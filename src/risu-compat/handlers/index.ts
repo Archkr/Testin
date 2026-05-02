@@ -1,0 +1,16 @@
+import "./trigger-id.js";
+import "./opaque-blocks.js";
+import "./structural-blocks.js";
+import "./iteration-blocks.js";
+import "./context-reads.js";
+import "./math.js";
+import "./logic.js";
+import "./strings.js";
+import "./arrays.js";
+import "./random.js";
+import "./variables.js";
+import "./misc.js";
+import "./chat-context.js";
+import "./display.js";
+import "./metadata.js";
+import "./assets.js";

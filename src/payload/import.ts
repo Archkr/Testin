@@ -1,0 +1,789 @@
+
+declare const spindle: import('lumiverse-spindle-types').SpindleAPI | undefined;
+
+import { translateCharx } from '../core/pipeline/index.js';
+import type { LumiBundle } from '../core/pipeline/index.js';
+import { CatalogIndex, parseCatalog } from '../core/cbs/index.js';
+import {
+  analyzeCardPortalCandidates,
+  extractInlineCssFromHtml,
+} from '../core/mappers/portal-analyze.js';
+import {
+  buildLumirealmData,
+  decideRulePartitionWithOverrides,
+  isStripStub,
+  partitionRulesForLumi,
+  preValidateRequires,
+  RisuCompatVersionError,
+  RisuConsentDeclinedError,
+  stripStubParentScriptId,
+  synthesizeStripStub,
+} from './codec.js';
+import { type UserStorageLike } from './installer.js';
+import type {
+  LumirealmCharacterData,
+  LumirealmUserOverrides,
+  RisuPayload,
+} from './types.js';
+import { LUMIREALM_EXT_KEY } from './types.js';
+import { appendImageIdsToJournal } from '../state/image-journal.js';
+
+// No-op in unit tests (no global spindle); each step logged for in-flight diagnosis.
+function logInfo(msg: string): void {
+  try { spindle?.log?.info?.(`[lumirealm] import: ${msg}`); } catch { /* ignore */ }
+}
+function logWarn(msg: string): void {
+  try { spindle?.log?.warn?.(`[lumirealm] import: ${msg}`); } catch { /* ignore */ }
+}
+function logError(msg: string): void {
+  try { spindle?.log?.error?.(`[lumirealm] import: ${msg}`); } catch { /* ignore */ }
+}
+
+import catalogJson from '../core/cbs/catalog/risu-macros.json';
+let cachedCatalog: CatalogIndex | null = null;
+function loadCatalog(): CatalogIndex {
+  if (cachedCatalog) return cachedCatalog;
+  cachedCatalog = new CatalogIndex(parseCatalog(catalogJson as unknown));
+  return cachedCatalog;
+}
+
+export interface ImportResult {
+  readonly characterId: string;
+  readonly characterName: string;
+  readonly lumirealm: LumirealmCharacterData;
+  readonly imageIds: readonly string[];
+  readonly pendingRegexScripts: readonly PendingRegexScript[];
+  readonly warnings: readonly string[];
+  readonly createdWorldBookIds: readonly string[];
+  readonly pendingSvgRasters: readonly import('../core/svg-rasterize.js').SvgRasterTask[];
+}
+
+export interface PendingRegexScript {
+  readonly name: string;
+  readonly script_id: string;
+  readonly find_regex: string;
+  readonly replace_string: string;
+  readonly flags: string;
+  readonly placement: readonly string[];
+  readonly scope: 'global' | 'character' | 'chat';
+  readonly scope_id: string | null;
+  readonly target: 'prompt' | 'response' | 'display';
+  readonly min_depth: number | null;
+  readonly max_depth: number | null;
+  readonly trim_strings: readonly string[];
+  readonly run_on_edit: boolean;
+  readonly substitute_macros: 'none' | 'raw' | 'escaped';
+  readonly disabled: boolean;
+  readonly sort_order: number;
+  readonly description: string;
+  readonly folder: string;
+  readonly metadata: Record<string, unknown>;
+}
+
+function makeLowLevelAccessConsentMessage(characterName: string): string {
+  return (
+    `"${characterName}" requests low-level access. With this granted the card may:\n\n` +
+    `  • Make additional LLM API calls (uses your tokens / billing)\n` +
+    `  • Run helper / classifier prompts in the background\n` +
+    `  • Trigger image generation (if your provider supports it)\n` +
+    `  • Inspect message similarity / embeddings\n\n` +
+    `Only grant access for cards from sources you trust. ` +
+    `Decline to import the card without low-level features (some panels / ` +
+    `auto-updates may not work).`
+  );
+}
+
+export function guessMimeType(path: string): string {
+  const lower = path.toLowerCase();
+  if (lower.endsWith('.png')) return 'image/png';
+  if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg';
+  if (lower.endsWith('.gif')) return 'image/gif';
+  if (lower.endsWith('.webp')) return 'image/webp';
+  if (lower.endsWith('.mp3')) return 'audio/mpeg';
+  if (lower.endsWith('.ogg')) return 'audio/ogg';
+  if (lower.endsWith('.wav')) return 'audio/wav';
+  if (lower.endsWith('.mp4')) return 'video/mp4';
+  if (lower.endsWith('.webm')) return 'video/webm';
+  return 'application/octet-stream';
+}
+
+function pickAvatar(
+  assets: ReadonlyMap<string, Uint8Array>,
+): { path: string; data: Uint8Array } | null {
+  const isImage = (p: string) => /\.(png|jpe?g|webp|gif)$/i.test(p);
+  // Canonical first.
+  for (const [path, data] of assets) {
+    if (/^assets\/icon\/main\.(png|jpe?g|webp|gif)$/i.test(path)) return { path, data };
+  }
+  // Any file inside an icon/ dir.
+  for (const [path, data] of assets) {
+    if (/\/icon\//i.test(path) && isImage(path)) return { path, data };
+  }
+  // First image asset.
+  for (const [path, data] of assets) {
+    if (isImage(path)) return { path, data };
+  }
+  return null;
+}
+
+function base64ToBytes(b64: string): Uint8Array {
+  return new Uint8Array(Buffer.from(b64, 'base64'));
+}
+
+// Declared here so tests can inject a mock without importing the full SpindleAPI type.
+export interface SpindleImportApi {
+  characters: {
+    create(input: Record<string, unknown>, userId?: string): Promise<{ id: string }>;
+    setAvatar?(
+      characterId: string,
+      avatar: { data: Uint8Array; filename?: string; mime_type?: string },
+      userId?: string,
+    ): Promise<{ id: string; image_id: string | null }>;
+    get(characterId: string, userId?: string): Promise<unknown>;
+    update(characterId: string, input: Record<string, unknown>, userId?: string): Promise<unknown>;
+    list(options?: { limit?: number; offset?: number; userId?: string }): Promise<{ data: readonly unknown[]; total: number }>;
+  };
+  world_books: {
+    create(input: Record<string, unknown>, userId?: string): Promise<{ id: string }>;
+    entries: {
+      create(worldBookId: string, input: Record<string, unknown>, userId?: string): Promise<{ id: string }>;
+    };
+  } | undefined;
+  requestConsent?(opts: {
+    title: string;
+    message: string;
+    confirmLabel: string;
+    cancelLabel: string;
+  }): Promise<{ confirmed: boolean }>;
+  images: {
+    upload(
+      input: { data: Uint8Array; mime_type?: string; filename?: string },
+      userId?: string,
+    ): Promise<{ id: string }>;
+  };
+}
+
+export interface ImportCardArgs {
+  readonly bytesB64: string;
+  readonly fileName: string;
+  readonly sourceId?: string;
+  readonly extensionVersion: string;
+  readonly userId: string | undefined;
+  readonly spindle: SpindleImportApi;
+  readonly userStorage: UserStorageLike;
+  readonly onProgress?: (phase: string, message: string, fraction: number | null) => void;
+}
+
+export async function importCard(args: ImportCardArgs): Promise<ImportResult> {
+  const progress = args.onProgress ?? (() => {});
+  const tImport = Date.now();
+  logInfo(`start file=${args.fileName} b64-bytes=${args.bytesB64.length} userId=${args.userId ?? '<none>'}`);
+
+  progress('decoding', `Decoding ${args.fileName}…`, 0.05);
+  const tDecode = Date.now();
+  const bytes = base64ToBytes(args.bytesB64);
+  logInfo(`(1) decoded base64 -> ${bytes.byteLength} bytes in ${Date.now() - tDecode}ms`);
+
+  progress('translating', 'Translating Risu card…', 0.15);
+  const tTranslate = Date.now();
+  const catalog = loadCatalog();
+  logInfo(`(2) translate: starting translateCharx bytes=${bytes.byteLength}`);
+  const bundle: LumiBundle = translateCharx(bytes, {
+    sourceId: args.sourceId ?? `file:${args.fileName}`,
+    mode: 'full',
+    catalog,
+    // emitPackScripts triggers fengari/json.lua disk reads; those paths
+    // are absent in dist/backend.js, so disable pack-script generation.
+    emitPackScripts: false,
+  });
+  logInfo(
+    `(2) translate: done in ${Date.now() - tTranslate}ms — char="${bundle.character.name}" ` +
+      `lore=${bundle.worldBookEntries.length} regex=${bundle.regexScripts.length} ` +
+      `assets=${bundle.assets.size} payload.triggers=${bundle.risuPayload?.triggers.length ?? 0} ` +
+      `payload.lua=${bundle.risuPayload?.lua_scripts.length ?? 0}`,
+  );
+  // Log translator issues loudly; silent degradation (e.g. dropped rpack modules) is hard to trace otherwise.
+  const issues = bundle.manifest.issues;
+  if (issues.length > 0) {
+    logWarn(`(2) translate produced ${issues.length} issue(s):`);
+    for (const iss of issues) {
+      logWarn(`    - ${iss.path}: ${iss.message}`);
+    }
+  }
+  if (!bundle.risuPayload) {
+    logError(`translator produced no risuPayload`);
+    throw new Error('risu-compat: translator produced no risuPayload');
+  }
+
+  progress('translating', 'Validating compatibility…', 0.22);
+  logInfo(`(3) preValidate requires=${JSON.stringify(bundle.risuPayload.requires)}`);
+  const check = preValidateRequires(bundle.risuPayload.requires);
+  const warnings: string[] = [];
+  if (!check.ok) {
+    logError(`(3) requires missing=[${check.missing.join(', ')}] — throwing RisuCompatVersionError`);
+    throw new RisuCompatVersionError(check.missing, args.extensionVersion);
+  }
+  if (check.degraded.length > 0) {
+    logWarn(`(3) degraded=[${check.degraded.join(', ')}]`);
+    warnings.push(
+      `Card uses degraded features: ${check.degraded.join(', ')}.`,
+    );
+  }
+
+  const svgTemplatedStripped = bundle.manifest.untranslated.svg_templated_stripped ?? 0;
+  const svgDangerousStripped = bundle.manifest.untranslated.svg_dangerous_stripped ?? 0;
+  if (svgTemplatedStripped > 0) {
+    logWarn(`(3) svg_templated_stripped=${svgTemplatedStripped}`);
+    warnings.push(
+      `${svgTemplatedStripped} dynamic SVG icon(s) on this card use template captures or macros and won't render — ` +
+        `the rest were rasterized to PNG. Visual gap on these icons only.`,
+    );
+  }
+  if (svgDangerousStripped > 0) {
+    logWarn(`(3) svg_dangerous_stripped=${svgDangerousStripped}`);
+    warnings.push(
+      `${svgDangerousStripped} SVG(s) with external references or scripts were skipped for safety.`,
+    );
+  }
+
+  // Risu parity: characterCards.ts alertConfirm gate for lowLevelAccess.
+  // Grant recorded on user_overrides.low_level_access_granted.
+  const userOverrides: {
+    -readonly [K in keyof LumirealmUserOverrides]: LumirealmUserOverrides[K];
+  } = {};
+  if (bundle.risuPayload.requires.lowLevelAccess === true) {
+    logInfo(`(3.5) requires.lowLevelAccess=true — prompting user consent`);
+    const consentMessage = makeLowLevelAccessConsentMessage(bundle.character.name);
+    let confirmed = false;
+    if (args.spindle.requestConsent) {
+      try {
+        const res = await args.spindle.requestConsent({
+          title: `Risu card "${bundle.character.name}" requests low-level access`,
+          message: consentMessage,
+          confirmLabel: 'Grant access',
+          cancelLabel: 'Decline',
+        });
+        confirmed = !!res?.confirmed;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logError(`(3.5) consent prompt threw: ${msg}`);
+        confirmed = false;
+      }
+    } else {
+      logWarn(`(3.5) requestConsent callback missing — refusing low-level access`);
+      confirmed = false;
+    }
+    if (!confirmed) {
+      logInfo(`(3.5) consent declined for "${bundle.character.name}" — aborting import`);
+      progress('error', `Import cancelled: low-level access declined`, null);
+      throw new RisuConsentDeclinedError(bundle.character.name);
+    }
+    userOverrides.low_level_access_granted = true;
+    userOverrides.consent_acknowledged_at = Date.now();
+    logInfo(`(3.5) consent granted; flag set on user_overrides`);
+  }
+
+  // Create world book before character so CHARACTER_CREATED already carries the lore attachment.
+  let worldBookId: string | null = null;
+  if (bundle.worldBookEntries.length > 0 && args.spindle.world_books) {
+    progress('creating_character', `Creating world book with ${bundle.worldBookEntries.length} entries…`, 0.3);
+    const tBook = Date.now();
+    try {
+      const wbName = bundle.worldBook?.name ?? `${bundle.character.name} — lore`;
+      logInfo(`(4a) create world_book name="${wbName}" for ${bundle.worldBookEntries.length} entries`);
+      const book = await args.spindle.world_books.create({ name: wbName }, args.userId);
+      worldBookId = book.id;
+      logInfo(`(4a) world_book created id=${worldBookId} in ${Date.now() - tBook}ms`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logError(`(4a) world_book create failed: ${msg}`);
+      warnings.push(`Failed to create world book: ${msg}. Lorebook entries skipped.`);
+    }
+  } else {
+    logInfo(`(4a) world_books: ${bundle.worldBookEntries.length === 0 ? 'no entries' : 'spindle.world_books unavailable'}`);
+  }
+
+  progress('creating_character', `Creating character "${bundle.character.name}"…`, 0.4);
+  const tChar = Date.now();
+  const characterInput: Record<string, unknown> = {
+    name: bundle.character.name,
+    description: bundle.character.description,
+    personality: bundle.character.personality,
+    scenario: bundle.character.scenario,
+    first_mes: bundle.character.first_mes,
+    mes_example: bundle.character.mes_example,
+    creator: bundle.character.creator,
+    creator_notes: bundle.character.creator_notes,
+    system_prompt: bundle.character.system_prompt,
+    post_history_instructions: bundle.character.post_history_instructions,
+    tags: [...bundle.character.tags],
+    alternate_greetings: [...bundle.character.alternate_greetings],
+  };
+  if (worldBookId) characterInput.world_book_ids = [worldBookId];
+  logInfo(`(4b) spindle.characters.create name="${bundle.character.name}" tags=${bundle.character.tags.length} alts=${bundle.character.alternate_greetings.length} worldBookId=${worldBookId ?? '<none>'}`);
+  const created = await args.spindle.characters.create(characterInput, args.userId);
+  const characterId = created.id;
+  logInfo(`(4b) spindle.characters.create -> id=${characterId} in ${Date.now() - tChar}ms`);
+
+  let avatarImageId: string | null = null;
+  if (args.spindle.characters.setAvatar) {
+    // Prefer the format-canonical avatar (JPEG preview from .charx polyglot;
+    // PNG card body) over scanning the asset map. Fall back to the asset scan
+    // for pure-ZIP charx without a preferred avatar.
+    const preferred = bundle.preferredAvatar;
+    const avatar = preferred
+      ? { path: preferred.filename, data: preferred.data, filename: preferred.filename, mime: preferred.mime }
+      : (() => {
+          const picked = pickAvatar(bundle.assets);
+          return picked
+            ? { path: picked.path, data: picked.data, filename: picked.path.split('/').pop() ?? 'avatar.png', mime: guessMimeType(picked.path) }
+            : null;
+        })();
+    if (avatar) {
+      const tAvatar = Date.now();
+      try {
+        logInfo(`(5a) setAvatar source=${preferred ? 'preferred' : 'asset-scan'} path=${avatar.path} bytes=${avatar.data.byteLength} mime=${avatar.mime}`);
+        const avatarResult = await args.spindle.characters.setAvatar(
+          characterId,
+          {
+            data: avatar.data,
+            filename: avatar.filename,
+            mime_type: avatar.mime,
+          },
+          args.userId,
+        );
+        if (typeof avatarResult.image_id === 'string' && avatarResult.image_id.length > 0) {
+          avatarImageId = avatarResult.image_id;
+        }
+        logInfo(`(5a) setAvatar done in ${Date.now() - tAvatar}ms image_id=${avatarImageId ?? '<none>'}`);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logWarn(`(5a) setAvatar failed: ${msg}`);
+        warnings.push(`Failed to set character avatar: ${msg}`);
+      }
+    } else {
+      logInfo(`(5a) setAvatar: no avatar candidate (no preferred avatar, no image in assets)`);
+    }
+  } else {
+    logInfo(`(5a) setAvatar: API unavailable (spindle-types < 0.4.31) — skipping`);
+  }
+
+  progress('uploading_assets', 'Uploading assets…', 0.55);
+  const tAssets = Date.now();
+  const uploadConcurrency = 6;
+  const pathToImageId: Record<string, string> = {};
+  const imageIds: string[] = [];
+  const journalBuffer: string[] = [];
+  let journalChain: Promise<void> = Promise.resolve();
+  const flushJournal = (): void => {
+    if (journalBuffer.length === 0) return;
+    const ids = journalBuffer.splice(0);
+    journalChain = journalChain.then(async () => {
+      try {
+        await appendImageIdsToJournal(args.userStorage, args.userId, characterId, ids);
+      } catch (err) {
+        journalBuffer.unshift(...ids);
+        logWarn(`image-journal flush failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    });
+  };
+  if (avatarImageId) {
+    imageIds.push(avatarImageId);
+    journalBuffer.push(avatarImageId);
+    flushJournal();
+  }
+  const assetEntries = [...bundle.assets];
+  const totalAssetCount = assetEntries.length;
+  let totalAssetBytes = 0;
+  for (const [, data] of assetEntries) totalAssetBytes += data.byteLength;
+  logInfo(
+    `(5b) uploading ${totalAssetCount} assets totalBytes=${totalAssetBytes} ` +
+      `concurrency=${uploadConcurrency} via spindle.images.upload`,
+  );
+
+  const progressEvery = Math.max(1, Math.min(25, Math.floor(totalAssetCount / 20) || 1));
+  const PROGRESS_BASE = 0.55;
+  const PROGRESS_END = 0.9;
+  let processed = 0;
+  let assetUploadFailures = 0;
+  let nextIndex = 0;
+
+  const uploadWorker = async (): Promise<void> => {
+    while (true) {
+      const i = nextIndex++;
+      if (i >= totalAssetCount) break;
+      const entry = assetEntries[i];
+      if (!entry) break;
+      const [path, data] = entry;
+      const filename = path.split('/').pop() ?? 'asset.bin';
+      try {
+        const result = await args.spindle.images.upload(
+          { data, mime_type: guessMimeType(path), filename },
+          args.userId,
+        );
+        if (typeof result?.id !== 'string' || result.id.length === 0) {
+          throw new Error('upload returned without an image id');
+        }
+        pathToImageId[path] = result.id;
+        imageIds.push(result.id);
+        journalBuffer.push(result.id);
+      } catch (err) {
+        assetUploadFailures += 1;
+        const msg = err instanceof Error ? err.message : String(err);
+        logWarn(`(5b) upload failed path=${path}: ${msg}`);
+      }
+      processed += 1;
+      if (processed % progressEvery === 0 || processed === totalAssetCount) {
+        flushJournal();
+        const frac = totalAssetCount === 0
+          ? PROGRESS_END
+          : PROGRESS_BASE + (PROGRESS_END - PROGRESS_BASE) * (processed / totalAssetCount);
+        progress(
+          'uploading_assets',
+          `Uploading assets (${processed}/${totalAssetCount})…`,
+          frac,
+        );
+      }
+    }
+  };
+
+  if (totalAssetCount > 0) {
+    const workers: Promise<void>[] = [];
+    for (let w = 0; w < Math.min(uploadConcurrency, totalAssetCount); w++) {
+      workers.push(uploadWorker());
+    }
+    await Promise.all(workers);
+  }
+  flushJournal();
+  await journalChain;
+
+  if (assetUploadFailures > 0) {
+    warnings.push(
+      `${assetUploadFailures} of ${totalAssetCount} asset upload(s) failed; ` +
+        `the card will work but may render fallback art.`,
+    );
+  }
+  logInfo(
+    `(5b) uploaded ${totalAssetCount - assetUploadFailures}/${totalAssetCount} assets ` +
+      `failed=${assetUploadFailures} elapsed=${Date.now() - tAssets}ms`,
+  );
+
+  const builtIndexes = buildAssetIndexes(
+    {
+      additional_assets: bundle.risuPayload.additional_assets,
+      emotion_images: bundle.risuPayload.emotion_images,
+    },
+    pathToImageId,
+  );
+  const assetIndex = builtIndexes.assetIndex;
+  const emotionIndex = builtIndexes.emotionIndex;
+
+  if (worldBookId && args.spindle.world_books) {
+    progress('uploading_assets', `Uploading ${bundle.worldBookEntries.length} world-info entries…`, 0.6);
+    const tEntries = Date.now();
+    const entries = bundle.worldBookEntries;
+    let failed = 0;
+    for (let i = 0; i < entries.length; i++) {
+      const entry = entries[i]!;
+      try {
+        // Forward the full shape; omitting fields like constant/disabled caused silent
+        // prompt-assembly failures (alwaysActive entries never injected).
+        const entryInput: Record<string, unknown> = {
+          key: entry.key,
+          keysecondary: entry.keysecondary,
+          content: entry.content,
+          comment: entry.comment,
+          position: entry.position,
+          depth: entry.depth,
+          order_value: entry.order_value,
+          selective: entry.selective,
+          constant: entry.constant,
+          disabled: entry.disabled,
+          group_name: entry.group_name,
+          group_override: entry.group_override,
+          group_weight: entry.group_weight,
+          probability: entry.probability,
+          case_sensitive: entry.case_sensitive,
+          match_whole_words: entry.match_whole_words,
+          use_regex: entry.use_regex,
+          prevent_recursion: entry.prevent_recursion,
+          exclude_recursion: entry.exclude_recursion,
+          delay_until_recursion: entry.delay_until_recursion,
+          priority: entry.priority,
+          sticky: entry.sticky,
+          cooldown: entry.cooldown,
+          delay: entry.delay,
+          selective_logic: entry.selective_logic,
+          use_probability: entry.use_probability,
+          vectorized: entry.vectorized,
+          ...(entry.role !== null ? { role: entry.role } : {}),
+          ...(entry.scan_depth !== null ? { scan_depth: entry.scan_depth } : {}),
+          ...(entry.automation_id !== null ? { automation_id: entry.automation_id } : {}),
+          ...(entry.extensions ? { extensions: entry.extensions } : {}),
+        };
+        await args.spindle.world_books.entries.create(worldBookId, entryInput, args.userId);
+      } catch (err) {
+        failed += 1;
+        const emsg = err instanceof Error ? err.message : String(err);
+        logWarn(`(6) entry "${entry.comment}" failed: ${emsg}`);
+        warnings.push(`Failed to create world info entry "${entry.comment}": ${emsg}`);
+      }
+      if (i % 10 === 0 || i === entries.length - 1) {
+        progress(
+          'uploading_assets',
+          `Uploading world-info entries (${i + 1}/${entries.length})…`,
+          0.55 + 0.35 * ((i + 1) / entries.length),
+        );
+      }
+    }
+    logInfo(`(6) entries done ok=${entries.length - failed} failed=${failed} elapsed=${Date.now() - tEntries}ms`);
+  }
+
+  // Rewrite scope_id from translator's internal id to the real Lumiverse character id.
+  const folderLabel = `Risu — ${bundle.character.name}`.slice(0, 80);
+
+  const allRows: PendingRegexScript[] = bundle.regexScripts.map((r) => ({
+    name: r.name,
+    script_id: r.script_id,
+    find_regex: r.find_regex,
+    replace_string: r.replace_string,
+    flags: r.flags,
+    placement: [...r.placement],
+    scope: r.scope,
+    scope_id: r.scope === 'character' ? characterId : r.scope_id,
+    target: r.target,
+    min_depth: r.min_depth,
+    max_depth: r.max_depth,
+    trim_strings: [...r.trim_strings],
+    run_on_edit: r.run_on_edit,
+    substitute_macros: r.substitute_macros,
+    disabled: r.disabled,
+    sort_order: r.sort_order,
+    description: r.description,
+    folder: r.folder || folderLabel,
+    metadata: { ...r.metadata },
+  }));
+
+  const tCandidates = Date.now();
+  const bgHtmlCss = extractInlineCssFromHtml(bundle.risuPayload.background_html ?? '');
+  const greetings = [
+    bundle.character.first_mes,
+    ...bundle.character.alternate_greetings,
+  ].filter((g): g is string => typeof g === 'string' && g.length > 0);
+  const portalCandidates = analyzeCardPortalCandidates({
+    regexScripts: allRows,
+    greetings,
+    bgHtmlCss,
+  });
+  const candidatesByConfidence = portalCandidates.reduce(
+    (acc, c) => { acc[c.confidence] = (acc[c.confidence] ?? 0) + 1; return acc; },
+    {} as Record<string, number>,
+  );
+  logInfo(
+    `(8.5) portal-candidates analyzed in ${Date.now() - tCandidates}ms — ` +
+      `total=${portalCandidates.length} ` +
+      `high-yes=${candidatesByConfidence['high-yes'] ?? 0} ` +
+      `ambiguous=${candidatesByConfidence['ambiguous'] ?? 0}`,
+  );
+
+  // Pre-generate stubs for ambiguous candidates the translator didn't stub.
+  // Without them, flipping an ambiguous rule to portal in the UI leaves its
+  // marker text leaking into the bubble (no stub to erase the find_regex match).
+  const existingStubParents = new Set<string>();
+  for (const r of allRows) {
+    if (isStripStub(r)) {
+      const parent = stripStubParentScriptId(r);
+      if (parent !== null) existingStubParents.add(parent);
+    }
+  }
+  const candidateBearingRulesById = new Map<number, PendingRegexScript>();
+  for (const r of allRows) {
+    if (!isStripStub(r)) candidateBearingRulesById.set(r.sort_order, r);
+  }
+  let synthesizedStubCount = 0;
+  for (const c of portalCandidates) {
+    if (c.source.kind !== 'regex_rule') continue;
+    const rule = candidateBearingRulesById.get(c.source.sort_order);
+    if (!rule) continue;
+    if (existingStubParents.has(rule.script_id)) continue;
+    const stub = synthesizeStripStub(rule, () => crypto.randomUUID());
+    // synthesizeStripStub returns StoredRegexScript (metadata optional);
+    // PendingRegexScript requires metadata; always populated here, so safe.
+    allRows.push({
+      name: stub.name,
+      script_id: stub.script_id,
+      find_regex: stub.find_regex,
+      replace_string: stub.replace_string,
+      flags: stub.flags,
+      placement: stub.placement,
+      scope: stub.scope,
+      scope_id: stub.scope_id,
+      target: stub.target,
+      min_depth: stub.min_depth,
+      max_depth: stub.max_depth,
+      trim_strings: stub.trim_strings,
+      run_on_edit: stub.run_on_edit,
+      substitute_macros: stub.substitute_macros,
+      disabled: stub.disabled,
+      sort_order: stub.sort_order,
+      description: stub.description,
+      folder: stub.folder,
+      metadata: { ...(stub.metadata ?? {}) },
+    });
+    existingStubParents.add(rule.script_id);
+    synthesizedStubCount++;
+  }
+  if (synthesizedStubCount > 0) {
+    logInfo(`(8.6) synthesized ${synthesizedStubCount} strip-stub(s) for ambiguous candidates`);
+  }
+
+  // portal_decisions overrides translator's extension_managed flag per candidate.
+  // Stale keys (from a prior import) are silently ignored.
+  const portalDecisions = userOverrides.portal_decisions ?? {};
+  const candidatesBySortOrder = new Map<number, string[]>();
+  for (const c of portalCandidates) {
+    if (c.source.kind !== 'regex_rule') continue;
+    const list = candidatesBySortOrder.get(c.source.sort_order) ?? [];
+    list.push(c.id);
+    candidatesBySortOrder.set(c.source.sort_order, list);
+  }
+  const isExtensionManaged = (r: { sort_order: number; metadata?: Readonly<Record<string, unknown>> }): boolean => {
+    const ruleCandidateIds = candidatesBySortOrder.get(r.sort_order) ?? [];
+    const risu = (r.metadata as { _risu?: { extension_managed?: unknown } } | undefined)?._risu;
+    const translatorFlag = risu?.extension_managed === true;
+    return decideRulePartitionWithOverrides(ruleCandidateIds, portalDecisions, translatorFlag);
+  };
+
+  // Lumi's table gets: non-managed plain rules + stubs whose parent is managed.
+  // partitionRulesForLumi gates stubs on parent status to avoid erasing inline rules.
+  const pendingRegexScripts: PendingRegexScript[] = partitionRulesForLumi(
+    allRows,
+    isExtensionManaged,
+  ).map((r) => ({
+    name: r.name,
+    script_id: r.script_id,
+    find_regex: r.find_regex,
+    replace_string: r.replace_string,
+    flags: r.flags,
+    placement: r.placement,
+    scope: r.scope,
+    scope_id: r.scope_id,
+    target: r.target,
+    min_depth: r.min_depth,
+    max_depth: r.max_depth,
+    trim_strings: r.trim_strings,
+    run_on_edit: r.run_on_edit,
+    substitute_macros: r.substitute_macros,
+    disabled: r.disabled,
+    sort_order: r.sort_order,
+    description: r.description,
+    folder: r.folder,
+    metadata: { ...(r.metadata ?? {}) },
+  }));
+  const partitionedOut = allRows.length - pendingRegexScripts.length;
+  logInfo(
+    `(8) pendingRegexScripts: total=${allRows.length} pushedToLumi=${pendingRegexScripts.length} ` +
+      `extensionManaged=${partitionedOut} folder="${folderLabel}"`,
+  );
+
+  // Lumi shallow-merges extensions (worker-host.ts); only the lumirealm key is overwritten.
+  progress('saving_payload', 'Saving lumirealm payload…', 0.92);
+  const tSave = Date.now();
+  // Store ALL rules (managed + plain + stubs) so the backend portal resolver
+  // has full context. Partition governs who executes each rule, not what is stored.
+  const storedRegexScripts = allRows.map((r) => ({
+    name: r.name,
+    script_id: r.script_id,
+    find_regex: r.find_regex,
+    replace_string: r.replace_string,
+    flags: r.flags,
+    placement: r.placement,
+    scope: r.scope,
+    scope_id: r.scope_id,
+    target: r.target,
+    min_depth: r.min_depth,
+    max_depth: r.max_depth,
+    trim_strings: r.trim_strings,
+    run_on_edit: r.run_on_edit,
+    substitute_macros: r.substitute_macros,
+    disabled: r.disabled,
+    sort_order: r.sort_order,
+    description: r.description,
+    folder: r.folder,
+    metadata: r.metadata,
+  }));
+  const lumirealmData = buildLumirealmData(
+    bundle.risuPayload,
+    args.extensionVersion,
+    storedRegexScripts,
+    assetIndex,    // populated above via spindle.images.upload
+    emotionIndex,  // populated alongside (last-wins per emotion name)
+    Date.now(),
+    userOverrides,
+    portalCandidates,
+  );
+  try {
+    await args.spindle.characters.update(
+      characterId,
+      { extensions: { [LUMIREALM_EXT_KEY]: lumirealmData } },
+      args.userId,
+    );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logError(`(9) characters.update extensions write failed: ${msg}`);
+    throw err;
+  }
+  logInfo(`(9) writeLumirealm done in ${Date.now() - tSave}ms regex_scripts=${storedRegexScripts.length}`);
+
+  // Caller (backend.ts importCardFromBytes) emits phase=done after asset upload completes.
+  progress('saving_payload', `Saved ${bundle.character.name}`, 1);
+  logInfo(`done file=${args.fileName} characterId=${characterId} total=${Date.now() - tImport}ms warnings=${warnings.length}`);
+
+  return {
+    characterId,
+    characterName: bundle.character.name,
+    lumirealm: lumirealmData,
+    imageIds,
+    pendingRegexScripts,
+    warnings,
+    createdWorldBookIds: worldBookId ? [worldBookId] : [],
+    pendingSvgRasters: bundle.pendingSvgRasters,
+  };
+}
+
+export function buildAssetIndexes(
+  payload: Pick<RisuPayload, "additional_assets" | "emotion_images">,
+  uploads: Readonly<Record<string, string>>,
+): {
+  assetIndex: Record<string, { imageIds: string[]; ext?: string }>;
+  emotionIndex: Record<string, { imageIds: string[]; ext?: string }>;
+  mappedCount: number;
+} {
+  const assetIndex: Record<string, { imageIds: string[]; ext?: string }> = {};
+  const emotionIndex: Record<string, { imageIds: string[]; ext?: string }> = {};
+  let mappedCount = 0;
+  for (const a of payload.additional_assets ?? []) {
+    const imageId = uploads[a.path];
+    if (!imageId) continue;
+    const key = a.name;
+    let bucket = assetIndex[key];
+    if (!bucket) {
+      bucket = a.ext ? { imageIds: [], ext: a.ext } : { imageIds: [] };
+      assetIndex[key] = bucket;
+    }
+    // Risu ext-binding: first-seen ext is sticky; mismatched ext is silently dropped.
+    if (bucket.ext === a.ext) {
+      bucket.imageIds.push(imageId);
+      mappedCount++;
+    }
+  }
+  for (const a of payload.emotion_images ?? []) {
+    const imageId = uploads[a.path];
+    if (!imageId) continue;
+    const key = a.name;
+    // Risu's getEmoSrc always overwrites; last-wins.
+    emotionIndex[key] = a.ext ? { imageIds: [imageId], ext: a.ext } : { imageIds: [imageId] };
+    mappedCount++;
+  }
+  return { assetIndex, emotionIndex, mappedCount };
+}

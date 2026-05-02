@@ -1,0 +1,3486 @@
+[
+  {
+    "name": "#each",
+    "aliases": [
+      ":each"
+    ],
+    "category": "control_flow",
+    "argShape": "[::keep ]ARRAY as VAR + body",
+    "minArgs": 2,
+    "maxArgs": 2,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/parser/parser.svelte.ts",
+    "risuLine": 1388,
+    "summary": "Iterates over a JSON or §-delimited array, substituting {{slot::VAR}} inside the body per iteration.",
+    "notes": "Known deviation: inner macros are not re-evaluated per iteration; remaining {{…}} in output appear literal."
+  },
+  {
+    "name": "#code",
+    "aliases": [
+      "#normalize"
+    ],
+    "category": "control_flow",
+    "argShape": "body",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/parser/parser.svelte.ts",
+    "risuLine": 1486,
+    "summary": "Normalizes a code body: trims, strips newlines and tabs, processes backslash escape sequences (\\n, \\r, \\t, \\uXXXX, \\x, etc).",
+    "notes": "Often used to inline machine-generated JSON into a prompt."
+  },
+  {
+    "name": "#ignore",
+    "aliases": [],
+    "category": "control_flow",
+    "argShape": "body",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/parser/parser.svelte.ts",
+    "risuLine": 1517,
+    "summary": "Discards the block body and returns empty string. Inner macros are not evaluated.",
+    "notes": "Typical use: disabling a section of a card without deleting it."
+  },
+  {
+    "name": "#escape",
+    "aliases": [],
+    "category": "control_flow",
+    "argShape": "[::keep] + body",
+    "minArgs": 0,
+    "maxArgs": 1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/parser/parser.svelte.ts",
+    "risuLine": 1514,
+    "summary": "Replaces { } ( ) in the body with Private Use Area chars so they don't parse as macro/function syntax.",
+    "notes": "Body is trimmed unless mode=keep. Inner macros are not evaluated (opaque block)."
+  },
+  {
+    "name": "#if",
+    "aliases": [],
+    "category": "control_flow",
+    "argShape": "cond + body",
+    "minArgs": 1,
+    "maxArgs": 2,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/parser/parser.svelte.ts",
+    "risuLine": 1138,
+    "summary": "Conditional block. Returns body if condition is truthy (\"true\" or \"1\"), else empty (or {{:else}} branch if present).",
+    "notes": "DEPRECATED. Use #when instead. Risu short-circuits body evaluation for the untaken branch; Lumiverse does not."
+  },
+  {
+    "name": "#if_pure",
+    "aliases": [],
+    "category": "control_flow",
+    "argShape": "cond + body",
+    "minArgs": 1,
+    "maxArgs": 2,
+    "pure": false,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/parser/parser.svelte.ts",
+    "risuLine": 1143,
+    "summary": "Conditional block variant that preserves interior whitespace. DEPRECATED; use #when::keep::cond instead.",
+    "notes": "DEPRECATED."
+  },
+  {
+    "name": "#pure",
+    "aliases": [],
+    "category": "control_flow",
+    "argShape": "body",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/parser/parser.svelte.ts",
+    "risuLine": 1420,
+    "summary": "Returns the block body as literal text without evaluating inner CBS macros.",
+    "notes": "Body is trimmed. Inner macros are preserved verbatim (opaque block)."
+  },
+  {
+    "name": "#puredisplay",
+    "aliases": [
+      "pure_display",
+      "pure-display"
+    ],
+    "category": "control_flow",
+    "argShape": "body",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/parser/parser.svelte.ts",
+    "risuLine": 1722,
+    "summary": "Returns the trimmed block body with {{ and }} backslash-escaped so downstream parsers leave them alone.",
+    "notes": "Like #pure, but additionally escapes brace pairs to prevent any further macro parsing."
+  },
+  {
+    "name": "#when",
+    "aliases": [],
+    "category": "control_flow",
+    "argShape": "[op::]cond[::op::cond::…] + body",
+    "minArgs": 1,
+    "maxArgs": -1,
+    "pure": false,
+    "readsState": [
+      "localVars",
+      "globalVars"
+    ],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/parser/parser.svelte.ts",
+    "risuLine": 1150,
+    "summary": "Conditional block with operator chain. Supports and/or/is/isnot/not/var/vis/visnot/toggle/tis/tisnot/>/</>=/<= plus whitespace modes keep and legacy.",
+    "notes": "Known deviation: body eager-evaluates in Lumiverse regardless of condition; side effects in the untaken branch still fire."
+  },
+  {
+    "name": "//",
+    "aliases": [],
+    "category": "other",
+    "argShape": "TEXT",
+    "minArgs": 0,
+    "maxArgs": -1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 2257,
+    "summary": "Inline comment — always returns ''.",
+    "notes": ""
+  },
+  {
+    "name": ":else",
+    "aliases": [],
+    "category": "other",
+    "argShape": "UNCERTAIN",
+    "minArgs": 0,
+    "maxArgs": 0,
+    "pure": false,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 2442,
+    "summary": "Else statement for CBS. Must be used inside {{#when}}. if {{#when}} is multiline",
+    "notes": ""
+  },
+  {
+    "name": "?",
+    "aliases": [],
+    "category": "other",
+    "argShape": "UNCERTAIN",
+    "minArgs": 0,
+    "maxArgs": 0,
+    "pure": false,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 2264,
+    "summary": "Runs math operations on numbers. Supports +, -, *, /, %, ^ (exponentiation), % (",
+    "notes": ""
+  },
+  {
+    "name": "__",
+    "aliases": [],
+    "category": "other",
+    "argShape": "UNCERTAIN",
+    "minArgs": 0,
+    "maxArgs": 0,
+    "pure": false,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 2271,
+    "summary": "**INTERNAL FUNCTION - DO NOT USE**",
+    "notes": ""
+  },
+  {
+    "name": "abs",
+    "aliases": [],
+    "category": "math",
+    "argShape": "N",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": {
+      "name": "abs",
+      "compatible": false,
+      "notes": ""
+    },
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1128,
+    "summary": "Returns the absolute value of a number.",
+    "notes": ""
+  },
+  {
+    "name": "addvar",
+    "aliases": [],
+    "category": "variables",
+    "argShape": "NAME::DELTA",
+    "minArgs": 2,
+    "maxArgs": 2,
+    "pure": false,
+    "readsState": [
+      "localVars"
+    ],
+    "writesState": [
+      "localVars"
+    ],
+    "lumiverseCollision": {
+      "name": "addvar",
+      "compatible": false,
+      "notes": ""
+    },
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 810,
+    "summary": "Adds DELTA to the current numeric value of NAME.",
+    "notes": ""
+  },
+  {
+    "name": "all",
+    "aliases": [],
+    "category": "other",
+    "argShape": "ARR or F1::F2::…",
+    "minArgs": 1,
+    "maxArgs": -1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1667,
+    "summary": "Returns '1' iff every value is the literal '1'. Accepts a JSON array or multiple args.",
+    "notes": ""
+  },
+  {
+    "name": "and",
+    "aliases": [],
+    "category": "logic",
+    "argShape": "A::B",
+    "minArgs": 2,
+    "maxArgs": 2,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": {
+      "name": "and",
+      "compatible": false,
+      "notes": ""
+    },
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 943,
+    "summary": "Boolean AND: returns '1' iff both args are the literal '1'.",
+    "notes": ""
+  },
+  {
+    "name": "any",
+    "aliases": [],
+    "category": "other",
+    "argShape": "ARR or F1::F2::…",
+    "minArgs": 1,
+    "maxArgs": -1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1680,
+    "summary": "Returns '1' if any value is the literal '1'.",
+    "notes": ""
+  },
+  {
+    "name": "arrayassert",
+    "aliases": [
+      "arrayassert"
+    ],
+    "category": "arrays",
+    "argShape": "JSON_ARR::INDEX::VALUE",
+    "minArgs": 3,
+    "maxArgs": 3,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1280,
+    "summary": "Sets arr[INDEX]=VALUE only if INDEX is out of bounds (extends the array).",
+    "notes": ""
+  },
+  {
+    "name": "arrayelement",
+    "aliases": [
+      "arrayelement"
+    ],
+    "category": "arrays",
+    "argShape": "JSON_ARR::INDEX",
+    "minArgs": 2,
+    "maxArgs": 2,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1178,
+    "summary": "Returns arr[INDEX] (JSON-stringified if object). 'null' if OOB.",
+    "notes": ""
+  },
+  {
+    "name": "arraylength",
+    "aliases": [
+      "arraylength"
+    ],
+    "category": "arrays",
+    "argShape": "JSON_ARR",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1065,
+    "summary": "Length of a JSON array.",
+    "notes": ""
+  },
+  {
+    "name": "arraypop",
+    "aliases": [
+      "arraypop"
+    ],
+    "category": "arrays",
+    "argShape": "JSON_ARR",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1247,
+    "summary": "Removes and discards the last element.",
+    "notes": ""
+  },
+  {
+    "name": "arraypush",
+    "aliases": [
+      "arraypush"
+    ],
+    "category": "arrays",
+    "argShape": "JSON_ARR::ELEM",
+    "minArgs": 2,
+    "maxArgs": 2,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1258,
+    "summary": "Appends an element to the array.",
+    "notes": ""
+  },
+  {
+    "name": "arrayshift",
+    "aliases": [
+      "arrayshift"
+    ],
+    "category": "arrays",
+    "argShape": "JSON_ARR",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1236,
+    "summary": "Removes and discards the first element; returns the modified JSON array.",
+    "notes": ""
+  },
+  {
+    "name": "arraysplice",
+    "aliases": [
+      "arraysplice"
+    ],
+    "category": "arrays",
+    "argShape": "JSON_ARR::START::DELETE_COUNT::NEW_ELEM",
+    "minArgs": 4,
+    "maxArgs": 4,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1269,
+    "summary": "Risu-style splice: (arr, start, deleteCount, newElement).",
+    "notes": ""
+  },
+  {
+    "name": "asset",
+    "aliases": [],
+    "category": "display",
+    "argShape": "NAME",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 2282,
+    "summary": "doc_only — stripped at prompt stage; rendered as character asset element at display.",
+    "notes": "Shim returns '' at prompt stage. Display-time HTML injection belongs to a Lumiverse renderer extension."
+  },
+  {
+    "name": "assetlist",
+    "aliases": [],
+    "category": "display",
+    "argShape": "(no args)",
+    "minArgs": 0,
+    "maxArgs": 0,
+    "pure": false,
+    "readsState": [
+      "characterFields"
+    ],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1340,
+    "summary": "JSON array of additional asset names. '' for group characters.",
+    "notes": ""
+  },
+  {
+    "name": "audio",
+    "aliases": [],
+    "category": "other",
+    "argShape": "NAME",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 2296,
+    "summary": "doc_only — audio asset NAME. Stripped at prompt stage.",
+    "notes": ""
+  },
+  {
+    "name": "authornote",
+    "aliases": [
+      "author_note"
+    ],
+    "category": "logic",
+    "argShape": "no args",
+    "minArgs": 0,
+    "maxArgs": 0,
+    "pure": false,
+    "readsState": [
+      "characterFields"
+    ],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 393,
+    "summary": "Returns the author's note for the current chat.",
+    "notes": ""
+  },
+  {
+    "name": "average",
+    "aliases": [],
+    "category": "other",
+    "argShape": "ARR or N1::N2::…",
+    "minArgs": 1,
+    "maxArgs": -1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1741,
+    "summary": "Arithmetic mean. Returns NaN on empty input.",
+    "notes": ""
+  },
+  {
+    "name": "axmodel",
+    "aliases": [],
+    "category": "identity",
+    "argShape": "no args",
+    "minArgs": 0,
+    "maxArgs": 0,
+    "pure": false,
+    "readsState": [
+      "chatState"
+    ],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 660,
+    "summary": "Returns the id of the auxiliary model.",
+    "notes": ""
+  },
+  {
+    "name": "bg",
+    "aliases": [],
+    "category": "display",
+    "argShape": "NAME",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 2303,
+    "summary": "doc_only — background image NAME. Stripped at prompt stage.",
+    "notes": ""
+  },
+  {
+    "name": "bgm",
+    "aliases": [],
+    "category": "display",
+    "argShape": "NAME",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 2310,
+    "summary": "doc_only — background music NAME. Stripped at prompt stage.",
+    "notes": ""
+  },
+  {
+    "name": "bkspc",
+    "aliases": [],
+    "category": "other",
+    "argShape": "(no args)",
+    "minArgs": 0,
+    "maxArgs": 0,
+    "pure": false,
+    "readsState": [
+      "chatState"
+    ],
+    "writesState": [
+      "chatState"
+    ],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 2179,
+    "summary": "Risu rewinds the generated buffer by one word. No buffer in risu-compat — shim '' (deviation).",
+    "notes": ""
+  },
+  {
+    "name": "blank",
+    "aliases": [
+      "none"
+    ],
+    "category": "other",
+    "argShape": "no args",
+    "minArgs": 0,
+    "maxArgs": 0,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 435,
+    "summary": "Returns an empty string.",
+    "notes": ""
+  },
+  {
+    "name": "bo",
+    "aliases": [
+      "ddecbo",
+      "doubledisplayescapedcurlybracketopen"
+    ],
+    "category": "other",
+    "argShape": "(no args)",
+    "minArgs": 0,
+    "maxArgs": 0,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1415,
+    "summary": "Displays as {{ (two PUA sentinels).",
+    "notes": ""
+  },
+  {
+    "name": "br",
+    "aliases": [
+      "newline"
+    ],
+    "category": "other",
+    "argShape": "no args",
+    "minArgs": 0,
+    "maxArgs": 0,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 641,
+    "summary": "Returns a literal newline character.",
+    "notes": ""
+  },
+  {
+    "name": "button",
+    "aliases": [],
+    "category": "other",
+    "argShape": "LABEL::TRIGGER",
+    "minArgs": 2,
+    "maxArgs": 2,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 869,
+    "summary": "HTML button with risu-trigger=\"TRIGGER\" that fires the named manual trigger when clicked.",
+    "notes": ""
+  },
+  {
+    "name": "calc",
+    "aliases": [],
+    "category": "math",
+    "argShape": "EXPR",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": false,
+    "readsState": [
+      "localVars",
+      "globalVars"
+    ],
+    "writesState": [],
+    "lumiverseCollision": {
+      "name": "calc",
+      "compatible": false,
+      "notes": ""
+    },
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 801,
+    "summary": "Evaluates a math expression. Supports +, -, *, /, ^, %, and comparisons. $var reads a local chat var; @var reads a global chat var.",
+    "notes": ""
+  },
+  {
+    "name": "capitalize",
+    "aliases": [],
+    "category": "strings",
+    "argShape": "STR",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": {
+      "name": "capitalize",
+      "compatible": false,
+      "notes": ""
+    },
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1092,
+    "summary": "Uppercases only the first character of STR.",
+    "notes": ""
+  },
+  {
+    "name": "cbr",
+    "aliases": [
+      "cnl",
+      "cnewline"
+    ],
+    "category": "other",
+    "argShape": "[N]",
+    "minArgs": 0,
+    "maxArgs": 1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1384,
+    "summary": "Emits literal '\\n' (backslash+n). Optional N repeats the sequence.",
+    "notes": ""
+  },
+  {
+    "name": "ceil",
+    "aliases": [],
+    "category": "math",
+    "argShape": "N",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": {
+      "name": "ceil",
+      "compatible": false,
+      "notes": ""
+    },
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1119,
+    "summary": "Rounds toward positive infinity (ceil).",
+    "notes": ""
+  },
+  {
+    "name": "char",
+    "aliases": [
+      "bot"
+    ],
+    "category": "character_fields",
+    "argShape": "UNCERTAIN",
+    "minArgs": 0,
+    "maxArgs": 0,
+    "pure": false,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": {
+      "name": "char",
+      "compatible": true,
+      "notes": ""
+    },
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 146,
+    "summary": "Returns the name or nickname of the current character/bot. In consistent charact",
+    "notes": ""
+  },
+  {
+    "name": "chardisplayasset",
+    "aliases": [],
+    "category": "character_fields",
+    "argShape": "(no args)",
+    "minArgs": 0,
+    "maxArgs": 0,
+    "pure": false,
+    "readsState": [
+      "characterFields"
+    ],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1487,
+    "summary": "JSON array of display assets filtered by prebuiltAssetExclude. Empty when prebuiltAssetCommand is off.",
+    "notes": ""
+  },
+  {
+    "name": "charhistory",
+    "aliases": [
+      "charmessages",
+      "char_history"
+    ],
+    "category": "chat_context",
+    "argShape": "(no args)",
+    "minArgs": 0,
+    "maxArgs": 0,
+    "pure": false,
+    "readsState": [
+      "messages"
+    ],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 354,
+    "summary": "JSON array of all assistant/character messages. role normalized to Risu's 'char'.",
+    "notes": ""
+  },
+  {
+    "name": "chatindex",
+    "aliases": [
+      "chat_index"
+    ],
+    "category": "other",
+    "argShape": "(no args)",
+    "minArgs": 0,
+    "maxArgs": 0,
+    "pure": false,
+    "readsState": [
+      "messages"
+    ],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 415,
+    "summary": "Index of the current message being processed. Empty string outside a message context.",
+    "notes": ""
+  },
+  {
+    "name": "codeblock",
+    "aliases": [],
+    "category": "other",
+    "argShape": "[LANG::]CODE",
+    "minArgs": 1,
+    "maxArgs": 2,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 2159,
+    "summary": "Emits <pre><code>...</code></pre> or a highlight-ready placeholder when LANG is provided.",
+    "notes": ""
+  },
+  {
+    "name": "comment",
+    "aliases": [],
+    "category": "other",
+    "argShape": "TEXT",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": {
+      "name": "comment",
+      "compatible": false,
+      "notes": ""
+    },
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 2129,
+    "summary": "Emits '' in model prompt; renders as a <div> on display. Our runtime never hits display mode, so always returns ''.",
+    "notes": ""
+  },
+  {
+    "name": "contains",
+    "aliases": [],
+    "category": "other",
+    "argShape": "STR::NEEDLE",
+    "minArgs": 2,
+    "maxArgs": 2,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1001,
+    "summary": "Returns '1' if STR contains NEEDLE anywhere.",
+    "notes": ""
+  },
+  {
+    "name": "crypt",
+    "aliases": [
+      "crypto",
+      "caesar",
+      "encrypt",
+      "decrypt"
+    ],
+    "category": "other",
+    "argShape": "STR[::SHIFT]",
+    "minArgs": 1,
+    "maxArgs": 2,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1973,
+    "summary": "Caesar-style Unicode shift cipher. Default SHIFT = 32768 (self-inverting over 16-bit code points).",
+    "notes": ""
+  },
+  {
+    "name": "date",
+    "aliases": [
+      "datetimeformat"
+    ],
+    "category": "time",
+    "argShape": "[FMT[::UNIX_MS]]",
+    "minArgs": 0,
+    "maxArgs": 2,
+    "pure": false,
+    "readsState": [
+      "time"
+    ],
+    "writesState": [],
+    "lumiverseCollision": {
+      "name": "date",
+      "compatible": false,
+      "notes": ""
+    },
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1563,
+    "summary": "No args → YYYY-M-D. First arg = format string. Second arg = unix ms.",
+    "notes": ""
+  },
+  {
+    "name": "decbo",
+    "aliases": [
+      "displayescapedcurlybracketopen"
+    ],
+    "category": "other",
+    "argShape": "(no args)",
+    "minArgs": 0,
+    "maxArgs": 0,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1397,
+    "summary": "Displays as { without re-parsing (PUA sentinel \\uE9B8).",
+    "notes": ""
+  },
+  {
+    "name": "declare",
+    "aliases": [],
+    "category": "other",
+    "argShape": "NAME",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": false,
+    "readsState": [],
+    "writesState": [
+      "localVars"
+    ],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 2247,
+    "summary": "Sets a __declared_NAME__ marker in the temp scope (writable from later {{declared::NAME}} reads).",
+    "notes": ""
+  },
+  {
+    "name": "description",
+    "aliases": [
+      "chardesc"
+    ],
+    "category": "character_fields",
+    "argShape": "UNCERTAIN",
+    "minArgs": 0,
+    "maxArgs": 0,
+    "pure": false,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": {
+      "name": "description",
+      "compatible": true,
+      "notes": "Both return the equivalent character field; semantics match."
+    },
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 252,
+    "summary": "Returns the description field of the current character. The text is processed th",
+    "notes": ""
+  },
+  {
+    "name": "dice",
+    "aliases": [],
+    "category": "random",
+    "argShape": "NdS",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": false,
+    "readsState": [
+      "rng"
+    ],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1826,
+    "summary": "Dice roll via NdS notation. Both numbers required — returns NaN otherwise.",
+    "notes": ""
+  },
+  {
+    "name": "dictelement",
+    "aliases": [
+      "dictelement",
+      "objectelement"
+    ],
+    "category": "arrays",
+    "argShape": "JSON_OBJ::KEY",
+    "minArgs": 2,
+    "maxArgs": 2,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1188,
+    "summary": "Returns dict[KEY] or 'null' if missing.",
+    "notes": ""
+  },
+  {
+    "name": "displayescapedanglebracketclose",
+    "aliases": [
+      "deabc",
+      ">"
+    ],
+    "category": "escape_markup",
+    "argShape": "(no args)",
+    "minArgs": 0,
+    "maxArgs": 0,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1460,
+    "summary": "Displays as > (PUA \\uE9BD).",
+    "notes": ""
+  },
+  {
+    "name": "displayescapedanglebracketopen",
+    "aliases": [
+      "deabo",
+      "<"
+    ],
+    "category": "escape_markup",
+    "argShape": "(no args)",
+    "minArgs": 0,
+    "maxArgs": 0,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1451,
+    "summary": "Displays as < (PUA \\uE9BC).",
+    "notes": ""
+  },
+  {
+    "name": "displayescapedbracketclose",
+    "aliases": [
+      "debc",
+      ")"
+    ],
+    "category": "escape_markup",
+    "argShape": "(no args)",
+    "minArgs": 0,
+    "maxArgs": 0,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1442,
+    "summary": "Displays as ) (PUA \\uE9BB).",
+    "notes": ""
+  },
+  {
+    "name": "displayescapedbracketopen",
+    "aliases": [
+      "debo",
+      "("
+    ],
+    "category": "escape_markup",
+    "argShape": "(no args)",
+    "minArgs": 0,
+    "maxArgs": 0,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1433,
+    "summary": "Displays as ( (PUA \\uE9BA).",
+    "notes": ""
+  },
+  {
+    "name": "displayescapedcolon",
+    "aliases": [
+      "dec",
+      ":"
+    ],
+    "category": "escape_markup",
+    "argShape": "(no args)",
+    "minArgs": 0,
+    "maxArgs": 0,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1469,
+    "summary": "Displays as : without being parsed as a CBS separator (PUA \\uE9BE).",
+    "notes": ""
+  },
+  {
+    "name": "displayescapedsemicolon",
+    "aliases": [
+      ";"
+    ],
+    "category": "escape_markup",
+    "argShape": "(no args)",
+    "minArgs": 0,
+    "maxArgs": 0,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1478,
+    "summary": "Displays as ; (PUA \\uE9BF).",
+    "notes": ""
+  },
+  {
+    "name": "element",
+    "aliases": [
+      "ele"
+    ],
+    "category": "arrays",
+    "argShape": "JSON::KEY1[::KEY2…]",
+    "minArgs": 2,
+    "maxArgs": -1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1211,
+    "summary": "Walks a JSON structure by successive keys/indices; returns 'null' if any step fails.",
+    "notes": ""
+  },
+  {
+    "name": "emotion",
+    "aliases": [],
+    "category": "display",
+    "argShape": "NAME",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 2289,
+    "summary": "doc_only — emotion image NAME. Stripped at prompt stage.",
+    "notes": ""
+  },
+  {
+    "name": "emotionlist",
+    "aliases": [],
+    "category": "display",
+    "argShape": "(no args)",
+    "minArgs": 0,
+    "maxArgs": 0,
+    "pure": false,
+    "readsState": [
+      "characterFields"
+    ],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1324,
+    "summary": "JSON array of emotion image names for the current character.",
+    "notes": ""
+  },
+  {
+    "name": "endswith",
+    "aliases": [],
+    "category": "other",
+    "argShape": "STR::SUFFIX",
+    "minArgs": 2,
+    "maxArgs": 2,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 992,
+    "summary": "Returns '1' if STR ends with SUFFIX.",
+    "notes": ""
+  },
+  {
+    "name": "equal",
+    "aliases": [],
+    "category": "logic",
+    "argShape": "A::B",
+    "minArgs": 2,
+    "maxArgs": 2,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 889,
+    "summary": "Returns '1' if A === B (string compare), else '0'.",
+    "notes": ""
+  },
+  {
+    "name": "erase",
+    "aliases": [],
+    "category": "other",
+    "argShape": "(no args)",
+    "minArgs": 0,
+    "maxArgs": 0,
+    "pure": false,
+    "readsState": [
+      "chatState"
+    ],
+    "writesState": [
+      "chatState"
+    ],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 2211,
+    "summary": "Risu rewinds the generated buffer by one sentence. Shim '' (deviation).",
+    "notes": ""
+  },
+  {
+    "name": "exampledialogue",
+    "aliases": [
+      "examplemessage",
+      "example_dialogue"
+    ],
+    "category": "other",
+    "argShape": "no args",
+    "minArgs": 0,
+    "maxArgs": 0,
+    "pure": false,
+    "readsState": [
+      "characterFields"
+    ],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 283,
+    "summary": "Returns the example dialogue/message field of the current character.",
+    "notes": ""
+  },
+  {
+    "name": "file",
+    "aliases": [],
+    "category": "other",
+    "argShape": "NAME::BASE64",
+    "minArgs": 2,
+    "maxArgs": 2,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 970,
+    "summary": "Decodes base64 file content to UTF-8 for inclusion in the model prompt. (Risu's display mode returns an HTML div; renderer-only — not ported.)",
+    "notes": ""
+  },
+  {
+    "name": "filter",
+    "aliases": [],
+    "category": "other",
+    "argShape": "JSON_ARR::MODE",
+    "minArgs": 2,
+    "maxArgs": 2,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1639,
+    "summary": "Filters a JSON array. MODE = 'all' (unique + non-empty), 'nonempty', or 'unique'.",
+    "notes": ""
+  },
+  {
+    "name": "firstmsgindex",
+    "aliases": [
+      "firstmessageindex",
+      "first_msg_index"
+    ],
+    "category": "other",
+    "argShape": "(no args)",
+    "minArgs": 0,
+    "maxArgs": 0,
+    "pure": false,
+    "readsState": [
+      "messages"
+    ],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 424,
+    "summary": "Index of the selected first-message/alternate-greeting. Always '0' in our model.",
+    "notes": ""
+  },
+  {
+    "name": "fixnum",
+    "aliases": [
+      "fixnum",
+      "fixnumber"
+    ],
+    "category": "other",
+    "argShape": "N::DIGITS",
+    "minArgs": 2,
+    "maxArgs": 2,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1758,
+    "summary": "Rounds N to DIGITS decimal places (via toFixed).",
+    "notes": ""
+  },
+  {
+    "name": "floor",
+    "aliases": [],
+    "category": "math",
+    "argShape": "N",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": {
+      "name": "floor",
+      "compatible": false,
+      "notes": ""
+    },
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1110,
+    "summary": "Rounds toward negative infinity (floor).",
+    "notes": ""
+  },
+  {
+    "name": "fromhex",
+    "aliases": [],
+    "category": "escape_markup",
+    "argShape": "HEX",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1845,
+    "summary": "Converts a hex string to its decimal representation.",
+    "notes": ""
+  },
+  {
+    "name": "getglobalvar",
+    "aliases": [],
+    "category": "variables",
+    "argShape": "NAME",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": false,
+    "readsState": [
+      "globalVars"
+    ],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 860,
+    "summary": "Reads a global (cross-chat) variable.",
+    "notes": ""
+  },
+  {
+    "name": "getvar",
+    "aliases": [],
+    "category": "variables",
+    "argShape": "NAME",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": false,
+    "readsState": [
+      "localVars"
+    ],
+    "writesState": [],
+    "lumiverseCollision": {
+      "name": "getvar",
+      "compatible": true,
+      "notes": ""
+    },
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 792,
+    "summary": "Reads a chat-scoped variable. Empty string if unset.",
+    "notes": ""
+  },
+  {
+    "name": "globalnote",
+    "aliases": [
+      "globalnote",
+      "systemnote",
+      "ujb"
+    ],
+    "category": "logic",
+    "argShape": "no args",
+    "minArgs": 0,
+    "maxArgs": 0,
+    "pure": false,
+    "readsState": [
+      "characterFields"
+    ],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 383,
+    "summary": "Returns the global note / system note / ujb appended to prompts.",
+    "notes": ""
+  },
+  {
+    "name": "greater",
+    "aliases": [],
+    "category": "logic",
+    "argShape": "A::B",
+    "minArgs": 2,
+    "maxArgs": 2,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": {
+      "name": "greater",
+      "compatible": false,
+      "notes": ""
+    },
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 907,
+    "summary": "Returns '1' if Number(A) > Number(B).",
+    "notes": ""
+  },
+  {
+    "name": "greaterequal",
+    "aliases": [
+      "greater_equal"
+    ],
+    "category": "logic",
+    "argShape": "A::B",
+    "minArgs": 2,
+    "maxArgs": 2,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 925,
+    "summary": "Returns '1' if Number(A) >= Number(B).",
+    "notes": ""
+  },
+  {
+    "name": "hash",
+    "aliases": [],
+    "category": "other",
+    "argShape": "STR",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1803,
+    "summary": "Deterministic 7-digit hash of the input string.",
+    "notes": ""
+  },
+  {
+    "name": "hiddenkey",
+    "aliases": [],
+    "category": "other",
+    "argShape": "STR",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 2111,
+    "summary": "Activates lorebook entries by keyword but emits nothing — returns the empty string.",
+    "notes": ""
+  },
+  {
+    "name": "history",
+    "aliases": [
+      "messages"
+    ],
+    "category": "chat_context",
+    "argShape": "[role]",
+    "minArgs": 0,
+    "maxArgs": 1,
+    "pure": false,
+    "readsState": [
+      "messages",
+      "characterFields"
+    ],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1511,
+    "summary": "No args → full JSON history with first-greeting prepended. Arg 'role' → array of 'role: data' strings.",
+    "notes": ""
+  },
+  {
+    "name": "idleduration",
+    "aliases": [
+      "idle_duration"
+    ],
+    "category": "other",
+    "argShape": "no args",
+    "minArgs": 0,
+    "maxArgs": 0,
+    "pure": false,
+    "readsState": [
+      "messages",
+      "time"
+    ],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 604,
+    "summary": "HH:MM:SS since the last message.",
+    "notes": ""
+  },
+  {
+    "name": "image",
+    "aliases": [],
+    "category": "display",
+    "argShape": "NAME",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 2331,
+    "summary": "doc_only — image asset NAME. Stripped at prompt stage.",
+    "notes": ""
+  },
+  {
+    "name": "img",
+    "aliases": [],
+    "category": "other",
+    "argShape": "NAME",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 2338,
+    "summary": "doc_only — unstyled image asset NAME. Stripped at prompt stage.",
+    "notes": ""
+  },
+  {
+    "name": "inlay",
+    "aliases": [],
+    "category": "other",
+    "argShape": "NAME",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 2352,
+    "summary": "doc_only — unstyled inlay NAME (not sent to model). Stripped at prompt.",
+    "notes": ""
+  },
+  {
+    "name": "inlayed",
+    "aliases": [],
+    "category": "other",
+    "argShape": "NAME",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 2359,
+    "summary": "doc_only — styled inlay NAME (not sent to model). Stripped at prompt.",
+    "notes": ""
+  },
+  {
+    "name": "inlayeddata",
+    "aliases": [],
+    "category": "other",
+    "argShape": "NAME",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 2366,
+    "summary": "doc_only — styled inlay NAME (included in model request). Stripped at prompt in risu-compat.",
+    "notes": "Risu's implementation DOES include this in the model prompt. Our shim drops it; enable only when a display-adapter is wired."
+  },
+  {
+    "name": "iserror",
+    "aliases": [],
+    "category": "logic",
+    "argShape": "STR",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1937,
+    "summary": "Returns '1' if STR begins with 'error:' (case-insensitive).",
+    "notes": ""
+  },
+  {
+    "name": "isfirstmsg",
+    "aliases": [
+      "isfirstmsg",
+      "isfirstmessage"
+    ],
+    "category": "other",
+    "argShape": "no args",
+    "minArgs": 0,
+    "maxArgs": 0,
+    "pure": false,
+    "readsState": [
+      "chatState"
+    ],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 690,
+    "summary": "Returns 1 if the current context is the first greeting message, 0 otherwise.",
+    "notes": ""
+  },
+  {
+    "name": "isodate",
+    "aliases": [],
+    "category": "time",
+    "argShape": "no args",
+    "minArgs": 0,
+    "maxArgs": 0,
+    "pure": false,
+    "readsState": [
+      "time"
+    ],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 536,
+    "summary": "Returns the current UTC date in YYYY-M-D format (unpadded).",
+    "notes": ""
+  },
+  {
+    "name": "isotime",
+    "aliases": [],
+    "category": "time",
+    "argShape": "no args",
+    "minArgs": 0,
+    "maxArgs": 0,
+    "pure": false,
+    "readsState": [
+      "time"
+    ],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 526,
+    "summary": "Returns the current UTC time in H:M:S format.",
+    "notes": ""
+  },
+  {
+    "name": "jb",
+    "aliases": [
+      "jailbreak"
+    ],
+    "category": "other",
+    "argShape": "no args",
+    "minArgs": 0,
+    "maxArgs": 0,
+    "pure": false,
+    "readsState": [
+      "characterFields"
+    ],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 373,
+    "summary": "Returns the jailbreak prompt text.",
+    "notes": ""
+  },
+  {
+    "name": "jbtoggled",
+    "aliases": [],
+    "category": "other",
+    "argShape": "(no args)",
+    "minArgs": 0,
+    "maxArgs": 0,
+    "pure": false,
+    "readsState": [
+      "chatState"
+    ],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 702,
+    "summary": "'1' iff the global jailbreak toggle is on.",
+    "notes": ""
+  },
+  {
+    "name": "join",
+    "aliases": [],
+    "category": "other",
+    "argShape": "JSON_ARR::DELIM",
+    "minArgs": 2,
+    "maxArgs": 2,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": {
+      "name": "join",
+      "compatible": false,
+      "notes": ""
+    },
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1028,
+    "summary": "Joins a JSON array with DELIM.",
+    "notes": ""
+  },
+  {
+    "name": "lastmessage",
+    "aliases": [],
+    "category": "chat_context",
+    "argShape": "(no args)",
+    "minArgs": 0,
+    "maxArgs": 0,
+    "pure": false,
+    "readsState": [
+      "messages"
+    ],
+    "writesState": [],
+    "lumiverseCollision": {
+      "name": "lastmessage",
+      "compatible": false,
+      "notes": ""
+    },
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 722,
+    "summary": "Content of the most recent message in the chat (any role). '' if empty.",
+    "notes": ""
+  },
+  {
+    "name": "lastmessageid",
+    "aliases": [
+      "lastmessageindex"
+    ],
+    "category": "chat_context",
+    "argShape": "(no args)",
+    "minArgs": 0,
+    "maxArgs": 0,
+    "pure": false,
+    "readsState": [
+      "messages"
+    ],
+    "writesState": [],
+    "lumiverseCollision": {
+      "name": "lastmessageid",
+      "compatible": false,
+      "notes": "Risu: chat.message[].length - 1 (greeting excluded) → -1 on greeting-only. Lumi: messages.length - 1 (greeting included as msg 0) → 0 on greeting-only. Off-by-one. Card-level literal comparisons like {{equal::lastmessageid::-1}} require Risu-frame — the rewriter emits {{risu_lastmessageid}} and our handler returns the Risu-frame value."
+    },
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 737,
+    "summary": "Index of the last message (count-1) or '' if empty.",
+    "notes": ""
+  },
+  {
+    "name": "length",
+    "aliases": [],
+    "category": "other",
+    "argShape": "STR",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": {
+      "name": "length",
+      "compatible": false,
+      "notes": ""
+    },
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1055,
+    "summary": "Returns the character length of STR.",
+    "notes": ""
+  },
+  {
+    "name": "less",
+    "aliases": [],
+    "category": "logic",
+    "argShape": "A::B",
+    "minArgs": 2,
+    "maxArgs": 2,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 916,
+    "summary": "Returns '1' if Number(A) < Number(B).",
+    "notes": ""
+  },
+  {
+    "name": "lessequal",
+    "aliases": [
+      "less_equal"
+    ],
+    "category": "logic",
+    "argShape": "A::B",
+    "minArgs": 2,
+    "maxArgs": 2,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 934,
+    "summary": "Returns '1' if Number(A) <= Number(B).",
+    "notes": ""
+  },
+  {
+    "name": "lorebook",
+    "aliases": [
+      "worldinfo"
+    ],
+    "category": "logic",
+    "argShape": "(no args)",
+    "minArgs": 0,
+    "maxArgs": 0,
+    "pure": false,
+    "readsState": [
+      "chatState"
+    ],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 317,
+    "summary": "JSON array of all active lorebook entries (character + chat + module lore).",
+    "notes": ""
+  },
+  {
+    "name": "lower",
+    "aliases": [],
+    "category": "strings",
+    "argShape": "STR",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": {
+      "name": "lower",
+      "compatible": false,
+      "notes": ""
+    },
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1074,
+    "summary": "Locale-aware lowercase.",
+    "notes": ""
+  },
+  {
+    "name": "mainprompt",
+    "aliases": [
+      "systemprompt",
+      "main_prompt"
+    ],
+    "category": "other",
+    "argShape": "no args",
+    "minArgs": 0,
+    "maxArgs": 0,
+    "pure": false,
+    "readsState": [
+      "characterFields"
+    ],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 308,
+    "summary": "Returns the system/main prompt for the current character.",
+    "notes": ""
+  },
+  {
+    "name": "makearray",
+    "aliases": [
+      "array",
+      "a",
+      "makearray"
+    ],
+    "category": "arrays",
+    "argShape": "E1::E2::…",
+    "minArgs": 0,
+    "maxArgs": -1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1294,
+    "summary": "Creates a JSON array from the given arguments.",
+    "notes": ""
+  },
+  {
+    "name": "makedict",
+    "aliases": [
+      "dict",
+      "d",
+      "makedict",
+      "makeobject",
+      "object",
+      "o"
+    ],
+    "category": "other",
+    "argShape": "K1::V1[::K2::V2…]",
+    "minArgs": 0,
+    "maxArgs": -1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1303,
+    "summary": "Creates a JSON object from interleaved key-value arguments. Note: Risu's built-in parses 'key=value' strings; our port accepts separate args — behavior documented.",
+    "notes": "Risu's upstream makedict parses each arg as 'key=value'. Our port accepts alternating key/value args (pair-wise), which matches the risu-compat handler."
+  },
+  {
+    "name": "max",
+    "aliases": [],
+    "category": "math",
+    "argShape": "ARR or N1::N2::…",
+    "minArgs": 1,
+    "maxArgs": -1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": {
+      "name": "max",
+      "compatible": false,
+      "notes": ""
+    },
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1709,
+    "summary": "Largest numeric value. Accepts a JSON array or multiple args.",
+    "notes": ""
+  },
+  {
+    "name": "maxcontext",
+    "aliases": [],
+    "category": "math",
+    "argShape": "(no args)",
+    "minArgs": 0,
+    "maxArgs": 0,
+    "pure": false,
+    "readsState": [
+      "chatState"
+    ],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 712,
+    "summary": "Max context token limit for the active model, as a decimal string.",
+    "notes": ""
+  },
+  {
+    "name": "messagedate",
+    "aliases": [
+      "message_date"
+    ],
+    "category": "chat_context",
+    "argShape": "no args",
+    "minArgs": 0,
+    "maxArgs": 0,
+    "pure": false,
+    "readsState": [
+      "messages",
+      "time"
+    ],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 469,
+    "summary": "Local date the current message was sent.",
+    "notes": ""
+  },
+  {
+    "name": "messageidleduration",
+    "aliases": [
+      "message_idle_duration"
+    ],
+    "category": "chat_context",
+    "argShape": "no args",
+    "minArgs": 0,
+    "maxArgs": 0,
+    "pure": false,
+    "readsState": [
+      "messages",
+      "time"
+    ],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 547,
+    "summary": "HH:MM:SS between the current and previous user message.",
+    "notes": ""
+  },
+  {
+    "name": "messagetime",
+    "aliases": [
+      "message_time"
+    ],
+    "category": "chat_context",
+    "argShape": "no args",
+    "minArgs": 0,
+    "maxArgs": 0,
+    "pure": false,
+    "readsState": [
+      "messages",
+      "time"
+    ],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 445,
+    "summary": "Local time the current message was sent.",
+    "notes": ""
+  },
+  {
+    "name": "messageunixtimearray",
+    "aliases": [
+      "message_unixtime_array"
+    ],
+    "category": "chat_context",
+    "argShape": "no args",
+    "minArgs": 0,
+    "maxArgs": 0,
+    "pure": false,
+    "readsState": [
+      "messages"
+    ],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 492,
+    "summary": "JSON array of all message unix timestamps.",
+    "notes": ""
+  },
+  {
+    "name": "metadata",
+    "aliases": [],
+    "category": "other",
+    "argShape": "KEY",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": false,
+    "readsState": [
+      "chatState"
+    ],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1863,
+    "summary": "Host metadata. Supported: imateapot, mobile/local/node, risutype, modelname/modelshortname/modelinternalid. Other keys return 'Error: X is not a valid metadata key.'.",
+    "notes": ""
+  },
+  {
+    "name": "min",
+    "aliases": [],
+    "category": "math",
+    "argShape": "ARR or N1::N2::…",
+    "minArgs": 1,
+    "maxArgs": -1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": {
+      "name": "min",
+      "compatible": false,
+      "notes": ""
+    },
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1693,
+    "summary": "Smallest numeric value. Accepts a JSON array or multiple args; non-numeric values treated as 0.",
+    "notes": ""
+  },
+  {
+    "name": "model",
+    "aliases": [],
+    "category": "identity",
+    "argShape": "no args",
+    "minArgs": 0,
+    "maxArgs": 0,
+    "pure": false,
+    "readsState": [
+      "chatState"
+    ],
+    "writesState": [],
+    "lumiverseCollision": {
+      "name": "model",
+      "compatible": false,
+      "notes": ""
+    },
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 650,
+    "summary": "Returns the id of the currently selected AI model.",
+    "notes": ""
+  },
+  {
+    "name": "moduleassetlist",
+    "aliases": [
+      "module_assetlist"
+    ],
+    "category": "display",
+    "argShape": "NAMESPACE",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": false,
+    "readsState": [
+      "chatState"
+    ],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1622,
+    "summary": "JSON array of module asset names for NAMESPACE. Empty without module state.",
+    "notes": ""
+  },
+  {
+    "name": "moduleenabled",
+    "aliases": [
+      "module_enabled"
+    ],
+    "category": "other",
+    "argShape": "NAMESPACE",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": false,
+    "readsState": [
+      "chatState"
+    ],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1607,
+    "summary": "Returns '1' if module NAMESPACE is loaded, else '0'. Our ctx has no module state — always '0'.",
+    "notes": ""
+  },
+  {
+    "name": "not",
+    "aliases": [],
+    "category": "logic",
+    "argShape": "A",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": {
+      "name": "not",
+      "compatible": false,
+      "notes": ""
+    },
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 961,
+    "summary": "Boolean NOT: '1' → '0'; any other value → '1'.",
+    "notes": ""
+  },
+  {
+    "name": "notequal",
+    "aliases": [
+      "not_equal"
+    ],
+    "category": "logic",
+    "argShape": "A::B",
+    "minArgs": 2,
+    "maxArgs": 2,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 898,
+    "summary": "Returns '1' if A !== B, else '0'.",
+    "notes": ""
+  },
+  {
+    "name": "objectassert",
+    "aliases": [
+      "dictassert",
+      "object_assert"
+    ],
+    "category": "other",
+    "argShape": "JSON_OBJ::KEY::VALUE",
+    "minArgs": 3,
+    "maxArgs": 3,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1198,
+    "summary": "Sets obj[KEY]=VALUE only if KEY is missing/falsy.",
+    "notes": ""
+  },
+  {
+    "name": "or",
+    "aliases": [],
+    "category": "logic",
+    "argShape": "A::B",
+    "minArgs": 2,
+    "maxArgs": 2,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 952,
+    "summary": "Boolean OR: returns '1' if either arg is '1'.",
+    "notes": ""
+  },
+  {
+    "name": "path",
+    "aliases": [
+      "raw"
+    ],
+    "category": "other",
+    "argShape": "NAME",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 2345,
+    "summary": "doc_only — asset URL lookup. Shim returns ''.",
+    "notes": ""
+  },
+  {
+    "name": "persona",
+    "aliases": [
+      "userpersona"
+    ],
+    "category": "other",
+    "argShape": "UNCERTAIN",
+    "minArgs": 0,
+    "maxArgs": 0,
+    "pure": false,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": {
+      "name": "persona",
+      "compatible": true,
+      "notes": "Both return the equivalent character field; semantics match."
+    },
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 298,
+    "summary": "Returns the user persona prompt text. The text is processed through the chat par",
+    "notes": ""
+  },
+  {
+    "name": "personality",
+    "aliases": [
+      "charpersona"
+    ],
+    "category": "character_fields",
+    "argShape": "UNCERTAIN",
+    "minArgs": 0,
+    "maxArgs": 0,
+    "pure": false,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": {
+      "name": "personality",
+      "compatible": true,
+      "notes": "Both return the equivalent character field; semantics match."
+    },
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 237,
+    "summary": "Returns the personality field of the current character. The text is processed th",
+    "notes": ""
+  },
+  {
+    "name": "pick",
+    "aliases": [],
+    "category": "random",
+    "argShape": "[ARR or E1::E2::…]",
+    "minArgs": 0,
+    "maxArgs": -1,
+    "pure": false,
+    "readsState": [
+      "rng",
+      "messages"
+    ],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 2033,
+    "summary": "Hash-deterministic pick seeded by message count + character name. Same inputs at same chat position return the same element.",
+    "notes": ""
+  },
+  {
+    "name": "position",
+    "aliases": [],
+    "category": "other",
+    "argShape": "NAME",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 2497,
+    "summary": "doc_only — @@position decorator marker. Shim returns ''.",
+    "notes": ""
+  },
+  {
+    "name": "pow",
+    "aliases": [],
+    "category": "math",
+    "argShape": "BASE::EXP",
+    "minArgs": 2,
+    "maxArgs": 2,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1169,
+    "summary": "Returns BASE raised to EXP (Math.pow).",
+    "notes": ""
+  },
+  {
+    "name": "prefillsupported",
+    "aliases": [
+      "prefill_supported",
+      "prefill"
+    ],
+    "category": "logic",
+    "argShape": "(no args)",
+    "minArgs": 0,
+    "maxArgs": 0,
+    "pure": false,
+    "readsState": [
+      "chatState"
+    ],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1356,
+    "summary": "'1' if the active model id starts with 'claude', else '0'.",
+    "notes": ""
+  },
+  {
+    "name": "previouscharchat",
+    "aliases": [
+      "previouscharchat",
+      "lastcharmessage"
+    ],
+    "category": "chat_context",
+    "argShape": "(no args)",
+    "minArgs": 0,
+    "maxArgs": 0,
+    "pure": false,
+    "readsState": [
+      "messages",
+      "characterFields"
+    ],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 194,
+    "summary": "Last assistant message prior to currentMessageIndex; first-greeting fallback.",
+    "notes": ""
+  },
+  {
+    "name": "previouschatlog",
+    "aliases": [
+      "previous_chat_log"
+    ],
+    "category": "chat_context",
+    "argShape": "INDEX",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": false,
+    "readsState": [
+      "messages"
+    ],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1146,
+    "summary": "Returns message[INDEX].content or 'Out of range' if invalid.",
+    "notes": ""
+  },
+  {
+    "name": "previoususerchat",
+    "aliases": [
+      "previoususerchat",
+      "lastusermessage"
+    ],
+    "category": "chat_context",
+    "argShape": "(no args)",
+    "minArgs": 0,
+    "maxArgs": 0,
+    "pure": false,
+    "readsState": [
+      "messages",
+      "characterFields"
+    ],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 213,
+    "summary": "Last user message prior to currentMessageIndex. '' if currentMessageIndex=null.",
+    "notes": ""
+  },
+  {
+    "name": "randint",
+    "aliases": [],
+    "category": "logic",
+    "argShape": "MIN::MAX",
+    "minArgs": 2,
+    "maxArgs": 2,
+    "pure": false,
+    "readsState": [
+      "rng"
+    ],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1812,
+    "summary": "Uniform random integer in [MIN, MAX] inclusive.",
+    "notes": ""
+  },
+  {
+    "name": "random",
+    "aliases": [],
+    "category": "logic",
+    "argShape": "[ARR or E1::E2::…]",
+    "minArgs": 0,
+    "maxArgs": -1,
+    "pure": false,
+    "readsState": [
+      "rng"
+    ],
+    "writesState": [],
+    "lumiverseCollision": {
+      "name": "random",
+      "compatible": false,
+      "notes": ""
+    },
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 2024,
+    "summary": "No args → random [0,1). One array arg → picks a random element. Multiple args → picks one.",
+    "notes": ""
+  },
+  {
+    "name": "range",
+    "aliases": [],
+    "category": "other",
+    "argShape": "JSON_ARR",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1544,
+    "summary": "Creates a range. [N] → [0..N-1]. [A,B] → [A..B-1]. [A,B,S] → step S.",
+    "notes": ""
+  },
+  {
+    "name": "remaind",
+    "aliases": [],
+    "category": "other",
+    "argShape": "A::B",
+    "minArgs": 2,
+    "maxArgs": 2,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1137,
+    "summary": "Returns A mod B (JavaScript % operator).",
+    "notes": ""
+  },
+  {
+    "name": "replace",
+    "aliases": [],
+    "category": "strings",
+    "argShape": "STR::NEEDLE::REPL",
+    "minArgs": 3,
+    "maxArgs": 3,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": {
+      "name": "replace",
+      "compatible": false,
+      "notes": ""
+    },
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1010,
+    "summary": "Replaces all occurrences of NEEDLE in STR with REPL (case-sensitive, global).",
+    "notes": ""
+  },
+  {
+    "name": "return",
+    "aliases": [],
+    "category": "flow_control",
+    "argShape": "VALUE",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": false,
+    "readsState": [],
+    "writesState": [
+      "localVars"
+    ],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 778,
+    "summary": "Risu sets __force_return__ to halt parsing and returns VALUE. Our port emits VALUE in place; known deviation.",
+    "notes": ""
+  },
+  {
+    "name": "reverse",
+    "aliases": [],
+    "category": "other",
+    "argShape": "STR",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 2120,
+    "summary": "Reverses a string (code-point safe via spread/join).",
+    "notes": ""
+  },
+  {
+    "name": "risu",
+    "aliases": [],
+    "category": "other",
+    "argShape": "[SIZE]",
+    "minArgs": 0,
+    "maxArgs": 1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 878,
+    "summary": "Embeds the RisuAI logo <img> at SIZE px (default 45).",
+    "notes": ""
+  },
+  {
+    "name": "role",
+    "aliases": [],
+    "category": "identity",
+    "argShape": "no args",
+    "minArgs": 0,
+    "maxArgs": 0,
+    "pure": false,
+    "readsState": [
+      "chatState"
+    ],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 670,
+    "summary": "Returns the role of the current message (user, char, system), or literal null when unknown.",
+    "notes": ""
+  },
+  {
+    "name": "roll",
+    "aliases": [],
+    "category": "random",
+    "argShape": "[NdS|S]",
+    "minArgs": 0,
+    "maxArgs": 1,
+    "pure": false,
+    "readsState": [
+      "rng"
+    ],
+    "writesState": [],
+    "lumiverseCollision": {
+      "name": "roll",
+      "compatible": false,
+      "notes": ""
+    },
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 2047,
+    "summary": "Dice roll. 'XdY' syntax; default 1d6 when no arg. Returns NaN on invalid notation.",
+    "notes": ""
+  },
+  {
+    "name": "rollp",
+    "aliases": [
+      "rollpick"
+    ],
+    "category": "random",
+    "argShape": "[NdS|S]",
+    "minArgs": 0,
+    "maxArgs": 1,
+    "pure": false,
+    "readsState": [
+      "rng",
+      "messages"
+    ],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 2076,
+    "summary": "Hash-deterministic dice roll. Same chat position returns the same outcome.",
+    "notes": ""
+  },
+  {
+    "name": "round",
+    "aliases": [],
+    "category": "math",
+    "argShape": "N",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": {
+      "name": "round",
+      "compatible": false,
+      "notes": ""
+    },
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1101,
+    "summary": "Rounds a decimal number to the nearest integer (half-up).",
+    "notes": ""
+  },
+  {
+    "name": "ruby",
+    "aliases": [
+      "furigana"
+    ],
+    "category": "other",
+    "argShape": "BASE::READING",
+    "minArgs": 2,
+    "maxArgs": 2,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 2150,
+    "summary": "Emits <ruby>...<rt>...</rt></ruby> furigana HTML.",
+    "notes": ""
+  },
+  {
+    "name": "scenario",
+    "aliases": [],
+    "category": "character_fields",
+    "argShape": "UNCERTAIN",
+    "minArgs": 0,
+    "maxArgs": 0,
+    "pure": false,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": {
+      "name": "scenario",
+      "compatible": true,
+      "notes": "Both return the equivalent character field; semantics match."
+    },
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 267,
+    "summary": "Returns the scenario field of the current character. The text is processed throu",
+    "notes": ""
+  },
+  {
+    "name": "screenheight",
+    "aliases": [
+      "screen_height"
+    ],
+    "category": "other",
+    "argShape": "(no args)",
+    "minArgs": 0,
+    "maxArgs": 0,
+    "pure": false,
+    "readsState": [
+      "chatState"
+    ],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1375,
+    "summary": "Window height in pixels. No host introspection — always '0'.",
+    "notes": ""
+  },
+  {
+    "name": "screenwidth",
+    "aliases": [
+      "screen_width"
+    ],
+    "category": "other",
+    "argShape": "(no args)",
+    "minArgs": 0,
+    "maxArgs": 0,
+    "pure": false,
+    "readsState": [
+      "chatState"
+    ],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1366,
+    "summary": "Window width in pixels. No host introspection in risu-compat — always '0' (known deviation).",
+    "notes": ""
+  },
+  {
+    "name": "setdefaultvar",
+    "aliases": [],
+    "category": "variables",
+    "argShape": "NAME::VALUE",
+    "minArgs": 2,
+    "maxArgs": 2,
+    "pure": false,
+    "readsState": [
+      "localVars"
+    ],
+    "writesState": [
+      "localVars"
+    ],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 842,
+    "summary": "Sets NAME=VALUE only if NAME is currently unset or empty.",
+    "notes": ""
+  },
+  {
+    "name": "settempvar",
+    "aliases": [],
+    "category": "variables",
+    "argShape": "NAME::VALUE",
+    "minArgs": 2,
+    "maxArgs": 2,
+    "pure": false,
+    "readsState": [],
+    "writesState": [
+      "localVars"
+    ],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 765,
+    "summary": "Sets a per-evaluation temporary variable.",
+    "notes": ""
+  },
+  {
+    "name": "setvar",
+    "aliases": [],
+    "category": "variables",
+    "argShape": "NAME::VALUE",
+    "minArgs": 2,
+    "maxArgs": 2,
+    "pure": false,
+    "readsState": [],
+    "writesState": [
+      "localVars"
+    ],
+    "lumiverseCollision": {
+      "name": "setvar",
+      "compatible": true,
+      "notes": ""
+    },
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 826,
+    "summary": "Sets a chat-scoped variable.",
+    "notes": ""
+  },
+  {
+    "name": "slot",
+    "aliases": [],
+    "category": "other",
+    "argShape": "VAR",
+    "minArgs": 0,
+    "maxArgs": 1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 2490,
+    "summary": "Iteration/func slot reference. Resolved inside each/call block handlers via string substitution.",
+    "notes": ""
+  },
+  {
+    "name": "source",
+    "aliases": [],
+    "category": "other",
+    "argShape": "user|char",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 2373,
+    "summary": "doc_only — avatar URL for 'user' or 'char'. Shim returns ''.",
+    "notes": ""
+  },
+  {
+    "name": "split",
+    "aliases": [],
+    "category": "other",
+    "argShape": "STR::DELIM",
+    "minArgs": 2,
+    "maxArgs": 2,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": {
+      "name": "split",
+      "compatible": false,
+      "notes": ""
+    },
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1019,
+    "summary": "Splits STR by DELIM; returns a JSON array.",
+    "notes": ""
+  },
+  {
+    "name": "spread",
+    "aliases": [],
+    "category": "other",
+    "argShape": "JSON_ARR",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1037,
+    "summary": "Joins a JSON array with '::' (CBS argument separator).",
+    "notes": ""
+  },
+  {
+    "name": "startswith",
+    "aliases": [],
+    "category": "other",
+    "argShape": "STR::PREFIX",
+    "minArgs": 2,
+    "maxArgs": 2,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 983,
+    "summary": "Returns '1' if STR starts with PREFIX (case-sensitive).",
+    "notes": ""
+  },
+  {
+    "name": "sum",
+    "aliases": [],
+    "category": "math",
+    "argShape": "ARR or N1::N2::…",
+    "minArgs": 1,
+    "maxArgs": -1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1725,
+    "summary": "Sum of numeric values. Accepts a JSON array or multiple args.",
+    "notes": ""
+  },
+  {
+    "name": "tempvar",
+    "aliases": [
+      "gettempvar"
+    ],
+    "category": "variables",
+    "argShape": "NAME",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": false,
+    "readsState": [
+      "localVars"
+    ],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 753,
+    "summary": "Reads a per-evaluation temporary variable.",
+    "notes": "Risu stores temp vars in a `vars` dict that lives for a single parser pass. Our context implements them as the 'temp' scope of ctx.vars."
+  },
+  {
+    "name": "tex",
+    "aliases": [
+      "latex",
+      "katex"
+    ],
+    "category": "other",
+    "argShape": "EXPR",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 2141,
+    "summary": "Wraps EXPR in $$...$$ for KaTeX rendering.",
+    "notes": ""
+  },
+  {
+    "name": "time",
+    "aliases": [],
+    "category": "time",
+    "argShape": "no args",
+    "minArgs": 0,
+    "maxArgs": 0,
+    "pure": false,
+    "readsState": [
+      "time"
+    ],
+    "writesState": [],
+    "lumiverseCollision": {
+      "name": "time",
+      "compatible": false,
+      "notes": ""
+    },
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 516,
+    "summary": "Returns the current local time in H:M:S format (unpadded).",
+    "notes": ""
+  },
+  {
+    "name": "tohex",
+    "aliases": [],
+    "category": "escape_markup",
+    "argShape": "N",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1854,
+    "summary": "Converts a decimal number to a hex string.",
+    "notes": ""
+  },
+  {
+    "name": "tonumber",
+    "aliases": [],
+    "category": "other",
+    "argShape": "STR",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1158,
+    "summary": "Extracts digits and decimal points from a string (drops everything else).",
+    "notes": ""
+  },
+  {
+    "name": "trigger_id",
+    "aliases": [
+      "triggerid"
+    ],
+    "category": "identity",
+    "argShape": "no args",
+    "minArgs": 0,
+    "maxArgs": 0,
+    "pure": false,
+    "readsState": [
+      "chatState"
+    ],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 184,
+    "summary": "Returns the ID value from the risu-id attribute of the clicked element that trig",
+    "notes": ""
+  },
+  {
+    "name": "trim",
+    "aliases": [],
+    "category": "strings",
+    "argShape": "STR",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1046,
+    "summary": "Removes leading and trailing whitespace.",
+    "notes": ""
+  },
+  {
+    "name": "u",
+    "aliases": [
+      "unicodedecodefromhex"
+    ],
+    "category": "other",
+    "argShape": "HEX",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1785,
+    "summary": "Returns the character for a hex Unicode code point.",
+    "notes": ""
+  },
+  {
+    "name": "ue",
+    "aliases": [
+      "unicodeencodefromhex"
+    ],
+    "category": "other",
+    "argShape": "HEX",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1794,
+    "summary": "Alias of {{u}}.",
+    "notes": ""
+  },
+  {
+    "name": "unicodedecode",
+    "aliases": [
+      "unicode_decode"
+    ],
+    "category": "escape_markup",
+    "argShape": "CODE",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1776,
+    "summary": "Converts a decimal Unicode code point to its character.",
+    "notes": ""
+  },
+  {
+    "name": "unicodeencode",
+    "aliases": [
+      "unicode_encode"
+    ],
+    "category": "escape_markup",
+    "argShape": "STR[::INDEX]",
+    "minArgs": 1,
+    "maxArgs": 2,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1767,
+    "summary": "Returns the Unicode code point of STR[INDEX] (default 0) as decimal.",
+    "notes": ""
+  },
+  {
+    "name": "unixtime",
+    "aliases": [],
+    "category": "time",
+    "argShape": "no args",
+    "minArgs": 0,
+    "maxArgs": 0,
+    "pure": false,
+    "readsState": [
+      "time"
+    ],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 506,
+    "summary": "Returns the current unix timestamp in seconds.",
+    "notes": ""
+  },
+  {
+    "name": "upper",
+    "aliases": [],
+    "category": "strings",
+    "argShape": "STR",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": {
+      "name": "upper",
+      "compatible": false,
+      "notes": ""
+    },
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1083,
+    "summary": "Locale-aware uppercase.",
+    "notes": ""
+  },
+  {
+    "name": "user",
+    "aliases": [],
+    "category": "identity",
+    "argShape": "UNCERTAIN",
+    "minArgs": 0,
+    "maxArgs": 0,
+    "pure": false,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": {
+      "name": "user",
+      "compatible": true,
+      "notes": ""
+    },
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 172,
+    "summary": "Returns the current user\\",
+    "notes": ""
+  },
+  {
+    "name": "userhistory",
+    "aliases": [
+      "usermessages",
+      "user_history"
+    ],
+    "category": "chat_context",
+    "argShape": "(no args)",
+    "minArgs": 0,
+    "maxArgs": 0,
+    "pure": false,
+    "readsState": [
+      "messages"
+    ],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 336,
+    "summary": "JSON array of all user messages with role='user'.",
+    "notes": ""
+  },
+  {
+    "name": "video",
+    "aliases": [],
+    "category": "other",
+    "argShape": "NAME",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 2317,
+    "summary": "doc_only — video asset NAME. Stripped at prompt stage.",
+    "notes": ""
+  },
+  {
+    "name": "video-img",
+    "aliases": [],
+    "category": "other",
+    "argShape": "NAME",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 2324,
+    "summary": "doc_only — video rendered as image. Stripped at prompt stage.",
+    "notes": ""
+  },
+  {
+    "name": "xor",
+    "aliases": [
+      "xorencrypt",
+      "xorencode",
+      "xore"
+    ],
+    "category": "logic",
+    "argShape": "STR",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1947,
+    "summary": "XOR-encrypts STR with 0xFF and base64-encodes the result.",
+    "notes": ""
+  },
+  {
+    "name": "xordecrypt",
+    "aliases": [
+      "xordecode",
+      "xord"
+    ],
+    "category": "logic",
+    "argShape": "B64",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1960,
+    "summary": "Inverse of {{xor}} — decodes base64 + XOR with 0xFF.",
+    "notes": ""
+  },
+  {
+    "name": "#func",
+    "aliases": [
+      "#function"
+    ],
+    "category": "control_flow",
+    "argShape": "funcName arg0 arg1 ... + body",
+    "minArgs": 1,
+    "maxArgs": -1,
+    "pure": false,
+    "readsState": [],
+    "writesState": [
+      "chatState"
+    ],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/parser/parser.svelte.ts",
+    "risuLine": 1400,
+    "summary": "Defines a named function. The body is stored and invoked later via {{call::funcName::…}}.",
+    "notes": "Deviation: function table is Lumiscript-session scoped, not per-evaluation pass like Risu."
+  },
+  {
+    "name": "call",
+    "aliases": [],
+    "category": "flow_control",
+    "argShape": "funcName::arg0::arg1::…",
+    "minArgs": 1,
+    "maxArgs": -1,
+    "pure": false,
+    "readsState": [
+      "chatState"
+    ],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/parser/parser.svelte.ts",
+    "risuLine": 1737,
+    "summary": "Invokes a function previously defined by #func. Arguments are passed as additional :: tokens; referenced inside the function body as {{arg::0}}, {{arg::1}}, etc.",
+    "notes": "Known deviation: inner macros in the function body are not re-evaluated after substitution."
+  },
+  {
+    "name": "legacy",
+    "aliases": [],
+    "category": "control_flow",
+    "argShape": "{#if cond\ncontent#} expression",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/parser/parser.svelte.ts",
+    "risuLine": 1082,
+    "summary": "Legacy {#if cond\ncontent#} form. Returns trimmed content if cond is not the empty string, 0, or -1.",
+    "notes": "Deprecated Risu form; preserved for compatibility."
+  },
+  {
+    "name": "unknown",
+    "aliases": [],
+    "category": "control_flow",
+    "argShape": "any + body",
+    "minArgs": 0,
+    "maxArgs": -1,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "packages/core/src/cbs/rewrite/blocks.ts",
+    "risuLine": 1,
+    "summary": "Fallback handler for unrecognized block kinds. Returns body verbatim without interpretation, matching Risu's \"nothing\" type fall-through.",
+    "notes": "Synthetic name emitted by the rewriter when it sees {{#someUnknownBlock}}…{{/someUnknownBlock}}. Not a Risu macro."
+  },
+  {
+    "name": "deletevar",
+    "aliases": [],
+    "category": "variables",
+    "argShape": "NAME",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": false,
+    "readsState": [],
+    "writesState": [
+      "localVars"
+    ],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/process/triggers.ts",
+    "risuLine": 1,
+    "summary": "Deletes a chat-scoped variable. Exposed via Risu's editCharVar trigger op — shim in risu-compat.",
+    "notes": "Not a cbs.ts registerFunction; exists as a trigger effect in Risu. Added so triggers that compile into {{deletevar::X}} macro calls survive the discipline gate."
+  },
+  {
+    "name": "flushvar",
+    "aliases": [],
+    "category": "variables",
+    "argShape": "NAME",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": false,
+    "readsState": [],
+    "writesState": [
+      "localVars"
+    ],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/process/triggers.ts",
+    "risuLine": 1,
+    "summary": "Alias of deletevar. Name matches older Risu trigger-compiler output.",
+    "notes": "Synthetic alias; see deletevar."
+  },
+  {
+    "name": "getchatvar",
+    "aliases": [],
+    "category": "variables",
+    "argShape": "NAME",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": false,
+    "readsState": [
+      "localVars"
+    ],
+    "writesState": [],
+    "lumiverseCollision": {
+      "name": "getchatvar",
+      "compatible": false,
+      "notes": "Lumiverse getchatvar uses a distinct chat scope; Risu only has one chat scope so our shim aliases to local."
+    },
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 792,
+    "summary": "Reads a chat-scoped variable. Aliased to getvar in Risu's single-chat-scope model.",
+    "notes": "Synthetic; Risu has no separate chat-scope. Provided for parity with Lumiverse's getchatvar."
+  },
+  {
+    "name": "setchatvar",
+    "aliases": [],
+    "category": "variables",
+    "argShape": "NAME::VALUE",
+    "minArgs": 2,
+    "maxArgs": 2,
+    "pure": false,
+    "readsState": [],
+    "writesState": [
+      "localVars"
+    ],
+    "lumiverseCollision": {
+      "name": "setchatvar",
+      "compatible": false,
+      "notes": "See getchatvar."
+    },
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 826,
+    "summary": "Sets a chat-scoped variable. Aliased to setvar.",
+    "notes": "Synthetic; see getchatvar."
+  },
+  {
+    "name": "bc",
+    "aliases": [
+      "ddecbc",
+      "doubledisplayescapedcurlybracketclose"
+    ],
+    "category": "escape_markup",
+    "argShape": "(no args)",
+    "minArgs": 0,
+    "maxArgs": 0,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1424,
+    "summary": "Displays as }} without being re-parsed (two PUA sentinels).",
+    "notes": ""
+  },
+  {
+    "name": "decbc",
+    "aliases": [
+      "displayescapedcurlybracketclose"
+    ],
+    "category": "escape_markup",
+    "argShape": "(no args)",
+    "minArgs": 0,
+    "maxArgs": 0,
+    "pure": true,
+    "readsState": [],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1406,
+    "summary": "Displays as } without being re-parsed (PUA \\uE9B9).",
+    "notes": ""
+  },
+  {
+    "name": "messagecount",
+    "aliases": [],
+    "category": "chat_context",
+    "argShape": "(no args)",
+    "minArgs": 0,
+    "maxArgs": 0,
+    "pure": false,
+    "readsState": [
+      "messages"
+    ],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 1,
+    "summary": "Total number of messages in the chat as a string. Frequently synthesized in CBS templates.",
+    "notes": "Not registered in Risu's cbs.ts as a named function; many cards use it via script."
+  },
+  {
+    "name": "declared",
+    "aliases": [],
+    "category": "metadata",
+    "argShape": "NAME",
+    "minArgs": 1,
+    "maxArgs": 1,
+    "pure": false,
+    "readsState": [
+      "localVars"
+    ],
+    "writesState": [],
+    "lumiverseCollision": null,
+    "risuFile": "src/ts/cbs.ts",
+    "risuLine": 2247,
+    "summary": "Reads a declaration marker set by {{declare::NAME}}; returns '1' if declared else '0'.",
+    "notes": "Risu implements this implicitly via var checks; we expose it as a dedicated handler for clarity."
+  }
+]

@@ -1,0 +1,38 @@
+Total macros in RisuAI CBS system: 174 (from cbs.ts registerFunction calls)
+
+BLOCK CONSTRUCTS (from parser.svelte.ts, lines 1137-1409):
+- #if / #if_pure (line 1138-1148) - conditional blocks
+- #when (line 1150-1373) - advanced conditional with operators (and/or/not/is/isnot/var/toggle/vis/visnot/tis/tisnot/>/</>=/<=)
+- #pure (line 1374-1376) - pure content block
+- #pure_display / #puredisplay (line 1377-1378) - pure display block  
+- #code (line 1380-1381) - normalize block
+- #escape (line 1383-1387) - escape content block
+- #each (line 1388-1398) - loop block
+- #func (line 1400-1406) - function definition block
+- {{:else}} (line 1442-1449) - else clause (works with #when)
+
+Total block constructs: 9 + else clause
+
+SANITY CHECK - macro counts by category (preliminary):
+Control flow: #if, #when, #pure, #each, #func, :else, etc.
+Variables: getvar, setvar, addvar, tempvar, globalvar, etc.
+Character fields: char, personality, description, scenario, etc.
+Chat context: previouscharchat, previoususerchat, userhistory, charhistory, etc.
+Strings: upper, lower, capitalize, trim, replace, split, join, etc.
+Math: abs, floor, ceil, round, calc, add, sub, mul, pow, etc.
+Logic: and, or, not, equal, greater, less, contains, etc.
+Arrays: arraypush, arraypop, arrayshift, arrayelement, arraylength, etc.
+Time: time, date, unixtime, isotime, dateformat, etc.
+Random: random, roll, dice, pick, hash, randint, etc.
+Display: image, asset, bg, emotion, audio, video, button, etc.
+Escape markup: unicode, escape, deco, hex, crypt, xor, etc.
+Identity: user, char, trigger_id, role, model, etc.
+Metadata: metadata, version, screenwidth, screenheight, etc.
+Other: comment, blank, br, newline, etc.
+
+LUMIVERSE COLLISION CANDIDATES (preliminary - needs verification):
+- char, user, getvar, setvar, addvar, random, roll, time, date, calc
+- lower, upper, capitalize, trim, replace, join, split, length
+- comment, and, or, not, and many more...
+
+Manual verification needed for true semantic compatibility.

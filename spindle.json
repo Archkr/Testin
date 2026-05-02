@@ -1,0 +1,27 @@
+{
+  "version": "0.1.0",
+  "name": "LumiRealm",
+  "identifier": "lumirealm",
+  "author": "amousepad",
+  "github": "https://github.com/AMousePad/LumiRealm",
+  "homepage": "https://github.com/AMousePad/LumiRealm",
+  "description": "Bringing RisuRealm into Lumiverse",
+  "permissions": [
+    "chat_mutation",
+    "chats",
+    "characters",
+    "generation",
+    "interceptor",
+    "context_handler",
+    "macro_interceptor",
+    "ui_panels",
+    "ephemeral_storage",
+    "world_books",
+    "personas",
+    "app_manipulation",
+    "images"
+  ],
+  "entry_backend": "dist/backend.js",
+  "entry_frontend": "dist/frontend.js",
+  "minimum_lumiverse_version": "0.9.6"
+}

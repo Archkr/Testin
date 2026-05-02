@@ -1,0 +1,34 @@
+{
+  "name": "lumirealm",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "GPL-3.0-or-later",
+  "description": "Bringing the RisuRealm into the Lumiverse 🔥🔥🔥",
+  "scripts": {
+    "typecheck": "bun --bun tsc --noEmit",
+    "build:backend": "bun build src/backend.ts --outfile dist/backend.js --target bun",
+    "build:frontend": "bun build src/frontend.ts --outfile dist/frontend.js --target browser",
+    "build:patch": "bun local/scripts/patch-bundle.ts",
+    "build": "bun run typecheck && bun run build:backend && bun run build:frontend && bun run build:patch",
+    "test": "bun test",
+    "test:parallel": "bun local/tools/test-parallel.ts",
+    "deploy": "powershell.exe -File local/scripts/deploy.ps1"
+  },
+  "dependencies": {
+    "fengari-web": "^0.1.4",
+    "fflate": "^0.8.2",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "fengari": "^0.1.5",
+    "happy-dom": "^15.0.0",
+    "juice": "^11.0.0",
+    "lumiverse-spindle-types": "^0.4.56",
+    "playwright": "^1.59.1",
+    "tsx": "^4.21.0",
+    "typescript": "^5.5.0",
+    "wasmoon": "^1.16.0"
+  }
+}
