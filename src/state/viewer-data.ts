@@ -3,6 +3,7 @@
 import type {
   ViewerAssetEntry,
   ViewerData,
+  ViewerDefaultVariable,
   ViewerLorebookEntry,
   ViewerLorebookGroup,
   ViewerRegexEntry,
@@ -64,6 +65,35 @@ export function buildCharacterViewerData(input: {
     ? bgRaw
     : null;
 
+  const cardDefaults = input.data.payload.scriptstate_defaults ?? {};
+  const overrides = input.data.user_overrides.default_variables_overrides ?? {};
+  const defaultVariables: ViewerDefaultVariable[] = [];
+  // Union of names: overrides may add new names that weren't in the card.
+  const seen = new Set<string>();
+  for (const name of Object.keys(cardDefaults)) {
+    seen.add(name);
+    const cardValue = cardDefaults[name] ?? '';
+    const overrideValue = Object.prototype.hasOwnProperty.call(overrides, name)
+      ? overrides[name] ?? ''
+      : null;
+    defaultVariables.push({
+      name,
+      value: overrideValue ?? cardValue,
+      cardDefault: cardValue,
+      overridden: overrideValue !== null,
+    });
+  }
+  for (const name of Object.keys(overrides)) {
+    if (seen.has(name)) continue;
+    defaultVariables.push({
+      name,
+      value: overrides[name] ?? '',
+      cardDefault: '',
+      overridden: true,
+    });
+  }
+  defaultVariables.sort((a, b) => a.name.localeCompare(b.name));
+
   return {
     source: { kind: 'character', characterId: input.characterId, name: input.characterName },
     lorebook: [],
@@ -72,6 +102,7 @@ export function buildCharacterViewerData(input: {
     assets,
     cjs: null,
     backgroundHtml,
+    defaultVariables,
     ts: input.ts ?? Date.now(),
     fetchWarnings: input.fetchWarnings ?? [],
   };
@@ -216,6 +247,7 @@ export function buildModuleViewerData(input: {
     assets,
     cjs: typeof m.cjs === 'string' && m.cjs.length > 0 ? m.cjs : null,
     backgroundHtml: null, // modules don't have bg-html
+    defaultVariables: [], // modules don't carry scriptstate defaults
     ts: input.ts ?? Date.now(),
     fetchWarnings: [],
   };

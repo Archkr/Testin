@@ -1733,6 +1733,58 @@
   content: '\25BC';
 }
 
+/* Default-variables section: name → value rows with optional Reset button. */
+.lr-viewer-drawer .lrv-section-note {
+  font-size: 11px;
+  color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.6));
+  margin: 4px 10px 8px;
+  line-height: 1.45;
+}
+.lr-viewer-drawer .lrv-defvar-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px 10px 8px;
+}
+.lr-viewer-drawer .lrv-defvar-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) minmax(160px, 2fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+.lr-viewer-drawer .lrv-defvar-row-overridden .lrv-defvar-input {
+  border-color: var(--lumiverse-primary, rgba(120, 160, 255, 0.5));
+}
+.lr-viewer-drawer .lrv-defvar-name {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  color: var(--lumiverse-text, inherit);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lr-viewer-drawer .lrv-defvar-input,
+.lr-viewer-drawer .lrv-defvar-name-input {
+  background: var(--lumiverse-bg-elevated, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--lumiverse-border, rgba(255, 255, 255, 0.1));
+  color: var(--lumiverse-text, inherit);
+  padding: 4px 6px;
+  border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  min-width: 0;
+}
+.lr-viewer-drawer .lrv-defvar-spacer {
+  display: inline-block;
+  min-width: 56px;
+}
+.lr-viewer-drawer .lrv-defvar-row-new {
+  border: 1px dashed var(--lumiverse-border, rgba(255, 255, 255, 0.15));
+  border-radius: 4px;
+  padding: 4px;
+  grid-template-columns: minmax(120px, 1fr) minmax(160px, 2fr) auto auto;
+}
+
 /* Asset toolbar (Add asset button + upload status) */
 .lr-viewer-drawer .lrv-asset-toolbar {
   display: flex;

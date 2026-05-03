@@ -49,6 +49,10 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
   let viewerData: ViewerData | null = null;
   let loading = false;
   let lastError: string | null = null;
+  // Per-name buffer preserves in-progress text for default-variable rows
+  // across backend-pushed re-renders (matches the toggles-tab pattern).
+  const defaultVarEditBuffers = new Map<string, string>();
+  let addingDefaultVarRow = false;
   const attachedByCharacter = new Map<string, readonly AttachedModuleSummary[]>();
   // Cleared on the next viewer_data_pushed (backend re-push = success signal).
   let assetUploadStatus: { kind: 'info' | 'error'; message: string } | null = null;
@@ -214,6 +218,10 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
     }
 
     surfaceHost.appendChild(renderAssetsSection(d.assets));
+    if (isCharacter) {
+      // Render even when empty so the user has a place to add new ones.
+      surfaceHost.appendChild(renderDefaultVariablesSection(d.defaultVariables));
+    }
     surfaceHost.appendChild(renderTriggersSection(d.triggers));
     if (d.backgroundHtml) {
       surfaceHost.appendChild(renderBackgroundHtmlSection(d.backgroundHtml));
@@ -346,6 +354,192 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
       'Edit and view this character\'s lorebook + regex rules through Lumiverse\'s native UI.';
     wrap.appendChild(body);
     return wrap;
+  }
+
+  function renderDefaultVariablesSection(
+    vars: readonly import('../types/messages.js').ViewerDefaultVariable[],
+  ): HTMLDetailsElement {
+    const det = document.createElement('details');
+    det.className = 'lrv-section';
+    det.open = vars.length > 0;
+    const sum = document.createElement('summary');
+    sum.className = 'lrv-section-summary';
+    const overrideCount = vars.filter((v) => v.overridden).length;
+    sum.textContent =
+      `Default variables · ${vars.length}` +
+      (overrideCount > 0 ? ` (${overrideCount} overridden)` : '');
+    det.appendChild(sum);
+
+    const note = document.createElement('p');
+    note.className = 'lrv-section-note';
+    note.textContent =
+      'Initial values that seed each new chat. CBS reads via {{getvar::name}} ' +
+      'until overwritten by triggers or {{setvar}}. Overrides are stored ' +
+      'per-character; "Reset" restores the card-side default.';
+    det.appendChild(note);
+
+    if (vars.length === 0 && !addingDefaultVarRow) {
+      const empty = document.createElement('div');
+      empty.className = 'lrv-empty';
+      empty.textContent = 'No default variables.';
+      det.appendChild(empty);
+    }
+
+    const list = document.createElement('div');
+    list.className = 'lrv-defvar-list';
+    for (const v of vars) list.appendChild(renderDefaultVariableRow(v));
+    if (addingDefaultVarRow) list.appendChild(renderDefaultVariableNewRow());
+    det.appendChild(list);
+
+    if (!addingDefaultVarRow) {
+      const addBtn = document.createElement('button');
+      addBtn.type = 'button';
+      addBtn.className = 'lrv-btn';
+      addBtn.textContent = '+ Add default variable';
+      addBtn.addEventListener('click', () => {
+        addingDefaultVarRow = true;
+        render();
+      });
+      det.appendChild(addBtn);
+    }
+    return det;
+  }
+
+  function renderDefaultVariableRow(
+    v: import('../types/messages.js').ViewerDefaultVariable,
+  ): HTMLDivElement {
+    const row = document.createElement('div');
+    row.className = 'lrv-defvar-row';
+    if (v.overridden) row.classList.add('lrv-defvar-row-overridden');
+
+    const nameEl = document.createElement('span');
+    nameEl.className = 'lrv-defvar-name';
+    nameEl.textContent = v.name;
+    nameEl.title = v.name;
+    row.appendChild(nameEl);
+
+    const buffered = defaultVarEditBuffers.get(v.name);
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'lrv-defvar-input';
+    input.value = buffered ?? v.value;
+    input.spellcheck = false;
+    input.addEventListener('input', () => {
+      defaultVarEditBuffers.set(v.name, input.value);
+    });
+    input.addEventListener('change', commit);
+    input.addEventListener('blur', commit);
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); commit(); input.blur(); }
+      else if (e.key === 'Escape') { e.preventDefault(); input.value = v.value; defaultVarEditBuffers.delete(v.name); input.blur(); }
+    });
+    row.appendChild(input);
+
+    if (v.overridden) {
+      const reset = document.createElement('button');
+      reset.type = 'button';
+      reset.className = 'lrv-asset-action';
+      reset.textContent = 'Reset';
+      reset.title = `Restore card default: "${v.cardDefault}"`;
+      reset.addEventListener('click', () => {
+        sendDeleteDefaultVariable(v.name);
+        defaultVarEditBuffers.delete(v.name);
+      });
+      row.appendChild(reset);
+    } else {
+      // No-op spacer to keep grid alignment.
+      const spacer = document.createElement('span');
+      spacer.className = 'lrv-defvar-spacer';
+      row.appendChild(spacer);
+    }
+
+    return row;
+
+    function commit(): void {
+      const next = input.value;
+      defaultVarEditBuffers.delete(v.name);
+      if (next !== v.value) sendSetDefaultVariable(v.name, next);
+    }
+  }
+
+  function renderDefaultVariableNewRow(): HTMLDivElement {
+    const row = document.createElement('div');
+    row.className = 'lrv-defvar-row lrv-defvar-row-new';
+
+    const nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    nameInput.className = 'lrv-defvar-name-input';
+    nameInput.placeholder = 'name';
+    nameInput.spellcheck = false;
+    row.appendChild(nameInput);
+
+    const valueInput = document.createElement('input');
+    valueInput.type = 'text';
+    valueInput.className = 'lrv-defvar-input';
+    valueInput.placeholder = 'value';
+    valueInput.spellcheck = false;
+    row.appendChild(valueInput);
+
+    const saveBtn = document.createElement('button');
+    saveBtn.type = 'button';
+    saveBtn.className = 'lrv-asset-action lrv-asset-action-primary';
+    saveBtn.textContent = 'Add';
+    saveBtn.addEventListener('click', commit);
+    row.appendChild(saveBtn);
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button';
+    cancelBtn.className = 'lrv-asset-action';
+    cancelBtn.textContent = 'Cancel';
+    cancelBtn.addEventListener('click', () => {
+      addingDefaultVarRow = false;
+      render();
+    });
+    row.appendChild(cancelBtn);
+
+    nameInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); valueInput.focus(); }
+      else if (e.key === 'Escape') { e.preventDefault(); addingDefaultVarRow = false; render(); }
+    });
+    valueInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); commit(); }
+      else if (e.key === 'Escape') { e.preventDefault(); addingDefaultVarRow = false; render(); }
+    });
+
+    queueMicrotask(() => nameInput.focus());
+
+    return row;
+
+    function commit(): void {
+      const name = nameInput.value.trim();
+      if (name.length === 0) {
+        nameInput.focus();
+        return;
+      }
+      sendSetDefaultVariable(name, valueInput.value);
+      addingDefaultVarRow = false;
+    }
+  }
+
+  function sendSetDefaultVariable(name: string, value: string): void {
+    if (!viewerData || viewerData.source.kind !== 'character') return;
+    log.info(`viewer-panel: set_default_variable name=${name} len=${value.length}`);
+    sendToBackend({
+      type: 'set_default_variable',
+      characterId: viewerData.source.characterId,
+      name,
+      value,
+    });
+  }
+
+  function sendDeleteDefaultVariable(name: string): void {
+    if (!viewerData || viewerData.source.kind !== 'character') return;
+    log.info(`viewer-panel: delete_default_variable name=${name}`);
+    sendToBackend({
+      type: 'delete_default_variable',
+      characterId: viewerData.source.characterId,
+      name,
+    });
   }
 
   function renderAssetsSection(assets: readonly ViewerAssetEntry[]): HTMLDetailsElement {

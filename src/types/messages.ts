@@ -214,6 +214,22 @@ export type FrontendToBackend =
         | { kind: 'module'; moduleId: string };
       assetName: string;
     }
+  // Default-variable mutations. Character-only; modules don't carry
+  // scriptstate defaults. Backend writes to
+  // `user_overrides.default_variables_overrides`. To restore the original
+  // card default, send `delete_default_variable` (which removes the override
+  // entry, falling back to the card-side default).
+  | {
+      type: 'set_default_variable';
+      characterId: string;
+      name: string;
+      value: string;
+    }
+  | {
+      type: 'delete_default_variable';
+      characterId: string;
+      name: string;
+    }
   // `triggerIndex` is position in `ViewerData.triggers[]`. Backend replaces all
   // `triggerlua`-typed entries in the trigger's `effect[]` with a single `triggerlua`
   // carrying the new code. Non-lua effects are preserved in order.
@@ -580,10 +596,27 @@ export interface ViewerData {
   /** Module-only (`module.cjs`); always `null` for characters. */
   readonly cjs: string | null;
   readonly backgroundHtml: string | null;
+  /** Character-only. The character's default variables — initial values that
+   *  seed `chat.metadata.macro_variables` for new chats and that CBS reads
+   *  via `{{getvar::X}}` until overwritten. Effective values (card defaults
+   *  with `user_overrides.default_variables_overrides` applied on top).
+   *  Module shape always emits an empty array. */
+  readonly defaultVariables: readonly ViewerDefaultVariable[];
   /** ms-since-epoch when assembled, for "Last refreshed" UX. */
   readonly ts: number;
   /** Fetch issues / cross-tab routing notes for a banner. */
   readonly fetchWarnings: readonly string[];
+}
+
+export interface ViewerDefaultVariable {
+  readonly name: string;
+  /** Effective value (override > card default). */
+  readonly value: string;
+  /** Original card-side default (before override). Same as `value` when no
+   *  override is set. */
+  readonly cardDefault: string;
+  /** True when the user_overrides map carries a value for this name. */
+  readonly overridden: boolean;
 }
 
 export interface ViewerLorebookGroup {

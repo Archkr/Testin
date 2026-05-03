@@ -5254,6 +5254,54 @@ spindle.onFrontendMessage(async (raw, userId) => {
         }
         break;
       }
+      case 'set_default_variable':
+      case 'delete_default_variable': {
+        if (!userId) {
+          send({ type: 'error', message: `${msg.type}: no userId` });
+          break;
+        }
+        const updated = await updateLumirealm(charactersApi(), msg.characterId, userId, (cur) => {
+          const overrides = { ...(cur.user_overrides.default_variables_overrides ?? {}) };
+          if (msg.type === 'set_default_variable') {
+            const trimmedName = msg.name.trim();
+            if (trimmedName.length === 0) return cur;
+            overrides[trimmedName] = String(msg.value);
+          } else {
+            if (!Object.prototype.hasOwnProperty.call(overrides, msg.name)) return cur;
+            delete overrides[msg.name];
+          }
+          return {
+            ...cur,
+            user_overrides: {
+              ...cur.user_overrides,
+              ...(Object.keys(overrides).length > 0
+                ? { default_variables_overrides: overrides }
+                : {}),
+            },
+          };
+        });
+        if (!updated) {
+          send({ type: 'error', message: `${msg.type}: not a lumirealm character` });
+          break;
+        }
+        try {
+          const data = await assembleCharacterViewerData(msg.characterId, userId);
+          if (data) send({ type: 'viewer_data_pushed', data });
+        } catch (err) {
+          log.warn(`${msg.type}: viewer re-push failed: ${errMsg(err)}`);
+        }
+        // Defaults feed buildSyntheticStoredCard's mergedDefaults; invalidate
+        // active card so the next chat-tick re-synthesises with the new
+        // override applied.
+        invalidateActiveForCharacter(msg.characterId);
+        log.info(
+          `${msg.type}: char=${msg.characterId} name=${msg.name}` +
+            (msg.type === 'set_default_variable'
+              ? ` len=${String(msg.value).length}`
+              : ' (override removed)'),
+        );
+        break;
+      }
       case 'set_trigger_lua': {
         if (!userId) {
           send({ type: 'error', message: 'set_trigger_lua: no userId' });
