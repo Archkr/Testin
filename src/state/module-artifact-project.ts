@@ -23,22 +23,40 @@ export function projectModuleLorebookEntries(
         ? [keyRaw]
         : [];
     if (key.length === 0 && content.length === 0) continue;
+    // Risu native shape uses alwaysActive + mode='constant' for the
+    // constant flag and mode='folder' for display headers. See
+    // mappers/lorebook.ts mapMode(). Also accept the CCSv3 shape
+    // (`constant: bool`) for FE-shaped inputs / re-installs.
+    const isConstant =
+      eo['constant'] === true ||
+      eo['alwaysActive'] === true ||
+      eo['mode'] === 'constant';
+    const isFolder = eo['mode'] === 'folder';
+    const disabled = isFolder
+      ? true
+      : typeof eo['disabled'] === 'boolean'
+        ? eo['disabled']
+        : undefined;
+    const orderRaw = typeof eo['insertorder'] === 'number'
+      ? eo['insertorder']
+      : typeof eo['order'] === 'number'
+        ? eo['order']
+        : undefined;
+    const secondaryKeys = Array.isArray(eo['secondary_keys'])
+      ? eo['secondary_keys'].filter((x): x is string => typeof x === 'string')
+      : typeof eo['secondkey'] === 'string' && eo['secondkey'].length > 0
+        ? eo['secondkey'].split(',').map((s) => s.trim()).filter((s) => s.length > 0)
+        : undefined;
     const entry: ModuleLorebookEntry = {
       key,
       content,
       ...(typeof eo['comment'] === 'string' ? { comment: eo['comment'] } : {}),
-      ...(typeof eo['constant'] === 'boolean' ? { constant: eo['constant'] } : {}),
-      ...(typeof eo['disabled'] === 'boolean' ? { disabled: eo['disabled'] } : {}),
+      ...(isConstant ? { constant: true } : isFolder ? { constant: false } : {}),
+      ...(disabled !== undefined ? { disabled } : {}),
       ...(typeof eo['position'] === 'string' ? { position: eo['position'] } : {}),
       ...(typeof eo['priority'] === 'number' ? { priority: eo['priority'] } : {}),
-      ...(typeof eo['order'] === 'number' ? { order: eo['order'] } : {}),
-      ...(Array.isArray(eo['secondary_keys'])
-        ? {
-            secondary_keys: eo['secondary_keys'].filter(
-              (x): x is string => typeof x === 'string',
-            ),
-          }
-        : {}),
+      ...(orderRaw !== undefined ? { order: orderRaw } : {}),
+      ...(secondaryKeys ? { secondary_keys: secondaryKeys } : {}),
       ...(typeof eo['selective'] === 'boolean' ? { selective: eo['selective'] } : {}),
       metadata: { _risu: { module_id: moduleId } },
     };

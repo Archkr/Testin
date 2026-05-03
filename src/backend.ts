@@ -3997,9 +3997,14 @@ function buildModuleWorldBookEntryInput(raw: unknown, moduleId: string): Record<
   if (!raw || typeof raw !== 'object') return null;
   const eo = raw as Record<string, unknown>;
   const keyRaw = eo['key'];
+  // Risu's native shape stores key as a comma-separated string. Module
+  // entries shipped from .risum follow that convention. Tolerate arrays
+  // for FE-shaped inputs.
   const key = Array.isArray(keyRaw)
     ? keyRaw.filter((x): x is string => typeof x === 'string')
-    : typeof keyRaw === 'string' ? [keyRaw] : [];
+    : typeof keyRaw === 'string'
+      ? keyRaw.split(',').map((s) => s.trim()).filter((s) => s.length > 0)
+      : [];
   const content = typeof eo['content'] === 'string' ? eo['content'] : '';
   if (key.length === 0 && content.length === 0) return null;
   const input: Record<string, unknown> = {
@@ -4008,15 +4013,46 @@ function buildModuleWorldBookEntryInput(raw: unknown, moduleId: string): Record<
     metadata: { _risu: { module_id: moduleId } },
   };
   if (typeof eo['comment'] === 'string') input['comment'] = eo['comment'];
-  if (typeof eo['constant'] === 'boolean') input['constant'] = eo['constant'];
-  if (typeof eo['disabled'] === 'boolean') input['disabled'] = eo['disabled'];
+  // Risu native LoreBook uses `alwaysActive: boolean` (or `mode: 'constant'`)
+  // for the constant flag — verified across 6396 corpus entries: 100% have
+  // alwaysActive, 0% have constant. See mappers/lorebook.ts:53 —
+  // `e.mode === 'constant' || !!e.alwaysActive`. Also accept CCSv3
+  // `constant: true` for FE-shaped inputs / re-installs.
+  const isConstant =
+    eo['constant'] === true ||
+    eo['alwaysActive'] === true ||
+    eo['mode'] === 'constant';
+  if (isConstant) input['constant'] = true;
+  // Folder-mode entries are display-only group headers in Risu; mirror
+  // mapMode() at mappers/lorebook.ts:50 — disabled, no constant.
+  const isFolder = eo['mode'] === 'folder';
+  if (isFolder) {
+    input['disabled'] = true;
+    input['constant'] = false;
+  } else if (typeof eo['disabled'] === 'boolean') {
+    input['disabled'] = eo['disabled'];
+  }
   if (typeof eo['position'] === 'string') input['position'] = eo['position'];
   if (typeof eo['priority'] === 'number') input['priority'] = eo['priority'];
-  if (typeof eo['order'] === 'number') input['order_value'] = eo['order'];
+  // Risu's native shape uses `insertorder` (one word). Accept both the
+  // native spelling and `order` as a tolerance for FE-shaped inputs.
+  if (typeof eo['insertorder'] === 'number') input['order_value'] = eo['insertorder'];
+  else if (typeof eo['order'] === 'number') input['order_value'] = eo['order'];
+  // Risu's native shape uses `secondkey` (string, comma-separated).
+  // `secondary_keys` is the CCSv3 shape (string[]). Accept both.
   if (Array.isArray(eo['secondary_keys'])) {
     input['keysecondary'] = eo['secondary_keys'].filter((x): x is string => typeof x === 'string');
+  } else if (typeof eo['secondkey'] === 'string' && eo['secondkey'].length > 0) {
+    input['keysecondary'] = eo['secondkey'].split(',').map((s) => s.trim()).filter((s) => s.length > 0);
   }
   if (typeof eo['selective'] === 'boolean') input['selective'] = eo['selective'];
+  if (eo['extentions'] && typeof eo['extentions'] === 'object' && !Array.isArray(eo['extentions'])) {
+    const ex = eo['extentions'] as Record<string, unknown>;
+    if (ex['risu_case_sensitive'] === true) input['case_sensitive'] = true;
+    if (typeof ex['risu_activationPercent'] === 'number') {
+      input['probability'] = ex['risu_activationPercent'];
+    }
+  }
   return input;
 }
 
