@@ -25,11 +25,6 @@ import {
   calculate,
   splitString,
 } from './runtime/strings-regex.js';
-import {
-  wrapFixedPositionRegions,
-  EMPTY_PORTAL_SELECTORS,
-} from '../core/mappers/portal-wrap.js';
-import type { PortalSelectors } from '../core/mappers/portal-analyze.js';
 import { toStr } from '../util/coerce.js';
 import { makeSafeLogger } from '../util/safe-log.js';
 import { samplersToWire } from '../util/samplers-wire.js';
@@ -210,7 +205,6 @@ export async function makeRisuTriggerRuntime(
   const dispatchCtx: DispatchContext = getDispatchContext() ?? {};
   const binding = toStr(dispatchCtx.binding ?? opts.binding ?? '');
   const portalChatId: string | undefined = opts.chatId ?? dispatchCtx.chatId;
-  const portalSelectors: PortalSelectors = opts.portalSelectors ?? dispatchCtx.portalSelectors ?? EMPTY_PORTAL_SELECTORS;
   const rememberOurWrite: ((chatId: string, msgId: string, content: string) => void) | undefined =
     opts.rememberOurWrite ?? dispatchCtx.rememberOurWrite;
   const stateChanged: (() => void) | undefined =
@@ -249,7 +243,6 @@ export async function makeRisuTriggerRuntime(
       : (opts.binding !== undefined ? 'opts' : '<none>');
     _logMake.info(
       `chatId=${portalChatId ?? '<none>'} ` +
-        `portalSelectors=ids:${portalSelectors.ids.size}/classes:${portalSelectors.classes.size} ` +
         `rememberOurWrite=${rememberOurWrite ? 'wired' : '<none>'} ` +
         `stateChanged=${stateChanged ? 'wired' : '<none>'} ` +
         `auxConn=${auxConnectionId ?? '<default>'} auxModel=${auxModelOverride ?? '<connection>'} ` +
@@ -551,36 +544,33 @@ export async function makeRisuTriggerRuntime(
           );
           return;
         }
-        // Doc-boundary normalize. Strips <!DOCTYPE>/<html>/<head>/<body> tags,
-        // wraps leading <style> so DOMPurify keeps the CSS.
+        // Doc-boundary normalize. Strips DOCTYPE/html/head/body tags, wraps
+        // leading style so DOMPurify keeps the CSS. Fixed-position Lua-emitted
+        // content is lifted at render time by message-portal, no write-time wrap.
         const raw = normalizeReplaceStringForSanitizer(toStr(value));
-        const wrapped = wrapFixedPositionRegions(raw, portalSelectors, 'lua');
-        const wrapFired = wrapped !== raw;
         const msgId = messagesCache[real]!.id;
-        messagesCache[real] = { ...messagesCache[real]!, content: wrapped };
+        messagesCache[real] = { ...messagesCache[real]!, content: raw };
 
         // Without rememberOurWrite, Lua-emitted content (no {{ markers) would flip userEdited=true.
         if (rememberOurWrite && portalChatId) {
-          try { rememberOurWrite(portalChatId, msgId, wrapped); }
+          try { rememberOurWrite(portalChatId, msgId, raw); }
           catch { /* */ }
         }
 
         // Sidecar must see the new raw or the next state-tick re-resolves stale content over it.
         if (trackSidecarWrite) {
-          try { trackSidecarWrite(msgId, wrapped); }
+          try { trackSidecarWrite(msgId, raw); }
           catch { /* never crash trigger work for a sidecar update */ }
         }
 
         _logSetChat.info(
           `index=${index} (real=${real}) msgId=${msgId} ` +
-            `raw_len=${raw.length} wrapped_len=${wrapped.length} wrap_fired=${wrapFired} ` +
-            `chatId=${portalChatId ?? '<none>'} ` +
-            `selectors=ids:${portalSelectors.ids.size}/classes:${portalSelectors.classes.size} ` +
+            `len=${raw.length} chatId=${portalChatId ?? '<none>'} ` +
             `rememberOurWrite=${rememberOurWrite && portalChatId ? 'called' : 'skipped'} ` +
             `sidecarWrite=${trackSidecarWrite ? 'called' : 'skipped'}`,
         );
 
-        try { api.chat.editMessage?.(msgId, wrapped); } catch { /* */ }
+        try { api.chat.editMessage?.(msgId, raw); } catch { /* */ }
       },
       setChatRole: (_id: unknown, index: unknown, value: unknown) => {
         const n = Number(index);
@@ -594,15 +584,11 @@ export async function makeRisuTriggerRuntime(
       },
       addChat: (_id: unknown, role: unknown, value: unknown) => {
         const raw = normalizeReplaceStringForSanitizer(toStr(value));
-        const wrapped = wrapFixedPositionRegions(raw, portalSelectors, 'lua');
-        const wrapFired = wrapped !== raw;
-        messagesCache.push({ id: String(messagesCache.length + 1), role: toStr(role), content: wrapped });
+        messagesCache.push({ id: String(messagesCache.length + 1), role: toStr(role), content: raw });
         _logAddChat.info(
-          `role=${toStr(role)} ` +
-            `raw_len=${raw.length} wrapped_len=${wrapped.length} wrap_fired=${wrapFired} ` +
-            `chatId=${portalChatId ?? '<none>'}`,
+          `role=${toStr(role)} len=${raw.length} chatId=${portalChatId ?? '<none>'}`,
         );
-        try { api.chat.sendMessage?.(wrapped, { role: toStr(role) }); } catch { /* */ }
+        try { api.chat.sendMessage?.(raw, { role: toStr(role) }); } catch { /* */ }
       },
       insertChat: (_id: unknown, index: unknown, role: unknown, value: unknown) => {
         messagesCache.splice(Number(index), 0, { id: String(Date.now()), role: toStr(role), content: toStr(value) });

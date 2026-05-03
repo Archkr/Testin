@@ -109,11 +109,6 @@ export type FrontendToBackend =
       /** `window.innerHeight` at report time. */
       height: number;
     }
-  // Backend's PortalStateStore retains state across reconnects for dedup.
-  | {
-      type: 'request_portal_snapshot';
-      chatId: string;
-    }
   // Backend replies with `set_variables` push. Also fires on every state-tick lifecycle event.
   | {
       type: 'request_variables_snapshot';
@@ -158,20 +153,6 @@ export type FrontendToBackend =
   | {
       type: 'request_connections_list';
     }
-  // Reads `extensions.lumirealm[characterId].portal_candidates` + `user_overrides.portal_decisions`.
-  // `set_portal_decision` writes one override (`null` clears → fall back to heuristic_decision);
-  // backend re-runs partition + re-pushes `set_portals` so the change is visible without re-import.
-  | {
-      type: 'request_portal_candidates';
-      characterId: string;
-    }
-  | {
-      type: 'set_portal_decision';
-      characterId: string;
-      candidateId: string;
-      /** `null` clears the override (fall back to heuristic). */
-      decision: 'portal' | 'inline' | null;
-    }
   | {
       type: 'upload_module_init';
       sessionId: string;
@@ -207,6 +188,18 @@ export type FrontendToBackend =
       /** File extension without leading dot (e.g. "png", "mp4"). Drives
        *  `{{asset::NAME}}` video-vs-image branching. */
       ext?: string;
+    }
+  // Bulk variant of `add_asset`: single envelope write + single viewer re-push
+  // regardless of `entries.length`. FE pre-uploads bytes via `/api/v1/images`.
+  | {
+      type: 'add_assets';
+      source: { kind: 'character'; characterId: string }
+        | { kind: 'module'; moduleId: string };
+      entries: ReadonlyArray<{
+        assetName: string;
+        imageId: string;
+        ext?: string;
+      }>;
     }
   | {
       type: 'rename_asset';
@@ -341,16 +334,8 @@ export type BackendToFrontend =
       type: 'clear_bg_html';
       chatId: string;
     }
-  // FE reconciles its mounted overlay: mounts new slots, replaces changed (signature differs),
-  // removes vanished. `seq` is per-chat monotonic; FE ignores out-of-order pushes.
-  | {
-      type: 'set_portals';
-      chatId: string;
-      seq: number;
-      portals: readonly Portal[];
-    }
-  // Pushed on every state-tick (same fan-out as `set_portals`).
-  // `defaults` is character-level `defaultVariables` (Risu's `getChatVar` fallback when key unset).
+  // Pushed on every state-tick. `defaults` is character-level `defaultVariables`
+  // (Risu's `getChatVar` fallback when key unset).
   // `seq` is monotonic per-chat; pushes only when snapshot changes (or on explicit request).
   | {
       type: 'set_variables';
@@ -405,16 +390,6 @@ export type BackendToFrontend =
         readonly model: string;
         readonly is_default: boolean;
       }[];
-    }
-  // Pushed on `request_portal_candidates` and every `set_portal_decision`.
-  // Effective decision per candidate = `decisions[candidateId] ?? candidate.heuristic_decision`.
-  | {
-      type: 'portal_candidates_pushed';
-      characterId: string;
-      candidates: readonly PortalCandidateMsg[];
-      decisions: Readonly<Record<string, 'portal' | 'inline'>>;
-      /** ms-since-epoch when assembled. */
-      ts: number;
     }
   // Module upload ack (seq=-1 init, seq=N chunk, seq=-2 commit).
   // `modules_pushed` is the full library + per-character attachment map.
@@ -574,20 +549,6 @@ export interface VariableScopes {
   readonly chat: Readonly<Record<string, string>>;
 }
 
-export interface Portal {
-  /** Globally unique within the chat. Format: `${msgId}::${matchIdx}`. */
-  readonly slotId: string;
-  /** Source message id (for `[data-message-id]` chat-scope CSS match). */
-  readonly msgId: string;
-  readonly matchIdx: number;
-  /** Full `<div data-risu-portal="...">...</div>` outerHTML. */
-  readonly html: string;
-  /** Stable hash of `html.trim()` for dedup. */
-  readonly signature: string;
-  /** Value of the `data-risu-portal` attribute (informational). */
-  readonly sourceToken: string;
-}
-
 export interface ModuleSummary {
   readonly id: string;
   readonly name: string;
@@ -697,15 +658,3 @@ export interface AttachedModuleSummary {
   readonly name: string;
 }
 
-export interface PortalCandidateMsg {
-  readonly id: string;
-  readonly source:
-    | { readonly kind: 'regex_rule'; readonly sort_order: number; readonly find_regex_preview: string }
-    | { readonly kind: 'greeting'; readonly alt_index: number };
-  readonly subtree_html: string;
-  readonly triggering_selectors: readonly string[];
-  readonly triggering_css_source: 'rule_inline_style' | 'bg_html' | 'both' | 'inline_style_attr';
-  readonly confidence: 'high-yes' | 'ambiguous' | 'high-no';
-  readonly heuristic_decision: 'portal' | 'inline';
-  readonly analyzer_version: number;
-}

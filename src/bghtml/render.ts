@@ -141,13 +141,10 @@ export function setupBgHtmlRenderer(
           // 28px absolute line-height mirrors Tailwind prose. Lumi's 1.65 unitless
           // ratio collapses bar-overlap layouts in cards with fixed-height text-box.
           const islandLineHeight = ':host { line-height: 28px; }\n';
-          // @import is illegal in replaceSync (async-only). Google Fonts still loads
-          // via the chat-scope style in document.head. Portal originals hidden inside
-          // islanded shadows, overlay copies use data-risu-portal-extracted.
-          const islandPortalHide =
-            "[data-risu-portal] { display: none !important; }\n";
+          // @import is illegal in replaceSync (async-only). Google Fonts still
+          // loads via the chat-scope style in document.head.
           const islandCss = stripCssImports(
-            islandLineHeight + islandImgReset + islandPortalHide + islandBundle.css,
+            islandLineHeight + islandImgReset + islandBundle.css,
           );
           islandStyles.setStylesheet(islandCss);
           flog.info(
@@ -164,31 +161,39 @@ export function setupBgHtmlRenderer(
         // Card inline styles always win over this.
         const imgReset =
           "[data-message-id] img { max-width: 100%; max-height: 80vh; }\n";
-        // Hide portal originals in light-DOM bubbles. Overlay copies are renamed.
-        const portalHide =
-          "[data-message-id] [data-risu-portal] { display: none !important; }\n";
         const lineHeight =
           "[data-message-id] { line-height: 28px; }\n";
-        // Lumi sets overflow:hidden + contain:layout style paint, which clips
-        // absolute-positioned card hover popups. Drop both for Risu chats.
-        // position:fixed widgets handled by portal extraction.
+        // Lumi sets overflow:hidden + contain:layout, which clips absolute
+        // hover popups and creates a containing block for position:fixed.
+        // The runtime DOM lifter handles fixed, drop both for Risu chats.
         const bubbleContainment =
           "[data-message-id] { overflow: visible !important; contain: none !important; }\n";
-        // @import must precede other rules. Hoist them back to the top after
+        // Cross-rule styles wrapped in `[data-message-id] { ... }` via CSS Nesting
+        // so they reach light-DOM widgets too. Without this, fixed-position widgets
+        // styled via a different rule wouldn't resolve to `fixed` and the lifter
+        // wouldn't see them. Shadow-DOM case is covered by island-styles.
+        const crossRuleParts = msg.crossRuleStyles ?? [];
+        const wrappedCrossRule = crossRuleParts
+          .map((p) => stripCssImports(p))
+          .filter((p) => p.trim().length > 0)
+          .map((p) => `[data-message-id] {\n${p}\n}\n`)
+          .join("\n");
+        // @import must precede other rules. Hoist them back to top after
         // preamble prepend, or Google Fonts silently stops loading.
         const { imports, rest } = splitCssImports(chatBundle.css);
         const chatScopeCss =
           (imports ? imports + "\n" : "")
           + lineHeight
           + imgReset
-          + portalHide
           + bubbleContainment
-          + rest;
+          + rest
+          + (wrappedCrossRule ? "\n" + wrappedCrossRule : "");
         upsertChatScopeStyle(chatScopeCss);
         flog.info(
           `bg-html renderer: chat-scope CSS injected css_len=${chatScopeCss.length} ` +
-            `(imports_hoisted_len=${imports.length}, body_len=${rest.length}; ` +
-            `+img-reset +portal-hide +bubble-containment preambles)`,
+            `(imports_hoisted_len=${imports.length}, body_len=${rest.length}, ` +
+            `cross_rule_wrapped_len=${wrappedCrossRule.length}; ` +
+            `+img-reset +bubble-containment preambles)`,
         );
       }
       flog.info(

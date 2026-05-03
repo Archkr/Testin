@@ -5,19 +5,10 @@ import { translateCharx } from '../core/pipeline/index.js';
 import type { LumiBundle } from '../core/pipeline/index.js';
 import { CatalogIndex, parseCatalog } from '../core/cbs/index.js';
 import {
-  analyzeCardPortalCandidates,
-  extractInlineCssFromHtml,
-} from '../core/mappers/portal-analyze.js';
-import {
   buildLumirealmData,
-  decideRulePartitionWithOverrides,
-  isStripStub,
-  partitionRulesForLumi,
   preValidateRequires,
   RisuCompatVersionError,
   RisuConsentDeclinedError,
-  stripStubParentScriptId,
-  synthesizeStripStub,
 } from './codec.js';
 import { type UserStorageLike } from './installer.js';
 import type {
@@ -564,102 +555,9 @@ export async function importCard(args: ImportCardArgs): Promise<ImportResult> {
     metadata: { ...r.metadata },
   }));
 
-  const tCandidates = Date.now();
-  const bgHtmlCss = extractInlineCssFromHtml(bundle.risuPayload.background_html ?? '');
-  const greetings = [
-    bundle.character.first_mes,
-    ...bundle.character.alternate_greetings,
-  ].filter((g): g is string => typeof g === 'string' && g.length > 0);
-  const portalCandidates = analyzeCardPortalCandidates({
-    regexScripts: allRows,
-    greetings,
-    bgHtmlCss,
-  });
-  const candidatesByConfidence = portalCandidates.reduce(
-    (acc, c) => { acc[c.confidence] = (acc[c.confidence] ?? 0) + 1; return acc; },
-    {} as Record<string, number>,
-  );
-  logInfo(
-    `(8.5) portal-candidates analyzed in ${Date.now() - tCandidates}ms — ` +
-      `total=${portalCandidates.length} ` +
-      `high-yes=${candidatesByConfidence['high-yes'] ?? 0} ` +
-      `ambiguous=${candidatesByConfidence['ambiguous'] ?? 0}`,
-  );
-
-  // Pre-generate stubs for ambiguous candidates the translator didn't stub.
-  // Without them, flipping an ambiguous rule to portal in the UI leaves its
-  // marker text leaking into the bubble (no stub to erase the find_regex match).
-  const existingStubParents = new Set<string>();
-  for (const r of allRows) {
-    if (isStripStub(r)) {
-      const parent = stripStubParentScriptId(r);
-      if (parent !== null) existingStubParents.add(parent);
-    }
-  }
-  const candidateBearingRulesById = new Map<number, PendingRegexScript>();
-  for (const r of allRows) {
-    if (!isStripStub(r)) candidateBearingRulesById.set(r.sort_order, r);
-  }
-  let synthesizedStubCount = 0;
-  for (const c of portalCandidates) {
-    if (c.source.kind !== 'regex_rule') continue;
-    const rule = candidateBearingRulesById.get(c.source.sort_order);
-    if (!rule) continue;
-    if (existingStubParents.has(rule.script_id)) continue;
-    const stub = synthesizeStripStub(rule, () => crypto.randomUUID());
-    // synthesizeStripStub returns StoredRegexScript (metadata optional);
-    // PendingRegexScript requires metadata; always populated here, so safe.
-    allRows.push({
-      name: stub.name,
-      script_id: stub.script_id,
-      find_regex: stub.find_regex,
-      replace_string: stub.replace_string,
-      flags: stub.flags,
-      placement: stub.placement,
-      scope: stub.scope,
-      scope_id: stub.scope_id,
-      target: stub.target,
-      min_depth: stub.min_depth,
-      max_depth: stub.max_depth,
-      trim_strings: stub.trim_strings,
-      run_on_edit: stub.run_on_edit,
-      substitute_macros: stub.substitute_macros,
-      disabled: stub.disabled,
-      sort_order: stub.sort_order,
-      description: stub.description,
-      folder: stub.folder,
-      metadata: { ...(stub.metadata ?? {}) },
-    });
-    existingStubParents.add(rule.script_id);
-    synthesizedStubCount++;
-  }
-  if (synthesizedStubCount > 0) {
-    logInfo(`(8.6) synthesized ${synthesizedStubCount} strip-stub(s) for ambiguous candidates`);
-  }
-
-  // portal_decisions overrides translator's extension_managed flag per candidate.
-  // Stale keys (from a prior import) are silently ignored.
-  const portalDecisions = userOverrides.portal_decisions ?? {};
-  const candidatesBySortOrder = new Map<number, string[]>();
-  for (const c of portalCandidates) {
-    if (c.source.kind !== 'regex_rule') continue;
-    const list = candidatesBySortOrder.get(c.source.sort_order) ?? [];
-    list.push(c.id);
-    candidatesBySortOrder.set(c.source.sort_order, list);
-  }
-  const isExtensionManaged = (r: { sort_order: number; metadata?: Readonly<Record<string, unknown>> }): boolean => {
-    const ruleCandidateIds = candidatesBySortOrder.get(r.sort_order) ?? [];
-    const risu = (r.metadata as { _risu?: { extension_managed?: unknown } } | undefined)?._risu;
-    const translatorFlag = risu?.extension_managed === true;
-    return decideRulePartitionWithOverrides(ruleCandidateIds, portalDecisions, translatorFlag);
-  };
-
-  // Lumi's table gets: non-managed plain rules + stubs whose parent is managed.
-  // partitionRulesForLumi gates stubs on parent status to avoid erasing inline rules.
-  const pendingRegexScripts: PendingRegexScript[] = partitionRulesForLumi(
-    allRows,
-    isExtensionManaged,
-  ).map((r) => ({
+  // Runtime DOM lifter handles fixed-position content post-render. No
+  // translate-time portal partition, all rules go to Lumi's regex_scripts.
+  const pendingRegexScripts: PendingRegexScript[] = allRows.map((r) => ({
     name: r.name,
     script_id: r.script_id,
     find_regex: r.find_regex,
@@ -720,7 +618,6 @@ export async function importCard(args: ImportCardArgs): Promise<ImportResult> {
     emotionIndex,  // populated alongside (last-wins per emotion name)
     Date.now(),
     userOverrides,
-    portalCandidates,
   );
   try {
     await args.spindle.characters.update(

@@ -8081,7 +8081,7 @@ function preValidateRequires(requires) {
   }
   return { ok: missing.length === 0, missing, degraded };
 }
-function buildLumirealmData(payload, extensionVersion, regexScripts = [], assetIndex = {}, emotionIndex = {}, importedAt = Date.now(), userOverrides = {}, portalCandidates = []) {
+function buildLumirealmData(payload, extensionVersion, regexScripts = [], assetIndex = {}, emotionIndex = {}, importedAt = Date.now(), userOverrides = {}) {
   return {
     schema_version: 1,
     imported_at: importedAt,
@@ -8102,7 +8102,6 @@ function buildLumirealmData(payload, extensionVersion, regexScripts = [], assetI
     asset_index: assetIndex,
     emotion_index: emotionIndex,
     regex_scripts: regexScripts,
-    ...portalCandidates.length > 0 ? { portal_candidates: portalCandidates } : {},
     user_overrides: userOverrides
   };
 }
@@ -8112,101 +8111,8 @@ function isLumirealmData(value) {
   const v = value;
   return v.schema_version === 1;
 }
-function decideRulePartitionWithOverrides(ruleCandidateIds, portalDecisions, translatorFlag) {
-  if (ruleCandidateIds.length > 0) {
-    let allInline = true;
-    for (const id of ruleCandidateIds) {
-      const decision = portalDecisions[id];
-      if (decision === "portal")
-        return true;
-      if (decision !== "inline")
-        allInline = false;
-    }
-    if (allInline)
-      return false;
-  }
-  return translatorFlag;
-}
-function synthesizeStripStub(parent, idGen) {
-  const meta = parent.metadata ?? {};
-  const parentRisu = meta._risu ?? {};
-  return {
-    name: `${parent.name} (strip)`,
-    script_id: idGen(),
-    find_regex: parent.find_regex,
-    replace_string: "",
-    flags: parent.flags,
-    placement: parent.placement,
-    scope: parent.scope,
-    scope_id: parent.scope_id,
-    target: parent.target,
-    min_depth: parent.min_depth,
-    max_depth: parent.max_depth,
-    trim_strings: [],
-    run_on_edit: parent.run_on_edit,
-    substitute_macros: parent.find_regex.indexOf("{{") >= 0 ? parent.substitute_macros : "none",
-    disabled: parent.disabled,
-    sort_order: parent.sort_order,
-    description: parent.description,
-    folder: parent.folder,
-    metadata: {
-      _risu: {
-        ...parentRisu,
-        has_meta: false,
-        is_strip_stub: true,
-        stub_for: parent.script_id,
-        extension_managed: false,
-        var_refs: []
-      }
-    }
-  };
-}
-function isStripStub(rule) {
-  const meta = rule.metadata;
-  return meta?._risu?.is_strip_stub === true;
-}
-function stripStubParentScriptId(rule) {
-  const meta = rule.metadata;
-  const v = meta?._risu?.stub_for;
-  return typeof v === "string" ? v : null;
-}
-function ensurePortalWrap(replaceString, wrap) {
-  const OPEN_RE = /^<div\s+data-risu-portal="([^"]*)">/;
-  const openMatch = OPEN_RE.exec(replaceString);
-  const isWrapped = openMatch !== null && replaceString.endsWith("</div>") && replaceString.length > openMatch[0].length + "</div>".length;
-  if (wrap) {
-    if (isWrapped)
-      return replaceString;
-    return `<div data-risu-portal="auto">${replaceString}</div>`;
-  }
-  if (!isWrapped)
-    return replaceString;
-  return replaceString.slice(openMatch[0].length, replaceString.length - "</div>".length);
-}
-function partitionRulesForLumi(rules, isManaged) {
-  const managedScriptIds = new Set;
-  for (const r of rules) {
-    if (isStripStub(r))
-      continue;
-    if (isManaged(r))
-      managedScriptIds.add(r.script_id);
-  }
-  const out = [];
-  for (const r of rules) {
-    if (isStripStub(r)) {
-      const parent = stripStubParentScriptId(r);
-      if (parent !== null && managedScriptIds.has(parent))
-        out.push(r);
-    } else {
-      if (!isManaged(r))
-        out.push(r);
-    }
-  }
-  return out;
-}
 
 // src/core/payload/types.ts
-var PORTAL_ANALYZER_VERSION = 1;
 var LUMIREALM_EXT_KEY = "lumirealm";
 // src/core/pipeline/risu-payload.ts
 var KNOWN_RISUAI_FIELDS = new Set([
@@ -8967,7 +8873,7 @@ function buildExtensions2(data, spec, specVersion, sourceId, translationNotes) {
     out["ccv3_modification_date"] = data["modification_date"];
   if (data["source"] !== undefined)
     out["ccv3_source"] = data["source"];
-  out["_risu_to_lumi"] = {
+  out["_lumirealm"] = {
     source: sourceId ?? null,
     spec,
     spec_version: specVersion,
@@ -9785,1513 +9691,6 @@ function rewriteArithShortcut(text) {
   return out;
 }
 
-// src/core/mappers/portal-analyze.ts
-var EMPTY_PORTAL_SELECTORS = {
-  ids: new Set,
-  classes: new Set
-};
-function extractPortalSelectors(css) {
-  if (!css || css.indexOf("position") < 0 || css.indexOf("fixed") < 0) {
-    return EMPTY_PORTAL_SELECTORS;
-  }
-  const ids = new Set;
-  const classes = new Set;
-  walkCss(css, (selectorList, declarations) => {
-    if (!declaresPositionFixed(declarations))
-      return;
-    for (const sel of splitSelectorList(selectorList)) {
-      collectSubjectIdsAndClasses(sel, ids, classes);
-    }
-  });
-  return { ids, classes };
-}
-function replacementNeedsPortal(replaceString, sel) {
-  if (!replaceString)
-    return false;
-  const inline = extractInlineStyleSelectors(replaceString);
-  const ids = sel.ids.size === 0 ? inline.ids : inline.ids.size === 0 ? sel.ids : new Set([...sel.ids, ...inline.ids]);
-  const classes = sel.classes.size === 0 ? inline.classes : inline.classes.size === 0 ? sel.classes : new Set([...sel.classes, ...inline.classes]);
-  if (ids.size === 0 && classes.size === 0) {
-    return hasInlineFixedStyle(replaceString);
-  }
-  return scanHtmlForPortal(replaceString, { ids, classes }) || hasInlineFixedStyle(replaceString);
-}
-function extractAnchoredPortalSelectors(css) {
-  const rules = extractDetailedFixedRules(css);
-  if (rules.length === 0)
-    return EMPTY_PORTAL_SELECTORS;
-  const ids = new Set;
-  const classes = new Set;
-  for (const rule of rules) {
-    if (rule.position !== "fixed")
-      continue;
-    const isAnchored = rule.has_explicit_anchor || rule.z_index !== null && rule.z_index >= 1000;
-    if (!isAnchored)
-      continue;
-    for (const id of rule.subjects.ids)
-      ids.add(id);
-    for (const cls of rule.subjects.classes)
-      classes.add(cls);
-  }
-  return { ids, classes };
-}
-function extractInlineAnchoredStyleSelectors(html) {
-  if (!html || html.indexOf("<style") < 0)
-    return EMPTY_PORTAL_SELECTORS;
-  const ids = new Set;
-  const classes = new Set;
-  const len = html.length;
-  let i = 0;
-  while (i < len) {
-    const openStart = html.indexOf("<style", i);
-    if (openStart < 0)
-      break;
-    const openEnd = html.indexOf(">", openStart);
-    if (openEnd < 0)
-      break;
-    const closeStart = html.indexOf("</style", openEnd);
-    if (closeStart < 0)
-      break;
-    const css = html.slice(openEnd + 1, closeStart);
-    if (css.length > 0) {
-      const partial = extractAnchoredPortalSelectors(css);
-      for (const id of partial.ids)
-        ids.add(id);
-      for (const cls of partial.classes)
-        classes.add(cls);
-    }
-    const closeEnd = html.indexOf(">", closeStart);
-    i = closeEnd < 0 ? len : closeEnd + 1;
-  }
-  return { ids, classes };
-}
-function extractInlineStyleSelectors(html) {
-  if (!html || html.indexOf("<style") < 0)
-    return EMPTY_PORTAL_SELECTORS;
-  const ids = new Set;
-  const classes = new Set;
-  const len = html.length;
-  let i = 0;
-  while (i < len) {
-    const openStart = html.indexOf("<style", i);
-    if (openStart < 0)
-      break;
-    const openEnd = html.indexOf(">", openStart);
-    if (openEnd < 0)
-      break;
-    const closeStart = html.indexOf("</style", openEnd);
-    if (closeStart < 0)
-      break;
-    const css = html.slice(openEnd + 1, closeStart);
-    if (css.length > 0) {
-      const partial = extractPortalSelectors(css);
-      for (const id of partial.ids)
-        ids.add(id);
-      for (const cls of partial.classes)
-        classes.add(cls);
-    }
-    const closeEnd = html.indexOf(">", closeStart);
-    i = closeEnd < 0 ? len : closeEnd + 1;
-  }
-  return { ids, classes };
-}
-var OUTERMOST_SKIP_TAGS = new Set([
-  "html",
-  "head",
-  "body",
-  "meta",
-  "link",
-  "style",
-  "script",
-  "title",
-  "template"
-]);
-function outermostElementIsFixed(html, selectors) {
-  if (!html)
-    return false;
-  const inline = extractInlineStyleSelectors(html);
-  const ids = selectors.ids.size === 0 ? inline.ids : inline.ids.size === 0 ? selectors.ids : new Set([...selectors.ids, ...inline.ids]);
-  const classes = selectors.classes.size === 0 ? inline.classes : inline.classes.size === 0 ? selectors.classes : new Set([...selectors.classes, ...inline.classes]);
-  const merged = { ids, classes };
-  for (const openTag of iterateTopLevelOpenTags(html)) {
-    if (openTagHasInlineFixed(openTag))
-      return true;
-    if (openTagMatchesSelectors(openTag, merged))
-      return true;
-  }
-  return false;
-}
-function* iterateTopLevelOpenTags(html) {
-  const len = html.length;
-  let i = 0;
-  while (i < len) {
-    const lt = html.indexOf("<", i);
-    if (lt < 0)
-      return;
-    const next = html[lt + 1] ?? "";
-    if (next === "!" || next === "?" || next === "/") {
-      const end = html.indexOf(">", lt);
-      if (end < 0)
-        return;
-      i = end + 1;
-      continue;
-    }
-    let nameEnd = lt + 1;
-    while (nameEnd < len && isOuterTagNameChar(html[nameEnd]))
-      nameEnd++;
-    if (nameEnd === lt + 1) {
-      i = lt + 1;
-      continue;
-    }
-    const tagName = html.slice(lt + 1, nameEnd).toLowerCase();
-    let openEnd = nameEnd;
-    let inStr = null;
-    while (openEnd < len) {
-      const c = html[openEnd];
-      if (inStr) {
-        if (c === inStr)
-          inStr = null;
-      } else {
-        if (c === '"' || c === "'")
-          inStr = c;
-        else if (c === ">")
-          break;
-      }
-      openEnd++;
-    }
-    if (openEnd >= len)
-      return;
-    const openTag = html.slice(lt, openEnd + 1);
-    if (OUTERMOST_SKIP_TAGS.has(tagName)) {
-      i = openEnd + 1;
-      continue;
-    }
-    yield openTag;
-    const isVoid = openTag.endsWith("/>") || VOID_TAGS_FOR_SIBLING_WALK.has(tagName);
-    if (isVoid) {
-      i = openEnd + 1;
-      continue;
-    }
-    const past = findElementClose(html, openEnd + 1, tagName);
-    if (past < 0)
-      return;
-    i = past;
-  }
-}
-var VOID_TAGS_FOR_SIBLING_WALK = new Set([
-  "area",
-  "base",
-  "br",
-  "col",
-  "embed",
-  "hr",
-  "img",
-  "input",
-  "keygen",
-  "link",
-  "meta",
-  "param",
-  "source",
-  "track",
-  "wbr"
-]);
-function findElementClose(html, from, tagName) {
-  const len = html.length;
-  const lname = tagName.toLowerCase();
-  let i = from;
-  let depth = 1;
-  while (i < len) {
-    const lt = html.indexOf("<", i);
-    if (lt < 0)
-      return -1;
-    const next = html[lt + 1] ?? "";
-    if (next === "!" || next === "?") {
-      const end = html.indexOf(">", lt);
-      if (end < 0)
-        return -1;
-      i = end + 1;
-      continue;
-    }
-    const isClose = next === "/";
-    const nameStart = isClose ? lt + 2 : lt + 1;
-    let nameEnd = nameStart;
-    while (nameEnd < len && isOuterTagNameChar(html[nameEnd]))
-      nameEnd++;
-    const name = html.slice(nameStart, nameEnd).toLowerCase();
-    if (name.length === 0) {
-      i = lt + 1;
-      continue;
-    }
-    let tagEnd = nameEnd;
-    let inStr = null;
-    while (tagEnd < len) {
-      const c = html[tagEnd];
-      if (inStr) {
-        if (c === inStr)
-          inStr = null;
-      } else {
-        if (c === '"' || c === "'")
-          inStr = c;
-        else if (c === ">")
-          break;
-      }
-      tagEnd++;
-    }
-    if (tagEnd >= len)
-      return -1;
-    if (name === lname) {
-      if (isClose) {
-        depth--;
-        if (depth === 0)
-          return tagEnd + 1;
-      } else {
-        const isSelfClosing = html[tagEnd - 1] === "/" || VOID_TAGS_FOR_SIBLING_WALK.has(name);
-        if (!isSelfClosing)
-          depth++;
-      }
-    }
-    i = tagEnd + 1;
-  }
-  return -1;
-}
-function isOuterTagNameChar(c) {
-  return c >= "a" && c <= "z" || c >= "A" && c <= "Z" || c >= "0" && c <= "9" || c === "-" || c === "_" || c === ":";
-}
-function openTagHasInlineFixed(openTag) {
-  const m = /\bstyle\s*=\s*(["'])([\s\S]*?)\1/i.exec(openTag);
-  if (!m)
-    return false;
-  return /\bposition\s*:\s*fixed\b/i.test(m[2] ?? "");
-}
-function openTagMatchesSelectors(openTag, selectors) {
-  if (selectors.classes.size > 0) {
-    const cm = /\bclass\s*=\s*(["'])([\s\S]*?)\1/i.exec(openTag);
-    if (cm) {
-      const tokens = (cm[2] ?? "").split(/\s+/);
-      for (const t of tokens) {
-        if (t.length > 0 && selectors.classes.has(t))
-          return true;
-      }
-    }
-  }
-  if (selectors.ids.size > 0) {
-    const im = /\bid\s*=\s*(["'])([\s\S]*?)\1/i.exec(openTag);
-    if (im && selectors.ids.has(im[2] ?? ""))
-      return true;
-  }
-  return false;
-}
-function walkCss(css, visit) {
-  const len = css.length;
-  let i = 0;
-  while (i < len) {
-    i = skipWsAndComments(css, i);
-    if (i >= len)
-      break;
-    if (css[i] === "@") {
-      i = handleAtRule(css, i, visit);
-      continue;
-    }
-    const selStart = i;
-    while (i < len && css[i] !== "{")
-      i++;
-    if (i >= len)
-      break;
-    const selectorList = css.slice(selStart, i).trim();
-    i++;
-    const blockStart = i;
-    i = skipToMatchingBrace(css, i);
-    const declarations = css.slice(blockStart, i);
-    if (i < len && css[i] === "}")
-      i++;
-    if (selectorList.length > 0)
-      visit(selectorList, declarations);
-  }
-}
-var NESTING_AT_RULES = new Set([
-  "media",
-  "supports",
-  "container",
-  "document",
-  "-moz-document",
-  "layer",
-  "scope",
-  "host"
-]);
-var KEYFRAMES_AT_RULES = new Set([
-  "keyframes",
-  "-webkit-keyframes",
-  "-moz-keyframes",
-  "-o-keyframes"
-]);
-function handleAtRule(css, start, visit) {
-  const len = css.length;
-  let i = start + 1;
-  const nameStart = i;
-  while (i < len && /[a-zA-Z0-9_-]/.test(css[i]))
-    i++;
-  const name = css.slice(nameStart, i).toLowerCase();
-  while (i < len && css[i] !== "{" && css[i] !== ";")
-    i++;
-  if (i >= len)
-    return len;
-  if (css[i] === ";")
-    return i + 1;
-  i++;
-  const blockStart = i;
-  const blockEnd = skipToMatchingBrace(css, i);
-  if (NESTING_AT_RULES.has(name)) {
-    walkCss(css.slice(blockStart, blockEnd), visit);
-  }
-  if (KEYFRAMES_AT_RULES.has(name)) {}
-  return blockEnd < len && css[blockEnd] === "}" ? blockEnd + 1 : blockEnd;
-}
-function skipWsAndComments(css, start) {
-  let i = start;
-  const len = css.length;
-  while (i < len) {
-    const c = css[i];
-    if (c === " " || c === "\t" || c === `
-` || c === "\r" || c === "\f") {
-      i++;
-      continue;
-    }
-    if (c === "/" && css[i + 1] === "*") {
-      i += 2;
-      while (i < len && !(css[i] === "*" && css[i + 1] === "/"))
-        i++;
-      if (i < len)
-        i += 2;
-      continue;
-    }
-    break;
-  }
-  return i;
-}
-function skipToMatchingBrace(css, start) {
-  let i = start;
-  let depth = 1;
-  const len = css.length;
-  while (i < len && depth > 0) {
-    const c = css[i];
-    if (c === "/" && css[i + 1] === "*") {
-      i += 2;
-      while (i < len && !(css[i] === "*" && css[i + 1] === "/"))
-        i++;
-      if (i < len)
-        i += 2;
-      continue;
-    }
-    if (c === '"' || c === "'") {
-      const quote = c;
-      i++;
-      while (i < len && css[i] !== quote) {
-        if (css[i] === "\\" && i + 1 < len)
-          i++;
-        i++;
-      }
-      if (i < len)
-        i++;
-      continue;
-    }
-    if (c === "{")
-      depth++;
-    else if (c === "}") {
-      depth--;
-      if (depth === 0)
-        return i;
-    }
-    i++;
-  }
-  return len;
-}
-function declaresPositionFixed(decls) {
-  const stripped = stripComments(decls);
-  let i = 0;
-  const len = stripped.length;
-  while (i < len) {
-    const start = i;
-    while (i < len && stripped[i] !== ";")
-      i++;
-    const decl = stripped.slice(start, i);
-    if (isPositionFixedDecl(decl))
-      return true;
-    if (i < len)
-      i++;
-  }
-  return false;
-}
-function isPositionFixedDecl(decl) {
-  const colon = decl.indexOf(":");
-  if (colon < 0)
-    return false;
-  const prop = decl.slice(0, colon).trim().toLowerCase();
-  if (prop !== "position")
-    return false;
-  const value = decl.slice(colon + 1).toLowerCase();
-  for (const tok of value.split(/[\s!]+/)) {
-    if (tok === "fixed")
-      return true;
-  }
-  return false;
-}
-function stripComments(s) {
-  if (s.indexOf("/*") < 0)
-    return s;
-  let out = "";
-  let i = 0;
-  const len = s.length;
-  while (i < len) {
-    if (s[i] === "/" && s[i + 1] === "*") {
-      i += 2;
-      while (i < len && !(s[i] === "*" && s[i + 1] === "/"))
-        i++;
-      if (i < len)
-        i += 2;
-      continue;
-    }
-    out += s[i];
-    i++;
-  }
-  return out;
-}
-function splitSelectorList(list) {
-  const out = [];
-  let depthP = 0;
-  let depthB = 0;
-  let start = 0;
-  let inStr = null;
-  for (let i = 0;i < list.length; i++) {
-    const c = list[i];
-    if (inStr) {
-      if (c === "\\" && i + 1 < list.length) {
-        i++;
-        continue;
-      }
-      if (c === inStr)
-        inStr = null;
-      continue;
-    }
-    if (c === '"' || c === "'") {
-      inStr = c;
-      continue;
-    }
-    if (c === "(")
-      depthP++;
-    else if (c === ")")
-      depthP--;
-    else if (c === "[")
-      depthB++;
-    else if (c === "]")
-      depthB--;
-    else if (c === "," && depthP === 0 && depthB === 0) {
-      const seg = list.slice(start, i).trim();
-      if (seg.length > 0)
-        out.push(seg);
-      start = i + 1;
-    }
-  }
-  const tail = list.slice(start).trim();
-  if (tail.length > 0)
-    out.push(tail);
-  return out;
-}
-function collectSubjectIdsAndClasses(selector, ids, classes) {
-  const subject = rightmostSimpleSelector(selector);
-  harvestFromSimpleSelector(subject, ids, classes);
-}
-function rightmostSimpleSelector(selector) {
-  const len = selector.length;
-  const safe = new Array(len);
-  let depthP = 0;
-  let depthB = 0;
-  let inStr = null;
-  for (let i = 0;i < len; i++) {
-    const c = selector[i];
-    if (inStr) {
-      safe[i] = false;
-      if (c === "\\" && i + 1 < len) {
-        safe[i + 1] = false;
-        i++;
-        continue;
-      }
-      if (c === inStr)
-        inStr = null;
-      continue;
-    }
-    if (c === '"' || c === "'") {
-      inStr = c;
-      safe[i] = false;
-      continue;
-    }
-    if (c === "(") {
-      depthP++;
-      safe[i] = false;
-      continue;
-    }
-    if (c === ")") {
-      safe[i] = false;
-      depthP--;
-      continue;
-    }
-    if (c === "[") {
-      depthB++;
-      safe[i] = false;
-      continue;
-    }
-    if (c === "]") {
-      safe[i] = false;
-      depthB--;
-      continue;
-    }
-    safe[i] = depthP === 0 && depthB === 0;
-  }
-  for (let i = len - 1;i >= 0; i--) {
-    if (!safe[i])
-      continue;
-    const c = selector[i];
-    if (c === ">" || c === "+" || c === "~" || c === " " || c === "\t" || c === `
-` || c === "\r") {
-      return selector.slice(i + 1).trim();
-    }
-  }
-  return selector.trim();
-}
-function harvestFromSimpleSelector(selector, ids, classes) {
-  const len = selector.length;
-  let i = 0;
-  while (i < len) {
-    const c = selector[i];
-    if (c === "#" || c === ".") {
-      const marker = c;
-      i++;
-      const start = i;
-      while (i < len) {
-        const ch = selector[i];
-        if (!isIdentChar(ch))
-          break;
-        i++;
-      }
-      const name = selector.slice(start, i);
-      if (name.length > 0) {
-        if (marker === "#")
-          ids.add(name);
-        else
-          classes.add(name);
-      }
-      continue;
-    }
-    if (c === "[") {
-      i = skipAttrSelector(selector, i);
-      continue;
-    }
-    if (c === "(") {
-      const end = matchParen(selector, i);
-      const inner = selector.slice(i + 1, end);
-      for (const sub of splitSelectorList(inner)) {
-        collectSubjectIdsAndClasses(sub, ids, classes);
-      }
-      i = end + 1;
-      continue;
-    }
-    i++;
-  }
-}
-function isIdentChar(c) {
-  return c >= "a" && c <= "z" || c >= "A" && c <= "Z" || c >= "0" && c <= "9" || c === "-" || c === "_" || c === "\\";
-}
-function skipAttrSelector(s, start) {
-  let i = start + 1;
-  let inStr = null;
-  while (i < s.length) {
-    const c = s[i];
-    if (inStr) {
-      if (c === "\\" && i + 1 < s.length) {
-        i += 2;
-        continue;
-      }
-      if (c === inStr)
-        inStr = null;
-      i++;
-      continue;
-    }
-    if (c === '"' || c === "'") {
-      inStr = c;
-      i++;
-      continue;
-    }
-    if (c === "]")
-      return i + 1;
-    i++;
-  }
-  return i;
-}
-function matchParen(s, start) {
-  let i = start + 1;
-  let depth = 1;
-  let inStr = null;
-  while (i < s.length && depth > 0) {
-    const c = s[i];
-    if (inStr) {
-      if (c === "\\" && i + 1 < s.length) {
-        i += 2;
-        continue;
-      }
-      if (c === inStr)
-        inStr = null;
-      i++;
-      continue;
-    }
-    if (c === '"' || c === "'") {
-      inStr = c;
-      i++;
-      continue;
-    }
-    if (c === "(")
-      depth++;
-    else if (c === ")") {
-      depth--;
-      if (depth === 0)
-        return i;
-    }
-    i++;
-  }
-  return i;
-}
-function scanHtmlForPortal(html, sel) {
-  const len = html.length;
-  let i = 0;
-  while (i < len) {
-    const lt = html.indexOf("<", i);
-    if (lt < 0)
-      return false;
-    const next = html[lt + 1];
-    if (next === "/" || next === "!" || next === "?") {
-      i = lt + 1;
-      continue;
-    }
-    let tagEnd = lt + 1;
-    while (tagEnd < len && /[a-zA-Z0-9]/.test(html[tagEnd]))
-      tagEnd++;
-    if (tagEnd === lt + 1) {
-      i = lt + 1;
-      continue;
-    }
-    let j = tagEnd;
-    while (j < len && html[j] !== ">") {
-      while (j < len && (html[j] === " " || html[j] === "\t" || html[j] === `
-` || html[j] === "\r"))
-        j++;
-      if (j >= len || html[j] === ">")
-        break;
-      if (html[j] === "/") {
-        j++;
-        continue;
-      }
-      const attrStart = j;
-      while (j < len && html[j] !== "=" && html[j] !== ">" && html[j] !== " " && html[j] !== "\t" && html[j] !== `
-` && html[j] !== "\r" && html[j] !== "/")
-        j++;
-      const attrName = html.slice(attrStart, j).toLowerCase();
-      while (j < len && (html[j] === " " || html[j] === "\t"))
-        j++;
-      if (html[j] !== "=")
-        continue;
-      j++;
-      while (j < len && (html[j] === " " || html[j] === "\t"))
-        j++;
-      let value = "";
-      if (html[j] === '"' || html[j] === "'") {
-        const quote = html[j];
-        j++;
-        const valStart = j;
-        while (j < len && html[j] !== quote)
-          j++;
-        value = html.slice(valStart, j);
-        if (j < len)
-          j++;
-      } else {
-        const valStart = j;
-        while (j < len && html[j] !== ">" && html[j] !== " " && html[j] !== "\t" && html[j] !== `
-` && html[j] !== "\r" && html[j] !== "/")
-          j++;
-        value = html.slice(valStart, j);
-      }
-      if (attrName === "id" && sel.ids.has(value.trim()))
-        return true;
-      if (attrName === "class") {
-        for (const tok of value.split(/\s+/)) {
-          if (tok.length > 0 && sel.classes.has(tok))
-            return true;
-        }
-      }
-    }
-    if (j < len && html[j] === ">")
-      j++;
-    i = j;
-  }
-  return false;
-}
-function hasInlineFixedStyle(html) {
-  const lower = html.toLowerCase();
-  if (lower.indexOf("position") < 0 || lower.indexOf("fixed") < 0)
-    return false;
-  const len = lower.length;
-  let i = 0;
-  while (i < len) {
-    const at = lower.indexOf("style", i);
-    if (at < 0)
-      return false;
-    const prev = at > 0 ? lower[at - 1] : "<";
-    if (prev !== " " && prev !== "\t" && prev !== `
-` && prev !== '"' && prev !== "'" && prev !== "<") {
-      i = at + 5;
-      continue;
-    }
-    let k = at + 5;
-    while (k < len && (lower[k] === " " || lower[k] === "\t"))
-      k++;
-    if (lower[k] !== "=") {
-      i = k;
-      continue;
-    }
-    k++;
-    while (k < len && (lower[k] === " " || lower[k] === "\t"))
-      k++;
-    const quote = lower[k];
-    if (quote !== '"' && quote !== "'") {
-      i = k;
-      continue;
-    }
-    k++;
-    const valStart = k;
-    while (k < len && lower[k] !== quote)
-      k++;
-    const value = lower.slice(valStart, k);
-    if (declaresPositionFixed(value))
-      return true;
-    i = k + 1;
-  }
-  return false;
-}
-function extractGetvarRefs(replaceString) {
-  if (!replaceString || replaceString.indexOf("{{") < 0)
-    return [];
-  const out = new Set;
-  const re = /\{\{\s*(?:risu_)?(?:getvar|getglobalvar|getchatvar)\s*::\s*([^}:]+)/gi;
-  let m;
-  while ((m = re.exec(replaceString)) !== null) {
-    const key = (m[1] ?? "").trim();
-    if (key.length > 0)
-      out.add(key);
-  }
-  return [...out];
-}
-function extractDetailedFixedRules(css) {
-  if (!css)
-    return [];
-  if (css.indexOf("position") < 0 || css.indexOf("fixed") < 0 && css.indexOf("sticky") < 0) {
-    return [];
-  }
-  const out = [];
-  walkCss(css, (selectorList, declarations) => {
-    const stripped = stripComments(declarations);
-    const pos = positionValue(stripped);
-    if (pos !== "fixed" && pos !== "sticky")
-      return;
-    const has_explicit_anchor = hasExplicitAnchor(stripped);
-    const z_index = readZIndex(stripped);
-    for (const sel of splitSelectorList(selectorList)) {
-      const ids = new Set;
-      const classes = new Set;
-      collectSubjectIdsAndClasses(sel, ids, classes);
-      if (ids.size === 0 && classes.size === 0)
-        continue;
-      out.push({
-        subjects: { ids, classes },
-        selector_text: sel,
-        position: pos,
-        has_explicit_anchor,
-        z_index
-      });
-    }
-  });
-  return out;
-}
-function positionValue(decls) {
-  let result = null;
-  let i = 0;
-  const len = decls.length;
-  while (i < len) {
-    const start = i;
-    while (i < len && decls[i] !== ";")
-      i++;
-    const decl = decls.slice(start, i);
-    const colon = decl.indexOf(":");
-    if (colon >= 0) {
-      const prop = decl.slice(0, colon).trim().toLowerCase();
-      if (prop === "position") {
-        const value = decl.slice(colon + 1).toLowerCase();
-        for (const tok of value.split(/[\s!]+/)) {
-          if (tok === "fixed" || tok === "sticky" || tok === "absolute" || tok === "relative" || tok === "static" || tok === "inherit" || tok === "initial" || tok === "unset") {
-            result = tok;
-            break;
-          }
-        }
-      }
-    }
-    if (i < len)
-      i++;
-  }
-  return result;
-}
-function hasExplicitAnchor(decls) {
-  const anchors = new Set(["top", "right", "bottom", "left", "inset"]);
-  let i = 0;
-  const len = decls.length;
-  while (i < len) {
-    const start = i;
-    while (i < len && decls[i] !== ";")
-      i++;
-    const decl = decls.slice(start, i);
-    const colon = decl.indexOf(":");
-    if (colon >= 0) {
-      const prop = decl.slice(0, colon).trim().toLowerCase();
-      if (anchors.has(prop)) {
-        const value = decl.slice(colon + 1).trim().toLowerCase();
-        const cleaned = value.replace(/!important\b/, "").trim();
-        if (cleaned.length > 0 && cleaned !== "auto")
-          return true;
-      }
-    }
-    if (i < len)
-      i++;
-  }
-  return false;
-}
-function readZIndex(decls) {
-  let result = null;
-  let i = 0;
-  const len = decls.length;
-  while (i < len) {
-    const start = i;
-    while (i < len && decls[i] !== ";")
-      i++;
-    const decl = decls.slice(start, i);
-    const colon = decl.indexOf(":");
-    if (colon >= 0) {
-      const prop = decl.slice(0, colon).trim().toLowerCase();
-      if (prop === "z-index") {
-        const value = decl.slice(colon + 1).trim().replace(/!important\b/i, "").trim();
-        const n = Number(value);
-        if (Number.isFinite(n))
-          result = n;
-      }
-    }
-    if (i < len)
-      i++;
-  }
-  return result;
-}
-function findTopLevelSubtrees(html) {
-  const out = [];
-  const len = html.length;
-  let i = 0;
-  let subtreeIdx = 0;
-  while (i < len) {
-    const lt = html.indexOf("<", i);
-    if (lt < 0)
-      break;
-    const next = html[lt + 1];
-    if (next === "/" || next === "!" || next === "?") {
-      const end = html.indexOf(">", lt);
-      if (end < 0)
-        break;
-      i = end + 1;
-      continue;
-    }
-    let nameEnd = lt + 1;
-    while (nameEnd < len && /[a-zA-Z0-9]/.test(html[nameEnd]))
-      nameEnd++;
-    if (nameEnd === lt + 1) {
-      i = lt + 1;
-      continue;
-    }
-    const tagName = html.slice(lt + 1, nameEnd).toLowerCase();
-    const openTagEnd = findOpenTagEnd(html, nameEnd);
-    if (openTagEnd < 0)
-      break;
-    let subtreeEnd;
-    const isSelfClosing = html[openTagEnd - 1] === "/" || VOID_ELEMENTS.has(tagName);
-    if (isSelfClosing) {
-      subtreeEnd = openTagEnd + 1;
-    } else if (RAW_TEXT_ELEMENTS.has(tagName)) {
-      subtreeEnd = findRawClose(html, openTagEnd + 1, tagName);
-      if (subtreeEnd < 0)
-        subtreeEnd = len;
-    } else {
-      subtreeEnd = findMatchingClose(html, openTagEnd + 1, tagName);
-      if (subtreeEnd < 0)
-        subtreeEnd = len;
-    }
-    out.push({
-      html: html.slice(lt, subtreeEnd),
-      index: subtreeIdx++
-    });
-    i = subtreeEnd;
-  }
-  return out;
-}
-var VOID_ELEMENTS = new Set([
-  "area",
-  "base",
-  "br",
-  "col",
-  "embed",
-  "hr",
-  "img",
-  "input",
-  "link",
-  "meta",
-  "source",
-  "track",
-  "wbr"
-]);
-var RAW_TEXT_ELEMENTS = new Set(["script", "style"]);
-function findOpenTagEnd(html, fromPos) {
-  let i = fromPos;
-  let inStr = null;
-  while (i < html.length) {
-    const c = html[i];
-    if (inStr) {
-      if (c === inStr)
-        inStr = null;
-    } else {
-      if (c === '"' || c === "'")
-        inStr = c;
-      else if (c === ">")
-        return i + 1;
-    }
-    i++;
-  }
-  return -1;
-}
-function findMatchingClose(html, fromPos, tagName) {
-  let depth = 1;
-  let i = fromPos;
-  const openMarker = `<${tagName}`;
-  const closeMarker = `</${tagName}`;
-  while (i < html.length && depth > 0) {
-    const nextOpen = html.indexOf(openMarker, i);
-    const nextClose = html.indexOf(closeMarker, i);
-    if (nextClose < 0)
-      return -1;
-    if (nextOpen >= 0 && nextOpen < nextClose) {
-      const after = nextOpen + openMarker.length;
-      const ch = html[after];
-      if (ch === " " || ch === "\t" || ch === `
-` || ch === ">" || ch === "/") {
-        const tagEnd = findOpenTagEnd(html, after);
-        if (tagEnd < 0)
-          return -1;
-        if (html[tagEnd - 2] !== "/")
-          depth++;
-        i = tagEnd;
-        continue;
-      }
-      i = nextOpen + 1;
-      continue;
-    }
-    const closeEnd = html.indexOf(">", nextClose);
-    if (closeEnd < 0)
-      return -1;
-    depth--;
-    if (depth === 0)
-      return closeEnd + 1;
-    i = closeEnd + 1;
-  }
-  return -1;
-}
-function findRawClose(html, fromPos, tagName) {
-  const closeMarker = `</${tagName}`;
-  const idx = html.indexOf(closeMarker, fromPos);
-  if (idx < 0)
-    return -1;
-  const end = html.indexOf(">", idx);
-  return end < 0 ? -1 : end + 1;
-}
-function findMatchingRules(subtreeHtml, rules) {
-  if (rules.length === 0)
-    return [];
-  const matches = [];
-  for (const rule of rules) {
-    if (scanHtmlForPortal(subtreeHtml, rule.subjects)) {
-      matches.push(rule);
-    }
-  }
-  return matches;
-}
-function scoreConfidence(matches, hasInlineFixed) {
-  if (hasInlineFixed)
-    return "high-yes";
-  if (matches.length === 0)
-    return "high-no";
-  for (const m of matches) {
-    if (m.position === "fixed" && (m.has_explicit_anchor || m.z_index !== null && m.z_index >= 1000)) {
-      return "high-yes";
-    }
-  }
-  return "ambiguous";
-}
-function analyzeCardPortalCandidates(input) {
-  const bgRules = extractDetailedFixedRules(input.bgHtmlCss);
-  const out = [];
-  for (const rule of input.regexScripts) {
-    const meta = rule.metadata;
-    if (meta?._risu?.is_strip_stub === true)
-      continue;
-    if (rule.target !== "display")
-      continue;
-    if (!rule.replace_string)
-      continue;
-    const inlineCss = extractInlineCssFromHtml(rule.replace_string);
-    const ruleInlineRules = extractDetailedFixedRules(inlineCss);
-    const allRules = [...bgRules, ...ruleInlineRules];
-    const subtrees = findTopLevelSubtrees(rule.replace_string);
-    for (const sub of subtrees) {
-      const matches = findMatchingRules(sub.html, allRules);
-      const hasInlineFixed = hasInlineFixedStyle(sub.html);
-      const confidence = scoreConfidence(matches, hasInlineFixed);
-      if (confidence === "high-no")
-        continue;
-      const triggering = matches.map((m) => m.selector_text);
-      const triggeringSource = inferTriggeringSource(matches, ruleInlineRules, bgRules, hasInlineFixed);
-      out.push({
-        id: `regex_rule:${rule.sort_order}:${sub.index}`,
-        source: {
-          kind: "regex_rule",
-          sort_order: rule.sort_order,
-          find_regex_preview: rule.find_regex.length > 80 ? rule.find_regex.slice(0, 80) + "\u2026" : rule.find_regex
-        },
-        subtree_html: sub.html,
-        triggering_selectors: triggering,
-        triggering_css_source: triggeringSource,
-        confidence,
-        heuristic_decision: confidence === "high-yes" || confidence === "ambiguous" ? "portal" : "inline",
-        analyzer_version: PORTAL_ANALYZER_VERSION
-      });
-    }
-  }
-  for (let altIdx = 0;altIdx < input.greetings.length; altIdx++) {
-    const greeting = input.greetings[altIdx];
-    if (!greeting)
-      continue;
-    const inlineCss = extractInlineCssFromHtml(greeting);
-    const greetingInlineRules = extractDetailedFixedRules(inlineCss);
-    const allRules = [...bgRules, ...greetingInlineRules];
-    const subtrees = findTopLevelSubtrees(greeting);
-    for (const sub of subtrees) {
-      const matches = findMatchingRules(sub.html, allRules);
-      const hasInlineFixed = hasInlineFixedStyle(sub.html);
-      const confidence = scoreConfidence(matches, hasInlineFixed);
-      if (confidence === "high-no")
-        continue;
-      const triggering = matches.map((m) => m.selector_text);
-      const triggeringSource = inferTriggeringSource(matches, greetingInlineRules, bgRules, hasInlineFixed);
-      out.push({
-        id: `greeting:${altIdx}:${sub.index}`,
-        source: { kind: "greeting", alt_index: altIdx },
-        subtree_html: sub.html,
-        triggering_selectors: triggering,
-        triggering_css_source: triggeringSource,
-        confidence,
-        heuristic_decision: "portal",
-        analyzer_version: PORTAL_ANALYZER_VERSION
-      });
-    }
-  }
-  return out;
-}
-function extractInlineCssFromHtml(html) {
-  if (!html || html.indexOf("<style") < 0)
-    return "";
-  const parts = [];
-  const len = html.length;
-  let i = 0;
-  while (i < len) {
-    const openStart = html.indexOf("<style", i);
-    if (openStart < 0)
-      break;
-    const openEnd = html.indexOf(">", openStart);
-    if (openEnd < 0)
-      break;
-    const closeStart = html.indexOf("</style", openEnd);
-    if (closeStart < 0)
-      break;
-    parts.push(html.slice(openEnd + 1, closeStart));
-    const closeEnd = html.indexOf(">", closeStart);
-    i = closeEnd < 0 ? len : closeEnd + 1;
-  }
-  return parts.join(`
-`);
-}
-function inferTriggeringSource(matches, containerInlineRules, bgRules, hasInlineFixed) {
-  if (matches.length === 0 && hasInlineFixed)
-    return "inline_style_attr";
-  const fromInline = matches.some((m) => containerInlineRules.includes(m));
-  const fromBg = matches.some((m) => bgRules.includes(m));
-  if (fromInline && fromBg)
-    return "both";
-  if (fromInline)
-    return "rule_inline_style";
-  return "bg_html";
-}
-
-// src/core/mappers/portal-wrap.ts
-var VOID_ELEMENTS2 = new Set([
-  "area",
-  "base",
-  "br",
-  "col",
-  "embed",
-  "hr",
-  "img",
-  "input",
-  "keygen",
-  "link",
-  "meta",
-  "param",
-  "source",
-  "track",
-  "wbr"
-]);
-var RAW_TEXT_ELEMENTS2 = new Set(["script", "style", "textarea", "title"]);
-function wrapFixedPositionRegions(html, selectors, source = "lua") {
-  if (!html || html.length === 0)
-    return html;
-  if (!replacementNeedsPortal(html, selectors))
-    return html;
-  const inline = extractInlineStyleSelectors(html);
-  const sel = {
-    ids: unionSet(selectors.ids, inline.ids),
-    classes: unionSet(selectors.classes, inline.classes)
-  };
-  const tagAttr = sanitizeSourceToken(source);
-  const wrapOpen = `<div data-risu-portal="${tagAttr}">`;
-  const wrapClose = `</div>`;
-  const out = [];
-  const len = html.length;
-  let i = 0;
-  while (i < len) {
-    const lt = html.indexOf("<", i);
-    if (lt < 0) {
-      out.push(html.slice(i));
-      break;
-    }
-    if (lt > i)
-      out.push(html.slice(i, lt));
-    const next = html[lt + 1];
-    if (next === "/" || next === "!" || next === "?") {
-      const end = html.indexOf(">", lt);
-      if (end < 0) {
-        out.push(html.slice(lt));
-        i = len;
-        break;
-      }
-      out.push(html.slice(lt, end + 1));
-      i = end + 1;
-      continue;
-    }
-    let nameEnd = lt + 1;
-    while (nameEnd < len && isTagNameChar(html[nameEnd]))
-      nameEnd++;
-    if (nameEnd === lt + 1) {
-      out.push("<");
-      i = lt + 1;
-      continue;
-    }
-    const tagName = html.slice(lt + 1, nameEnd).toLowerCase();
-    const openTagEnd = findOpenTagEnd2(html, nameEnd);
-    if (openTagEnd < 0) {
-      out.push(html.slice(lt));
-      i = len;
-      break;
-    }
-    const isSelfClosing = html[openTagEnd - 1] === "/" || VOID_ELEMENTS2.has(tagName);
-    const subtreeStart = lt;
-    let subtreeEnd;
-    if (isSelfClosing) {
-      subtreeEnd = openTagEnd + 1;
-    } else if (RAW_TEXT_ELEMENTS2.has(tagName)) {
-      const closeIdx = findRawClose2(html, openTagEnd + 1, tagName);
-      subtreeEnd = closeIdx >= 0 ? closeIdx : len;
-    } else {
-      subtreeEnd = findMatchingClose2(html, openTagEnd + 1, tagName);
-      if (subtreeEnd < 0)
-        subtreeEnd = len;
-    }
-    const subtree = html.slice(subtreeStart, subtreeEnd);
-    const alreadyWrapped = isPortalWrapper(html, lt, openTagEnd);
-    if (!alreadyWrapped && replacementNeedsPortal(subtree, sel)) {
-      out.push(wrapOpen);
-      out.push(subtree);
-      out.push(wrapClose);
-    } else {
-      out.push(subtree);
-    }
-    i = subtreeEnd;
-  }
-  return out.join("");
-}
-function isTagNameChar(c) {
-  return c >= "a" && c <= "z" || c >= "A" && c <= "Z" || c >= "0" && c <= "9" || c === "-" || c === "_" || c === ":";
-}
-function findOpenTagEnd2(html, from) {
-  const len = html.length;
-  let i = from;
-  let inStr = null;
-  while (i < len) {
-    const c = html[i];
-    if (inStr) {
-      if (c === inStr)
-        inStr = null;
-      i++;
-      continue;
-    }
-    if (c === '"' || c === "'") {
-      inStr = c;
-      i++;
-      continue;
-    }
-    if (c === ">")
-      return i;
-    i++;
-  }
-  return -1;
-}
-function findMatchingClose2(html, from, name) {
-  const len = html.length;
-  const lname = name.toLowerCase();
-  let i = from;
-  let depth = 1;
-  while (i < len) {
-    const lt = html.indexOf("<", i);
-    if (lt < 0)
-      return -1;
-    const next = html[lt + 1];
-    if (next === "!" || next === "?") {
-      const end = html.indexOf(">", lt);
-      if (end < 0)
-        return -1;
-      i = end + 1;
-      continue;
-    }
-    let isClose = false;
-    let nameStart = lt + 1;
-    if (next === "/") {
-      isClose = true;
-      nameStart = lt + 2;
-    }
-    let nameEnd = nameStart;
-    while (nameEnd < len && isTagNameChar(html[nameEnd]))
-      nameEnd++;
-    const tagName = html.slice(nameStart, nameEnd).toLowerCase();
-    if (tagName.length === 0) {
-      i = lt + 1;
-      continue;
-    }
-    const tagEnd = findOpenTagEnd2(html, nameEnd);
-    if (tagEnd < 0)
-      return -1;
-    if (tagName === lname) {
-      if (isClose) {
-        depth--;
-        if (depth === 0)
-          return tagEnd + 1;
-      } else {
-        const isSelfClosing = html[tagEnd - 1] === "/" || VOID_ELEMENTS2.has(tagName);
-        if (!isSelfClosing)
-          depth++;
-      }
-    } else if (!isClose) {
-      if (RAW_TEXT_ELEMENTS2.has(tagName)) {
-        const rawClose = findRawClose2(html, tagEnd + 1, tagName);
-        i = rawClose >= 0 ? rawClose : len;
-        continue;
-      }
-    }
-    i = tagEnd + 1;
-  }
-  return -1;
-}
-function findRawClose2(html, from, name) {
-  const lname = name.toLowerCase();
-  const target = "</" + lname;
-  const len = html.length;
-  let i = from;
-  while (i < len) {
-    const idx = html.toLowerCase().indexOf(target, i);
-    if (idx < 0)
-      return -1;
-    const after = html[idx + target.length] ?? "";
-    if (after === ">" || after === " " || after === "\t" || after === `
-` || after === "\r") {
-      const end = html.indexOf(">", idx + target.length);
-      if (end < 0)
-        return -1;
-      return end + 1;
-    }
-    i = idx + target.length;
-  }
-  return -1;
-}
-function isPortalWrapper(html, ltStart, openTagEnd) {
-  return html.slice(ltStart, openTagEnd + 1).indexOf("data-risu-portal") >= 0;
-}
-function unionSet(a, b) {
-  if (a.size === 0)
-    return b;
-  if (b.size === 0)
-    return a;
-  const out = new Set(a);
-  for (const v of b)
-    out.add(v);
-  return out;
-}
-function sanitizeSourceToken(source) {
-  const cleaned = source.replace(/[^a-zA-Z0-9_-]/g, "");
-  return cleaned.length > 0 ? cleaned : "auto";
-}
-function wrapFixedElementsRecursive(html, selectors, source = "auto") {
-  if (!html || html.length === 0)
-    return html;
-  const inline = extractInlineAnchoredStyleSelectors(html);
-  const sel = {
-    ids: unionSet(selectors.ids, inline.ids),
-    classes: unionSet(selectors.classes, inline.classes)
-  };
-  if (sel.ids.size === 0 && sel.classes.size === 0 && !replacementNeedsPortal(html, selectors)) {
-    return html;
-  }
-  const tagAttr = sanitizeSourceToken(source);
-  const wrapOpen = `<div data-risu-portal="${tagAttr}">`;
-  const wrapClose = `</div>`;
-  return walkRecursive(html, sel, wrapOpen, wrapClose);
-}
-function walkRecursive(html, sel, wrapOpen, wrapClose) {
-  const out = [];
-  const len = html.length;
-  let i = 0;
-  while (i < len) {
-    const lt = html.indexOf("<", i);
-    if (lt < 0) {
-      out.push(html.slice(i));
-      break;
-    }
-    if (lt > i)
-      out.push(html.slice(i, lt));
-    const next = html[lt + 1] ?? "";
-    if (next === "/" || next === "!" || next === "?") {
-      const end = html.indexOf(">", lt);
-      if (end < 0) {
-        out.push(html.slice(lt));
-        i = len;
-        break;
-      }
-      out.push(html.slice(lt, end + 1));
-      i = end + 1;
-      continue;
-    }
-    let nameEnd = lt + 1;
-    while (nameEnd < len && isTagNameChar(html[nameEnd]))
-      nameEnd++;
-    if (nameEnd === lt + 1) {
-      out.push("<");
-      i = lt + 1;
-      continue;
-    }
-    const tagName = html.slice(lt + 1, nameEnd).toLowerCase();
-    const openTagEnd = findOpenTagEnd2(html, nameEnd);
-    if (openTagEnd < 0) {
-      out.push(html.slice(lt));
-      i = len;
-      break;
-    }
-    const openTag = html.slice(lt, openTagEnd + 1);
-    const isVoid = html[openTagEnd - 1] === "/" || VOID_ELEMENTS2.has(tagName);
-    let subtreeEnd;
-    let innerStart;
-    let innerEnd;
-    if (isVoid) {
-      subtreeEnd = openTagEnd + 1;
-      innerStart = subtreeEnd;
-      innerEnd = subtreeEnd;
-    } else if (RAW_TEXT_ELEMENTS2.has(tagName)) {
-      const rc = findRawClose2(html, openTagEnd + 1, tagName);
-      subtreeEnd = rc >= 0 ? rc : len;
-      innerStart = openTagEnd + 1;
-      innerEnd = subtreeEnd;
-    } else {
-      subtreeEnd = findMatchingClose2(html, openTagEnd + 1, tagName);
-      if (subtreeEnd < 0) {
-        subtreeEnd = len;
-        innerStart = openTagEnd + 1;
-        innerEnd = subtreeEnd;
-      } else {
-        innerStart = openTagEnd + 1;
-        let scan = subtreeEnd - 1;
-        while (scan > innerStart && html[scan] !== "<")
-          scan--;
-        innerEnd = scan;
-      }
-    }
-    const subtree = html.slice(lt, subtreeEnd);
-    if (openTag.indexOf("data-risu-portal") >= 0) {
-      out.push(subtree);
-      i = subtreeEnd;
-      continue;
-    }
-    if (OUTERMOST_SKIP_TAGS.has(tagName) && !isVoid && !RAW_TEXT_ELEMENTS2.has(tagName)) {
-      const inner2 = html.slice(innerStart, innerEnd);
-      const recursed = walkRecursive(inner2, sel, wrapOpen, wrapClose);
-      out.push(html.slice(lt, innerStart));
-      out.push(recursed);
-      out.push(html.slice(innerEnd, subtreeEnd));
-      i = subtreeEnd;
-      continue;
-    }
-    if (OUTERMOST_SKIP_TAGS.has(tagName)) {
-      out.push(subtree);
-      i = subtreeEnd;
-      continue;
-    }
-    const isItselfFixed = openTagHasInlineFixed(openTag) || openTagMatchesSelectors(openTag, sel);
-    if (isItselfFixed) {
-      out.push(wrapOpen);
-      out.push(subtree);
-      out.push(wrapClose);
-      i = subtreeEnd;
-      continue;
-    }
-    if (isVoid || RAW_TEXT_ELEMENTS2.has(tagName)) {
-      out.push(subtree);
-      i = subtreeEnd;
-      continue;
-    }
-    const inner = html.slice(innerStart, innerEnd);
-    if (replacementNeedsPortal(inner, sel)) {
-      const recursed = walkRecursive(inner, sel, wrapOpen, wrapClose);
-      out.push(openTag);
-      out.push(recursed);
-      out.push(html.slice(innerEnd, subtreeEnd));
-    } else {
-      out.push(subtree);
-    }
-    i = subtreeEnd;
-  }
-  return out.join("");
-}
-
 // src/core/mappers/island-merge.ts
 var BLOCK_ELEMENT_RE = /^<(div|section|article|aside|nav|main|header|footer|form|fieldset|figure|details)\b/i;
 var STYLE_TAG_RE = /<style[\s>]/i;
@@ -11498,19 +9897,6 @@ function mapRegex(scripts, opts) {
         });
       }
     }
-    let needsPortal = false;
-    if (effectivePhase.target === "display" && opts.portalSelectors) {
-      const hasFixedAnywhere = replacementNeedsPortal(replaceString, opts.portalSelectors);
-      if (hasFixedAnywhere) {
-        const outerFixed = outermostElementIsFixed(replaceString, opts.portalSelectors);
-        if (outerFixed) {
-          needsPortal = true;
-          replaceString = `<div data-risu-portal="auto">${replaceString}</div>`;
-        } else {
-          replaceString = wrapFixedElementsRecursive(replaceString, opts.anchoredPortalSelectors ?? EMPTY_PORTAL_SELECTORS, "auto");
-        }
-      }
-    }
     if (effectivePhase.target === "display") {
       replaceString = wrapIslandMergeIfNeeded(replaceString);
     }
@@ -11526,13 +9912,10 @@ function mapRegex(scripts, opts) {
         });
       }
     }
-    if (!needsPortal) {
-      findPattern = simplifyStateConditionalAnchor(findPattern);
-    }
+    findPattern = simplifyStateConditionalAnchor(findPattern);
     const hasMacros = replaceString.indexOf("{{") >= 0 || findPattern.indexOf("{{") >= 0;
     const findHasCbs = findPattern.indexOf("{{") >= 0;
     const emittedFlags = findHasCbs ? normalised.flag.replace(/u/g, "") : normalised.flag;
-    const varRefs = extractGetvarRefs(replaceString);
     const row = {
       id: uuid(),
       user_id: opts.userId ?? "",
@@ -11560,41 +9943,13 @@ function mapRegex(scripts, opts) {
           phase: s.type,
           origin,
           order_index: i,
-          has_meta: normalised.actions.length > 0,
-          ...needsPortal ? { extension_managed: true } : {},
-          ...varRefs.length > 0 ? { var_refs: varRefs } : {}
+          has_meta: normalised.actions.length > 0
         }
       },
       created_at: now,
       updated_at: now
     };
     rows.push(row);
-    if (needsPortal) {
-      const stubFindRegex = simplifyStateConditionalAnchor(findPattern);
-      const stubFindHasCbs = stubFindRegex.indexOf("{{") >= 0;
-      const stubSubstituteMacros = stubFindHasCbs ? row.substitute_macros : "none";
-      const stubRow = {
-        ...row,
-        id: uuid(),
-        script_id: uuid(),
-        name: `${row.name} (strip)`,
-        find_regex: stubFindRegex,
-        replace_string: "",
-        substitute_macros: stubSubstituteMacros,
-        trim_strings: [],
-        metadata: {
-          _risu: {
-            phase: s.type,
-            origin,
-            order_index: i,
-            has_meta: false,
-            is_strip_stub: true,
-            stub_for: row.script_id
-          }
-        }
-      };
-      rows.push(stubRow);
-    }
   }
   return { rows, skipped, issues };
 }
@@ -11768,7 +10123,7 @@ function renderAtActionCode(a) {
     `// @type       trigger`,
     ...a.events.length > 0 ? [`// @triggers   ${a.events.join(", ")}`] : [],
     `// @folder     risu/at-actions`,
-    `// @description risu-to-lumi @@${a.action.action} (character ${a.characterId}, phase ${a.action.phase})`
+    `// @description LumiRealm @@${a.action.action} (character ${a.characterId}, phase ${a.action.phase})`
   ].join(`
 `);
   const comment = [
@@ -13059,7 +11414,7 @@ function renderTriggerCode(a) {
     `// @type       ${a.isManual ? "library" : "trigger"}`,
     ...a.events.length > 0 ? [`// @triggers   ${a.events.join(", ")}`] : [],
     `// @folder     ${a.isManual ? "risu/manual" : `risu/${a.binding}`}`,
-    `// @description risu-to-lumi translated trigger (character ${a.characterId}, binding ${a.binding}, source index ${a.index})`
+    `// @description LumiRealm translated trigger (character ${a.characterId}, binding ${a.binding}, source index ${a.index})`
   ].join(`
 `);
   const comment = [
@@ -13217,7 +11572,7 @@ function renderCode(a) {
     `// @type       trigger`,
     `// @triggers   CHAT_CHANGED, ls:startup`,
     `// @folder     risu/background-html`,
-    `// @description risu-to-lumi translated backgroundHTML (character ${a.characterId})`
+    `// @description LumiRealm translated backgroundHTML (character ${a.characterId})`
   ].join(`
 `);
   return [
@@ -14648,7 +13003,6 @@ async function makeRisuTriggerRuntime(api, data, scriptNs, opts = {}) {
   const dispatchCtx = getDispatchContext() ?? {};
   const binding = toStr(dispatchCtx.binding ?? opts.binding ?? "");
   const portalChatId = opts.chatId ?? dispatchCtx.chatId;
-  const portalSelectors = opts.portalSelectors ?? dispatchCtx.portalSelectors ?? EMPTY_PORTAL_SELECTORS;
   const rememberOurWrite = opts.rememberOurWrite ?? dispatchCtx.rememberOurWrite;
   const stateChanged = opts.stateChanged ?? dispatchCtx.stateChanged;
   const trackSidecarWrite = opts.trackSidecarWrite ?? dispatchCtx.trackSidecarWrite;
@@ -14675,7 +13029,7 @@ async function makeRisuTriggerRuntime(api, data, scriptNs, opts = {}) {
   }
   {
     const bindingSrc = dispatchCtx.binding !== undefined ? "side-channel" : opts.binding !== undefined ? "opts" : "<none>";
-    _logMake.info(`chatId=${portalChatId ?? "<none>"} ` + `portalSelectors=ids:${portalSelectors.ids.size}/classes:${portalSelectors.classes.size} ` + `rememberOurWrite=${rememberOurWrite ? "wired" : "<none>"} ` + `stateChanged=${stateChanged ? "wired" : "<none>"} ` + `auxConn=${auxConnectionId ?? "<default>"} auxModel=${auxModelOverride ?? "<connection>"} ` + `auxParams=${auxParamsWire ? Object.keys(auxParamsWire).join(",") : "<preset>"} ` + `submodelConn=${submodelConnectionId ?? "<inherit-aux>"} ` + `submodelModel=${submodelModelOverride ?? "<connection>"} ` + `submodelParams=${submodelParamsWire ? Object.keys(submodelParamsWire).join(",") : "<preset>"} ` + `binding=${binding}(src=${bindingSrc}) characterId=${characterId ?? "<none>"}`);
+    _logMake.info(`chatId=${portalChatId ?? "<none>"} ` + `rememberOurWrite=${rememberOurWrite ? "wired" : "<none>"} ` + `stateChanged=${stateChanged ? "wired" : "<none>"} ` + `auxConn=${auxConnectionId ?? "<default>"} auxModel=${auxModelOverride ?? "<connection>"} ` + `auxParams=${auxParamsWire ? Object.keys(auxParamsWire).join(",") : "<preset>"} ` + `submodelConn=${submodelConnectionId ?? "<inherit-aux>"} ` + `submodelModel=${submodelModelOverride ?? "<connection>"} ` + `submodelParams=${submodelParamsWire ? Object.keys(submodelParamsWire).join(",") : "<preset>"} ` + `binding=${binding}(src=${bindingSrc}) characterId=${characterId ?? "<none>"}`);
   }
   let varsCache;
   let isInheritedVarsCache = false;
@@ -14977,23 +13331,21 @@ async function makeRisuTriggerRuntime(api, data, scriptNs, opts = {}) {
           return;
         }
         const raw = normalizeReplaceStringForSanitizer(toStr(value));
-        const wrapped = wrapFixedPositionRegions(raw, portalSelectors, "lua");
-        const wrapFired = wrapped !== raw;
         const msgId = messagesCache[real].id;
-        messagesCache[real] = { ...messagesCache[real], content: wrapped };
+        messagesCache[real] = { ...messagesCache[real], content: raw };
         if (rememberOurWrite && portalChatId) {
           try {
-            rememberOurWrite(portalChatId, msgId, wrapped);
+            rememberOurWrite(portalChatId, msgId, raw);
           } catch {}
         }
         if (trackSidecarWrite) {
           try {
-            trackSidecarWrite(msgId, wrapped);
+            trackSidecarWrite(msgId, raw);
           } catch {}
         }
-        _logSetChat.info(`index=${index} (real=${real}) msgId=${msgId} ` + `raw_len=${raw.length} wrapped_len=${wrapped.length} wrap_fired=${wrapFired} ` + `chatId=${portalChatId ?? "<none>"} ` + `selectors=ids:${portalSelectors.ids.size}/classes:${portalSelectors.classes.size} ` + `rememberOurWrite=${rememberOurWrite && portalChatId ? "called" : "skipped"} ` + `sidecarWrite=${trackSidecarWrite ? "called" : "skipped"}`);
+        _logSetChat.info(`index=${index} (real=${real}) msgId=${msgId} ` + `len=${raw.length} chatId=${portalChatId ?? "<none>"} ` + `rememberOurWrite=${rememberOurWrite && portalChatId ? "called" : "skipped"} ` + `sidecarWrite=${trackSidecarWrite ? "called" : "skipped"}`);
         try {
-          api.chat.editMessage?.(msgId, wrapped);
+          api.chat.editMessage?.(msgId, raw);
         } catch {}
       },
       setChatRole: (_id, index, value) => {
@@ -15015,12 +13367,10 @@ async function makeRisuTriggerRuntime(api, data, scriptNs, opts = {}) {
       },
       addChat: (_id, role, value) => {
         const raw = normalizeReplaceStringForSanitizer(toStr(value));
-        const wrapped = wrapFixedPositionRegions(raw, portalSelectors, "lua");
-        const wrapFired = wrapped !== raw;
-        messagesCache.push({ id: String(messagesCache.length + 1), role: toStr(role), content: wrapped });
-        _logAddChat.info(`role=${toStr(role)} ` + `raw_len=${raw.length} wrapped_len=${wrapped.length} wrap_fired=${wrapFired} ` + `chatId=${portalChatId ?? "<none>"}`);
+        messagesCache.push({ id: String(messagesCache.length + 1), role: toStr(role), content: raw });
+        _logAddChat.info(`role=${toStr(role)} len=${raw.length} chatId=${portalChatId ?? "<none>"}`);
         try {
-          api.chat.sendMessage?.(wrapped, { role: toStr(role) });
+          api.chat.sendMessage?.(raw, { role: toStr(role) });
         } catch {}
       },
       insertChat: (_id, index, role, value) => {
@@ -21700,7 +20050,7 @@ function* iterateGlobalAtRules(css) {
   const len = css.length;
   let i = 0;
   while (i < len) {
-    i = skipWsAndComments2(css, i);
+    i = skipWsAndComments(css, i);
     if (i >= len)
       return;
     if (css[i] !== "@") {
@@ -21744,7 +20094,7 @@ function* iterateGlobalAtRules(css) {
 function isAtNameChar(c) {
   return c >= "a" && c <= "z" || c >= "A" && c <= "Z" || c >= "0" && c <= "9" || c === "-" || c === "_";
 }
-function skipWsAndComments2(css, start) {
+function skipWsAndComments(css, start) {
   const len = css.length;
   let i = start;
   while (i < len) {
@@ -21909,9 +20259,9 @@ function translateCharx(bytes, opts = {}) {
     worldBook = {
       id: wbId,
       name: charMap.character.name ? `${charMap.character.name} \u2014 lore` : "Translated lore",
-      description: "Merged from Risu module.lorebook + card.character_book by risu-to-lumi.",
+      description: "Merged from Risu module.lorebook + card.character_book by LumiRealm.",
       metadata: {
-        _risu_to_lumi: {
+        _lumirealm: {
           source: opts.sourceId ?? null,
           translated_at: wbNow,
           version: TRANSLATOR_VERSION,
@@ -21933,28 +20283,22 @@ function translateCharx(bytes, opts = {}) {
       throw new TranslationError("pipeline/missing_catalog", "rewriteCbs / mode=full requires a CatalogIndex via opts.catalog");
     }
     finalCharacter = applyCbsRewrite(charMap.character, opts.catalog);
-    rewriteNote = "character text fields rewritten via risu-to-lumi CBS rename + block lowering";
+    rewriteNote = "character text fields rewritten via LumiRealm CBS rename + block lowering";
   }
   const charRegexScripts = filterValidCustomScripts(charMap.extracted.customScripts, issues, "character_level_regex");
-  const portalSelectors = charMap.extracted.backgroundHTML ? extractPortalSelectors(charMap.extracted.backgroundHTML) : EMPTY_PORTAL_SELECTORS;
-  const anchoredPortalSelectors = charMap.extracted.backgroundHTML ? extractAnchoredPortalSelectors(charMap.extracted.backgroundHTML) : EMPTY_PORTAL_SELECTORS;
   const charRegexOut = wantRegex ? mapRegex(charRegexScripts, {
     characterId: charMap.character.id,
     now,
     uuid,
     origin: "character",
-    ...opts.catalog ? { catalog: opts.catalog } : {},
-    portalSelectors,
-    anchoredPortalSelectors
+    ...opts.catalog ? { catalog: opts.catalog } : {}
   }) : { rows: [], skipped: [], issues: [] };
   const moduleRegexOut = wantRegex ? mapRegex(moduleRegexScripts, {
     characterId: charMap.character.id,
     now,
     uuid,
     origin: "module",
-    ...opts.catalog ? { catalog: opts.catalog } : {},
-    portalSelectors,
-    anchoredPortalSelectors
+    ...opts.catalog ? { catalog: opts.catalog } : {}
   }) : { rows: [], skipped: [], issues: [] };
   const regexScriptsRaw = [...charRegexOut.rows, ...moduleRegexOut.rows];
   for (const iss of charRegexOut.issues)
@@ -22006,7 +20350,7 @@ function translateCharx(bytes, opts = {}) {
   for (const iss of triggersOut.issues)
     issues.push(iss);
   const assetsMap = opts.includeAssets === false ? new Map : bundle.assets;
-  const extSpec = charMap.character.extensions["_risu_to_lumi"];
+  const extSpec = charMap.character.extensions["_lumirealm"];
   const hasMacrosInText = detectMacrosInText(charMap.character);
   const translatedCharRegex = charRegexOut.rows.length + charRegexOut.skipped.length;
   const translatedModuleRegex = moduleRegexOut.rows.length + moduleRegexOut.skipped.length;
@@ -22123,7 +20467,7 @@ function translateCharx(bytes, opts = {}) {
     });
   }
   const manifest = {
-    translator: { name: "risu-to-lumi", version: TRANSLATOR_VERSION },
+    translator: { name: "LumiRealm", version: TRANSLATOR_VERSION },
     source: {
       spec: extSpec.spec,
       spec_version: extSpec.spec_version,
@@ -22142,7 +20486,7 @@ function translateCharx(bytes, opts = {}) {
     requires
   };
   if (rewriteNote) {
-    const ext = finalCharacter.extensions["_risu_to_lumi"];
+    const ext = finalCharacter.extensions["_lumirealm"];
     if (ext && Array.isArray(ext["translation_notes"])) {
       ext["translation_notes"].push(rewriteNote);
     }
@@ -25050,7 +23394,7 @@ var risu_macros_default = [
     lumiverseCollision: null,
     risuFile: "src/ts/cbs.ts",
     risuLine: 778,
-    summary: "Risu sets __force_return__ to halt parsing and returns VALUE. Our port emits VALUE in place \u2014 known deviation (\xA77 HANDOFF).",
+    summary: "Risu sets __force_return__ to halt parsing and returns VALUE. Our port emits VALUE in place; known deviation.",
     notes: ""
   },
   {
@@ -26374,88 +24718,7 @@ async function importCard(args) {
     folder: r.folder || folderLabel,
     metadata: { ...r.metadata }
   }));
-  const tCandidates = Date.now();
-  const bgHtmlCss = extractInlineCssFromHtml(bundle.risuPayload.background_html ?? "");
-  const greetings = [
-    bundle.character.first_mes,
-    ...bundle.character.alternate_greetings
-  ].filter((g) => typeof g === "string" && g.length > 0);
-  const portalCandidates = analyzeCardPortalCandidates({
-    regexScripts: allRows,
-    greetings,
-    bgHtmlCss
-  });
-  const candidatesByConfidence = portalCandidates.reduce((acc, c) => {
-    acc[c.confidence] = (acc[c.confidence] ?? 0) + 1;
-    return acc;
-  }, {});
-  logInfo2(`(8.5) portal-candidates analyzed in ${Date.now() - tCandidates}ms \u2014 ` + `total=${portalCandidates.length} ` + `high-yes=${candidatesByConfidence["high-yes"] ?? 0} ` + `ambiguous=${candidatesByConfidence["ambiguous"] ?? 0}`);
-  const existingStubParents = new Set;
-  for (const r of allRows) {
-    if (isStripStub(r)) {
-      const parent = stripStubParentScriptId(r);
-      if (parent !== null)
-        existingStubParents.add(parent);
-    }
-  }
-  const candidateBearingRulesById = new Map;
-  for (const r of allRows) {
-    if (!isStripStub(r))
-      candidateBearingRulesById.set(r.sort_order, r);
-  }
-  let synthesizedStubCount = 0;
-  for (const c of portalCandidates) {
-    if (c.source.kind !== "regex_rule")
-      continue;
-    const rule = candidateBearingRulesById.get(c.source.sort_order);
-    if (!rule)
-      continue;
-    if (existingStubParents.has(rule.script_id))
-      continue;
-    const stub = synthesizeStripStub(rule, () => crypto.randomUUID());
-    allRows.push({
-      name: stub.name,
-      script_id: stub.script_id,
-      find_regex: stub.find_regex,
-      replace_string: stub.replace_string,
-      flags: stub.flags,
-      placement: stub.placement,
-      scope: stub.scope,
-      scope_id: stub.scope_id,
-      target: stub.target,
-      min_depth: stub.min_depth,
-      max_depth: stub.max_depth,
-      trim_strings: stub.trim_strings,
-      run_on_edit: stub.run_on_edit,
-      substitute_macros: stub.substitute_macros,
-      disabled: stub.disabled,
-      sort_order: stub.sort_order,
-      description: stub.description,
-      folder: stub.folder,
-      metadata: { ...stub.metadata ?? {} }
-    });
-    existingStubParents.add(rule.script_id);
-    synthesizedStubCount++;
-  }
-  if (synthesizedStubCount > 0) {
-    logInfo2(`(8.6) synthesized ${synthesizedStubCount} strip-stub(s) for ambiguous candidates`);
-  }
-  const portalDecisions = userOverrides.portal_decisions ?? {};
-  const candidatesBySortOrder = new Map;
-  for (const c of portalCandidates) {
-    if (c.source.kind !== "regex_rule")
-      continue;
-    const list = candidatesBySortOrder.get(c.source.sort_order) ?? [];
-    list.push(c.id);
-    candidatesBySortOrder.set(c.source.sort_order, list);
-  }
-  const isExtensionManaged = (r) => {
-    const ruleCandidateIds = candidatesBySortOrder.get(r.sort_order) ?? [];
-    const risu = r.metadata?._risu;
-    const translatorFlag = risu?.extension_managed === true;
-    return decideRulePartitionWithOverrides(ruleCandidateIds, portalDecisions, translatorFlag);
-  };
-  const pendingRegexScripts = partitionRulesForLumi(allRows, isExtensionManaged).map((r) => ({
+  const pendingRegexScripts = allRows.map((r) => ({
     name: r.name,
     script_id: r.script_id,
     find_regex: r.find_regex,
@@ -26501,7 +24764,7 @@ async function importCard(args) {
     folder: r.folder,
     metadata: r.metadata
   }));
-  const lumirealmData = buildLumirealmData(bundle.risuPayload, args.extensionVersion, storedRegexScripts, assetIndex, emotionIndex, Date.now(), userOverrides, portalCandidates);
+  const lumirealmData = buildLumirealmData(bundle.risuPayload, args.extensionVersion, storedRegexScripts, assetIndex, emotionIndex, Date.now(), userOverrides);
   try {
     await args.spindle.characters.update(characterId, { extensions: { [LUMIREALM_EXT_KEY]: lumirealmData } }, args.userId);
   } catch (err) {
@@ -29947,56 +28210,6 @@ async function clearSidecar(storage, chatId, userId) {
   }
 }
 
-// src/state/portal-state.ts
-class PortalStateStore {
-  #byChat = new Map;
-  applySnapshot(chatId, newSlots) {
-    const existing = this.#byChat.get(chatId);
-    if (existing && slotsEquivalent(existing.slots, newSlots)) {
-      return { changed: false, entry: existing };
-    }
-    const seq = (existing?.seq ?? 0) + 1;
-    const entry = { slots: [...newSlots], seq };
-    this.#byChat.set(chatId, entry);
-    return { changed: true, entry };
-  }
-  clearChat(chatId) {
-    const existing = this.#byChat.get(chatId);
-    this.#byChat.delete(chatId);
-    return { seq: (existing?.seq ?? 0) + 1 };
-  }
-  current(chatId) {
-    return this.#byChat.get(chatId) ?? null;
-  }
-  reset() {
-    this.#byChat.clear();
-  }
-  diagnostic() {
-    const perChat = new Map;
-    for (const [chatId, entry] of this.#byChat) {
-      perChat.set(chatId, entry.slots.length);
-    }
-    return { chats: this.#byChat.size, perChat };
-  }
-}
-function slotsEquivalent(a, b) {
-  if (a.length !== b.length)
-    return false;
-  if (a.length === 0)
-    return true;
-  const map = new Map;
-  for (const slot of a)
-    map.set(slot.slotId, slot.signature);
-  for (const slot of b) {
-    const sig = map.get(slot.slotId);
-    if (sig === undefined)
-      return false;
-    if (sig !== slot.signature)
-      return false;
-  }
-  return true;
-}
-
 // src/state/variables-state.ts
 class VariableStateStore {
   #byChat = new Map;
@@ -30217,453 +28430,6 @@ function extractToggleKeys(flat) {
   return out;
 }
 
-// src/interpreter/portal/extract.ts
-var ATTR_NAME = "data-risu-portal";
-function extractPortalRegions(html, onWarn) {
-  const out = [];
-  if (!html || html.indexOf(ATTR_NAME) < 0)
-    return out;
-  let pos = 0;
-  while (pos < html.length) {
-    const opener = findNextPortalOpener(html, pos);
-    if (!opener)
-      break;
-    const closer = findMatchingDivClose(html, opener.endTagIndex);
-    if (closer === null) {
-      onWarn?.(`extractPortalRegions: unbalanced data-risu-portal opener at ${opener.startTagIndex} \u2014 skipping rest of input`);
-      break;
-    }
-    const outerHTML = html.slice(opener.startTagIndex, closer);
-    out.push({
-      outerHTML,
-      sourceToken: opener.attrValue,
-      startIndex: opener.startTagIndex,
-      endIndex: closer
-    });
-    pos = closer;
-  }
-  return out;
-}
-function findNextPortalOpener(html, fromPos) {
-  let pos = fromPos;
-  while (pos < html.length) {
-    const i = html.indexOf("<div", pos);
-    if (i < 0)
-      return null;
-    const after = i + 4;
-    const ch = html[after];
-    if (ch !== " " && ch !== "\t" && ch !== `
-` && ch !== ">" && ch !== "/") {
-      pos = i + 1;
-      continue;
-    }
-    const tagEnd = findTagClose(html, after);
-    if (tagEnd < 0) {
-      return null;
-    }
-    const tagText = html.slice(i, tagEnd + 1);
-    const attrMatch = matchPortalAttr(tagText);
-    if (attrMatch === null) {
-      pos = tagEnd + 1;
-      continue;
-    }
-    return {
-      startTagIndex: i,
-      endTagIndex: tagEnd + 1,
-      attrValue: attrMatch
-    };
-  }
-  return null;
-}
-function findTagClose(html, fromPos) {
-  let i = fromPos;
-  let inQuote = null;
-  while (i < html.length) {
-    const c = html[i];
-    if (inQuote) {
-      if (c === inQuote)
-        inQuote = null;
-    } else {
-      if (c === '"' || c === "'")
-        inQuote = c;
-      else if (c === ">")
-        return i;
-    }
-    i++;
-  }
-  return -1;
-}
-function matchPortalAttr(tagText) {
-  const re = /(?:^|\s)data-risu-portal(?:=("([^"]*)"|'([^']*)'|([^\s>"']+)))?(?=[\s/>])/;
-  const m = re.exec(tagText);
-  if (!m)
-    return null;
-  return (m[2] ?? m[3] ?? m[4] ?? "").trim();
-}
-function findMatchingDivClose(html, fromPos) {
-  let depth = 1;
-  let pos = fromPos;
-  while (pos < html.length) {
-    const nextOpen = html.indexOf("<div", pos);
-    const nextClose = html.indexOf("</div", pos);
-    if (nextClose < 0)
-      return null;
-    if (nextOpen >= 0 && nextOpen < nextClose) {
-      const after = nextOpen + 4;
-      const ch = html[after];
-      if (ch === " " || ch === "\t" || ch === `
-` || ch === ">" || ch === "/") {
-        const tagEnd = findTagClose(html, after);
-        if (tagEnd < 0)
-          return null;
-        const tagText = html.slice(nextOpen, tagEnd + 1);
-        if (tagText.endsWith("/>")) {
-          pos = tagEnd + 1;
-          continue;
-        }
-        depth++;
-        pos = tagEnd + 1;
-        continue;
-      }
-      pos = nextOpen + 1;
-      continue;
-    }
-    const closeTagEnd = findTagClose(html, nextClose + 5);
-    if (closeTagEnd < 0)
-      return null;
-    depth--;
-    if (depth === 0) {
-      return closeTagEnd + 1;
-    }
-    pos = closeTagEnd + 1;
-  }
-  return null;
-}
-
-// src/interpreter/portal/resolver.ts
-var ruleOutputCache = new Map;
-var MAX_CACHE_ENTRIES = 1000;
-var cacheInsertionCounter = 0;
-function cacheGet(key) {
-  const entry = ruleOutputCache.get(key);
-  return entry ? entry.html : null;
-}
-function cacheSet(key, html) {
-  if (ruleOutputCache.size >= MAX_CACHE_ENTRIES) {
-    let oldestKey = null;
-    let oldestInserted = Infinity;
-    for (const [k, e] of ruleOutputCache) {
-      if (e.insertedAt < oldestInserted) {
-        oldestInserted = e.insertedAt;
-        oldestKey = k;
-      }
-    }
-    if (oldestKey !== null)
-      ruleOutputCache.delete(oldestKey);
-  }
-  ruleOutputCache.set(key, { html, insertedAt: ++cacheInsertionCounter });
-}
-function clearPortalCacheForCard(cardId) {
-  const prefix = `${cardId}|`;
-  for (const k of ruleOutputCache.keys()) {
-    if (k.startsWith(prefix))
-      ruleOutputCache.delete(k);
-  }
-}
-function computeRulesShapeHash(rules) {
-  let hash = 2166136261;
-  const fields = (r) => `${r.script_id}|${r.find_regex}|${r.replace_string}|${r.flags}|` + `${r.target}|${r.sort_order}|${r.trim_strings.join(",")}|` + `${r.substitute_macros}|${r.disabled ? 1 : 0}|` + `${r.min_depth ?? "n"}|${r.max_depth ?? "n"}`;
-  for (const r of rules) {
-    const s = fields(r);
-    for (let i = 0;i < s.length; i++) {
-      hash ^= s.charCodeAt(i);
-      hash = hash + ((hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24)) >>> 0;
-    }
-  }
-  return hash.toString(16).padStart(8, "0");
-}
-function computeContentHash(content) {
-  let hash = 2166136261;
-  for (let i = 0;i < content.length; i++) {
-    hash ^= content.charCodeAt(i);
-    hash = hash + ((hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24)) >>> 0;
-  }
-  return hash.toString(16).padStart(8, "0");
-}
-function buildRuleVarDeps(applicable) {
-  const out = [];
-  for (const rule of applicable) {
-    const meta = rule.metadata;
-    const rawRefs = meta?._risu?.var_refs;
-    const hasMetadata = Array.isArray(rawRefs);
-    const varRefs = hasMetadata ? rawRefs.filter((v) => typeof v === "string") : [];
-    let findRe = null;
-    try {
-      const findHasCbs = /\{\{/.test(rule.find_regex);
-      const flags = normalizeFlags(rule.flags, findHasCbs);
-      findRe = new RegExp(rule.find_regex, flags);
-    } catch {
-      findRe = null;
-    }
-    out.push({
-      varRefs,
-      findRe,
-      hasMetadata,
-      minDepth: rule.min_depth,
-      maxDepth: rule.max_depth
-    });
-  }
-  return out;
-}
-function computeVarsHashForMessage(msgContent, ruleDeps, depthFromLatest, vars) {
-  if (!vars)
-    return "00000000";
-  for (const dep of ruleDeps) {
-    if (dep.minDepth !== null && depthFromLatest < dep.minDepth)
-      continue;
-    if (dep.maxDepth !== null && depthFromLatest > dep.maxDepth)
-      continue;
-    if (!dep.hasMetadata)
-      return computeGlobalVarsHash(vars);
-  }
-  const referencedVars = new Set;
-  for (const dep of ruleDeps) {
-    if (dep.varRefs.length === 0)
-      continue;
-    if (dep.minDepth !== null && depthFromLatest < dep.minDepth)
-      continue;
-    if (dep.maxDepth !== null && depthFromLatest > dep.maxDepth)
-      continue;
-    let matches;
-    if (dep.findRe === null) {
-      matches = true;
-    } else {
-      dep.findRe.lastIndex = 0;
-      matches = dep.findRe.test(msgContent);
-    }
-    if (!matches)
-      continue;
-    for (const v of dep.varRefs)
-      referencedVars.add(v);
-  }
-  if (referencedVars.size === 0) {
-    return "00000000";
-  }
-  let hash = 2166136261;
-  const sortedKeys = [...referencedVars].sort();
-  for (const k of sortedKeys) {
-    for (const scope of [vars.local, vars.global, vars.chat]) {
-      if (!scope)
-        continue;
-      const v = scope[k];
-      if (typeof v === "string") {
-        const piece = `${k}=${v}|`;
-        for (let i = 0;i < piece.length; i++) {
-          hash ^= piece.charCodeAt(i);
-          hash = hash + ((hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24)) >>> 0;
-        }
-      }
-    }
-  }
-  return hash.toString(16).padStart(8, "0");
-}
-function computeGlobalVarsHash(vars) {
-  if (!vars)
-    return "00000000";
-  let hash = 2166136261;
-  const fold = (label, scope) => {
-    hash ^= label.charCodeAt(0);
-    hash = hash + ((hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24)) >>> 0;
-    if (!scope)
-      return;
-    const keys = Object.keys(scope).sort();
-    for (const k of keys) {
-      const piece = `${k}=${String(scope[k])}`;
-      for (let i = 0;i < piece.length; i++) {
-        hash ^= piece.charCodeAt(i);
-        hash = hash + ((hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24)) >>> 0;
-      }
-    }
-  };
-  fold("L", vars.local);
-  fold("G", vars.global);
-  fold("C", vars.chat);
-  return hash.toString(16).padStart(8, "0");
-}
-function resolvePortalsForChat(messages, rules, ctxBase) {
-  const slots = [];
-  const warnings = [];
-  const perMessageMs = new Map;
-  let cacheHits = 0;
-  let cacheMisses = 0;
-  const applicable = rules.filter((r) => r.target === "display" && !r.disabled && !isStripStub2(r)).slice().sort((a, b) => a.sort_order - b.sort_order);
-  const rulesShapeHash = computeRulesShapeHash(applicable);
-  const ruleVarDeps = buildRuleVarDeps(applicable);
-  const variables = ctxBase.pipelineCtx.variables;
-  for (let lumiIdx = 0;lumiIdx < messages.length; lumiIdx++) {
-    const msg = messages[lumiIdx];
-    const t0 = Date.now();
-    const risuIdx = lumiIdx - 1;
-    const perMsgCtx = {
-      ...ctxBase,
-      currentMessageIndex: risuIdx
-    };
-    const depthFromLatest = messages.length - 1 - lumiIdx;
-    let resolvedContent;
-    try {
-      resolvedContent = runPipeline({
-        ...perMsgCtx.pipelineCtx,
-        template: msg.content,
-        phase: "display",
-        currentMessageIndexOverride: risuIdx
-      });
-    } catch (err) {
-      warnings.push({
-        stage: "cbs_resolve",
-        msgId: msg.id,
-        message: errMsg(err)
-      });
-      perMessageMs.set(msg.id, Date.now() - t0);
-      continue;
-    }
-    const contentHash = computeContentHash(resolvedContent);
-    const varsHash = computeVarsHashForMessage(resolvedContent, ruleVarDeps, depthFromLatest, variables);
-    const cacheKey = `${ctxBase.cardId}|${risuIdx}|${rulesShapeHash}|${contentHash}|${varsHash}`;
-    const cached = cacheGet(cacheKey);
-    let html;
-    if (cached !== null) {
-      html = cached;
-      cacheHits++;
-    } else {
-      cacheMisses++;
-      html = resolvedContent;
-      for (const rule of applicable) {
-        if (rule.min_depth !== null && depthFromLatest < rule.min_depth)
-          continue;
-        if (rule.max_depth !== null && depthFromLatest > rule.max_depth)
-          continue;
-        try {
-          html = applyOneRule(html, rule, perMsgCtx);
-        } catch (err) {
-          warnings.push({
-            stage: "rule_apply",
-            msgId: msg.id,
-            ruleId: rule.script_id,
-            message: errMsg(err)
-          });
-        }
-      }
-      cacheSet(cacheKey, html);
-    }
-    let regions;
-    try {
-      regions = extractPortalRegions(html, (m) => warnings.push({ stage: "extract", msgId: msg.id, message: m }));
-    } catch (err) {
-      warnings.push({
-        stage: "extract",
-        msgId: msg.id,
-        message: errMsg(err)
-      });
-      regions = [];
-    }
-    for (let m = 0;m < regions.length; m++) {
-      const region = regions[m];
-      const overlayHtml = renameForOverlay(region.outerHTML);
-      slots.push({
-        slotId: `${msg.id}::${m}`,
-        msgId: msg.id,
-        matchIdx: m,
-        html: overlayHtml,
-        signature: signatureOf(overlayHtml),
-        sourceToken: region.sourceToken
-      });
-    }
-    perMessageMs.set(msg.id, Date.now() - t0);
-  }
-  return { slots, warnings, perMessageMs, cacheHits, cacheMisses };
-}
-function applyOneRule(html, rule, ctx) {
-  let findRegex = rule.find_regex;
-  const subMacros = rule.substitute_macros;
-  if (subMacros !== "none" && /\{\{/.test(findRegex)) {
-    try {
-      findRegex = runPipeline({
-        ...ctx.pipelineCtx,
-        template: findRegex,
-        phase: "display",
-        currentMessageIndexOverride: ctx.currentMessageIndex
-      });
-    } catch {}
-  }
-  const flags = normalizeFlags(rule.flags, /\{\{/.test(findRegex));
-  const re = new RegExp(findRegex, flags);
-  let result = html.replace(re, (...args) => {
-    const last = args[args.length - 1];
-    const hasGroups = typeof last === "object" && last !== null;
-    const groups = hasGroups ? last : undefined;
-    const tailLen = hasGroups ? 3 : 2;
-    const matchAndCaps = args.slice(0, args.length - tailLen);
-    const matchStr = String(matchAndCaps[0] ?? "");
-    const caps = matchAndCaps.slice(1).map((c) => c == null ? "" : String(c));
-    const matchArr = [matchStr, ...caps];
-    if (groups)
-      matchArr.groups = groups;
-    let replaced = applyMatchTemplate(rule.replace_string, matchArr);
-    if (subMacros !== "none" && /\{\{/.test(replaced)) {
-      try {
-        replaced = runPipeline({
-          ...ctx.pipelineCtx,
-          template: replaced,
-          phase: "display",
-          currentMessageIndexOverride: ctx.currentMessageIndex
-        });
-      } catch {}
-    }
-    return replaced;
-  });
-  for (const trim2 of rule.trim_strings) {
-    if (trim2.length === 0)
-      continue;
-    while (result.includes(trim2))
-      result = result.replaceAll(trim2, "");
-  }
-  return result;
-}
-function normalizeFlags(raw, findHasCbs) {
-  const allowed = "dgimsuvy";
-  const seen = new Set;
-  let out = "";
-  for (const c of raw) {
-    if (allowed.includes(c) && !seen.has(c)) {
-      seen.add(c);
-      out += c;
-    }
-  }
-  if (out.length === 0)
-    out = "u";
-  if (findHasCbs)
-    out = out.replace(/u/g, "");
-  if (!out.includes("g"))
-    out += "g";
-  return out;
-}
-function signatureOf(html) {
-  const trimmed = html.trim();
-  let hash = 2166136261;
-  for (let i = 0;i < trimmed.length; i++) {
-    hash ^= trimmed.charCodeAt(i);
-    hash = hash + ((hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24)) >>> 0;
-  }
-  return hash.toString(16).padStart(8, "0");
-}
-function renameForOverlay(html) {
-  return html.replace(/data-risu-portal(?!-)/g, "data-risu-portal-extracted");
-}
-function isStripStub2(rule) {
-  const meta = rule.metadata;
-  return meta?._risu?.is_strip_stub === true;
-}
-
 // src/state/recent-writes.ts
 var log4 = makeSafeLogger("recent-writes");
 var TTL_MS = 60000;
@@ -30734,42 +28500,6 @@ function scheduleStateChangedRefresh(chatId, runRefresh, onError) {
     timer.unref();
   }
   pendingTimers.set(chatId, timer);
-}
-
-// src/state/portal-selectors-cache.ts
-var byCharacter3 = new Map;
-function getOrBuildPortalSelectors(card) {
-  const cid = card.character_id;
-  const cached = byCharacter3.get(cid);
-  if (cached)
-    return cached;
-  const bgHtml = card.risuPayload.background_html ?? "";
-  let sel = EMPTY_PORTAL_SELECTORS;
-  if (bgHtml.length > 0) {
-    sel = extractInlineStyleSelectors(bgHtml);
-    if (sel.ids.size === 0 && sel.classes.size === 0) {
-      sel = extractPortalSelectors(bgHtml);
-    }
-  }
-  const rules = card.regex_scripts ?? [];
-  const ids = new Set(sel.ids);
-  const classes = new Set(sel.classes);
-  for (const r of rules) {
-    const replace = String(r.replace_string ?? "");
-    if (replace.length === 0 || replace.indexOf("<style") < 0)
-      continue;
-    const partial = extractInlineStyleSelectors(replace);
-    for (const id of partial.ids)
-      ids.add(id);
-    for (const cls of partial.classes)
-      classes.add(cls);
-  }
-  const merged = { ids, classes };
-  byCharacter3.set(cid, merged);
-  return merged;
-}
-function clearPortalSelectorsForCard(characterId) {
-  byCharacter3.delete(characterId);
 }
 
 // src/state/depth-prompt-seed.ts
@@ -31380,6 +29110,8 @@ if (typeof registerMacroInterceptor === "function") {
     const screenDims = getScreenDims(ctx.userId);
     const charImage = getActiveCharacterImage(chatId);
     const personaImage = getActivePersonaImage(ctx.userId);
+    const dynChatIndex = ctx.env.dynamicMacros?.chat_index;
+    const dynChatIndexNum = typeof dynChatIndex === "string" && /^-?\d+$/.test(dynChatIndex) ? parseInt(dynChatIndex, 10) - 1 : undefined;
     let resolved;
     try {
       resolved = runPipeline({
@@ -31387,6 +29119,7 @@ if (typeof registerMacroInterceptor === "function") {
         phase: ctx.commit ? "commit" : "display",
         chatId,
         ...ctx.userId !== undefined ? { userId: ctx.userId } : {},
+        ...dynChatIndexNum !== undefined ? { currentMessageIndexOverride: dynChatIndexNum } : {},
         characterId: active.card.character_id,
         userName: namesEnv.user ?? "",
         charName: namesEnv.char ?? charCard.name ?? "",
@@ -31496,6 +29229,40 @@ if (typeof registerMessageContentProcessor === "function") {
       if (!active) {
         log5.info(`messageContentProcessor.exit #${seq} path=skip-not-lumirealm chat=${ctx.chatId} ensure=${tB - tA}ms total=${Date.now() - tStart}ms`);
         return;
+      }
+      if (ctx.origin === "render") {
+        const triggers2 = active.card.risuPayload.triggers;
+        const luaScripts = active.card.risuPayload.lua_scripts;
+        const hasLuaTrigger = triggers2.some((t) => t.effect?.[0]?.type === "triggerlua");
+        if (!hasLuaTrigger) {
+          log5.info(`messageContentProcessor.exit #${seq} path=render-no-lua chat=${ctx.chatId} ensure=${tB - tA}ms total=${Date.now() - tStart}ms`);
+          return;
+        }
+        const rawIdx = ctx.extra?.["messageIndex"];
+        const messageIndex = typeof rawIdx === "number" ? rawIdx : 0;
+        const risuChatIdx = Math.max(-1, messageIndex - 1);
+        const editChain = triggers2.map((t, i) => ({
+          source: t,
+          luaCode: luaScripts[i] ?? ""
+        }));
+        try {
+          const editApi = makeSpindleHost({
+            chatId: ctx.chatId,
+            characterId: active.card.character_id,
+            userId: ctx.userId
+          });
+          const editScriptNS = makeDispatcherScriptNS();
+          const transformed = await runListenEditChain(editChain, "editDisplay", ctx.content, { index: risuChatIdx }, editApi, { characterId: active.card.character_id, content: ctx.content }, editScriptNS, { chatId: ctx.chatId, characterId: active.card.character_id });
+          if (transformed === ctx.content) {
+            log5.info(`messageContentProcessor.exit #${seq} path=render-noop chat=${ctx.chatId} msg=${ctx.messageId ?? "<?>"} idx=${messageIndex} total=${Date.now() - tStart}ms`);
+            return;
+          }
+          log5.info(`messageContentProcessor.exit #${seq} path=render-transformed chat=${ctx.chatId} msg=${ctx.messageId ?? "<?>"} idx=${messageIndex} before_len=${ctx.content.length} after_len=${transformed.length} total=${Date.now() - tStart}ms`);
+          return { content: transformed };
+        } catch (err) {
+          log5.warn(`messageContentProcessor.exit #${seq} path=render-threw chat=${ctx.chatId} msg=${ctx.messageId ?? "<?>"} err=${errMsg(err)} total=${Date.now() - tStart}ms`);
+          return;
+        }
       }
       let resolved;
       try {
@@ -31618,7 +29385,6 @@ if (typeof registerInterceptor === "function") {
 } else {
   log5.info("interceptor: not available on this Lumi build \u2014 listenEdit editInput/editRequest will not fire");
 }
-var portalState = new PortalStateStore;
 var variableState = new VariableStateStore;
 var toggleState = new ToggleStateStore;
 function scheduleStateChangedRefresh2(chatId) {
@@ -31632,7 +29398,6 @@ function scheduleStateChangedRefresh2(chatId) {
     const t0 = Date.now();
     await refreshResolvedContent(active, chatId);
     await refreshBgHtml(active, chatId);
-    await refreshPortals(active, chatId);
     await refreshVariables(active, chatId);
     log5.info(`scheduleStateChangedRefresh: completed chat=${chatId} elapsed=${Date.now() - t0}ms`);
   }, (err) => log5.error(`scheduleStateChangedRefresh: refresh threw chat=${chatId}: ${errMsg(err)}`));
@@ -31926,10 +29691,7 @@ async function applySvgRasterIndex(args) {
     log5.warn(`applySvgRasterIndex: updateLumirealm failed char=${characterId} \u2014 character may not be a lumirealm card`);
     return;
   }
-  const lumiManaged = regexScriptsAfterSubstitution.filter((r) => {
-    const meta = r.metadata;
-    return meta?._risu?.extension_managed !== true;
-  });
+  const lumiManaged = regexScriptsAfterSubstitution;
   if (lumiManaged.length > 0) {
     let characterName = characterId;
     try {
@@ -31990,7 +29752,6 @@ async function applySvgRasterIndex(args) {
         if (reloaded) {
           await refreshResolvedContent(reloaded, chatId);
           await refreshBgHtml(reloaded, chatId);
-          await refreshPortals(reloaded, chatId);
         }
       } catch (err) {
         log5.warn(`applySvgRasterIndex: refresh chat=${chatId} threw: ${errMsg(err)}`);
@@ -32289,16 +30050,13 @@ async function deleteCardByChar(characterId, mode = "cascade") {
       activeCardByChat.delete(chatId);
       clearActiveAssetIndexes(chatId);
       clearActiveCharacterImage(chatId);
-      portalState.clearChat(chatId);
       variableState.clearChat(chatId);
       toggleState.clearChat(chatId);
       evictedChats += 1;
     }
   }
   const compiledEvicted = compiledByCharacter.delete(characterId);
-  clearPortalCacheForCard(characterId);
-  clearPortalSelectorsForCard(characterId);
-  log5.info(`deleteCardByChar: evicted activeCard entries=${evictedChats} compiled=${compiledEvicted} portalCache=cleared portalSelectors=cleared`);
+  log5.info(`deleteCardByChar: evicted activeCard entries=${evictedChats} compiled=${compiledEvicted}`);
   const fresh = await listCards();
   const filtered = fresh.filter((c) => c.character_id !== characterId);
   pushCards(filtered);
@@ -32452,14 +30210,12 @@ async function runBinding(active, chatId, binding) {
   const api = makeSpindleHost({ chatId, characterId, userId: getUserId() });
   const scriptNS = makeDispatcherScriptNS();
   registerManualTriggers(scriptNS, compiled, api);
-  const portalSelectors = getOrBuildPortalSelectors(active.card);
   const stateChanged = makeStateChangedCallback(chatId);
   const trackSidecarWrite = makeTrackSidecarWrite(chatId);
   const settings = getCachedSettingsSync(getUserId());
   const auxDebugCapture = makeAuxDebugCapture(chatId, settings);
   const prior = setDispatchContext({
     chatId,
-    portalSelectors,
     rememberOurWrite,
     binding,
     stateChanged,
@@ -32556,7 +30312,6 @@ async function dispatchManualTrigger(chatId, triggerName, triggerId) {
   const api = makeSpindleHost({ chatId, characterId, userId: getUserId() });
   const scriptNS = makeDispatcherScriptNS();
   const effectiveTriggerId = triggerId ?? String(Math.random()).slice(2, 10);
-  const portalSelectors = getOrBuildPortalSelectors(active.card);
   const t0 = Date.now();
   for (const trigger of luaTriggers) {
     const firstEffect = trigger.effect[0];
@@ -32572,7 +30327,6 @@ async function dispatchManualTrigger(chatId, triggerName, triggerId) {
         characterId,
         binding: "manual",
         chatId,
-        portalSelectors,
         rememberOurWrite,
         stateChanged: makeStateChangedCallback(chatId),
         trackSidecarWrite: makeTrackSidecarWrite(chatId),
@@ -32604,7 +30358,6 @@ async function dispatchManualTrigger(chatId, triggerName, triggerId) {
       const trackSidecarWrite = makeTrackSidecarWrite(chatId);
       const prior = setDispatchContext({
         chatId,
-        portalSelectors,
         rememberOurWrite,
         binding: "manual",
         stateChanged,
@@ -32640,107 +30393,7 @@ async function dispatchManualTrigger(chatId, triggerName, triggerId) {
   log5.info(`dispatchManualTrigger: done triggerName=${triggerName} elapsed=${Date.now() - t0}ms`);
   await refreshResolvedContent(active, chatId);
   await refreshBgHtml(active, chatId);
-  await refreshPortals(active, chatId);
   await refreshVariables(active, chatId);
-}
-async function refreshPortals(active, chatId) {
-  const t0 = Date.now();
-  const characterId = active.card.character_id;
-  const userId = getUserId();
-  if (userId === undefined) {
-    log5.info(`portal.refresh: skip chatId=${chatId} \u2014 userId not yet captured`);
-    return;
-  }
-  const rules = active.card.regex_scripts ?? [];
-  if (rules.length === 0) {
-    const cur = portalState.current(chatId);
-    if (cur && cur.slots.length > 0) {
-      const r = portalState.applySnapshot(chatId, []);
-      if (r.changed) {
-        sendPortalSnapshot(chatId, r.entry.seq, []);
-      }
-    }
-    return;
-  }
-  const [chat, character2, messages, persona] = await Promise.all([
-    spindle.chats.get(chatId, userId).catch((err) => {
-      log5.warn(`portal.refresh: chats.get failed chat=${chatId}: ${errMsg(err)}`);
-      return null;
-    }),
-    spindle.characters.get(characterId, userId).catch((err) => {
-      log5.warn(`portal.refresh: characters.get failed char=${characterId}: ${errMsg(err)}`);
-      return null;
-    }),
-    fetchChatMessages(chatId),
-    spindle.personas.getActive(userId).catch(() => null)
-  ]);
-  const metadata = chat?.metadata ?? {};
-  const mv = metadata.macro_variables ?? {};
-  const assetIndexes = getActiveAssetIndexes(chatId);
-  const scriptstateDefaults = active.card.risuPayload.scriptstate_defaults;
-  const screenDims = getScreenDims(userId);
-  const lastMessageId = messages.length === 0 ? -1 : messages.length - 1;
-  const assistantTail = [...messages].reverse().find((m) => m.role === "assistant");
-  const userTail = [...messages].reverse().find((m) => m.role === "user");
-  const charImageUrlForPortals = imageUrlFromId(character2?.image_id);
-  const personaImageUrlForPortals = imageUrlFromId(persona?.image_id);
-  const pipelineCtx = {
-    chatId,
-    userId,
-    characterId,
-    userName: persona?.name ?? "",
-    charName: character2?.name ?? "",
-    ...persona?.description ? { personaText: persona.description } : {},
-    ...personaImageUrlForPortals ? { personaImage: personaImageUrlForPortals } : {},
-    character: {
-      description: character2?.description ?? "",
-      personality: character2?.personality ?? "",
-      scenario: character2?.scenario ?? "",
-      exampleDialogue: character2?.mes_example ?? "",
-      mainPrompt: character2?.system_prompt ?? "",
-      postHistoryInstructions: character2?.post_history_instructions ?? "",
-      creatorNotes: character2?.creator_notes ?? "",
-      firstMessage: character2?.first_mes ?? "",
-      alternateGreetings: character2?.alternate_greetings ?? [],
-      ...assetIndexes ? { additionalAssets: assetIndexes.assets } : {},
-      ...assetIndexes ? { emotionImages: assetIndexes.emotions } : {},
-      ...charImageUrlForPortals ? { image: charImageUrlForPortals } : {}
-    },
-    chat: {
-      messageCount: messages.length,
-      lastMessageId,
-      lastMessage: messages[messages.length - 1]?.content ?? "",
-      lastCharMessage: assistantTail?.content ?? "",
-      lastUserMessage: userTail?.content ?? ""
-    },
-    variables: {
-      ...mv.local ? { local: mv.local } : {},
-      ...mv.global ? { global: mv.global } : {},
-      ...mv.chat ? { chat: mv.chat } : {}
-    },
-    ...scriptstateDefaults && Object.keys(scriptstateDefaults).length > 0 ? { scriptstateDefaults } : {},
-    ...screenDims ? { screenWidth: screenDims.width, screenHeight: screenDims.height } : {},
-    legacyMediaFindings: getCachedSettingsSync(userId).legacyMediaFindings,
-    ...modulesByNamespaceFromCard(active.card) ? { modulesByNamespace: modulesByNamespaceFromCard(active.card) } : {}
-  };
-  const resolverMessages = messages.map((m) => ({
-    id: m.id,
-    content: m.content
-  }));
-  const outcome = resolvePortalsForChat(resolverMessages, rules, {
-    chatId,
-    userId,
-    cardId: characterId,
-    pipelineCtx
-  });
-  for (const w of outcome.warnings) {
-    log5.warn(`portal.resolver.${w.stage}: chat=${chatId} msg=${w.msgId} ${w.ruleId ? `rule=${w.ruleId} ` : ""}${w.message}`);
-  }
-  const result = portalState.applySnapshot(chatId, outcome.slots);
-  if (result.changed) {
-    sendPortalSnapshot(chatId, result.entry.seq, outcome.slots);
-  }
-  log5.info(`portal.refresh: chat=${chatId} messages=${messages.length} rules=${rules.length} slots=${outcome.slots.length} changed=${result.changed} seq=${result.entry.seq} cacheHits=${outcome.cacheHits} cacheMisses=${outcome.cacheMisses} elapsed=${Date.now() - t0}ms`);
 }
 async function refreshVariables(active, chatId, opts) {
   const userId = getUserId();
@@ -32817,7 +30470,6 @@ async function writeLocalVariable(chatId, key2, value) {
   }
   await refreshResolvedContent(active, chatId);
   await refreshBgHtml(active, chatId);
-  await refreshPortals(active, chatId);
   await refreshVariables(active, chatId, { force: true });
   log5.info(`variables.write: chat=${chatId} key=${trimmedKey} ` + (value === null ? "deleted" : `len=${String(value).length}`));
   return { ok: true };
@@ -32949,7 +30601,6 @@ async function writeToggleValue(chatId, key2, value) {
   }
   await refreshResolvedContent(active, chatId);
   await refreshBgHtml(active, chatId);
-  await refreshPortals(active, chatId);
   await refreshVariables(active, chatId, { force: true });
   log5.info(`toggles.write: chat=${chatId} key=${storeKey} ` + (value === null ? "deleted" : `len=${String(value).length}`));
   return { ok: true };
@@ -32974,21 +30625,6 @@ function sanitizeVarMap(raw) {
     }
   }
   return out;
-}
-function sendPortalSnapshot(chatId, seq, slots) {
-  send({
-    type: "set_portals",
-    chatId,
-    seq,
-    portals: slots.map((s) => ({
-      slotId: s.slotId,
-      msgId: s.msgId,
-      matchIdx: s.matchIdx,
-      html: s.html,
-      signature: s.signature,
-      sourceToken: s.sourceToken
-    }))
-  });
 }
 async function extractCrossRuleStyleParts(rules, atActions, chatId, characterId) {
   const candidates = [];
@@ -33401,14 +31037,8 @@ spindle.on("SETTINGS_UPDATED", async (raw, userId) => {
   }
   await refreshResolvedContent(active, chatId);
   await refreshBgHtml(active, chatId);
-  await refreshPortals(active, chatId);
   await refreshVariables(active, chatId, { force: true });
   await refreshToggleDefinitions(active, chatId, { force: true });
-  const cur = portalState.current(chatId);
-  if (cur && cur.slots.length > 0) {
-    log5.info(`SETTINGS_UPDATED activeChatId: force-re-emitting portal snapshot chat=${chatId} seq=${cur.seq} slots=${cur.slots.length} (chat-switch overlay-restore)`);
-    sendPortalSnapshot(chatId, cur.seq, cur.slots);
-  }
   log5.info(`SETTINGS_UPDATED activeChatId: ALL DONE chatId=${chatId}`);
 });
 var chatChangedDebounceTimers = new Map;
@@ -33435,7 +31065,6 @@ function scheduleChatChangedRefresh(chatId, characterId) {
       }
       await refreshResolvedContent(active, chatId);
       await refreshBgHtml(active, chatId);
-      await refreshPortals(active, chatId);
       await refreshVariables(active, chatId, { force: true });
     } catch (err) {
       log5.error(`scheduleChatChangedRefresh: chat=${chatId} threw: ${errMsg(err)}`);
@@ -33474,7 +31103,6 @@ spindle.on("MESSAGE_SENT", async (raw, userId) => {
   }
   log5.info(`MESSAGE_SENT: \u2192 refreshResolvedContent (no binding \u2014 Risu parity)`);
   await refreshResolvedContent(active, chatId);
-  await refreshPortals(active, chatId);
   await refreshVariables(active, chatId);
 });
 var generationsInFlight = new Map;
@@ -33497,7 +31125,6 @@ spindle.on("GENERATION_STARTED", async (raw, userId) => {
   await runBinding(active, chatId, "request");
   await refreshResolvedContent(active, chatId);
   await refreshBgHtml(active, chatId);
-  await refreshPortals(active, chatId);
   await refreshVariables(active, chatId);
 });
 spindle.on("GENERATION_ENDED", async (raw, userId) => {
@@ -33519,7 +31146,6 @@ spindle.on("GENERATION_ENDED", async (raw, userId) => {
   }
   await refreshResolvedContent(active, chatId);
   await refreshBgHtml(active, chatId);
-  await refreshPortals(active, chatId);
   await refreshVariables(active, chatId);
 });
 spindle.on("MESSAGE_SWIPED", async (raw, userId) => {
@@ -33547,7 +31173,6 @@ spindle.on("MESSAGE_SWIPED", async (raw, userId) => {
   }
   await refreshResolvedContent(active, chatId);
   await refreshBgHtml(active, chatId);
-  await refreshPortals(active, chatId);
   await refreshVariables(active, chatId);
 });
 function readEditedBy(payload) {
@@ -33592,7 +31217,6 @@ spindle.on("MESSAGE_EDITED", async (raw, userId) => {
       if (active) {
         await refreshResolvedContent(active, chatId);
         await refreshBgHtml(active, chatId);
-        await refreshPortals(active, chatId);
         await refreshVariables(active, chatId);
       }
     } catch (err) {
@@ -33635,7 +31259,6 @@ spindle.on("MESSAGE_DELETED", async (raw, userId) => {
     return;
   await refreshResolvedContent(active, chatId);
   await refreshBgHtml(active, chatId);
-  await refreshPortals(active, chatId);
   await refreshVariables(active, chatId);
 });
 spindle.on("CHAT_DELETED", async (raw, userId) => {
@@ -33650,7 +31273,6 @@ spindle.on("CHAT_DELETED", async (raw, userId) => {
   clearActiveCharacterImage(chatId);
   clearActiveScriptstateDefaults(chatId);
   clearVarOverlay(chatId);
-  portalState.clearChat(chatId);
   variableState.clearChat(chatId);
   toggleState.clearChat(chatId);
   try {
@@ -34209,7 +31831,6 @@ function invalidateActiveForCharacter(characterId) {
       activeCardByChat.delete(chatId);
       clearActiveAssetIndexes(chatId);
       clearActiveCharacterImage(chatId);
-      portalState.clearChat(chatId);
       variableState.clearChat(chatId);
       toggleState.clearChat(chatId);
       evictedChats.push(chatId);
@@ -34217,8 +31838,6 @@ function invalidateActiveForCharacter(characterId) {
     }
   }
   compiledByCharacter.delete(characterId);
-  clearPortalCacheForCard(characterId);
-  clearPortalSelectorsForCard(characterId);
   log5.info(`invalidateActiveForCharacter: char=${characterId} evictedChats=${evicted}`);
   for (const chatId of evictedChats) {
     (async () => {
@@ -34325,6 +31944,17 @@ async function mutateAssetIndex(msg, userId) {
     const characterId = msg.source.characterId;
     const updated = await updateLumirealm(charactersApi(), characterId, userId, (cur) => {
       const before = cur.asset_index;
+      if (msg.type === "add_assets") {
+        let working = before;
+        for (const e of msg.entries) {
+          const r = addAssetToCharacterIndex(working, e.assetName, e.imageId, e.ext);
+          if (r.ok)
+            working = r.index;
+          else
+            log5.warn(`add_assets (character ${characterId}): "${e.assetName}" skipped \u2014 ${r.reason}`);
+        }
+        return { ...cur, asset_index: working };
+      }
       let result2;
       switch (msg.type) {
         case "add_asset":
@@ -34351,6 +31981,20 @@ async function mutateAssetIndex(msg, userId) {
   const env = await readEnvelope(moduleStorage(), userId, moduleId);
   if (!env)
     return { ok: false, reason: `module ${moduleId} not in library` };
+  if (msg.type === "add_assets") {
+    let working = env.asset_index;
+    for (const e of msg.entries) {
+      const r = addAssetToModuleIndex(working, e.assetName, e.imageId, e.ext);
+      if (r.ok)
+        working = r.index;
+      else
+        log5.warn(`add_assets (module ${moduleId}): "${e.assetName}" skipped \u2014 ${r.reason}`);
+    }
+    const nextEnv2 = { ...env, asset_index: working };
+    await writeEnvelope(moduleStorage(), userId, nextEnv2);
+    await pushModules(userId);
+    return { ok: true };
+  }
   let result;
   switch (msg.type) {
     case "add_asset":
@@ -34556,12 +32200,6 @@ spindle.onFrontendMessage(async (raw, userId) => {
             if (active) {
               await refreshBgHtml(active, lastChat);
               await refreshResolvedContent(active, lastChat);
-              const cur = portalState.current(lastChat);
-              if (cur) {
-                sendPortalSnapshot(lastChat, cur.seq, cur.slots);
-              } else {
-                await refreshPortals(active, lastChat);
-              }
               await refreshVariables(active, lastChat, { force: true });
             }
           } catch (err) {
@@ -34832,167 +32470,6 @@ spindle.onFrontendMessage(async (raw, userId) => {
         }
         break;
       }
-      case "request_portal_snapshot": {
-        const cur = portalState.current(msg.chatId);
-        if (cur) {
-          sendPortalSnapshot(msg.chatId, cur.seq, cur.slots);
-        } else {
-          sendPortalSnapshot(msg.chatId, 1, []);
-        }
-        break;
-      }
-      case "request_portal_candidates": {
-        if (userId === undefined) {
-          send({ type: "error", message: "request_portal_candidates: no userId" });
-          break;
-        }
-        const fetched = await readLumirealm(charactersApi(), msg.characterId, userId);
-        if (!fetched || !fetched.data) {
-          send({
-            type: "portal_candidates_pushed",
-            characterId: msg.characterId,
-            candidates: [],
-            decisions: {},
-            ts: Date.now()
-          });
-          break;
-        }
-        const candidates = fetched.data.portal_candidates ?? [];
-        const decisions = fetched.data.user_overrides.portal_decisions ?? {};
-        log5.info(`request_portal_candidates: char=${msg.characterId} candidates=${candidates.length} decisions=${Object.keys(decisions).length}`);
-        send({
-          type: "portal_candidates_pushed",
-          characterId: msg.characterId,
-          candidates,
-          decisions: { ...decisions },
-          ts: Date.now()
-        });
-        break;
-      }
-      case "set_portal_decision": {
-        if (userId === undefined) {
-          send({ type: "error", message: "set_portal_decision: no userId" });
-          break;
-        }
-        const updated = await updateLumirealm(charactersApi(), msg.characterId, userId, (current) => {
-          const prior = current.user_overrides.portal_decisions ?? {};
-          const newDecisions2 = { ...prior };
-          if (msg.decision === null) {
-            delete newDecisions2[msg.candidateId];
-          } else {
-            newDecisions2[msg.candidateId] = msg.decision;
-          }
-          const candidates2 = current.portal_candidates ?? [];
-          const candidatesBySortOrder2 = new Map;
-          for (const c of candidates2) {
-            if (c.source.kind !== "regex_rule")
-              continue;
-            const list = candidatesBySortOrder2.get(c.source.sort_order) ?? [];
-            list.push(c.id);
-            candidatesBySortOrder2.set(c.source.sort_order, list);
-          }
-          const newRegexScripts = current.regex_scripts.map((r) => {
-            if (isStripStub(r))
-              return r;
-            const ruleCandidateIds = candidatesBySortOrder2.get(r.sort_order) ?? [];
-            const risu = r.metadata?._risu;
-            const translatorFlag = risu?.extension_managed === true;
-            const managed = decideRulePartitionWithOverrides(ruleCandidateIds, newDecisions2, translatorFlag);
-            const newReplace = ensurePortalWrap(r.replace_string, managed);
-            if (newReplace === r.replace_string)
-              return r;
-            return { ...r, replace_string: newReplace };
-          });
-          return {
-            ...current,
-            regex_scripts: newRegexScripts,
-            user_overrides: {
-              ...current.user_overrides,
-              ...Object.keys(newDecisions2).length > 0 ? { portal_decisions: newDecisions2 } : {}
-            }
-          };
-        });
-        if (!updated) {
-          send({ type: "error", message: `set_portal_decision: char ${msg.characterId} is not a lumirealm card` });
-          break;
-        }
-        const newDecisions = updated.user_overrides.portal_decisions ?? {};
-        log5.info(`set_portal_decision: char=${msg.characterId} candidate=${msg.candidateId} decision=${msg.decision ?? "<auto>"} totalOverrides=${Object.keys(newDecisions).length}`);
-        const candidates = updated.portal_candidates ?? [];
-        const candidatesBySortOrder = new Map;
-        for (const c of candidates) {
-          if (c.source.kind !== "regex_rule")
-            continue;
-          const list = candidatesBySortOrder.get(c.source.sort_order) ?? [];
-          list.push(c.id);
-          candidatesBySortOrder.set(c.source.sort_order, list);
-        }
-        const isManaged = (r) => {
-          const ids = candidatesBySortOrder.get(r.sort_order) ?? [];
-          const risu = r.metadata?._risu;
-          const translatorFlag = risu?.extension_managed === true;
-          return decideRulePartitionWithOverrides(ids, newDecisions, translatorFlag);
-        };
-        const pendingScripts = partitionRulesForLumi(updated.regex_scripts, isManaged);
-        let characterName = msg.characterId;
-        try {
-          const ch = await spindle.characters.get(msg.characterId, userId);
-          if (ch && typeof ch.name === "string") {
-            characterName = ch.name;
-          }
-        } catch {}
-        spindle.sendToFrontend({
-          type: "install_regex_scripts",
-          characterId: msg.characterId,
-          characterName,
-          scripts: pendingScripts.map((r) => ({
-            name: r.name,
-            script_id: r.script_id,
-            find_regex: r.find_regex,
-            replace_string: r.replace_string,
-            flags: r.flags,
-            placement: r.placement,
-            scope: r.scope,
-            scope_id: r.scope_id,
-            target: r.target,
-            min_depth: r.min_depth,
-            max_depth: r.max_depth,
-            trim_strings: r.trim_strings,
-            run_on_edit: r.run_on_edit,
-            substitute_macros: r.substitute_macros,
-            disabled: r.disabled,
-            sort_order: r.sort_order,
-            description: r.description,
-            folder: r.folder,
-            metadata: { ...r.metadata ?? {} }
-          }))
-        });
-        log5.info(`set_portal_decision: re-installed ${pendingScripts.length} regex_scripts for char=${msg.characterId} (stubs+inline rules)`);
-        const affectedChats = [];
-        for (const [chatId, active] of activeCardByChat) {
-          if (active.card.character_id === msg.characterId) {
-            affectedChats.push(chatId);
-            activeCardByChat.delete(chatId);
-          }
-        }
-        for (const chatId of affectedChats) {
-          const reloaded = await ensureActiveCardForChat(chatId, null);
-          if (reloaded) {
-            await refreshPortals(reloaded, chatId);
-          }
-        }
-        if (affectedChats.length > 0) {
-          log5.info(`set_portal_decision: refreshed portals for ${affectedChats.length} active chat(s) of char=${msg.characterId}`);
-        }
-        send({
-          type: "portal_candidates_pushed",
-          characterId: msg.characterId,
-          candidates: updated.portal_candidates ?? [],
-          decisions: { ...newDecisions },
-          ts: Date.now()
-        });
-        break;
-      }
       case "upload_module_init": {
         if (!userId) {
           send({ type: "error", message: "upload_module_init: no userId" });
@@ -35235,6 +32712,7 @@ spindle.onFrontendMessage(async (raw, userId) => {
         break;
       }
       case "add_asset":
+      case "add_assets":
       case "rename_asset":
       case "delete_asset": {
         if (!userId) {

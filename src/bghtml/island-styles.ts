@@ -17,6 +17,10 @@ export interface IslandStyles {
 
 export interface SetupIslandStylesOptions {
   readonly riskuEnvironmentCss?: string;
+  /** Invoked after every setStylesheet / setCrossRuleSheets call. Used by
+   *  the portal lifter to re-sweep when card CSS changes (which can flip
+   *  computed `position: fixed` without firing a DOM mutation). */
+  readonly onStylesUpdated?: () => void;
 }
 
 export function setupIslandStyles(flog: Flog, opts: SetupIslandStylesOptions = {}): IslandStyles {
@@ -217,6 +221,12 @@ export function setupIslandStyles(flog: Flog, opts: SetupIslandStylesOptions = {
     }
   }
 
+  function fireUpdated(): void {
+    const cb = opts.onStylesUpdated;
+    if (!cb) return;
+    try { cb(); } catch (err) { flog.warn('island-styles: onStylesUpdated callback threw', err); }
+  }
+
   return {
     setStylesheet(css: string): void {
       if (!sheet) return;
@@ -226,6 +236,7 @@ export function setupIslandStyles(flog: Flog, opts: SetupIslandStylesOptions = {
       } catch (err) {
         flog.error('island-styles: replaceSync failed', err);
       }
+      fireUpdated();
     },
     setCrossRuleSheets(cssParts: readonly string[]): void {
       const next: CSSStyleSheet[] = [];
@@ -252,6 +263,7 @@ export function setupIslandStyles(flog: Flog, opts: SetupIslandStylesOptions = {
       flog.info(
         `island-styles: cross-rule sheets set ok=${okCount} failed=${failCount} total_parts=${cssParts.length}`,
       );
+      fireUpdated();
     },
     clear(): void {
       if (!sheet) return;

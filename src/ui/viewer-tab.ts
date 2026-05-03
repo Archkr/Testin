@@ -15,6 +15,10 @@ import type { FrontendLog } from './drawer.js';
 // Viewer for both characters and standalone .risum modules.
 // Mounts into a host element provided by ui/sidebar.ts.
 
+// Matches Lumi /api/v1/images route cap and Risu's MAX_ASSET_SIZE_BYTES.
+const MAX_ASSET_MB = 50;
+const MAX_ASSET_BYTES = MAX_ASSET_MB * 1024 * 1024;
+
 export interface ViewerPanelHandle {
   handleBackendMessage(msg: BackendToFrontend): void;
   destroy(): void;
@@ -496,6 +500,10 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
   function sendCurrentSourceMutation(
     partial:
       | { type: 'add_asset'; assetName: string; imageId: string; ext?: string }
+      | {
+          type: 'add_assets';
+          entries: ReadonlyArray<{ assetName: string; imageId: string; ext?: string }>;
+        }
       | { type: 'rename_asset'; oldName: string; newName: string }
       | { type: 'delete_asset'; assetName: string },
   ): void {
@@ -509,76 +517,159 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
 
   async function onAddAssetClicked(): Promise<void> {
     if (!viewerData) return;
-    let file: File | null;
+    let files: File[];
     try {
-      file = await pickFile();
+      files = await pickFiles();
     } catch (err) {
       log.error('viewer-panel: file pick threw', err);
       assetUploadStatus = { kind: 'error', message: `File pick failed: ${errMsg(err)}` };
       render();
       return;
     }
-    if (!file) return;
-
-    const lastDot = file.name.lastIndexOf('.');
-    const baseName = lastDot > 0 ? file.name.slice(0, lastDot) : file.name;
-    const ext = lastDot > 0 ? file.name.slice(lastDot + 1).toLowerCase() : undefined;
-    // Prompt the user for the asset name; default to the basename.
-    const promptedName = window.prompt('Asset name (CBS macros use this verbatim):', baseName);
-    if (promptedName === null) return; // user dismissed
-    const assetName = promptedName.trim();
-    if (assetName.length === 0) {
-      assetUploadStatus = { kind: 'error', message: 'Asset name cannot be empty.' };
-      render();
-      return;
-    }
-
-    assetUploadStatus = { kind: 'info', message: `Uploading "${file.name}"…` };
-    render();
-    let imageId: string;
-    try {
-      const fd = new FormData();
-      fd.set('image', file, file.name);
-      const resp = await fetch('/api/v1/images', {
-        method: 'POST',
-        body: fd,
-        credentials: 'include',
-      });
-      if (!resp.ok) {
-        let detail = '';
-        try { detail = ` — ${(await resp.text()).slice(0, 200)}`; } catch { /* */ }
-        throw new Error(`HTTP ${resp.status}${detail}`);
-      }
-      const body = (await resp.json()) as { id?: string };
-      if (typeof body?.id !== 'string' || body.id.length === 0) {
-        throw new Error('upload response missing id');
-      }
-      imageId = body.id;
-    } catch (err) {
-      log.error('viewer-panel: asset upload failed', err);
-      assetUploadStatus = { kind: 'error', message: `Upload failed: ${errMsg(err)}` };
-      render();
-      return;
-    }
-    assetUploadStatus = { kind: 'info', message: `Uploaded — saving…` };
-    render();
-    sendCurrentSourceMutation({
-      type: 'add_asset',
-      assetName,
-      imageId,
-      ...(ext !== undefined ? { ext } : {}),
-    });
+    if (files.length === 0) return;
+    await uploadAssetsBatch(files);
   }
 
-  function pickFile(): Promise<File | null> {
+  // Mirrors payload/import.ts asset uploader: 6-worker pool, count-based progress.
+  // Single backend mutation at the end → one envelope write + one viewer re-push.
+  async function uploadAssetsBatch(files: readonly File[]): Promise<void> {
+    if (!viewerData) return;
+    const existingNames = new Set(viewerData.assets.map((a) => a.name));
+    const planned: Array<{ file: File; assetName: string; ext: string | undefined }> = [];
+    const failures: Array<{ filename: string; reason: string }> = [];
+    for (const f of files) {
+      if (f.size > MAX_ASSET_BYTES) {
+        failures.push({ filename: f.name, reason: `${formatMB(f.size)} > ${MAX_ASSET_MB} MB` });
+        continue;
+      }
+      const { baseName, ext } = splitName(f.name);
+      const assetName = disambiguateName(baseName, existingNames);
+      existingNames.add(assetName);
+      planned.push({ file: f, assetName, ext });
+    }
+
+    const total = planned.length;
+    if (total === 0) {
+      assetUploadStatus = {
+        kind: 'error',
+        message: `${failures.length} file${failures.length === 1 ? '' : 's'} skipped — all exceeded ${MAX_ASSET_MB} MB. ${formatFailureList(failures)}`,
+      };
+      render();
+      return;
+    }
+    let processed = 0;
+    const results: Array<{ assetName: string; imageId: string; ext?: string }> = [];
+    assetUploadStatus = { kind: 'info', message: `Uploading 0/${total}…` };
+    render();
+
+    const concurrency = Math.min(6, total);
+    let nextIndex = 0;
+    const worker = async (): Promise<void> => {
+      while (true) {
+        const i = nextIndex++;
+        if (i >= total) break;
+        const p = planned[i]!;
+        try {
+          const imageId = await uploadOne(p.file);
+          results.push({
+            assetName: p.assetName,
+            imageId,
+            ...(p.ext !== undefined ? { ext: p.ext } : {}),
+          });
+        } catch (err) {
+          const reason = errMsg(err);
+          failures.push({ filename: p.file.name, reason });
+          log.warn(`viewer-panel: batch upload failed name="${p.assetName}" file="${p.file.name}": ${reason}`);
+        }
+        processed += 1;
+        if (processed === total || processed % Math.max(1, Math.floor(total / 20)) === 0) {
+          const tail = failures.length > 0 ? ` (${failures.length} failed)` : '';
+          assetUploadStatus = { kind: 'info', message: `Uploading ${processed}/${total}${tail}…` };
+          render();
+        }
+      }
+    };
+    const workers: Promise<void>[] = [];
+    for (let w = 0; w < concurrency; w++) workers.push(worker());
+    await Promise.all(workers);
+
+    if (results.length === 0) {
+      assetUploadStatus = {
+        kind: 'error',
+        message: `All ${files.length} upload(s) failed. ${formatFailureList(failures)}`,
+      };
+      render();
+      return;
+    }
+    const tail = failures.length > 0
+      ? ` (${failures.length} failed — ${formatFailureList(failures)})`
+      : '';
+    assetUploadStatus = {
+      kind: failures.length > 0 ? 'error' : 'info',
+      message: `Saving ${results.length} asset${results.length === 1 ? '' : 's'}${tail}…`,
+    };
+    render();
+    sendCurrentSourceMutation({ type: 'add_assets', entries: results });
+  }
+
+  function formatFailureList(failures: ReadonlyArray<{ filename: string; reason: string }>): string {
+    if (failures.length === 0) return '';
+    const max = 3;
+    const shown = failures.slice(0, max).map((f) => `"${f.filename}" (${f.reason})`).join(', ');
+    if (failures.length <= max) return shown + '.';
+    return `${shown}, +${failures.length - max} more — see console.`;
+  }
+
+  function formatMB(bytes: number): string {
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
+  async function uploadOne(file: File): Promise<string> {
+    const fd = new FormData();
+    fd.set('image', file, file.name);
+    const resp = await fetch('/api/v1/images', {
+      method: 'POST',
+      body: fd,
+      credentials: 'include',
+    });
+    if (!resp.ok) {
+      let detail = '';
+      try { detail = ` — ${(await resp.text()).slice(0, 200)}`; } catch { /* */ }
+      throw new Error(`HTTP ${resp.status}${detail}`);
+    }
+    const body = (await resp.json()) as { id?: string };
+    if (typeof body?.id !== 'string' || body.id.length === 0) {
+      throw new Error('upload response missing id');
+    }
+    return body.id;
+  }
+
+  function splitName(filename: string): { baseName: string; ext: string | undefined } {
+    const lastDot = filename.lastIndexOf('.');
+    const baseName = lastDot > 0 ? filename.slice(0, lastDot) : filename;
+    const ext = lastDot > 0 ? filename.slice(lastDot + 1).toLowerCase() : undefined;
+    return { baseName, ext };
+  }
+
+  function disambiguateName(base: string, taken: ReadonlySet<string>): string {
+    if (!taken.has(base)) return base;
+    for (let n = 2; n < 10_000; n++) {
+      const candidate = `${base} (${n})`;
+      if (!taken.has(candidate)) return candidate;
+    }
+    return `${base} (${Date.now()})`;
+  }
+
+  function pickFiles(): Promise<File[]> {
     return new Promise((resolve, reject) => {
       const input = document.createElement('input');
       input.type = 'file';
       input.accept = 'image/*,video/*,audio/*';
+      input.multiple = true;
       input.style.display = 'none';
       document.body.appendChild(input);
       let settled = false;
-      const done = (result: File | null, err?: Error): void => {
+      const done = (result: File[], err?: Error): void => {
         if (settled) return;
         settled = true;
         try { document.body.removeChild(input); } catch { /* */ }
@@ -586,10 +677,12 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
         else resolve(result);
       };
       input.addEventListener('change', () => {
-        const f = input.files?.[0] ?? null;
-        done(f);
+        const list = input.files;
+        const out: File[] = [];
+        if (list) for (let i = 0; i < list.length; i++) out.push(list.item(i)!);
+        done(out);
       });
-      input.addEventListener('cancel', () => done(null));
+      input.addEventListener('cancel', () => done([]));
       input.click();
     });
   }

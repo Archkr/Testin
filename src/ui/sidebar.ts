@@ -4,7 +4,6 @@ import { mountCardsPanel } from './drawer.js';
 import type { FrontendLog } from './drawer.js';
 import { mountVariablesPanel } from './variables-tab.js';
 import { mountSettingsPanel } from './settings-tab.js';
-import { mountPersistentUisPanel } from './portal-tab.js';
 import { mountModulesPanel } from './modules-tab.js';
 import { mountViewerPanel } from './viewer-tab.js';
 import { mountTogglesPanel } from './toggles-tab.js';
@@ -34,12 +33,11 @@ const SUB_TABS: readonly SubTabDef[] = [
   { id: 'settings',       label: 'Settings',       title: 'Aux model, parity toggles, and diagnostic logs.' },
 ];
 
-type StateSubTabId = 'variables' | 'toggles' | 'persistent-uis';
+type StateSubTabId = 'variables' | 'toggles';
 
 const STATE_SUB_TABS: readonly { id: StateSubTabId; label: string; title: string }[] = [
-  { id: 'variables',      label: 'Variables',      title: 'Live macro variables.' },
-  { id: 'toggles',        label: 'Toggles',        title: 'Custom toggles.' },
-  { id: 'persistent-uis', label: 'Persistent UIs', title: 'Per-card pinned overlay decisions.' },
+  { id: 'variables', label: 'Variables', title: 'Live macro variables.' },
+  { id: 'toggles',   label: 'Toggles',   title: 'Custom toggles.' },
 ];
 
 interface SubPanelHandle {
@@ -209,9 +207,6 @@ export function createSidebar(opts: CreateSidebarOptions): SidebarHandle {
             case 'toggles':
               sub = mountTogglesPanel({ root: h, sendToBackend, log });
               if (sub.setActiveChatId) sub.setActiveChatId(cachedActiveChatId);
-              break;
-            case 'persistent-uis':
-              sub = mountPersistentUisPanel({ root: h, sendToBackend, log });
               break;
             default: {
               const ex: never = id;

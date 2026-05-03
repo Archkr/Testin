@@ -7,14 +7,6 @@ import type {
 } from "../lumiverse/types.js";
 import type { CatalogIndex } from "../cbs/catalog/loader.js";
 import { rewriteText } from "../cbs/rewrite/text.js";
-import {
-  extractGetvarRefs,
-  outermostElementIsFixed,
-  replacementNeedsPortal,
-  EMPTY_PORTAL_SELECTORS,
-  type PortalSelectors,
-} from "./portal-analyze.js";
-import { wrapFixedElementsRecursive } from "./portal-wrap.js";
 import { wrapIslandMergeIfNeeded } from "./island-merge.js";
 import { newUuid, nowMs } from "./util.js";
 import { normalizeReplaceStringForSanitizer } from "../../util/sanitizer-doc-shape.js";
@@ -49,8 +41,6 @@ export interface MapRegexOptions {
   readonly userId?: string;
   readonly origin?: "character" | "module";
   readonly catalog?: CatalogIndex;
-  readonly portalSelectors?: PortalSelectors;
-  readonly anchoredPortalSelectors?: PortalSelectors;
 }
 
 export interface MapRegexResult {
@@ -123,41 +113,15 @@ export function mapRegex(
     }
 
 
-    // Wrap fixed-position HTML so Lumi's row transform doesn't trap it.
-    // Outer fixed: whole-string wrap + extension_managed. Subtree fixed: recursive sub-wrap.
-    let needsPortal = false;
-    if (effectivePhase.target === "display" && opts.portalSelectors) {
-      const hasFixedAnywhere = replacementNeedsPortal(
-        replaceString,
-        opts.portalSelectors,
-      );
-      if (hasFixedAnywhere) {
-        const outerFixed = outermostElementIsFixed(
-          replaceString,
-          opts.portalSelectors,
-        );
-        if (outerFixed) {
-          needsPortal = true;
-          replaceString = `<div data-risu-portal="auto">${replaceString}</div>`;
-        } else {
-          // Wrap each individually-fixed sub-element.
-          // Anchored selectors (explicit top/right/bottom/left or z-index>=1000)
-          // avoid extracting transform-only decoratives that need parent context.
-          replaceString = wrapFixedElementsRecursive(
-            replaceString,
-            opts.anchoredPortalSelectors ?? EMPTY_PORTAL_SELECTORS,
-            "auto",
-          );
-        }
-      }
-    }
+    // Runtime DOM lifter handles fixed-position content post-render via
+    // getComputedStyle. No translate-time partition.
 
     if (effectivePhase.target === "display") {
       replaceString = wrapIslandMergeIfNeeded(replaceString);
     }
 
-    // Strip doc-boundary tags and lift <style> blocks so DOMPurify keeps CSS.
-    // Must run after portal/island wraps.
+    // Strip doc-boundary tags and lift style blocks so DOMPurify keeps CSS.
+    // Must run after island wrap.
     replaceString = normalizeReplaceStringForSanitizer(replaceString);
 
     let findPattern = String(s.in ?? "");
@@ -172,11 +136,9 @@ export function mapRegex(
       }
     }
 
-    // Simplify state-conditional anchor idiom for Lumi-managed rules.
-    // Portal-managed rules resolve find_regex per-message via backend resolver, skip simplification.
-    if (!needsPortal) {
-      findPattern = simplifyStateConditionalAnchor(findPattern);
-    }
+    // Collapse the state-conditional two-branch idiom to its literal-marker
+    // branch so chat-wide useDisplayRegex doesn't over-fire on `$` end-anchor.
+    findPattern = simplifyStateConditionalAnchor(findPattern);
 
     const hasMacros =
       replaceString.indexOf("{{") >= 0 || findPattern.indexOf("{{") >= 0;
@@ -184,9 +146,6 @@ export function mapRegex(
     // Drop `u` when find_regex has CBS: `{{` is invalid in Unicode mode. Lumi pre-resolves it.
     const findHasCbs = findPattern.indexOf("{{") >= 0;
     const emittedFlags = findHasCbs ? normalised.flag.replace(/u/g, "") : normalised.flag;
-
-    // Static scan for var_refs (used by backend portal resolver's per-message cache key).
-    const varRefs = extractGetvarRefs(replaceString);
 
     const row: LumiRegexScript = {
       id: uuid(),
@@ -216,44 +175,12 @@ export function mapRegex(
           origin,
           order_index: i,
           has_meta: normalised.actions.length > 0,
-          ...(needsPortal ? { extension_managed: true } : {}),
-          ...(varRefs.length > 0 ? { var_refs: varRefs } : {}),
         },
       },
       created_at: now,
       updated_at: now,
     };
     rows.push(row);
-
-    // Strip-stub: erases the marker text from Lumi's rendered bubbles.
-    // Portal resolver handles the actual HTML injection.
-    if (needsPortal) {
-      const stubFindRegex = simplifyStateConditionalAnchor(findPattern);
-      const stubFindHasCbs = stubFindRegex.indexOf("{{") >= 0;
-      const stubSubstituteMacros: LumiRegexMacroMode =
-        stubFindHasCbs ? row.substitute_macros : "none";
-      const stubRow: LumiRegexScript = {
-        ...row,
-        id: uuid(),
-        script_id: uuid(),
-        name: `${row.name} (strip)`,
-        find_regex: stubFindRegex,
-        replace_string: "",
-        substitute_macros: stubSubstituteMacros,
-        trim_strings: [],
-        metadata: {
-          _risu: {
-            phase: s.type,
-            origin,
-            order_index: i,
-            has_meta: false,
-            is_strip_stub: true,
-            stub_for: row.script_id,
-          },
-        },
-      };
-      rows.push(stubRow);
-    }
   }
 
   return { rows, skipped, issues };

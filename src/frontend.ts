@@ -7,7 +7,7 @@ import { setupBgHtmlRenderer } from './bghtml/render.js';
 import { setupIslandStyles } from './bghtml/island-styles.js';
 // Risu compiled CSS (Tailwind v4 + theme vars). GPL-3.0 output; reason LumiRealm is GPL-3.0.
 import risuEnvironmentCss from './bghtml/risu-environment.css' with { type: 'text' };
-import { setupSidebarPortal } from './portal/sidebar-portal.js';
+import { setupMessagePortal } from './portal/message-portal.js';
 import { setupImportOverlay } from './ui/import-overlay.js';
 import { setupBgmPlayer } from './audio/bgm.js';
 import { setupSvgRasterizer } from './svg-raster.js';
@@ -172,7 +172,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     const result = {
       chatScopeBytes: chatScope?.textContent?.length ?? null,
       bgHtmlHostExists: document.querySelector('[data-risu-bg-host]') !== null,
-      portalRootExists: document.getElementById('risu-compat-sidebar-portal-root') !== null,
+      messagePortalRootExists: document.querySelector('.lumi-message-portal-root') !== null,
       islandShadows: islandSheets,
     };
     console.log('[lumirealm] [STYLE-SCOPE]', JSON.stringify(result, null, 2));
@@ -229,10 +229,19 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     };
   }
 
-  // Island-styles must be set up before the bg-html renderer so the constructed
-  // CSSStyleSheet exists when the first render_bg_html arrives.
+  // Runtime DOM lifter: walks chat-message subtrees, finds position:fixed
+  // elements, reparents them into a body-level overlay to escape Lumi's
+  // row-transform containing block. Ground truth via getComputedStyle.
+  const messagePortal = setupMessagePortal(ctx, flog);
+  cleanups.push(() => messagePortal.destroy());
+
+  // Island-styles before the bg-html renderer so the sheet exists when the
+  // first render_bg_html arrives. Adopting a sheet that flips computed position
+  // to fixed doesn't fire a DOM mutation, so the lifter wouldn't see it. The
+  // styles-updated callback triggers a sweep.
   const islandStyles = setupIslandStyles(flog, {
     riskuEnvironmentCss: risuEnvironmentCss,
+    onStylesUpdated: () => messagePortal.sweep('island-styles-updated'),
   });
   cleanups.push(() => islandStyles.destroy());
 
@@ -251,11 +260,6 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   } catch (err) {
     flog.error('createAuxDebugPanel failed:', err);
   }
-
-  // Portal: reparents `[data-risu-portal]` nodes out of Lumi's virtualizer
-  // subtree (transform creates a containing block, breaking position:fixed).
-  const sidebarPortal = setupSidebarPortal(flog);
-  cleanups.push(() => sidebarPortal.destroy());
 
   const alertModal = setupAlertModal({ ctx, sendToBackend, log: flog });
   cleanups.push(() => alertModal.destroy());
@@ -338,21 +342,15 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     },
     dumpPortalState(): {
       activeRisuChatId: string | null;
-      portal: ReturnType<typeof sidebarPortal.diagnostic>;
+      portal: ReturnType<typeof messagePortal.diagnostic>;
     } {
       return {
         activeRisuChatId,
-        portal: sidebarPortal.diagnostic(),
+        portal: messagePortal.diagnostic(),
       };
     },
-    requestPortalSnapshot(): boolean {
-      if (!activeRisuChatId) {
-        flog.warn('__riCompat.requestPortalSnapshot: no active Risu chat');
-        return false;
-      }
-      sendToBackend({ type: 'request_portal_snapshot', chatId: activeRisuChatId });
-      flog.info(`__riCompat.requestPortalSnapshot: requested for chatId=${activeRisuChatId}`);
-      return true;
+    sweepPortals(): void {
+      messagePortal.sweep('manual');
     },
     requestVariablesSnapshot(): boolean {
       if (!activeRisuChatId) {
@@ -461,17 +459,13 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       const prevChatId = activeRisuChatId;
       if (msg.type === 'render_bg_html') activeRisuChatId = msg.chatId;
       else if (msg.type === 'clear_bg_html') activeRisuChatId = null;
-      if (msg.type === 'clear_bg_html') sidebarPortal.clearAll();
+      // Lifter overlay is per-chat. Drop everything on chat switch.
+      // The new chat's bg-html arrives next and the lifter re-detects.
+      if (activeRisuChatId !== prevChatId) {
+        messagePortal.clearAll(msg.type === 'clear_bg_html' ? 'clear_bg_html' : 'chat-switch');
+      }
       if (sidebar && activeRisuChatId !== prevChatId) {
         sidebar.setActiveChatId(activeRisuChatId);
-      }
-      return;
-    }
-    if (msg.type === 'set_portals') {
-      try {
-        sidebarPortal.applySetPortals(msg);
-      } catch (err) {
-        flog.error('set_portals dispatch failed:', err);
       }
       return;
     }

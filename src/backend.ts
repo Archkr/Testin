@@ -13,10 +13,6 @@ import {
   type UserStorageLike,
 } from './payload/installer.js';
 import {
-  decideRulePartitionWithOverrides,
-  ensurePortalWrap,
-  isStripStub,
-  partitionRulesForLumi,
   preValidateRequires,
   RisuCompatVersionError,
   RisuConsentDeclinedError,
@@ -98,7 +94,6 @@ import {
   trackMessagesBatch,
   type ChatSidecar,
 } from './state/sidecar.js';
-import { PortalStateStore } from './state/portal-state.js';
 import { VariableStateStore } from './state/variables-state.js';
 import { ToggleStateStore } from './state/toggle-state.js';
 import {
@@ -117,12 +112,6 @@ import {
   normalizeSettingsPatch,
 } from './state/settings-store.js';
 import {
-  resolvePortalsForChat,
-  clearPortalCacheForCard,
-  type PortalSlot,
-  type ResolverMessage,
-} from './interpreter/portal/resolver.js';
-import {
   expectChatChange,
   consumeOwnChatChange,
 } from './state/own-chat-change.js';
@@ -132,10 +121,6 @@ import {
   consumeIfOurWrite,
 } from './state/recent-writes.js';
 import { scheduleStateChangedRefresh as scheduleDebouncedRefresh } from './state/state-changed-debouncer.js';
-import {
-  getOrBuildPortalSelectors,
-  clearPortalSelectorsForCard,
-} from './state/portal-selectors-cache.js';
 import { computeDepthPromptSeed } from './state/depth-prompt-seed.js';
 import { normalizeReplaceStringForSanitizer } from './util/sanitizer-doc-shape.js';
 import {
@@ -196,7 +181,7 @@ interface MessageContentProcessorCtx {
   readonly messageId?: string;
   readonly content: string;
   readonly extra?: Record<string, unknown>;
-  readonly origin: 'create' | 'update' | 'swipe_add' | 'swipe_update';
+  readonly origin: 'create' | 'update' | 'swipe_add' | 'swipe_update' | 'render';
   readonly swipeIndex?: number;
   readonly userId: string;
 }
@@ -313,6 +298,11 @@ if (typeof registerMacroInterceptor === 'function') {
     const charImage = getActiveCharacterImage(chatId);
     const personaImage = getActivePersonaImage(ctx.userId);
 
+    const dynChatIndex = (ctx.env as { dynamicMacros?: Record<string, string> }).dynamicMacros?.chat_index;
+    const dynChatIndexNum = typeof dynChatIndex === 'string' && /^-?\d+$/.test(dynChatIndex)
+      ? parseInt(dynChatIndex, 10) - 1
+      : undefined;
+
     let resolved: string;
     try {
       resolved = runPipeline({
@@ -320,6 +310,7 @@ if (typeof registerMacroInterceptor === 'function') {
         phase: ctx.commit ? 'commit' : 'display',
         chatId,
         ...(ctx.userId !== undefined ? { userId: ctx.userId } : {}),
+        ...(dynChatIndexNum !== undefined ? { currentMessageIndexOverride: dynChatIndexNum } : {}),
         characterId: active.card.character_id,
         userName: namesEnv.user ?? '',
         charName: namesEnv.char ?? charCard.name ?? '',
@@ -473,6 +464,63 @@ if (typeof registerMessageContentProcessor === 'function') {
         );
         return;
       }
+
+      if (ctx.origin === 'render') {
+        const triggers = active.card.risuPayload.triggers as ReadonlyArray<{
+          effect?: ReadonlyArray<{ type?: string }>;
+        }>;
+        const luaScripts = active.card.risuPayload.lua_scripts;
+        const hasLuaTrigger = triggers.some(
+          (t) => t.effect?.[0]?.type === 'triggerlua',
+        );
+        if (!hasLuaTrigger) {
+          log.info(
+            `messageContentProcessor.exit #${seq} path=render-no-lua chat=${ctx.chatId} ensure=${tB - tA}ms total=${Date.now() - tStart}ms`,
+          );
+          return;
+        }
+        const rawIdx = ctx.extra?.['messageIndex'];
+        const messageIndex = typeof rawIdx === 'number' ? rawIdx : 0;
+        const risuChatIdx = Math.max(-1, messageIndex - 1);
+        const editChain = triggers.map((t, i) => ({
+          source: t,
+          luaCode: luaScripts[i] ?? '',
+        }));
+        try {
+          const editApi = makeSpindleHost({
+            chatId: ctx.chatId,
+            characterId: active.card.character_id,
+            userId: ctx.userId,
+          });
+          const editScriptNS = makeDispatcherScriptNS();
+          const transformed = await runListenEditChain<string>(
+            editChain,
+            'editDisplay',
+            ctx.content,
+            { index: risuChatIdx },
+            editApi,
+            { characterId: active.card.character_id, content: ctx.content },
+            editScriptNS,
+            { chatId: ctx.chatId, characterId: active.card.character_id },
+          );
+          if (transformed === ctx.content) {
+            log.info(
+              `messageContentProcessor.exit #${seq} path=render-noop chat=${ctx.chatId} msg=${ctx.messageId ?? '<?>'} idx=${messageIndex} total=${Date.now() - tStart}ms`,
+            );
+            return;
+          }
+          log.info(
+            `messageContentProcessor.exit #${seq} path=render-transformed chat=${ctx.chatId} msg=${ctx.messageId ?? '<?>'} idx=${messageIndex} before_len=${ctx.content.length} after_len=${transformed.length} total=${Date.now() - tStart}ms`,
+          );
+          return { content: transformed };
+        } catch (err) {
+          log.warn(
+            `messageContentProcessor.exit #${seq} path=render-threw chat=${ctx.chatId} msg=${ctx.messageId ?? '<?>'} err=${errMsg(err)} total=${Date.now() - tStart}ms`,
+          );
+          return;
+        }
+      }
+
       let resolved: string;
       try {
         resolved = await resolveReadonly(ctx.content, ctx.chatId, active.card.character_id);
@@ -669,8 +717,6 @@ if (typeof registerInterceptor === 'function') {
   log.info('interceptor: not available on this Lumi build — listenEdit editInput/editRequest will not fire');
 }
 
-const portalState = new PortalStateStore();
-
 const variableState = new VariableStateStore();
 
 const toggleState = new ToggleStateStore();
@@ -688,7 +734,6 @@ function scheduleStateChangedRefresh(chatId: string): void {
       const t0 = Date.now();
       await refreshResolvedContent(active, chatId);
       await refreshBgHtml(active, chatId);
-      await refreshPortals(active, chatId);
       await refreshVariables(active, chatId);
       log.info(`scheduleStateChangedRefresh: completed chat=${chatId} elapsed=${Date.now() - t0}ms`);
     },
@@ -1064,11 +1109,9 @@ async function applySvgRasterIndex(args: {
     return;
   }
 
-  // Re-install Lumi-managed rules (extension-managed excluded; strip-stubs included).
-  const lumiManaged = regexScriptsAfterSubstitution.filter((r) => {
-    const meta = (r as { metadata?: { _risu?: { extension_managed?: unknown } } }).metadata;
-    return meta?._risu?.extension_managed !== true;
-  });
+  // Re-install all rules. Runtime DOM lifter handles fixed-position content
+  // post-render, so there's no extension-managed partition to filter on.
+  const lumiManaged = regexScriptsAfterSubstitution;
   if (lumiManaged.length > 0) {
     let characterName = characterId;
     try {
@@ -1140,7 +1183,6 @@ async function applySvgRasterIndex(args: {
         if (reloaded) {
           await refreshResolvedContent(reloaded, chatId);
           await refreshBgHtml(reloaded, chatId);
-          await refreshPortals(reloaded, chatId);
         }
       } catch (err) {
         log.warn(`applySvgRasterIndex: refresh chat=${chatId} threw: ${errMsg(err)}`);
@@ -1518,16 +1560,13 @@ async function deleteCardByChar(
       activeCardByChat.delete(chatId);
       clearActiveAssetIndexes(chatId);
       clearActiveCharacterImage(chatId);
-      portalState.clearChat(chatId);
       variableState.clearChat(chatId);
       toggleState.clearChat(chatId);
       evictedChats += 1;
     }
   }
   const compiledEvicted = compiledByCharacter.delete(characterId);
-  clearPortalCacheForCard(characterId);
-  clearPortalSelectorsForCard(characterId);
-  log.info(`deleteCardByChar: evicted activeCard entries=${evictedChats} compiled=${compiledEvicted} portalCache=cleared portalSelectors=cleared`);
+  log.info(`deleteCardByChar: evicted activeCard entries=${evictedChats} compiled=${compiledEvicted}`);
   // CHARACTER_DELETED fires before the row is removed; filter defensively.
   const fresh = await listCards();
   const filtered = fresh.filter((c) => c.character_id !== characterId);
@@ -1757,14 +1796,12 @@ async function runBinding(
   const api = makeSpindleHost({ chatId, characterId, userId: getUserId() });
   const scriptNS = makeDispatcherScriptNS();
   registerManualTriggers(scriptNS, compiled, api);
-  const portalSelectors = getOrBuildPortalSelectors(active.card);
   const stateChanged = makeStateChangedCallback(chatId);
   const trackSidecarWrite = makeTrackSidecarWrite(chatId);
   const settings = getCachedSettingsSync(getUserId());
   const auxDebugCapture = makeAuxDebugCapture(chatId, settings);
   const prior = setDispatchContext({
     chatId,
-    portalSelectors,
     rememberOurWrite,
     binding,
     stateChanged,
@@ -1921,7 +1958,6 @@ async function dispatchManualTrigger(
   const api = makeSpindleHost({ chatId, characterId, userId: getUserId() });
   const scriptNS = makeDispatcherScriptNS();
   const effectiveTriggerId = triggerId ?? String(Math.random()).slice(2, 10);
-  const portalSelectors = getOrBuildPortalSelectors(active.card);
   const t0 = Date.now();
   for (const trigger of luaTriggers) {
     const firstEffect = trigger.effect[0];
@@ -1935,7 +1971,6 @@ async function dispatchManualTrigger(
         characterId,
         binding: 'manual',
         chatId,
-        portalSelectors,
         rememberOurWrite,
         stateChanged: makeStateChangedCallback(chatId),
         trackSidecarWrite: makeTrackSidecarWrite(chatId),
@@ -1975,7 +2010,6 @@ async function dispatchManualTrigger(
       const trackSidecarWrite = makeTrackSidecarWrite(chatId);
       const prior = setDispatchContext({
         chatId,
-        portalSelectors,
         rememberOurWrite,
         binding: 'manual',
         stateChanged,
@@ -2015,143 +2049,9 @@ async function dispatchManualTrigger(
 
   log.info(`dispatchManualTrigger: done triggerName=${triggerName} elapsed=${Date.now() - t0}ms`);
   // State may have mutated → re-resolve every tracked message + repaint bg
-  // + push portal snapshot so the user sees post-click state immediately.
   await refreshResolvedContent(active, chatId);
   await refreshBgHtml(active, chatId);
-  await refreshPortals(active, chatId);
   await refreshVariables(active, chatId);
-}
-
-async function refreshPortals(active: ActiveCard, chatId: string): Promise<void> {
-  const t0 = Date.now();
-  const characterId = active.card.character_id;
-  const userId = getUserId();
-  if (userId === undefined) {
-    log.info(`portal.refresh: skip chatId=${chatId} — userId not yet captured`);
-    return;
-  }
-
-  const rules = active.card.regex_scripts ?? [];
-  if (rules.length === 0) {
-    const cur = portalState.current(chatId);
-    if (cur && cur.slots.length > 0) {
-      const r = portalState.applySnapshot(chatId, []);
-      if (r.changed) {
-        sendPortalSnapshot(chatId, r.entry.seq, []);
-      }
-    }
-    return;
-  }
-
-  const [chat, character, messages, persona] = await Promise.all([
-    spindle.chats.get(chatId, userId).catch((err) => {
-      log.warn(`portal.refresh: chats.get failed chat=${chatId}: ${errMsg(err)}`);
-      return null;
-    }),
-    spindle.characters.get(characterId, userId).catch((err) => {
-      log.warn(`portal.refresh: characters.get failed char=${characterId}: ${errMsg(err)}`);
-      return null;
-    }),
-    fetchChatMessages(chatId),
-    spindle.personas.getActive(userId).catch(() => null),
-  ]);
-
-  const metadata = (chat?.metadata ?? {}) as {
-    macro_variables?: {
-      local?: Record<string, string>;
-      global?: Record<string, string>;
-      chat?: Record<string, string>;
-    };
-  };
-  const mv = metadata.macro_variables ?? {};
-  const assetIndexes = getActiveAssetIndexes(chatId);
-  const scriptstateDefaults = active.card.risuPayload.scriptstate_defaults;
-  const screenDims = getScreenDims(userId);
-
-  const lastMessageId = messages.length === 0 ? -1 : messages.length - 1;
-  const assistantTail = [...messages].reverse().find((m) => m.role === 'assistant');
-  const userTail = [...messages].reverse().find((m) => m.role === 'user');
-
-  const charImageUrlForPortals = imageUrlFromId(
-    (character as { image_id?: unknown } | null | undefined)?.image_id as string | null | undefined,
-  );
-  const personaImageUrlForPortals = imageUrlFromId(
-    (persona as { image_id?: unknown } | null | undefined)?.image_id as string | null | undefined,
-  );
-
-  // Build the per-call pipelineCtx  - passed to runPipeline by the
-  // resolver, with currentMessageIndexOverride spliced per-message.
-  const pipelineCtx = {
-    chatId,
-    userId,
-    characterId,
-    userName: persona?.name ?? '',
-    charName: character?.name ?? '',
-    ...(persona?.description ? { personaText: persona.description } : {}),
-    ...(personaImageUrlForPortals ? { personaImage: personaImageUrlForPortals } : {}),
-    character: {
-      description: character?.description ?? '',
-      personality: character?.personality ?? '',
-      scenario: character?.scenario ?? '',
-      exampleDialogue: character?.mes_example ?? '',
-      mainPrompt: character?.system_prompt ?? '',
-      postHistoryInstructions: character?.post_history_instructions ?? '',
-      creatorNotes: character?.creator_notes ?? '',
-      firstMessage: character?.first_mes ?? '',
-      alternateGreetings: character?.alternate_greetings ?? [],
-      ...(assetIndexes ? { additionalAssets: assetIndexes.assets } : {}),
-      ...(assetIndexes ? { emotionImages: assetIndexes.emotions } : {}),
-      ...(charImageUrlForPortals ? { image: charImageUrlForPortals } : {}),
-    },
-    chat: {
-      messageCount: messages.length,
-      lastMessageId,
-      lastMessage: messages[messages.length - 1]?.content ?? '',
-      lastCharMessage: assistantTail?.content ?? '',
-      lastUserMessage: userTail?.content ?? '',
-    },
-    variables: {
-      ...(mv.local ? { local: mv.local } : {}),
-      ...(mv.global ? { global: mv.global } : {}),
-      ...(mv.chat ? { chat: mv.chat } : {}),
-    },
-    ...(scriptstateDefaults && Object.keys(scriptstateDefaults).length > 0
-      ? { scriptstateDefaults }
-      : {}),
-    ...(screenDims ? { screenWidth: screenDims.width, screenHeight: screenDims.height } : {}),
-    legacyMediaFindings: getCachedSettingsSync(userId).legacyMediaFindings,
-    ...(modulesByNamespaceFromCard(active.card) ? { modulesByNamespace: modulesByNamespaceFromCard(active.card)! } : {}),
-  };
-
-  const resolverMessages: ResolverMessage[] = messages.map((m) => ({
-    id: m.id,
-    content: m.content,
-  }));
-
-  const outcome = resolvePortalsForChat(resolverMessages, rules, {
-    chatId,
-    userId,
-    cardId: characterId,
-    pipelineCtx,
-  });
-
-  for (const w of outcome.warnings) {
-    log.warn(
-      `portal.resolver.${w.stage}: chat=${chatId} msg=${w.msgId} ` +
-        `${w.ruleId ? `rule=${w.ruleId} ` : ''}${w.message}`,
-    );
-  }
-
-  const result = portalState.applySnapshot(chatId, outcome.slots);
-  if (result.changed) {
-    sendPortalSnapshot(chatId, result.entry.seq, outcome.slots);
-  }
-  log.info(
-    `portal.refresh: chat=${chatId} messages=${messages.length} rules=${rules.length} ` +
-      `slots=${outcome.slots.length} changed=${result.changed} seq=${result.entry.seq} ` +
-      `cacheHits=${outcome.cacheHits} cacheMisses=${outcome.cacheMisses} ` +
-      `elapsed=${Date.now() - t0}ms`,
-  );
 }
 
 async function refreshVariables(
@@ -2263,7 +2163,6 @@ async function writeLocalVariable(
 
   await refreshResolvedContent(active, chatId);
   await refreshBgHtml(active, chatId);
-  await refreshPortals(active, chatId);
   await refreshVariables(active, chatId, { force: true });
 
   log.info(
@@ -2439,7 +2338,6 @@ async function writeToggleValue(
 
   await refreshResolvedContent(active, chatId);
   await refreshBgHtml(active, chatId);
-  await refreshPortals(active, chatId);
   await refreshVariables(active, chatId, { force: true });
 
   log.info(
@@ -2463,22 +2361,6 @@ function sanitizeVarMap(raw: unknown): Record<string, string> {
     }
   }
   return out;
-}
-
-function sendPortalSnapshot(chatId: string, seq: number, slots: readonly PortalSlot[]): void {
-  send({
-    type: 'set_portals',
-    chatId,
-    seq,
-    portals: slots.map((s) => ({
-      slotId: s.slotId,
-      msgId: s.msgId,
-      matchIdx: s.matchIdx,
-      html: s.html,
-      signature: s.signature,
-      sourceToken: s.sourceToken,
-    })),
-  });
 }
 
 function extractStyleBlocks(template: string): string[] {
@@ -3020,21 +2902,9 @@ spindle.on('SETTINGS_UPDATED', async (raw, userId) => {
   }
   await refreshResolvedContent(active, chatId);
   await refreshBgHtml(active, chatId);
-  await refreshPortals(active, chatId);
   await refreshVariables(active, chatId, { force: true });
   // Force toggle definitions on chat open; toggle values travel via the variables push above.
   await refreshToggleDefinitions(active, chatId, { force: true });
-  // Force-re-emit portal snapshot on chat-switch: refreshPortals may have no diff if this chat
-  // was previously mounted, but the frontend overlay may have been cleared by clear_bg_html
-  // for an intermediate non-lumirealm chat.
-  const cur = portalState.current(chatId);
-  if (cur && cur.slots.length > 0) {
-    log.info(
-      `SETTINGS_UPDATED activeChatId: force-re-emitting portal snapshot chat=${chatId} ` +
-      `seq=${cur.seq} slots=${cur.slots.length} (chat-switch overlay-restore)`,
-    );
-    sendPortalSnapshot(chatId, cur.seq, cur.slots);
-  }
   log.info(`SETTINGS_UPDATED activeChatId: ALL DONE chatId=${chatId}`);
 });
 
@@ -3059,7 +2929,6 @@ function scheduleChatChangedRefresh(chatId: string, characterId: string | null):
       }
       await refreshResolvedContent(active, chatId);
       await refreshBgHtml(active, chatId);
-      await refreshPortals(active, chatId);
       await refreshVariables(active, chatId, { force: true });
     } catch (err) {
       log.error(`scheduleChatChangedRefresh: chat=${chatId} threw: ${errMsg(err)}`);
@@ -3095,7 +2964,6 @@ spindle.on('MESSAGE_SENT', async (raw, userId) => {
 
   log.info(`MESSAGE_SENT: → refreshResolvedContent (no binding — Risu parity)`);
   await refreshResolvedContent(active, chatId);
-  await refreshPortals(active, chatId);
   await refreshVariables(active, chatId);
 });
 
@@ -3118,7 +2986,6 @@ spindle.on('GENERATION_STARTED', async (raw, userId) => {
   await runBinding(active, chatId, 'request');
   await refreshResolvedContent(active, chatId);
   await refreshBgHtml(active, chatId);
-  await refreshPortals(active, chatId);
   await refreshVariables(active, chatId);
 });
 
@@ -3137,7 +3004,6 @@ spindle.on('GENERATION_ENDED', async (raw, userId) => {
   }
   await refreshResolvedContent(active, chatId);
   await refreshBgHtml(active, chatId);
-  await refreshPortals(active, chatId);
   await refreshVariables(active, chatId);
 });
 
@@ -3183,7 +3049,6 @@ spindle.on('MESSAGE_SWIPED', async (raw, userId) => {
   }
   await refreshResolvedContent(active, chatId);
   await refreshBgHtml(active, chatId);
-  await refreshPortals(active, chatId);
   await refreshVariables(active, chatId);
   // No output/display bindings here. Risu's output trigger fires inside
   // sendChat (index.svelte.ts,1679), not on the swipe primitive.
@@ -3255,8 +3120,7 @@ spindle.on('MESSAGE_EDITED', async (raw, userId) => {
       if (active) {
         await refreshResolvedContent(active, chatId);
         await refreshBgHtml(active, chatId);
-        await refreshPortals(active, chatId);
-        await refreshVariables(active, chatId);
+              await refreshVariables(active, chatId);
       }
     } catch (err) {
       log.warn(`MESSAGE_EDITED content-reset: reconcile failed chat=${chatId}: ${errMsg(err)}`);
@@ -3304,7 +3168,6 @@ spindle.on('MESSAGE_DELETED', async (raw, userId) => {
   // No output/display bindings: Risu has no binding-firing analogue for deletes.
   await refreshResolvedContent(active, chatId);
   await refreshBgHtml(active, chatId);
-  await refreshPortals(active, chatId);
   await refreshVariables(active, chatId);
 });
 
@@ -3319,7 +3182,6 @@ spindle.on('CHAT_DELETED', async (raw, userId) => {
   clearActiveCharacterImage(chatId);
   clearActiveScriptstateDefaults(chatId);
   clearVarOverlay(chatId);
-  portalState.clearChat(chatId);
   variableState.clearChat(chatId);
   toggleState.clearChat(chatId);
   try {
@@ -4084,16 +3946,13 @@ function invalidateActiveForCharacter(characterId: string): void {
       activeCardByChat.delete(chatId);
       clearActiveAssetIndexes(chatId);
       clearActiveCharacterImage(chatId);
-      portalState.clearChat(chatId);
       variableState.clearChat(chatId);
-          toggleState.clearChat(chatId);
+      toggleState.clearChat(chatId);
       evictedChats.push(chatId);
       evicted += 1;
     }
   }
   compiledByCharacter.delete(characterId);
-  clearPortalCacheForCard(characterId);
-  clearPortalSelectorsForCard(characterId);
   log.info(`invalidateActiveForCharacter: char=${characterId} evictedChats=${evicted}`);
   for (const chatId of evictedChats) {
     void (async () => {
@@ -4218,6 +4077,7 @@ async function detachModuleFromAllCharacters(
 
 type AssetMutationMessage =
   | Extract<FrontendToBackend, { type: 'add_asset' }>
+  | Extract<FrontendToBackend, { type: 'add_assets' }>
   | Extract<FrontendToBackend, { type: 'rename_asset' }>
   | Extract<FrontendToBackend, { type: 'delete_asset' }>;
 
@@ -4229,6 +4089,15 @@ async function mutateAssetIndex(
     const characterId = msg.source.characterId;
     const updated = await updateLumirealm(charactersApi(), characterId, userId, (cur) => {
       const before = cur.asset_index;
+      if (msg.type === 'add_assets') {
+        let working = before;
+        for (const e of msg.entries) {
+          const r = addAssetToCharacterIndex(working, e.assetName, e.imageId, e.ext);
+          if (r.ok) working = r.index;
+          else log.warn(`add_assets (character ${characterId}): "${e.assetName}" skipped — ${r.reason}`);
+        }
+        return { ...cur, asset_index: working };
+      }
       let result;
       switch (msg.type) {
         case 'add_asset':
@@ -4256,6 +4125,18 @@ async function mutateAssetIndex(
   const moduleId = msg.source.moduleId;
   const env = await readModuleEnvelope(moduleStorage(), userId, moduleId);
   if (!env) return { ok: false, reason: `module ${moduleId} not in library` };
+  if (msg.type === 'add_assets') {
+    let working = env.asset_index;
+    for (const e of msg.entries) {
+      const r = addAssetToModuleIndex(working, e.assetName, e.imageId, e.ext);
+      if (r.ok) working = r.index;
+      else log.warn(`add_assets (module ${moduleId}): "${e.assetName}" skipped — ${r.reason}`);
+    }
+    const nextEnv = { ...env, asset_index: working };
+    await writeModuleEnvelope(moduleStorage(), userId, nextEnv);
+    await pushModules(userId);
+    return { ok: true };
+  }
   let result;
   switch (msg.type) {
     case 'add_asset':
@@ -4520,12 +4401,6 @@ spindle.onFrontendMessage(async (raw, userId) => {
             if (active) {
               await refreshBgHtml(active, lastChat);
               await refreshResolvedContent(active, lastChat);
-              const cur = portalState.current(lastChat);
-              if (cur) {
-                sendPortalSnapshot(lastChat, cur.seq, cur.slots);
-              } else {
-                await refreshPortals(active, lastChat);
-              }
               await refreshVariables(active, lastChat, { force: true });
             }
           } catch (err) {
@@ -4808,195 +4683,6 @@ spindle.onFrontendMessage(async (raw, userId) => {
         }
         break;
       }
-      case 'request_portal_snapshot': {
-        const cur = portalState.current(msg.chatId);
-        if (cur) {
-          sendPortalSnapshot(msg.chatId, cur.seq, cur.slots);
-        } else {
-          sendPortalSnapshot(msg.chatId, 1, []);
-        }
-        break;
-      }
-      case 'request_portal_candidates': {
-        if (userId === undefined) {
-          send({ type: 'error', message: 'request_portal_candidates: no userId' });
-          break;
-        }
-        const fetched = await readLumirealm(charactersApi(), msg.characterId, userId);
-        if (!fetched || !fetched.data) {
-          send({
-            type: 'portal_candidates_pushed',
-            characterId: msg.characterId,
-            candidates: [],
-            decisions: {},
-            ts: Date.now(),
-          });
-          break;
-        }
-        const candidates = fetched.data.portal_candidates ?? [];
-        const decisions = fetched.data.user_overrides.portal_decisions ?? {};
-        log.info(
-          `request_portal_candidates: char=${msg.characterId} ` +
-            `candidates=${candidates.length} decisions=${Object.keys(decisions).length}`,
-        );
-        send({
-          type: 'portal_candidates_pushed',
-          characterId: msg.characterId,
-          candidates,
-          decisions: { ...decisions },
-          ts: Date.now(),
-        });
-        break;
-      }
-      case 'set_portal_decision': {
-        if (userId === undefined) {
-          send({ type: 'error', message: 'set_portal_decision: no userId' });
-          break;
-        }
-        const updated = await updateLumirealm(
-          charactersApi(),
-          msg.characterId,
-          userId,
-          (current) => {
-            const prior = current.user_overrides.portal_decisions ?? {};
-            const newDecisions: Record<string, 'portal' | 'inline'> = { ...prior };
-            if (msg.decision === null) {
-              delete newDecisions[msg.candidateId];
-            } else {
-              newDecisions[msg.candidateId] = msg.decision;
-            }
-
-            const candidates = current.portal_candidates ?? [];
-            const candidatesBySortOrder = new Map<number, string[]>();
-            for (const c of candidates) {
-              if (c.source.kind !== 'regex_rule') continue;
-              const list = candidatesBySortOrder.get(c.source.sort_order) ?? [];
-              list.push(c.id);
-              candidatesBySortOrder.set(c.source.sort_order, list);
-            }
-
-            const newRegexScripts = current.regex_scripts.map((r) => {
-              if (isStripStub(r)) return r;
-              const ruleCandidateIds = candidatesBySortOrder.get(r.sort_order) ?? [];
-              const risu = (r.metadata as { _risu?: { extension_managed?: unknown } } | undefined)?._risu;
-              const translatorFlag = risu?.extension_managed === true;
-              const managed = decideRulePartitionWithOverrides(
-                ruleCandidateIds,
-                newDecisions,
-                translatorFlag,
-              );
-              const newReplace = ensurePortalWrap(r.replace_string, managed);
-              if (newReplace === r.replace_string) return r;
-              return { ...r, replace_string: newReplace };
-            });
-
-            return {
-              ...current,
-              regex_scripts: newRegexScripts,
-              user_overrides: {
-                ...current.user_overrides,
-                ...(Object.keys(newDecisions).length > 0
-                  ? { portal_decisions: newDecisions }
-                  : {}),
-              },
-            };
-          },
-        );
-        if (!updated) {
-          send({ type: 'error', message: `set_portal_decision: char ${msg.characterId} is not a lumirealm card` });
-          break;
-        }
-        const newDecisions = updated.user_overrides.portal_decisions ?? {};
-        log.info(
-          `set_portal_decision: char=${msg.characterId} candidate=${msg.candidateId} ` +
-            `decision=${msg.decision ?? '<auto>'} totalOverrides=${Object.keys(newDecisions).length}`,
-        );
-
-        const candidates = updated.portal_candidates ?? [];
-        const candidatesBySortOrder = new Map<number, string[]>();
-        for (const c of candidates) {
-          if (c.source.kind !== 'regex_rule') continue;
-          const list = candidatesBySortOrder.get(c.source.sort_order) ?? [];
-          list.push(c.id);
-          candidatesBySortOrder.set(c.source.sort_order, list);
-        }
-        const isManaged = (r: { sort_order: number; metadata?: Readonly<Record<string, unknown>> }): boolean => {
-          const ids = candidatesBySortOrder.get(r.sort_order) ?? [];
-          const risu = (r.metadata as { _risu?: { extension_managed?: unknown } } | undefined)?._risu;
-          const translatorFlag = risu?.extension_managed === true;
-          return decideRulePartitionWithOverrides(ids, newDecisions, translatorFlag);
-        };
-        const pendingScripts = partitionRulesForLumi(updated.regex_scripts, isManaged);
-        let characterName = msg.characterId;
-        try {
-          const ch = await spindle.characters.get(msg.characterId, userId);
-          if (ch && typeof (ch as { name?: unknown }).name === 'string') {
-            characterName = (ch as { name: string }).name;
-          }
-        } catch {
-          // Best-effort  - falls back to characterId in the message.
-        }
-        spindle.sendToFrontend({
-          type: 'install_regex_scripts',
-          characterId: msg.characterId,
-          characterName,
-          scripts: pendingScripts.map((r) => ({
-            name: r.name,
-            script_id: r.script_id,
-            find_regex: r.find_regex,
-            replace_string: r.replace_string,
-            flags: r.flags,
-            placement: r.placement,
-            scope: r.scope,
-            scope_id: r.scope_id,
-            target: r.target,
-            min_depth: r.min_depth,
-            max_depth: r.max_depth,
-            trim_strings: r.trim_strings,
-            run_on_edit: r.run_on_edit,
-            substitute_macros: r.substitute_macros,
-            disabled: r.disabled,
-            sort_order: r.sort_order,
-            description: r.description,
-            folder: r.folder,
-            metadata: { ...(r.metadata ?? {}) },
-          })),
-        });
-        log.info(
-          `set_portal_decision: re-installed ${pendingScripts.length} regex_scripts for char=${msg.characterId} ` +
-            `(stubs+inline rules)`,
-        );
-
-        // Invalidate active-card cache so refreshPortals reads the updated regex_scripts.
-        const affectedChats: string[] = [];
-        for (const [chatId, active] of activeCardByChat) {
-          if (active.card.character_id === msg.characterId) {
-            affectedChats.push(chatId);
-            activeCardByChat.delete(chatId);
-          }
-        }
-        for (const chatId of affectedChats) {
-          const reloaded = await ensureActiveCardForChat(chatId, null);
-          if (reloaded) {
-            await refreshPortals(reloaded, chatId);
-          }
-        }
-        if (affectedChats.length > 0) {
-          log.info(
-            `set_portal_decision: refreshed portals for ${affectedChats.length} active chat(s) ` +
-              `of char=${msg.characterId}`,
-          );
-        }
-
-        send({
-          type: 'portal_candidates_pushed',
-          characterId: msg.characterId,
-          candidates: updated.portal_candidates ?? [],
-          decisions: { ...newDecisions },
-          ts: Date.now(),
-        });
-        break;
-      }
       case 'upload_module_init': {
         if (!userId) {
           send({ type: 'error', message: 'upload_module_init: no userId' });
@@ -5272,6 +4958,7 @@ spindle.onFrontendMessage(async (raw, userId) => {
         break;
       }
       case 'add_asset':
+      case 'add_assets':
       case 'rename_asset':
       case 'delete_asset': {
         if (!userId) {

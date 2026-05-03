@@ -1,13 +1,10 @@
-// Side-channel for non-serialisable dispatch values (Functions, Sets) that
-// can't ride in compiled triggers' JSON-frozen rtOpts. Set before invoking
-// each trigger, cleared via try/finally on return. Single-threaded JS
-// event loop guarantees no races.
-
-import type { PortalSelectors } from '../../core/mappers/portal-analyze.js';
+// Side-channel for non-serialisable dispatch values (Functions) that can't
+// ride in compiled triggers' JSON-frozen rtOpts. Set before invoking each
+// trigger, cleared via try/finally on return. Single-threaded JS event loop
+// guarantees no races.
 
 export interface DispatchContext {
   chatId?: string;
-  portalSelectors?: PortalSelectors;
   rememberOurWrite?: (chatId: string, msgId: string, content: string) => void;
   binding?: string;
   stateChanged?: () => void;

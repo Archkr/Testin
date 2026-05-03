@@ -2,7 +2,6 @@ import type {
   AssetIndexEntry,
   LumirealmCharacterData,
   LumirealmUserOverrides,
-  PortalCandidate,
   RisuPayload,
   StoredRegexScript,
   StoredRisuCard,
@@ -100,7 +99,6 @@ export function buildLumirealmData(
   emotionIndex: Readonly<Record<string, AssetIndexEntry>> = {},
   importedAt: number = Date.now(),
   userOverrides: LumirealmUserOverrides = {},
-  portalCandidates: readonly PortalCandidate[] = [],
 ): LumirealmCharacterData {
   return {
     schema_version: 1,
@@ -123,8 +121,6 @@ export function buildLumirealmData(
     asset_index: assetIndex,
     emotion_index: emotionIndex,
     regex_scripts: regexScripts,
-    // Omit field when empty; `candidates === undefined` means "nothing to review".
-    ...(portalCandidates.length > 0 ? { portal_candidates: portalCandidates } : {}),
     user_overrides: userOverrides,
   };
 }
@@ -135,112 +131,3 @@ export function isLumirealmData(value: unknown): value is LumirealmCharacterData
   return v.schema_version === 1;
 }
 
-export function decideRulePartitionWithOverrides(
-  ruleCandidateIds: readonly string[],
-  portalDecisions: Readonly<Record<string, 'portal' | 'inline'>>,
-  translatorFlag: boolean,
-): boolean {
-  if (ruleCandidateIds.length > 0) {
-    let allInline = true;
-    for (const id of ruleCandidateIds) {
-      const decision = portalDecisions[id];
-      if (decision === 'portal') return true;
-      if (decision !== 'inline') allInline = false;
-    }
-    if (allInline) return false;
-  }
-  return translatorFlag;
-}
-
-export function synthesizeStripStub(
-  parent: StoredRegexScript,
-  idGen: () => string,
-): StoredRegexScript {
-  const meta = (parent.metadata ?? {}) as { _risu?: Record<string, unknown> };
-  const parentRisu = (meta._risu ?? {}) as Record<string, unknown>;
-  return {
-    name: `${parent.name} (strip)`,
-    script_id: idGen(),
-    find_regex: parent.find_regex,
-    replace_string: '',
-    flags: parent.flags,
-    placement: parent.placement,
-    scope: parent.scope,
-    scope_id: parent.scope_id,
-    target: parent.target,
-    min_depth: parent.min_depth,
-    max_depth: parent.max_depth,
-    trim_strings: [],
-    run_on_edit: parent.run_on_edit,
-    // Inherit substitute_macros when find_regex contains CBS so Lumi pre-resolves
-    // the pattern before RegExp compile (useDisplayRegex.ts). Stubs with no
-    // CBS stay "none"; the empty replace_string has nothing to resolve.
-    substitute_macros: parent.find_regex.indexOf('{{') >= 0
-      ? parent.substitute_macros
-      : 'none',
-    disabled: parent.disabled,
-    sort_order: parent.sort_order,
-    description: parent.description,
-    folder: parent.folder,
-    metadata: {
-      _risu: {
-        ...parentRisu,
-        has_meta: false,
-        is_strip_stub: true,
-        stub_for: parent.script_id,
-        extension_managed: false,
-        // Clear var_refs; stubs have no replace_string so they don't read vars.
-        var_refs: [],
-      },
-    },
-  };
-}
-
-export function isStripStub(rule: StoredRegexScript): boolean {
-  const meta = rule.metadata as { _risu?: { is_strip_stub?: unknown } } | undefined;
-  return meta?._risu?.is_strip_stub === true;
-}
-
-export function stripStubParentScriptId(rule: StoredRegexScript): string | null {
-  const meta = rule.metadata as { _risu?: { stub_for?: unknown } } | undefined;
-  const v = meta?._risu?.stub_for;
-  return typeof v === 'string' ? v : null;
-}
-
-export function ensurePortalWrap(replaceString: string, wrap: boolean): string {
-  const OPEN_RE = /^<div\s+data-risu-portal="([^"]*)">/;
-  const openMatch = OPEN_RE.exec(replaceString);
-  const isWrapped =
-    openMatch !== null
-    && replaceString.endsWith('</div>')
-    // Belt-and-braces: confirm the closing </div> is the top-level wrap's.
-    && replaceString.length > openMatch[0].length + '</div>'.length;
-  if (wrap) {
-    if (isWrapped) return replaceString;
-    return `<div data-risu-portal="auto">${replaceString}</div>`;
-  }
-  if (!isWrapped) return replaceString;
-  // Strip the wrap: remove the opening <div ...> and trailing </div>.
-  return replaceString.slice(openMatch![0].length, replaceString.length - '</div>'.length);
-}
-
-export function partitionRulesForLumi(
-  rules: readonly StoredRegexScript[],
-  isManaged: (r: StoredRegexScript) => boolean,
-): readonly StoredRegexScript[] {
-  const managedScriptIds = new Set<string>();
-  for (const r of rules) {
-    if (isStripStub(r)) continue;
-    if (isManaged(r)) managedScriptIds.add(r.script_id);
-  }
-  const out: StoredRegexScript[] = [];
-  for (const r of rules) {
-    if (isStripStub(r)) {
-      const parent = stripStubParentScriptId(r);
-      if (parent !== null && managedScriptIds.has(parent)) out.push(r);
-    } else {
-      if (!isManaged(r)) out.push(r);
-    }
-  }
-  return out;
-}

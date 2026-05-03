@@ -3,11 +3,6 @@ import { parseRisuModule } from "../schemas/parse.js";
 import { mapCharacter } from "../mappers/character.js";
 import { mapLoreBook } from "../mappers/lorebook.js";
 import { mapRegex, type AtAtAction } from "../mappers/regex.js";
-import {
-  extractPortalSelectors,
-  extractAnchoredPortalSelectors,
-  EMPTY_PORTAL_SELECTORS,
-} from "../mappers/portal-analyze.js";
 import { compileAtActions } from "../mappers/at-actions.js";
 import { compileTriggers } from "../mappers/triggers.js";
 import { buildBackgroundHtmlScript } from "../mappers/background-html.js";
@@ -185,26 +180,16 @@ export function translateCharx(
     issues,
     "character_level_regex",
   );
-  const portalSelectors = charMap.extracted.backgroundHTML
-    ? extractPortalSelectors(charMap.extracted.backgroundHTML)
-    : EMPTY_PORTAL_SELECTORS;
-  const anchoredPortalSelectors = charMap.extracted.backgroundHTML
-    ? extractAnchoredPortalSelectors(charMap.extracted.backgroundHTML)
-    : EMPTY_PORTAL_SELECTORS;
   const charRegexOut = wantRegex
     ? mapRegex(charRegexScripts, {
         characterId: charMap.character.id, now, uuid, origin: "character",
         ...(opts.catalog ? { catalog: opts.catalog } : {}),
-        portalSelectors,
-        anchoredPortalSelectors,
       })
     : { rows: [] as LumiRegexScript[], skipped: [] as AtAtAction[], issues: [] as { path: string; message: string }[] };
   const moduleRegexOut = wantRegex
     ? mapRegex(moduleRegexScripts, {
         characterId: charMap.character.id, now, uuid, origin: "module",
         ...(opts.catalog ? { catalog: opts.catalog } : {}),
-        portalSelectors,
-        anchoredPortalSelectors,
       })
     : { rows: [] as LumiRegexScript[], skipped: [] as AtAtAction[], issues: [] as { path: string; message: string }[] };
   const regexScriptsRaw: readonly LumiRegexScript[] = [...charRegexOut.rows, ...moduleRegexOut.rows];

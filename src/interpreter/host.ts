@@ -138,7 +138,6 @@ export interface TriggerRuntimeOpts {
   readonly characterId?: string | null;
   readonly binding?: string;
   readonly chatId?: string;
-  readonly portalSelectors?: import("../core/mappers/portal-analyze.js").PortalSelectors;
   // Backend uses this to filter MESSAGE_EDITED self-echoes from Lua setChat.
   readonly rememberOurWrite?: (chatId: string, msgId: string, content: string) => void;
   readonly stateChanged?: () => void;
