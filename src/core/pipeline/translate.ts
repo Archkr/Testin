@@ -132,13 +132,9 @@ export function translateCharx(
   }
 
   const charBookEntriesRaw = extractCharacterBookEntries(charMap.extracted.characterBook, issues);
-  // Match Risu's .charx import semantic at characterCards.ts:153-159:
-  // when module.risum carries a lorebook, use ONLY that — character_book
-  // entries are discarded (Risu passes the module lorebook as
-  // `overrideLorebook` to importCharacterCardSpec, which then passes
-  // `lorebook: []` into convertCharbook so the charbook's entries don't
-  // merge in). For non-charx formats (PNG/JSON, no moduleEnvelope), use
-  // character_book.entries as before.
+  // Match Risu .charx import: when module.risum carries a lorebook, use ONLY
+  // that and discard character_book entries. For non-charx formats (PNG/JSON,
+  // no moduleEnvelope), use character_book.entries as before.
   const haveModuleLore = moduleLorebook.length > 0;
   const allLoreEntries: LoreBook[] = haveModuleLore
     ? [...moduleLorebook]

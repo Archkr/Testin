@@ -4013,18 +4013,14 @@ function buildModuleWorldBookEntryInput(raw: unknown, moduleId: string): Record<
     metadata: { _risu: { module_id: moduleId } },
   };
   if (typeof eo['comment'] === 'string') input['comment'] = eo['comment'];
-  // Risu native LoreBook uses `alwaysActive: boolean` (or `mode: 'constant'`)
-  // for the constant flag — verified across 6396 corpus entries: 100% have
-  // alwaysActive, 0% have constant. See mappers/lorebook.ts:53 —
-  // `e.mode === 'constant' || !!e.alwaysActive`. Also accept CCSv3
-  // `constant: true` for FE-shaped inputs / re-installs.
+  // Risu LoreBook uses alwaysActive: boolean (or mode: 'constant') for the
+  // constant flag. Also accept CCSv3 `constant: true` for FE-shaped inputs.
   const isConstant =
     eo['constant'] === true ||
     eo['alwaysActive'] === true ||
     eo['mode'] === 'constant';
   if (isConstant) input['constant'] = true;
-  // Folder-mode entries are display-only group headers in Risu; mirror
-  // mapMode() at mappers/lorebook.ts:50 — disabled, no constant.
+  // Folder-mode entries are display-only group headers: disabled, no constant.
   const isFolder = eo['mode'] === 'folder';
   if (isFolder) {
     input['disabled'] = true;

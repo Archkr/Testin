@@ -1,28 +1,11 @@
-// Risu parity for `<iframe>` embeds.
+// Risu parity for iframe embeds. Risu allows YouTube embeds, removes others.
+// Lumi's TrustedYouTubeEmbed accepts youtube-nocookie.com/embed/<id> via CSP
+// allowlist. Translate-time policy rewrites Risu YouTube iframes to that form
+// so Lumi's component picks them up; other iframes are stripped.
 //
-// Risu's parser at parser.svelte.ts:46-52 allows iframes whose src starts with
-// `https://www.youtube.com/embed/`; everything else is removed.
-//
-// Lumi's MessageContent.tsx ships a `TrustedYouTubeEmbed` React component
-// (Lumiverse staging commit 29c3568) that detects iframes pointing at
-// `https://www.youtube-nocookie.com/embed/<id>` in chat content, replaces them
-// with a sandboxed <iframe>, and Lumi's CSP allowlists that origin under
-// `frame-src`. ANYTHING ELSE is still stripped by `richHtmlSanitizer.ts`
-// `BASE_FORBID_TAGS`.
-//
-// Translate-time policy: rewrite Risu-style YouTube iframes to match Lumi's
-// validator exactly, so they survive sanitization and Lumi's component picks
-// them up. Other iframes are stripped (Risu does the same).
-//
-// Lumi's validator at MessageContent.tsx:993-1019 enforces:
-//   - origin === 'https://www.youtube-nocookie.com'
-//   - path matches /^\/embed\/[A-Za-z0-9_-]{6,}$/
-//   - no hash
-//   - query params restricted to a small allowlist with type checks:
-//       boolean (`autoplay`/`controls`/`loop`/`mute`/`playsinline`/`rel`) → '0'|'1'
-//       numeric (`start`/`end`) → \d{1,6}
-//       token   (`si`)          → [A-Za-z0-9_-]{1,128}
-//   - body parses to exactly one <iframe> child, no surrounding text
+// Lumi's validator requires: origin youtube-nocookie.com, /embed/<id> path,
+// no hash, allowlisted query params (booleans 0|1, numerics 1-6 digits, token
+// [A-Za-z0-9_-]{1,128}), body parses to exactly one iframe.
 
 // Single-pass regex matching both paired and self-closing iframe forms:
 //   - `<iframe ...>...</iframe>` (alternation branch 1, captures attrs in
@@ -55,7 +38,7 @@ function parseYoutubeSrc(rawSrc: string | null | undefined): ParsedYoutube | nul
   const m = YOUTUBE_EMBED_RE.exec(trimmed);
   if (!m || !m[1]) return null;
   const videoId = m[1];
-  // Reject hashes — Lumi's validator does too.
+  // Reject hashes (Lumi's validator does too).
   const hashIdx = trimmed.indexOf('#');
   if (hashIdx !== -1) return null;
   // Pull query params, filter, and re-validate per Lumi's rules.
@@ -73,10 +56,8 @@ function parseYoutubeSrc(rawSrc: string | null | undefined): ParsedYoutube | nul
     }
     for (const [key, value] of source) {
       if (!ALLOWED_QUERY_PARAMS.has(key)) {
-        // Lumi REJECTS the whole iframe on unknown param. Drop the param to
-        // give the user a chance — emitting the iframe without the bad param
-        // still works; emitting it WITH the bad param means Lumi strips the
-        // iframe entirely. Defensive: skip unknown.
+        // Lumi rejects the whole iframe on unknown param. Drop the param so
+        // the iframe still emits, otherwise Lumi strips the entire iframe.
         continue;
       }
       if (BOOL_PARAMS.has(key)) {
@@ -98,9 +79,8 @@ function getSrcFromAttrs(attrs: string): string | null {
   return m[1] ?? m[2] ?? m[3] ?? null;
 }
 
-/** Emit the Lumi-validator-compliant iframe. Plain element, no surrounding
- *  text — `extractTrustedYouTubeEmbed` requires the iframe to be the sole
- *  child of its DOMParser body. */
+/** Emit Lumi-validator-compliant iframe. No surrounding text:
+ *  extractTrustedYouTubeEmbed requires iframe as sole DOMParser body child. */
 function trustedIframeMarkup(parsed: ParsedYoutube): string {
   const path = `/embed/${parsed.videoId}`;
   const url = parsed.query.length > 0

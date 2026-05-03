@@ -749,10 +749,8 @@ export function applyInjectAtToMessages(
           after = before.replace(anchor, plan.content);
           break;
         }
-        // Literal-text replace — distinguish "param not present in slot"
-        // from "param present but replacement is identity (X→X)". Only the
-        // not-present case triggers Tier B-2 fallback append; identity is a
-        // legitimate noop.
+        // Literal-text replace. param-not-present triggers fallback append.
+        // Identity (X to X) is a legitimate noop.
         if (!before.includes(plan.param)) {
           after = `${before} ${plan.content}`;
           isFallbackAppend = true;

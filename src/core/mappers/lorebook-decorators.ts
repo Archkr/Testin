@@ -276,12 +276,14 @@ function applyOne(dec: ParsedDecorator, state: MutableState): ApplyOutcome {
       return { kind: "applied" };
     }
     case "probability": {
-      // Both engines use 0-100 scale, map directly.
+      // Both engines use 0-100. Lumi gates rolls on use_probability=true,
+      // Risu always rolls when @@probability is present, so set the flag.
       const intArg = args[0];
       if (intArg === undefined) return { kind: "dropped", reason: "missing probability arg" };
       const n = parseInt(intArg, 10);
       if (Number.isNaN(n)) return { kind: "dropped", reason: `probability NaN: ${intArg}` };
       state.probability = n;
+      state.use_probability = true;
       return { kind: "applied" };
     }
     case "additional_keys": {
@@ -322,7 +324,10 @@ function applyOne(dec: ParsedDecorator, state: MutableState): ApplyOutcome {
       return { kind: "applied" };
     }
     case "end": {
-      // No-op. Practical use is closing a @@@ fallback chain.
+      // @@end sets position=4 depth=0 (latest message). @@@end is rewritten
+      // to @@end before the suspend check so it always applies.
+      state.position = 4;
+      state.depth = 0;
       return { kind: "applied" };
     }
     default: {

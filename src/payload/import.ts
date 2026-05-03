@@ -347,11 +347,8 @@ export async function importCard(args: ImportCardArgs): Promise<ImportResult> {
   const characterId = created.id;
   logInfo(`(4b) spindle.characters.create -> id=${characterId} in ${Date.now() - tChar}ms`);
 
-  // (4c) Patch the world_book metadata with source_character_id now that
-  // the character row exists. Without this the WorldBookPanel "From
-  // character" badge won't render — it requires both source==='character'
-  // AND source_character_id===character.id (WorldBookPanel.tsx:618 +
-  // services/prompt-assembly.service.ts:2918-2919).
+  // Patch world_book metadata with source_character_id now that the character
+  // row exists. Required for the "From character" badge to render.
   if (worldBookId && args.spindle.world_books) {
     try {
       await args.spindle.world_books.update(
