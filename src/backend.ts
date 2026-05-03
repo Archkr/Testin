@@ -57,6 +57,8 @@ import { makeSpindleHost } from './interpreter/spindle-host.js';
 import { makeRisuTriggerRuntime, setDispatchContext } from './interpreter/runtime.js';
 import type { RisuBinding } from './interpreter/runtime.js';
 import { importCard, type SpindleImportApi } from './payload/import.js';
+import { parseDirectLorebook } from './payload/lorebook-direct-import.js';
+import { mapLoreBook } from './core/mappers/lorebook.js';
 import { registerAll as registerAllMacros } from './interpreter/macros.js';
 import { setActiveAssetIndexes, clearActiveAssetIndexes } from './interpreter/asset-cache.js';
 import {
@@ -3993,6 +3995,153 @@ async function refreshRisuAssetMap(characterId: string, userId: string): Promise
   }
 }
 
+async function handleImportLorebook(
+  msg: Extract<FrontendToBackend, { type: 'import_lorebook' }>,
+  userId: string,
+): Promise<void> {
+  // Risu parity for `importLoreBook(mode='global')` (Risu
+  // lorebook.svelte.ts:663-697). Append entries from a JSON file to the
+  // character's existing world_book (create one when missing) and persist
+  // each entry via the same forward-the-full-shape path the .charx
+  // importer uses.
+  const t0 = Date.now();
+  const fetched = await readLumirealm(charactersApi(), msg.characterId, userId);
+  if (!fetched || !fetched.data) {
+    send({
+      type: 'lorebook_import_result',
+      characterId: msg.characterId,
+      ok: false,
+      written: 0,
+      dropped: 0,
+      reason: 'not a lumirealm character',
+    });
+    return;
+  }
+
+  const parsed = parseDirectLorebook(msg.json);
+  if (parsed.format === 'unknown') {
+    send({
+      type: 'lorebook_import_result',
+      characterId: msg.characterId,
+      ok: false,
+      written: 0,
+      dropped: parsed.dropped,
+      reason: 'unrecognized lorebook format (expected Risu native or CCSv3)',
+    });
+    return;
+  }
+  if (parsed.entries.length === 0) {
+    send({
+      type: 'lorebook_import_result',
+      characterId: msg.characterId,
+      ok: false,
+      written: 0,
+      dropped: parsed.dropped,
+      reason: 'no entries found in lorebook file',
+    });
+    return;
+  }
+
+  // Find existing character-owned world_book (set during import). If none,
+  // create a new one.
+  const existing = fetched.character.world_book_ids ?? [];
+  let targetBookId: string | null = null;
+  if (existing.length > 0) {
+    targetBookId = existing[0] ?? null;
+  }
+  if (!targetBookId) {
+    try {
+      const wbName = `${fetched.character.name ?? 'character'}  - lore (imported)`;
+      const wb = await spindle.world_books.create({ name: wbName }, userId);
+      targetBookId = wb.id;
+      expectCharacterEdit(msg.characterId);
+      await spindle.characters.update(
+        msg.characterId,
+        { world_book_ids: [...existing, wb.id] } as never,
+        userId,
+      );
+      log.info(`import_lorebook: created world_book ${wb.id} for char=${msg.characterId}`);
+    } catch (err) {
+      send({
+        type: 'lorebook_import_result',
+        characterId: msg.characterId,
+        ok: false,
+        written: 0,
+        dropped: parsed.dropped,
+        reason: `world_book create failed: ${errMsg(err)}`,
+      });
+      return;
+    }
+  }
+
+  // Project Risu loreBook[] → LumiWorldBookEntry[] via the SAME mapper the
+  // .charx importer uses. Decorators in entry content (e.g. `@@end`) are
+  // applied; the lorebook id is the target world_book.
+  const lumiEntries = mapLoreBook(parsed.entries, { worldBookId: targetBookId });
+
+  let written = 0;
+  let entryWriteFailures = 0;
+  for (const entry of lumiEntries) {
+    try {
+      const entryInput: Record<string, unknown> = {
+        key: entry.key,
+        keysecondary: entry.keysecondary,
+        content: entry.content,
+        comment: entry.comment,
+        position: entry.position,
+        depth: entry.depth,
+        order_value: entry.order_value,
+        selective: entry.selective,
+        constant: entry.constant,
+        disabled: entry.disabled,
+        group_name: entry.group_name,
+        group_override: entry.group_override,
+        group_weight: entry.group_weight,
+        probability: entry.probability,
+        case_sensitive: entry.case_sensitive,
+        match_whole_words: entry.match_whole_words,
+        use_regex: entry.use_regex,
+        prevent_recursion: entry.prevent_recursion,
+        exclude_recursion: entry.exclude_recursion,
+        delay_until_recursion: entry.delay_until_recursion,
+        priority: entry.priority,
+        sticky: entry.sticky,
+        cooldown: entry.cooldown,
+        delay: entry.delay,
+        selective_logic: entry.selective_logic,
+        use_probability: entry.use_probability,
+        ...(entry.role !== null ? { role: entry.role } : {}),
+        ...(entry.scan_depth !== null ? { scan_depth: entry.scan_depth } : {}),
+        ...(entry.automation_id !== null ? { automation_id: entry.automation_id } : {}),
+        ...(entry.extensions ? { extensions: entry.extensions } : {}),
+      };
+      await spindle.world_books.entries.create(targetBookId, entryInput as never, userId);
+      written += 1;
+    } catch (err) {
+      entryWriteFailures += 1;
+      log.warn(`import_lorebook: entry "${entry.comment}" failed: ${errMsg(err)}`);
+    }
+  }
+
+  log.info(
+    `import_lorebook: char=${msg.characterId} format=${parsed.format} ` +
+      `written=${written}/${parsed.entries.length} drops=${parsed.dropped} ` +
+      `entry_write_failures=${entryWriteFailures} elapsed=${Date.now() - t0}ms ` +
+      `file=${msg.filename ?? '<unnamed>'}`,
+  );
+
+  send({
+    type: 'lorebook_import_result',
+    characterId: msg.characterId,
+    ok: written > 0,
+    written,
+    dropped: parsed.dropped + entryWriteFailures,
+    ...(written === 0 && entryWriteFailures > 0
+      ? { reason: 'all entry writes failed; see log for details' }
+      : {}),
+  });
+}
+
 function buildModuleWorldBookEntryInput(raw: unknown, moduleId: string): Record<string, unknown> | null {
   if (!raw || typeof raw !== 'object') return null;
   const eo = raw as Record<string, unknown>;
@@ -5300,6 +5449,14 @@ spindle.onFrontendMessage(async (raw, userId) => {
               ? ` len=${String(msg.value).length}`
               : ' (override removed)'),
         );
+        break;
+      }
+      case 'import_lorebook': {
+        if (!userId) {
+          send({ type: 'error', message: 'import_lorebook: no userId' });
+          break;
+        }
+        await handleImportLorebook(msg, userId);
         break;
       }
       case 'set_trigger_lua': {

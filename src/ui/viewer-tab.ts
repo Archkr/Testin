@@ -53,6 +53,8 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
   // across backend-pushed re-renders (matches the toggles-tab pattern).
   const defaultVarEditBuffers = new Map<string, string>();
   let addingDefaultVarRow = false;
+  // Lorebook-import status — surfaced next to the "+ Import lorebook…" button.
+  let lorebookImportStatus: { kind: 'info' | 'error'; message: string } | null = null;
   const attachedByCharacter = new Map<string, readonly AttachedModuleSummary[]>();
   // Cleared on the next viewer_data_pushed (backend re-push = success signal).
   let assetUploadStatus: { kind: 'info' | 'error'; message: string } | null = null;
@@ -353,7 +355,84 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
     body.textContent =
       'Edit and view this character\'s lorebook + regex rules through Lumiverse\'s native UI.';
     wrap.appendChild(body);
+
+    // Direct lorebook import — Risu parity (importLoreBook 'global'). Appends
+    // entries to the character's existing world_book (creates one if missing).
+    const importRow = document.createElement('div');
+    importRow.className = 'lrv-redirect-actions';
+    const importBtn = document.createElement('button');
+    importBtn.type = 'button';
+    importBtn.className = 'lrv-btn';
+    importBtn.textContent = '+ Import lorebook…';
+    importBtn.title = 'Append entries from a Risu/CCSv3 JSON file to this character\'s world book.';
+    importBtn.addEventListener('click', () => { void onImportLorebookClicked(); });
+    importRow.appendChild(importBtn);
+    if (lorebookImportStatus !== null) {
+      const status = document.createElement('span');
+      status.className = 'lrv-asset-upload-status';
+      if (lorebookImportStatus.kind === 'error') {
+        status.classList.add('lrv-asset-upload-status-error');
+      }
+      status.textContent = lorebookImportStatus.message;
+      importRow.appendChild(status);
+    }
+    wrap.appendChild(importRow);
     return wrap;
+  }
+
+  async function onImportLorebookClicked(): Promise<void> {
+    if (!viewerData || viewerData.source.kind !== 'character') return;
+    const characterId = viewerData.source.characterId;
+    let file: File | null;
+    try {
+      file = await pickJsonFile();
+    } catch (err) {
+      lorebookImportStatus = { kind: 'error', message: `File pick failed: ${errMsg(err)}` };
+      render();
+      return;
+    }
+    if (!file) return;
+    let text: string;
+    try {
+      text = await file.text();
+    } catch (err) {
+      lorebookImportStatus = { kind: 'error', message: `Read failed: ${errMsg(err)}` };
+      render();
+      return;
+    }
+    lorebookImportStatus = { kind: 'info', message: `Importing "${file.name}"…` };
+    render();
+    log.info(`viewer-panel: import_lorebook char=${characterId} file=${file.name} bytes=${text.length}`);
+    sendToBackend({
+      type: 'import_lorebook',
+      characterId,
+      json: text,
+      filename: file.name,
+    });
+  }
+
+  function pickJsonFile(): Promise<File | null> {
+    return new Promise((resolve, reject) => {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = '.json,.lorebook,application/json';
+      input.style.display = 'none';
+      document.body.appendChild(input);
+      let settled = false;
+      const done = (f: File | null, err?: Error): void => {
+        if (settled) return;
+        settled = true;
+        try { document.body.removeChild(input); } catch { /* */ }
+        if (err) reject(err);
+        else resolve(f);
+      };
+      input.addEventListener('change', () => {
+        const list = input.files;
+        done(list && list.length > 0 ? list.item(0) : null);
+      });
+      input.addEventListener('cancel', () => done(null));
+      input.click();
+    });
   }
 
   function renderDefaultVariablesSection(
@@ -1201,6 +1280,22 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
         lastError = null;
         if (assetUploadStatus !== null && assetUploadStatus.kind === 'info') {
           assetUploadStatus = null;
+        }
+        render();
+        break;
+      }
+      case 'lorebook_import_result': {
+        if (msg.ok) {
+          lorebookImportStatus = {
+            kind: 'info',
+            message: `Imported ${msg.written} entr${msg.written === 1 ? 'y' : 'ies'}` +
+              (msg.dropped > 0 ? ` (${msg.dropped} dropped)` : ''),
+          };
+        } else {
+          lorebookImportStatus = {
+            kind: 'error',
+            message: msg.reason ?? `Import failed (dropped=${msg.dropped})`,
+          };
         }
         render();
         break;

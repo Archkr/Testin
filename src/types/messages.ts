@@ -230,6 +230,18 @@ export type FrontendToBackend =
       characterId: string;
       name: string;
     }
+  // Direct lorebook import — appends entries from a standalone JSON file
+  // (Risu native `{type:'risu',ver:1,data:loreBook[]}` or CCSv3
+  // `{entries:{...}}`) to the character's existing world_book (created
+  // if none exists). Mirrors Risu's `importLoreBook(mode='global')`.
+  | {
+      type: 'import_lorebook';
+      characterId: string;
+      /** File contents as UTF-8 string (FE has already read the file). */
+      json: string;
+      /** Original filename for the optional new-world-book name. */
+      filename?: string;
+    }
   // `triggerIndex` is position in `ViewerData.triggers[]`. Backend replaces all
   // `triggerlua`-typed entries in the trigger's `effect[]` with a single `triggerlua`
   // carrying the new code. Non-lua effects are preserved in order.
@@ -431,6 +443,16 @@ export type BackendToFrontend =
   | {
       type: 'viewer_data_pushed';
       data: ViewerData;
+    }
+  | {
+      type: 'lorebook_import_result';
+      characterId: string;
+      ok: boolean;
+      /** Number of entries actually written (0 on failure). */
+      written: number;
+      /** Number of entries the parser saw but dropped (bad shape, etc.). */
+      dropped: number;
+      reason?: string;
     }
   | {
       type: 'cleanup_character_artifacts';

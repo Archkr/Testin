@@ -1733,6 +1733,14 @@
   content: '\25BC';
 }
 
+.lr-viewer-drawer .lrv-redirect-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 10px 10px;
+  flex-wrap: wrap;
+}
+
 /* Default-variables section: name → value rows with optional Reset button. */
 .lr-viewer-drawer .lrv-section-note {
   font-size: 11px;
