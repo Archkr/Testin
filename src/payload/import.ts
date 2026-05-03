@@ -193,6 +193,21 @@ export async function importCard(args: ImportCardArgs): Promise<ImportResult> {
       `assets=${bundle.assets.size} payload.triggers=${bundle.risuPayload?.triggers.length ?? 0} ` +
       `payload.lua=${bundle.risuPayload?.lua_scripts.length ?? 0}`,
   );
+  // Deliberate diagnostic: emitted only when at least one lorebook entry
+  // carried a `@@`-decorator block. Tells us at a glance whether decorator
+  // mapping fired + how many were Tier 1 (mapped) vs Tier 2/3 (stashed for
+  // a future runtime intercept) vs dropped (Risu would have suspended).
+  // See src/core/mappers/lorebook-decorators.ts.
+  if (bundle.decoratorStats.decorators_seen > 0) {
+    logInfo(
+      `(2.1) lorebook decorators: ` +
+        `entries_with_decorators=${bundle.decoratorStats.entries_with_decorators}/${bundle.worldBookEntries.length} ` +
+        `seen=${bundle.decoratorStats.decorators_seen} ` +
+        `mapped=${bundle.decoratorStats.mapped} ` +
+        `stashed=${bundle.decoratorStats.stashed} ` +
+        `dropped=${bundle.decoratorStats.dropped}`,
+    );
+  }
   // Log translator issues loudly; silent degradation (e.g. dropped rpack modules) is hard to trace otherwise.
   const issues = bundle.manifest.issues;
   if (issues.length > 0) {

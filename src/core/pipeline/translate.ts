@@ -1,7 +1,7 @@
 import { readCharx } from "../charx/reader.js";
 import { parseRisuModule } from "../schemas/parse.js";
 import { mapCharacter } from "../mappers/character.js";
-import { mapLoreBook } from "../mappers/lorebook.js";
+import { mapLoreBook, mapLoreBookWithStats } from "../mappers/lorebook.js";
 import { mapRegex, type AtAtAction } from "../mappers/regex.js";
 import { compileAtActions } from "../mappers/at-actions.js";
 import { compileTriggers } from "../mappers/triggers.js";
@@ -136,6 +136,13 @@ export function translateCharx(
 
   let worldBook: LumiWorldBook | null = null;
   let worldBookEntries: readonly LumiWorldBookEntry[] = [];
+  let decoratorStats = {
+    entries_with_decorators: 0,
+    decorators_seen: 0,
+    mapped: 0,
+    stashed: 0,
+    dropped: 0,
+  };
   if (allLoreEntries.length > 0) {
     const wbId = uuid();
     const wbNow = now();
@@ -159,7 +166,10 @@ export function translateCharx(
       created_at: wbNow,
       updated_at: wbNow,
     };
-    worldBookEntries = mapLoreBook(allLoreEntries, { worldBookId: wbId, now, uuid });
+    const lbResult = mapLoreBookWithStats(allLoreEntries, { worldBookId: wbId, now, uuid });
+    worldBookEntries = lbResult.entries;
+    decoratorStats = lbResult.decoratorStats;
+    void mapLoreBook; // re-export referenced from elsewhere; keep import live
   }
 
   let rewriteNote: string | null = null;
@@ -441,6 +451,7 @@ export function translateCharx(
     assets: assetsMap,
     preferredAvatar,
     pendingSvgRasters: svgIndexer.getTasks(),
+    decoratorStats,
     manifest,
   };
 }

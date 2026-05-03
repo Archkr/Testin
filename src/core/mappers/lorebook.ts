@@ -1,12 +1,31 @@
 import type { LoreBook } from "../schemas/lorebook.js";
 import type { LumiWorldBookEntry } from "../lumiverse/types.js";
 import { newUuid, nowMs, splitKeywords } from "./util.js";
+import {
+  parseDecorators,
+  applyDecoratorsToEntry,
+} from "./lorebook-decorators.js";
 
 
 export interface MapLorebookOptions {
   readonly worldBookId: string;
   readonly now?: () => number;
   readonly uuid?: () => string;
+}
+
+/** Aggregate stats from one mapLoreBook call — surfaced by the importer for
+ *  a single deliberate log line so we don't burn log lines per-entry. */
+export interface DecoratorStats {
+  /** Entries whose content carried at least one `@@`-prefixed decorator. */
+  readonly entries_with_decorators: number;
+  /** Total decorators parsed across all entries. */
+  readonly decorators_seen: number;
+  /** Decorators that mapped to a Lumi field (Tier 1). */
+  readonly mapped: number;
+  /** Decorators stashed on `extensions._risu_decorators` for runtime intercept. */
+  readonly stashed: number;
+  /** Decorators that Risu would have suspended on (bad args, unknown name). */
+  readonly dropped: number;
 }
 
 function buildFolderIndex(entries: readonly LoreBook[]): Map<string, string> {
@@ -47,6 +66,20 @@ function buildExtensions(e: LoreBook): Record<string, unknown> {
   return ext;
 }
 
+export interface MappedLoreBookEntry {
+  readonly entry: LumiWorldBookEntry;
+  readonly stats: {
+    /** Decorator lines parsed at the top of `content`. */
+    readonly decoratorsSeen: number;
+    /** Decorators applied via Tier 1 mapping. */
+    readonly mapped: number;
+    /** Decorators stashed on `extensions._risu_decorators`. */
+    readonly stashed: number;
+    /** Decorators Risu would have suspended on (bad args, unknown). */
+    readonly dropped: number;
+  };
+}
+
 export function mapLoreBookEntry(
   entry: LoreBook,
   worldBookId: string,
@@ -54,6 +87,16 @@ export function mapLoreBookEntry(
   now: number,
   uuid: () => string,
 ): LumiWorldBookEntry {
+  return mapLoreBookEntryWithStats(entry, worldBookId, folders, now, uuid).entry;
+}
+
+export function mapLoreBookEntryWithStats(
+  entry: LoreBook,
+  worldBookId: string,
+  folders: Map<string, string>,
+  now: number,
+  uuid: () => string,
+): MappedLoreBookEntry {
   const { constant, disabled, position } = mapMode(entry);
   const groupName = resolveFolderName(entry, folders);
 
@@ -64,68 +107,123 @@ export function mapLoreBookEntry(
 
   const caseSensitive = entry.extentions?.risu_case_sensitive === true;
 
+  // Decorators live at the top of content. First non-@@ line ends the block.
+  const parsed = parseDecorators(entry.content);
+  const draftKey = splitKeywords(entry.key);
+  const draftExt = buildExtensions(entry);
+  const applied = applyDecoratorsToEntry({ key: draftKey, extensions: draftExt }, parsed.decorators);
+
+  // Decorator patch wins over Risu mode/extension defaults for Tier 1 fields.
+  const finalKey = applied.patch.key ?? draftKey;
+  const finalExtensions = applied.patch.extensions ?? draftExt;
+  const finalContent = parsed.decorators.length > 0 ? parsed.remainingContent : entry.content;
+
+  const stats = {
+    decoratorsSeen: parsed.decorators.length,
+    mapped: applied.applied.length,
+    stashed: applied.stashed.length,
+    dropped: applied.dropped.length,
+  };
+
   return {
+    entry: {
     id: uuid(),
     world_book_id: worldBookId,
     uid: entry.id ?? uuid(),
-    key: splitKeywords(entry.key),
+    key: finalKey,
     keysecondary: splitKeywords(entry.secondkey),
 
-    content: entry.content,
+    content: finalContent,
     comment: entry.comment,
 
-    position,
-    depth: 0,
-    role: null,
+    position: applied.patch.position ?? position,
+    depth: applied.patch.depth ?? 0,
+    role: applied.patch.role ?? null,
     order_value: entry.insertorder,
 
     selective: entry.selective,
-    constant,
-    disabled,
+    constant: applied.patch.constant ?? constant,
+    disabled: applied.patch.disabled ?? disabled,
 
     group_name: groupName,
     group_override: false,
     group_weight: 1,
 
-    probability,
-    scan_depth: null,
+    probability: applied.patch.probability ?? probability,
+    scan_depth: applied.patch.scan_depth ?? null,
 
     case_sensitive: caseSensitive,
-    match_whole_words: false,
+    match_whole_words: applied.patch.match_whole_words ?? false,
     automation_id: null,
     use_regex: entry.useRegex === true,
 
-    prevent_recursion: false,
-    exclude_recursion: false,
+    prevent_recursion: applied.patch.prevent_recursion ?? false,
+    exclude_recursion: applied.patch.exclude_recursion ?? false,
     delay_until_recursion: false,
-    priority: 0,
+    priority: applied.patch.priority ?? 0,
     sticky: 0,
     cooldown: 0,
     delay: 0,
     selective_logic: 0,
-    use_probability: entry.activationPercent !== undefined && entry.activationPercent !== null,
+    use_probability: applied.patch.use_probability ?? (entry.activationPercent !== undefined && entry.activationPercent !== null),
 
     vectorized: false,
     vector_index_status: "not_enabled",
     vector_indexed_at: null,
     vector_index_error: null,
 
-    extensions: buildExtensions(entry),
+    extensions: finalExtensions,
     created_at: now,
     updated_at: now,
+    },
+    stats,
   };
+}
+
+
+/** Map a list of lore entries plus aggregate decorator stats. */
+export interface MapLoreBookResult {
+  readonly entries: readonly LumiWorldBookEntry[];
+  readonly decoratorStats: DecoratorStats;
 }
 
 export function mapLoreBook(
   entries: readonly LoreBook[],
   opts: MapLorebookOptions,
 ): LumiWorldBookEntry[] {
+  return mapLoreBookWithStats(entries, opts).entries as LumiWorldBookEntry[];
+}
+
+export function mapLoreBookWithStats(
+  entries: readonly LoreBook[],
+  opts: MapLorebookOptions,
+): MapLoreBookResult {
   const now = (opts.now ?? nowMs)();
   const uuid = opts.uuid ?? newUuid;
   const folders = buildFolderIndex(entries);
   const out: LumiWorldBookEntry[] = new Array(entries.length);
+  let entries_with_decorators = 0;
+  let decorators_seen = 0;
+  let mapped = 0;
+  let stashed = 0;
+  let dropped = 0;
   for (let i = 0; i < entries.length; i++) {
-    out[i] = mapLoreBookEntry(entries[i]!, opts.worldBookId, folders, now, uuid);
+    const r = mapLoreBookEntryWithStats(entries[i]!, opts.worldBookId, folders, now, uuid);
+    out[i] = r.entry;
+    if (r.stats.decoratorsSeen > 0) entries_with_decorators += 1;
+    decorators_seen += r.stats.decoratorsSeen;
+    mapped += r.stats.mapped;
+    stashed += r.stats.stashed;
+    dropped += r.stats.dropped;
   }
-  return out;
+  return {
+    entries: out,
+    decoratorStats: {
+      entries_with_decorators,
+      decorators_seen,
+      mapped,
+      stashed,
+      dropped,
+    },
+  };
 }

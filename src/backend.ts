@@ -347,6 +347,9 @@ if (typeof registerMacroInterceptor === 'function') {
         ...(screenDims ? { screenWidth: screenDims.width, screenHeight: screenDims.height } : {}),
         legacyMediaFindings: getCachedSettingsSync(ctx.userId).legacyMediaFindings,
         ...(modulesByNamespaceFromCard(active.card) ? { modulesByNamespace: modulesByNamespaceFromCard(active.card)! } : {}),
+        ...(readDecoratorBuffers(chatId)?.positionPt
+          ? { positionPt: readDecoratorBuffers(chatId)!.positionPt }
+          : {}),
       });
     } catch (err) {
       log.warn(`macroInterceptor: runPipeline threw chat=${chatId} phase=${ctx.phase} — ${errMsg(err)}. Passing through.`);
@@ -622,6 +625,12 @@ const registerInterceptor = (spindle as unknown as {
   ) => void;
 }).registerInterceptor;
 
+import {
+  getDecoratorBuffers as readDecoratorBuffers,
+  setDecoratorBuffers,
+  clearDecoratorBuffers as clearDecoratorBuffer,
+} from './interpreter/decorator-buffers.js';
+
 if (typeof registerInterceptor === 'function') {
   registerInterceptor(async (messages, contextRaw) => {
     const ctx = (contextRaw ?? {}) as InterceptorContext;
@@ -633,12 +642,78 @@ if (typeof registerInterceptor === 'function') {
     const active = await ensureActiveCardForChat(chatId, null);
     if (!active) return messages;
 
+    let out: LlmMessage[] = messages;
+
+    // ─── Tier 3: inject_at slot injection (Risu index.svelte.ts:520-585) ───
+    // Pulls injection plans staged by worldInfoInterceptor, applies them to
+    // system messages by content match against character.{description,
+    // system_prompt, post_history_instructions} / persona.description /
+    // chat.metadata.authors_note.content. Mirrors Risu's positionParser
+    // behaviour: append/prepend/replace operations on the slot's text.
+    const buffers = readDecoratorBuffers(chatId);
+    if (buffers && buffers.injectAt.length > 0) {
+      const character = await spindle.characters
+        .get(active.card.character_id, userId)
+        .catch(() => null);
+      const persona = await spindle.personas.getActive(userId).catch(() => null);
+      const authorsNote = (() => {
+        const meta = active.card.risuPayload.extra as
+          | { authors_note?: { content?: unknown } }
+          | undefined;
+        const c = meta?.authors_note?.content;
+        return typeof c === 'string' ? c : '';
+      })();
+      // Map of Risu loc to identifier text expected inside a system message.
+      // Imperfect anchors since Lumi merges multiple sources into one block.
+      const slotText: Record<string, string> = {};
+      const charDesc = (character as { description?: unknown } | null)?.description;
+      if (typeof charDesc === 'string' && charDesc.length > 0) slotText['description'] = charDesc;
+      const charPersona = (character as { persona?: unknown } | null)?.persona;
+      if (typeof charPersona === 'string' && charPersona.length > 0) slotText['persona'] = charPersona;
+      const charScenario = (character as { scenario?: unknown } | null)?.scenario;
+      if (typeof charScenario === 'string' && charScenario.length > 0) slotText['scenario'] = charScenario;
+      const charSysPrompt = (character as { system_prompt?: unknown } | null)?.system_prompt;
+      if (typeof charSysPrompt === 'string' && charSysPrompt.length > 0) slotText['main'] = charSysPrompt;
+      const charPostHist = (character as { post_history_instructions?: unknown } | null)?.post_history_instructions;
+      if (typeof charPostHist === 'string' && charPostHist.length > 0) {
+        slotText['globalNote'] = charPostHist;
+        // Risu's `jailbreak` / `cot` cards both consume globalNote-like content.
+        slotText['jailbreak'] = charPostHist;
+        slotText['cot'] = charPostHist;
+      }
+      const personaDesc = (persona as { description?: unknown } | null)?.description;
+      if (typeof personaDesc === 'string' && personaDesc.length > 0 && !slotText['persona']) {
+        slotText['persona'] = personaDesc;
+      }
+      if (authorsNote.length > 0) slotText['authornote'] = authorsNote;
+
+      const { applyInjectAtToMessages } = await import(
+        './payload/lorebook-decorator-runtime.js'
+      );
+      const applyResult = applyInjectAtToMessages(out, buffers.injectAt, slotText);
+      out = applyResult.messages.slice();
+      if (
+        applyResult.mutationCount > 0 ||
+        applyResult.synthesizedCount > 0 ||
+        applyResult.fallbackAppendCount > 0
+      ) {
+        log.info(
+          `[decorators] injectAt applied chat=${chatId} ` +
+            `mutations=${applyResult.mutationCount}/${buffers.injectAt.length} ` +
+            `synthesized=${applyResult.synthesizedCount} ` +
+            `fallback_append=${applyResult.fallbackAppendCount}`,
+        );
+      }
+      // Drop the buffer: this is its single point of consumption per generation.
+      clearDecoratorBuffer(chatId);
+    }
+
     const triggers = active.card.risuPayload.triggers as ReadonlyArray<{
       effect?: ReadonlyArray<{ type?: string }>;
     }>;
     const luaScripts = active.card.risuPayload.lua_scripts;
     const hasLuaTrigger = triggers.some((t) => t.effect?.[0]?.type === 'triggerlua');
-    if (!hasLuaTrigger) return messages;
+    if (!hasLuaTrigger) return out;
 
     const editApi = makeSpindleHost({
       chatId,
@@ -650,8 +725,6 @@ if (typeof registerInterceptor === 'function') {
       source: t,
       luaCode: luaScripts[i] ?? '',
     }));
-
-    let out: LlmMessage[] = messages;
 
     // editInput: only on actual user typing (not regenerate/swipe/continue).
     if (ctx.generationType === 'normal') {
@@ -715,6 +788,144 @@ if (typeof registerInterceptor === 'function') {
   log.info('interceptor: registered (editInput + editRequest)');
 } else {
   log.info('interceptor: not available on this Lumi build — listenEdit editInput/editRequest will not fire');
+}
+
+const registerWorldInfoInterceptor =
+  typeof (spindle as unknown as { registerWorldInfoInterceptor?: unknown }).registerWorldInfoInterceptor === 'function'
+    ? (spindle.registerWorldInfoInterceptor.bind(spindle) as typeof spindle.registerWorldInfoInterceptor)
+    : null;
+
+if (registerWorldInfoInterceptor) {
+  registerWorldInfoInterceptor(async (ctx) => {
+    const verbose = (() => {
+      try {
+        const env = (globalThis as { Bun?: { env?: Record<string, string | undefined> } }).Bun?.env;
+        return env?.RISU_COMPAT_VERBOSE === '1';
+      } catch { return false; }
+    })();
+    const { runWorldInfoInterceptor } = await import('./payload/lorebook-decorator-runtime.js');
+    const verboseFn = verbose ? (m: string) => log.info(`[decorators] ${m}`) : undefined;
+    // Risu loreDepth default (lorebook.svelte.ts:83). Lumi exposes neither
+    // per-entry scan_depth nor the chat-level default in the interceptor view,
+    // so we use Risu's shipped default. Cards that need a different window
+    // would have to express it via on-entry scan_depth which is currently
+    // not surfaced through this hook.
+    const RISU_DEFAULT_LORE_DEPTH = 4;
+    const outcome = runWorldInfoInterceptor(
+      {
+        entries: ctx.entries.map((e) => ({
+          id: e.id,
+          disabled: e.disabled,
+          comment: typeof e.comment === 'string' ? e.comment : '',
+          key: Array.isArray(e.key) ? e.key : [],
+          keysecondary: Array.isArray(e.keysecondary) ? e.keysecondary : [],
+          content: typeof e.content === 'string' ? e.content : '',
+          priority: typeof e.priority === 'number' ? e.priority : 0,
+          extensions: e.extensions,
+        })),
+        messages: ctx.messages.map((m) => ({
+          role: m.role,
+          content: m.content,
+          is_user: m.is_user,
+          is_greeting: m.is_greeting,
+          ...(m.greeting_index !== undefined ? { greeting_index: m.greeting_index } : {}),
+        })),
+        chatTurn: ctx.chatTurn,
+        chatMetadata: ctx.chatMetadata,
+        defaultScanDepth: RISU_DEFAULT_LORE_DEPTH,
+      },
+      verboseFn,
+    );
+
+    // Persist sticky var writes (keep_activate_after_match / dont_activate_after_match).
+    // The runtime returned WHICH writes to perform; we apply them via a single
+    // chats.update RMW. expectChatChange suppresses the resulting CHAT_CHANGED echo.
+    if (outcome.stickyWrites.length > 0 && ctx.userId) {
+      try {
+        const chat = await spindle.chats.get(ctx.chatId, ctx.userId);
+        const meta = (chat?.metadata ?? {}) as Record<string, unknown>;
+        const mv = (meta['macro_variables'] && typeof meta['macro_variables'] === 'object'
+          ? { ...(meta['macro_variables'] as Record<string, unknown>) }
+          : {}) as Record<string, unknown>;
+        const local = (mv['local'] && typeof mv['local'] === 'object'
+          ? { ...(mv['local'] as Record<string, unknown>) }
+          : {}) as Record<string, unknown>;
+        let changed = 0;
+        for (const w of outcome.stickyWrites) {
+          if (local[w.varName] === w.value) continue;
+          local[w.varName] = w.value;
+          changed += 1;
+        }
+        if (changed > 0) {
+          mv['local'] = local;
+          expectChatChange(ctx.chatId);
+          await spindle.chats.update(
+            ctx.chatId,
+            { metadata: { ...meta, macro_variables: mv } as never },
+            ctx.userId,
+          );
+          log.info(
+            `[decorators] sticky_writes chat=${ctx.chatId} count=${changed}/${outcome.stickyWrites.length} ` +
+              `keys=[${outcome.stickyWrites.slice(0, 3).map((w) => w.varName).join(',')}${outcome.stickyWrites.length > 3 ? ',…' : ''}]`,
+          );
+        }
+      } catch (err) {
+        log.warn(`[decorators] sticky_writes failed chat=${ctx.chatId}: ${errMsg(err)}`);
+      }
+    }
+
+    // Stash Tier 3 cross-hook data: injectAt buffer for registerInterceptor,
+    // positionPt buffer for the {{position::NAME}} macro evaluator. Each
+    // generation overwrites. Consumer hooks clear, 60s TTL as safety net.
+    if (outcome.injectAt.length > 0 || outcome.positionPt.length > 0) {
+      const positionPt: Record<string, string> = {};
+      for (const p of outcome.positionPt) positionPt[p.name] = p.content;
+      setDecoratorBuffers(ctx.chatId, {
+        injectAt: outcome.injectAt,
+        positionPt,
+      });
+      log.info(
+        `[decorators] tier3_buffer chat=${ctx.chatId} ` +
+          `injectAt=${outcome.injectAt.length} ` +
+          `positionPt=${outcome.positionPt.length}`,
+      );
+    } else {
+      // No Tier 3 plans this turn. Drop stale buffer so post-assembly
+      // doesn't apply ghosts.
+      clearDecoratorBuffer(ctx.chatId);
+    }
+
+    if (outcome.disabled.length > 0 || outcome.forced.length > 0 || outcome.mutated.length > 0) {
+      const reasons = Object.entries(outcome.reasons)
+        .map(([n, c]) => `${n}:${c}`)
+        .join(',');
+      log.info(
+        `[decorators] chat=${ctx.chatId} entries=${ctx.entries.length} ` +
+          `disabled=${outcome.disabled.length} forced=${outcome.forced.length} ` +
+          `mutated=${outcome.mutated.length} sticky_writes=${outcome.stickyWrites.length} ` +
+          `reasons=[${reasons}]`,
+      );
+    }
+    if (
+      outcome.disabled.length === 0 &&
+      outcome.forced.length === 0 &&
+      outcome.mutated.length === 0
+    ) return;
+    const result: {
+      disabled?: readonly string[];
+      forced?: readonly string[];
+      mutated?: readonly { id: string; content: string }[];
+    } = {};
+    if (outcome.disabled.length > 0) result.disabled = outcome.disabled;
+    if (outcome.forced.length > 0) result.forced = outcome.forced;
+    if (outcome.mutated.length > 0) {
+      result.mutated = outcome.mutated.map((m) => ({ id: m.entryId, content: m.content }));
+    }
+    return result;
+  }, 100);
+  log.info('worldInfoInterceptor: registered');
+} else {
+  log.info('worldInfoInterceptor: not available on this Lumi build — Tier 2 lorebook decorators will not gate');
 }
 
 const variableState = new VariableStateStore();
@@ -2672,6 +2883,9 @@ async function resolveReadonlyInWorker(
     legacyMediaFindings: getCachedSettingsSync(userId).legacyMediaFindings,
     wrapIslands: false,
     ...(activeCard && modulesByNamespaceFromCard(activeCard) ? { modulesByNamespace: modulesByNamespaceFromCard(activeCard)! } : {}),
+    ...(readDecoratorBuffers(chatId)?.positionPt
+      ? { positionPt: readDecoratorBuffers(chatId)!.positionPt }
+      : {}),
   });
 }
 

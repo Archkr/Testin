@@ -43,6 +43,15 @@ export interface LumiBundle {
    */
   readonly preferredAvatar: { readonly data: Uint8Array; readonly mime: string; readonly filename: string } | null;
   readonly pendingSvgRasters: readonly SvgRasterTask[];
+  /** Aggregate counts from per-entry decorator parsing. Importer logs once
+   *  per import (only when `decorators_seen > 0`). */
+  readonly decoratorStats: {
+    readonly entries_with_decorators: number;
+    readonly decorators_seen: number;
+    readonly mapped: number;
+    readonly stashed: number;
+    readonly dropped: number;
+  };
   readonly manifest: TranslationManifest;
 }
 

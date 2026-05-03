@@ -17,6 +17,7 @@ import { CatalogIndex, parseCatalog } from '../core/cbs/index.js';
 import { getActiveAssetIndexes } from './asset-cache.js';
 import { getActiveScriptstateDefaults, getCharacterIdForChat } from './defaults-cache.js';
 import { getActiveModulesByNamespace } from './modules-by-namespace-cache.js';
+import { getDecoratorBuffers } from './decorator-buffers.js';
 import { getActiveCharacterImage, getActivePersonaImage } from './image-cache.js';
 import type { AssetIndexEntry } from '../payload/types.js';
 
@@ -360,6 +361,12 @@ export function buildRuntimeContext(mctx: MacroInvokeCtx): RisuRuntimeContext {
     legacyMediaFindings: false,
     ...(getActiveModulesByNamespace(chatId)
       ? { modulesByNamespace: getActiveModulesByNamespace(chatId)! }
+      : {}),
+    // Tier 3 lorebook decorator: {{position::NAME}} → joined content from
+    // active entries with @@position pt_<NAME>. Buffer is staged by the
+    // worldInfoInterceptor in backend.ts and consumed here per macro eval.
+    ...(getDecoratorBuffers(chatId)?.positionPt
+      ? { positionPt: getDecoratorBuffers(chatId)!.positionPt }
       : {}),
   };
 }

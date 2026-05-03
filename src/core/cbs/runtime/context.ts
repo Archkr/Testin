@@ -109,6 +109,12 @@ export interface RisuRuntimeContext {
   readonly commit: boolean;
   readonly legacyMediaFindings: boolean;
   readonly modulesByNamespace?: Readonly<Record<string, readonly string[]>>;
+  /** Tier 3 lorebook decorator support: per-chat map of `{{position::NAME}}` →
+   *  joined content from active entries with `@@position pt_<NAME>` decorator.
+   *  Populated at worldInfoInterceptor time and read by the `position` macro
+   *  handler in `risu-compat/handlers/display.ts`. Risu source:
+   *  index.svelte.ts:575-584 (positionParser pt_* substitution). */
+  readonly positionPt?: Readonly<Record<string, string>>;
 }
 
 export interface FunctionRegistry {

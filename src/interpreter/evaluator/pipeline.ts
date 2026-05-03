@@ -40,6 +40,7 @@ export function runPipeline(input: RunPipelineInput): string {
       ? { legacyMediaFindings: input.legacyMediaFindings }
       : {}),
     ...(input.modulesByNamespace ? { modulesByNamespace: input.modulesByNamespace } : {}),
+    ...(input.positionPt ? { positionPt: input.positionPt } : {}),
     commit,
   });
 

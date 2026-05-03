@@ -38,8 +38,21 @@ register("cbr", (_c, a) => {
 }, "Returns a literal '\\n'. With numeric arg, repeats that many times.");
 
 // Asset family (img/image/asset/bg/emotion/video/audio/bgm/source/path/raw) and inlay* are in handlers/assets.ts.
+//
+// `position` is the {{position::NAME}} macro substituted by Risu's positionParser
+// (index.svelte.ts:575-584). It joins content from active lorebook entries
+// decorated with `@@position pt_<NAME>`. Backend populates `ctx.positionPt`
+// from the worldInfoInterceptor pass; we look up by NAME (the part after pt_)
+// and return the joined content. Empty string when no entries declare pt_<NAME>.
+register("position", (ctx, args) => {
+  const name = args[0];
+  if (typeof name !== "string" || name.length === 0) return "";
+  const map = ctx.positionPt;
+  if (!map) return "";
+  return map[name] ?? "";
+}, "Risu {{position::NAME}}: joined content of active entries with @@position pt_<NAME>.");
+
 const DOC_ONLY: Array<[string, string]> = [
-  ["position", "@@position decorator marker — shim at prompt stage."],
   ["slot", "{{slot::VAR}} inside a scoped block. Resolved by #each/#func/call handlers."],
 ];
 for (const [name, desc] of DOC_ONLY) {

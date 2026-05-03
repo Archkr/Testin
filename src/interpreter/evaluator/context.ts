@@ -128,6 +128,8 @@ export interface BuildEvaluatorCtxInput {
   readonly commit: boolean;
   readonly legacyMediaFindings?: boolean;
   readonly modulesByNamespace?: Readonly<Record<string, readonly string[]>>;
+  /** Per-chat `{{position::NAME}}` substitution map. See RisuRuntimeContext.positionPt. */
+  readonly positionPt?: Readonly<Record<string, string>>;
 }
 
 function indexToCharacterAssets(
@@ -332,5 +334,6 @@ export function buildEvaluatorContext(input: BuildEvaluatorCtxInput): EvaluatorC
     legacyMediaFindings: input.legacyMediaFindings === true,
     callStack: 0,
     ...(input.modulesByNamespace ? { modulesByNamespace: input.modulesByNamespace } : {}),
+    ...(input.positionPt ? { positionPt: input.positionPt } : {}),
   };
 }
