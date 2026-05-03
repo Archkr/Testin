@@ -55,6 +55,16 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
   let addingDefaultVarRow = false;
   // Lorebook-import status — surfaced next to the "+ Import lorebook…" button.
   let lorebookImportStatus: { kind: 'info' | 'error'; message: string } | null = null;
+  // Active sub-tab inside the viewer panel. Persists across re-renders within
+  // a session; switching the source resets to 'assets'.
+  type ViewerSubTab = 'assets' | 'triggers' | 'lorebook' | 'regex' | 'background' | 'defaults' | 'cjs';
+  let activeSubTab: ViewerSubTab = 'assets';
+  // Asset pagination — render at most ASSET_PAGE_SIZE tiles up front; "Show
+  // more" expands. Risu-grade modules ship 1500+ assets (Cheongwon); building
+  // 1500 DOM nodes synchronously freezes the panel for ~400 ms. Paginating
+  // keeps initial render under one frame.
+  const ASSET_PAGE_SIZE = 60;
+  let assetPagesShown = 1;
   const attachedByCharacter = new Map<string, readonly AttachedModuleSummary[]>();
   // Cleared on the next viewer_data_pushed (backend re-push = success signal).
   let assetUploadStatus: { kind: 'info' | 'error'; message: string } | null = null;
@@ -170,6 +180,11 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
     loading = true;
     viewerData = null;
     lastError = null;
+    activeSubTab = 'assets';
+    assetPagesShown = 1;
+    addingDefaultVarRow = false;
+    defaultVarEditBuffers.clear();
+    lorebookImportStatus = null;
     renderStatus();
     renderSurfaces();
     log.info(`viewer-panel: request data kind=${o.kind} id=${o.id}`);
@@ -205,12 +220,99 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
     status.textContent = '';
   }
 
+  interface SubTabSpec {
+    readonly id: ViewerSubTab;
+    readonly label: string;
+    /** Optional count badge (e.g. "Triggers · 4"). */
+    readonly count?: number;
+    readonly render: () => HTMLElement;
+  }
+
+  function buildSubTabs(d: import('../types/messages.js').ViewerData): readonly SubTabSpec[] {
+    const isCharacter = d.source.kind === 'character';
+    const tabs: SubTabSpec[] = [];
+    tabs.push({
+      id: 'assets',
+      label: 'Assets',
+      count: d.assets.length,
+      render: () => renderAssetsSection(d.assets),
+    });
+    if (isCharacter) {
+      tabs.push({
+        id: 'defaults',
+        label: 'Default vars',
+        count: d.defaultVariables.length,
+        render: () => renderDefaultVariablesSection(d.defaultVariables),
+      });
+    }
+    tabs.push({
+      id: 'triggers',
+      label: 'Triggers',
+      count: d.triggers.length,
+      render: () => renderTriggersSection(d.triggers),
+    });
+    if (d.backgroundHtml) {
+      tabs.push({
+        id: 'background',
+        label: 'Background HTML',
+        render: () => renderBackgroundHtmlSection(d.backgroundHtml ?? ''),
+      });
+    }
+    if (isCharacter) {
+      tabs.push({
+        id: 'lorebook',
+        label: 'Lorebook',
+        render: () => renderLumiverseRedirect(),
+      });
+    } else {
+      tabs.push({
+        id: 'regex',
+        label: 'Regex',
+        count: d.regex.length,
+        render: () => renderRegexSection(d.regex),
+      });
+      tabs.push({
+        id: 'lorebook',
+        label: 'Lorebook',
+        count: d.lorebook.reduce((s, g) => s + g.entries.length, 0),
+        render: () => renderLorebookSection(d.lorebook),
+      });
+    }
+    if (d.cjs) {
+      tabs.push({
+        id: 'cjs',
+        label: 'CJS',
+        render: () => renderCjsSection(d.cjs ?? ''),
+      });
+    }
+    return tabs;
+  }
+
+  function renderSubTabBar(tabs: readonly SubTabSpec[]): HTMLDivElement {
+    const bar = document.createElement('div');
+    bar.className = 'lrv-subtab-bar';
+    for (const t of tabs) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'lrv-subtab';
+      if (t.id === activeSubTab) btn.classList.add('lrv-subtab-active');
+      btn.textContent = typeof t.count === 'number' ? `${t.label} · ${t.count}` : t.label;
+      btn.addEventListener('click', () => {
+        if (activeSubTab === t.id) return;
+        activeSubTab = t.id;
+        if (t.id !== 'assets') assetPagesShown = 1; // reset pagination on tab leave
+        render();
+      });
+      bar.appendChild(btn);
+    }
+    return bar;
+  }
+
   function renderSurfaces(): void {
     surfaceHost.replaceChildren();
     if (loading) return;
     if (!viewerData) return;
     const d = viewerData;
-    const isCharacter = d.source.kind === 'character';
 
     if (d.fetchWarnings.length > 0) {
       const wb = document.createElement('div');
@@ -219,26 +321,15 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
       surfaceHost.appendChild(wb);
     }
 
-    surfaceHost.appendChild(renderAssetsSection(d.assets));
-    if (isCharacter) {
-      // Render even when empty so the user has a place to add new ones.
-      surfaceHost.appendChild(renderDefaultVariablesSection(d.defaultVariables));
+    const tabs = buildSubTabs(d);
+    if (tabs.length === 0) return;
+    if (!tabs.some((t) => t.id === activeSubTab)) {
+      activeSubTab = tabs[0]!.id;
     }
-    surfaceHost.appendChild(renderTriggersSection(d.triggers));
-    if (d.backgroundHtml) {
-      surfaceHost.appendChild(renderBackgroundHtmlSection(d.backgroundHtml));
-    }
+    surfaceHost.appendChild(renderSubTabBar(tabs));
 
-    if (isCharacter) {
-      surfaceHost.appendChild(renderLumiverseRedirect());
-    } else {
-      surfaceHost.appendChild(renderRegexSection(d.regex));
-      surfaceHost.appendChild(renderLorebookSection(d.lorebook));
-    }
-
-    if (d.cjs) {
-      surfaceHost.appendChild(renderCjsSection(d.cjs));
-    }
+    const active = tabs.find((t) => t.id === activeSubTab) ?? tabs[0]!;
+    surfaceHost.appendChild(active.render());
   }
 
   function renderBackgroundHtmlSection(html: string): HTMLDetailsElement {
@@ -656,12 +747,39 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
       det.appendChild(empty);
       return det;
     }
+    // Paginate to keep initial DOM construction under one frame for
+    // module-grade asset counts (Cheongwon ships 1500+ images).
+    const limit = ASSET_PAGE_SIZE * assetPagesShown;
+    const visible = assets.slice(0, limit);
     const grid = document.createElement('div');
     grid.className = 'lrv-asset-grid';
-    for (const a of assets) {
+    for (const a of visible) {
       grid.appendChild(renderAssetTile(a));
     }
     det.appendChild(grid);
+    if (assets.length > limit) {
+      const more = document.createElement('button');
+      more.type = 'button';
+      more.className = 'lrv-btn lrv-asset-show-more';
+      const remaining = assets.length - limit;
+      more.textContent = `Show ${Math.min(ASSET_PAGE_SIZE, remaining)} more (${remaining} hidden)`;
+      more.addEventListener('click', () => {
+        assetPagesShown += 1;
+        render();
+      });
+      det.appendChild(more);
+      if (assets.length > limit + ASSET_PAGE_SIZE) {
+        const allBtn = document.createElement('button');
+        allBtn.type = 'button';
+        allBtn.className = 'lrv-btn lrv-asset-show-more';
+        allBtn.textContent = `Show all (${assets.length})`;
+        allBtn.addEventListener('click', () => {
+          assetPagesShown = Math.ceil(assets.length / ASSET_PAGE_SIZE) + 1;
+          render();
+        });
+        det.appendChild(allBtn);
+      }
+    }
     return det;
   }
 

@@ -1741,6 +1741,42 @@
   flex-wrap: wrap;
 }
 
+/* Sub-tab bar inside the viewer panel — picks one section to render at a time. */
+.lr-viewer-drawer .lrv-subtab-bar {
+  display: flex;
+  gap: 2px;
+  padding: 6px 10px 0;
+  border-bottom: 1px solid var(--lumiverse-border, rgba(255, 255, 255, 0.08));
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.lr-viewer-drawer .lrv-subtab {
+  background: transparent;
+  border: 1px solid transparent;
+  border-bottom: none;
+  color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.55));
+  font-size: 12px;
+  padding: 5px 10px 6px;
+  border-radius: 5px 5px 0 0;
+  cursor: pointer;
+  transition: background 80ms, color 80ms;
+}
+.lr-viewer-drawer .lrv-subtab:hover {
+  color: var(--lumiverse-text, inherit);
+  background: var(--lumiverse-bg-elevated, rgba(255, 255, 255, 0.04));
+}
+.lr-viewer-drawer .lrv-subtab-active {
+  color: var(--lumiverse-text, inherit);
+  background: var(--lumiverse-bg-elevated, rgba(255, 255, 255, 0.06));
+  border-color: var(--lumiverse-border, rgba(255, 255, 255, 0.12));
+}
+
+/* "Show more" pagination button under the asset grid. */
+.lr-viewer-drawer .lrv-asset-show-more {
+  display: block;
+  margin: 8px auto;
+}
+
 /* Default-variables section: name → value rows with optional Reset button. */
 .lr-viewer-drawer .lrv-section-note {
   font-size: 11px;
