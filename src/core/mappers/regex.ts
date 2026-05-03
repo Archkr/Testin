@@ -10,6 +10,7 @@ import { rewriteText } from "../cbs/rewrite/text.js";
 import { wrapIslandMergeIfNeeded } from "./island-merge.js";
 import { newUuid, nowMs } from "./util.js";
 import { normalizeReplaceStringForSanitizer } from "../../util/sanitizer-doc-shape.js";
+import { applyIframePolicy } from "./iframe-policy.js";
 
 
 // Risu scripts.ts+
@@ -166,6 +167,14 @@ export function mapRegex(
     }
     if (effectivePhase.target === "display" && !action) {
       baseReplace = wrapIslandMergeIfNeeded(baseReplace);
+    }
+    // Risu parity: rewrite YouTube `embed/` iframes to a click-through
+    // thumbnail anchor; strip all other iframes. Lumi's sanitizer would strip
+    // every iframe tag anyway (and CSP `frame-src 'self' blob:` blocks
+    // YouTube even if it didn't), so this is the most useful surface we can
+    // ship without Lumi-side changes.
+    if (effectivePhase.target === "display") {
+      baseReplace = applyIframePolicy(baseReplace).html;
     }
     baseReplace = normalizeReplaceStringForSanitizer(baseReplace);
 

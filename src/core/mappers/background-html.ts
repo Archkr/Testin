@@ -1,6 +1,7 @@
 import type { ScriptPackEntry, ScriptBindingEntry } from "../pipeline/types.js";
 import type { CatalogIndex } from "../cbs/catalog/loader.js";
 import { rewriteText } from "../cbs/rewrite/text.js";
+import { applyIframePolicy } from "./iframe-policy.js";
 
 
 const SHORTHAND_MARKER_START = "{";
@@ -25,7 +26,13 @@ export function buildBackgroundHtmlScript(
   const issues: { path: string; message: string }[] = [];
 
   const expanded = expandShorthand(html);
-  const rewritten = opts.catalog ? rewriteText(expanded, opts.catalog) : expanded;
+  const cbsRewritten = opts.catalog ? rewriteText(expanded, opts.catalog) : expanded;
+  // Risu parity: rewrite YouTube `embed/` iframes to a click-through anchor;
+  // strip all other iframes. See iframe-policy.ts. Bg-html is rendered into a
+  // shadow-DOM mount that is also subject to Lumi's sanitizer + the
+  // document-level CSP `frame-src 'self' blob:` (so direct YouTube iframes
+  // wouldn't load anyway).
+  const rewritten = applyIframePolicy(cbsRewritten).html;
 
   const bindings: readonly ScriptBindingEntry[] = [
     {
