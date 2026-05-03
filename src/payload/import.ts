@@ -136,6 +136,7 @@ export interface SpindleImportApi {
   };
   world_books: {
     create(input: Record<string, unknown>, userId?: string): Promise<{ id: string }>;
+    update(worldBookId: string, input: Record<string, unknown>, userId?: string): Promise<unknown>;
     entries: {
       create(worldBookId: string, input: Record<string, unknown>, userId?: string): Promise<{ id: string }>;
     };
@@ -290,6 +291,11 @@ export async function importCard(args: ImportCardArgs): Promise<ImportResult> {
   }
 
   // Create world book before character so CHARACTER_CREATED already carries the lore attachment.
+  // metadata.source='character' + source_character_id matches Lumi's native
+  // CharX importer (services/world-books.service.ts:1254-1262) so the
+  // "From character" badge shows up in WorldBookPanel.tsx:618.
+  // source_character_id is patched in post-character-create (we don't have
+  // the id yet at this point).
   let worldBookId: string | null = null;
   if (bundle.worldBookEntries.length > 0 && args.spindle.world_books) {
     progress('creating_character', `Creating world book with ${bundle.worldBookEntries.length} entries…`, 0.3);
@@ -297,7 +303,17 @@ export async function importCard(args: ImportCardArgs): Promise<ImportResult> {
     try {
       const wbName = bundle.worldBook?.name ?? `${bundle.character.name} — lore`;
       logInfo(`(4a) create world_book name="${wbName}" for ${bundle.worldBookEntries.length} entries`);
-      const book = await args.spindle.world_books.create({ name: wbName }, args.userId);
+      const book = await args.spindle.world_books.create(
+        {
+          name: wbName,
+          metadata: {
+            source: 'character',
+            // source_character_id is set in (4c) once the character row exists.
+            auto_managed_by_character: true,
+          },
+        },
+        args.userId,
+      );
       worldBookId = book.id;
       logInfo(`(4a) world_book created id=${worldBookId} in ${Date.now() - tBook}ms`);
     } catch (err) {
@@ -330,6 +346,30 @@ export async function importCard(args: ImportCardArgs): Promise<ImportResult> {
   const created = await args.spindle.characters.create(characterInput, args.userId);
   const characterId = created.id;
   logInfo(`(4b) spindle.characters.create -> id=${characterId} in ${Date.now() - tChar}ms`);
+
+  // (4c) Patch the world_book metadata with source_character_id now that
+  // the character row exists. Without this the WorldBookPanel "From
+  // character" badge won't render — it requires both source==='character'
+  // AND source_character_id===character.id (WorldBookPanel.tsx:618 +
+  // services/prompt-assembly.service.ts:2918-2919).
+  if (worldBookId && args.spindle.world_books) {
+    try {
+      await args.spindle.world_books.update(
+        worldBookId,
+        {
+          metadata: {
+            source: 'character',
+            source_character_id: characterId,
+            auto_managed_by_character: true,
+          },
+        },
+        args.userId,
+      );
+      logInfo(`(4c) world_book metadata patched with source_character_id=${characterId}`);
+    } catch (err) {
+      logWarn(`(4c) world_book metadata patch failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
 
   let avatarImageId: string | null = null;
   if (args.spindle.characters.setAvatar) {

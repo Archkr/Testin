@@ -1613,6 +1613,8 @@ async function importCardFromBytes(
               return { id: w.id };
             });
           },
+          update: (bookId, input, uid) =>
+            spindle.world_books.update(bookId, input as never, uid),
           entries: {
             create: (bookId, input, uid) =>
               spindle.world_books.entries.create(bookId, input as never, uid).then((e) => ({ id: e.id })),

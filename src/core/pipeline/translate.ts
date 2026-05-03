@@ -131,8 +131,25 @@ export function translateCharx(
     }
   }
 
-  const charBookEntries = extractCharacterBookEntries(charMap.extracted.characterBook, issues);
-  const allLoreEntries: LoreBook[] = [...moduleLorebook, ...charBookEntries];
+  const charBookEntriesRaw = extractCharacterBookEntries(charMap.extracted.characterBook, issues);
+  // Match Risu's .charx import semantic at characterCards.ts:153-159:
+  // when module.risum carries a lorebook, use ONLY that — character_book
+  // entries are discarded (Risu passes the module lorebook as
+  // `overrideLorebook` to importCharacterCardSpec, which then passes
+  // `lorebook: []` into convertCharbook so the charbook's entries don't
+  // merge in). For non-charx formats (PNG/JSON, no moduleEnvelope), use
+  // character_book.entries as before.
+  const haveModuleLore = moduleLorebook.length > 0;
+  const allLoreEntries: LoreBook[] = haveModuleLore
+    ? [...moduleLorebook]
+    : [...charBookEntriesRaw];
+  const dropped = haveModuleLore ? charBookEntriesRaw.length : 0;
+  if (dropped > 0) {
+    issues.push({
+      path: "lorebook",
+      message: `dropped ${dropped} character_book entr${dropped === 1 ? "y" : "ies"} — module.lorebook is the authoritative copy when .charx ships both (matches Risu characterCards.ts:153)`,
+    });
+  }
 
   let worldBook: LumiWorldBook | null = null;
   let worldBookEntries: readonly LumiWorldBookEntry[] = [];
@@ -159,7 +176,8 @@ export function translateCharx(
           version: TRANSLATOR_VERSION,
           source_counts: {
             module_lorebook: moduleLorebook.length,
-            character_book: charBookEntries.length,
+            character_book: charBookEntriesRaw.length,
+            character_book_dropped: dropped,
           },
         },
       },
