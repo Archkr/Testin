@@ -74,7 +74,9 @@ register("hiddenkey", () => "",
 // Empty at prompt time. Display renders as <div class="risu-comment">.
 register("risu_comment", (ctx, a) => {
   if (ctx.commit) return "";
-  return `<div class="risu-comment">${a[0] ?? ""}</div>`;
+  // Pre-prefixed to match Risu's `.x-risu-risu-comment` rule (parser
+  // double-prefixes since the source class already starts with `risu-`).
+  return `<div class="x-risu-risu-comment">${a[0] ?? ""}</div>`;
 }, "Comment macro. Empty at prompt time; displays as <div class=\"risu-comment\">…</div> at render time.");
 
 // `//` inline comment.
@@ -103,7 +105,9 @@ register("risu", (_c, a) => {
   return `<img src="/logo2.png" style="height:${size}px;width:${size}px" />`;
 }, "Embeds the RisuAI logo image.");
 
-register("button", (_c, a) => `<button class="button-default" risu-trigger="${a[1] ?? ""}">${a[0] ?? ""}</button>`,
+// Pre-prefixed `x-risu-button-default` to match Risu's compiled stylesheet.
+// Macro output skips the class-rewrite parser pass, so emit post-rewrite directly.
+register("button", (_c, a) => `<button class="x-risu-button-default" risu-trigger="${a[1] ?? ""}">${a[0] ?? ""}</button>`,
   "HTML button that fires the named risu-trigger when clicked.");
 
 // Frontend-reported viewport size. 0 before first report.

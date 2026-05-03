@@ -132,7 +132,7 @@ register("image", (ctx, args) => {
   if (!name) return "";
   const hit = findAsset(ctx, ctx.character.additionalAssets, name, ctx.legacyMediaFindings);
   if (!hit) return "";
-  return `<div class="risu-inlay-image"><img src="${hit.src}" alt="${hit.src}" style="${ASSET_WIDTH_STYLE}"/></div>\n`;
+  return `<div class="x-risu-risu-inlay-image"><img src="${hit.src}" alt="${hit.src}" style="${ASSET_WIDTH_STYLE}"/></div>\n`;
 }, "Inlay image wrapper. parser.svelte.ts.");
 
 register("emotion", (ctx, args) => {
@@ -207,14 +207,14 @@ register("inlay", (_ctx, args) => {
 register("inlayed", (_ctx, args) => {
   const id = String(args[0] ?? "");
   if (!id) return "";
-  return `<div class="risu-inlay-image"><img src="/api/v1/images/${id}"/></div>\n\n`;
+  return `<div class="x-risu-risu-inlay-image"><img src="/api/v1/images/${id}"/></div>\n\n`;
 }, "Wrapped inlay image. Risu parser.svelte.ts + 688.");
 
 register("inlayeddata", (_ctx, args) => {
   const id = String(args[0] ?? "");
   if (!id) return "";
   // parser.svelte.ts. `startsWith('{{inlayed')` matches both inlayed and inlayeddata.
-  return `<div class="risu-inlay-image"><img src="/api/v1/images/${id}"/></div>\n\n`;
+  return `<div class="x-risu-risu-inlay-image"><img src="/api/v1/images/${id}"/></div>\n\n`;
 }, "Wrapped inlay image (data variant). Risu parser.svelte.ts + 688.");
 
 // parser.svelte.ts. Returns stable `/api/v1/images/<id>` URLs.

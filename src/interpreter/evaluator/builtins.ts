@@ -15,8 +15,6 @@ function parseUTCOffset(s: string): number | null {
 }
 
 export function registerBuiltins(register: RegisterFn): void {
-  register("user", (ctx) => ctx.identity.userName, false);
-  register("char", (ctx) => ctx.identity.charName, false);
   register("bot", (ctx) => ctx.identity.charName, false);
 
   register("newline", () => "\n", false);
