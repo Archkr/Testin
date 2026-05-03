@@ -5203,6 +5203,9 @@ spindle.onFrontendMessage(async (raw, userId) => {
           const attached = await charactersAttachedTo(msg.source.moduleId, userId);
           for (const charId of attached) {
             invalidateActiveForCharacter(charId);
+            await refreshRisuAssetMap(charId, userId).catch((err) => {
+              log.warn(`${msg.type}: refreshRisuAssetMap failed char=${charId}: ${errMsg(err)}`);
+            });
           }
           if (attached.length > 0) {
             log.info(
@@ -5211,6 +5214,9 @@ spindle.onFrontendMessage(async (raw, userId) => {
           }
         } else {
           invalidateActiveForCharacter(msg.source.characterId);
+          await refreshRisuAssetMap(msg.source.characterId, userId).catch((err) => {
+            log.warn(`${msg.type}: refreshRisuAssetMap failed char=${msg.source.kind === 'character' ? msg.source.characterId : '?'}: ${errMsg(err)}`);
+          });
         }
         break;
       }

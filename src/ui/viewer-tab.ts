@@ -534,6 +534,11 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
   // Single backend mutation at the end → one envelope write + one viewer re-push.
   async function uploadAssetsBatch(files: readonly File[]): Promise<void> {
     if (!viewerData) return;
+    // Snapshot the source at upload-start so a mid-upload source switch
+    // doesn't redirect the mutation to the wrong character/module.
+    const startSource = viewerData.source.kind === 'character'
+      ? { kind: 'character' as const, characterId: viewerData.source.characterId }
+      : { kind: 'module' as const, moduleId: viewerData.source.moduleId };
     const existingNames = new Set(viewerData.assets.map((a) => a.name));
     const planned: Array<{ file: File; assetName: string; ext: string | undefined }> = [];
     const failures: Array<{ filename: string; reason: string }> = [];
@@ -609,7 +614,8 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
       message: `Saving ${results.length} asset${results.length === 1 ? '' : 's'}${tail}…`,
     };
     render();
-    sendCurrentSourceMutation({ type: 'add_assets', entries: results });
+    log.info(`viewer-panel: add_assets via snapshot source kind=${startSource.kind} entries=${results.length}`);
+    sendToBackend({ type: 'add_assets', source: startSource, entries: results } as FrontendToBackend);
   }
 
   function formatFailureList(failures: ReadonlyArray<{ filename: string; reason: string }>): string {
