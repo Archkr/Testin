@@ -1,15 +1,15 @@
-// @@-actions runtime: applies @@emo / @@inject / @@move_top / @@move_bottom /
-// @@repeat_back post-regex actions per phase.
-// Risu source: scripts.ts.
+// @@-actions runtime: applies @@emo / @@repeat_back side-effecting actions per
+// phase. @@inject / @@move_top / @@move_bottom are emitted as native Lumi
+// regex_script rows by core/mappers/regex.ts and run inside Lumi's pipeline,
+// so this module never sees them. Risu source: scripts.ts.
 
 import type { HostApi, HostMessage } from "./host.js";
-import { applyMatchTemplate } from "./runtime.js";
 import { errMsg } from "../util/coerce.js";
 import { makeSafeLogger } from "../util/safe-log.js";
 
 const log = makeSafeLogger("atActions.runForPhase");
 
-export type AtAtActionKind = "emo" | "inject" | "move_top" | "move_bottom" | "repeat_back";
+export type AtAtActionKind = "emo" | "repeat_back";
 
 export type AtAtPhase = "editinput" | "editoutput" | "editdisplay" | "edittrans";
 
@@ -64,69 +64,30 @@ async function applyOne(
   data: string,
   ctx: RunAtActionsCtx,
 ): Promise<string> {
-  // Risu strips 'g' for move_top/bottom (scripts.ts "temperary fix").
-  let flag = a.flag;
-  if ((a.action === "move_top" || a.action === "move_bottom") && flag.includes("g")) {
-    flag = flag.replace(/g/g, "");
-  }
-
   let regex: RegExp;
   try {
-    regex = new RegExp(a.findRegex, flag);
+    regex = new RegExp(a.findRegex, a.flag);
   } catch (err) {
-    throw new Error(`atAction ${a.action}: invalid regex /${a.findRegex}/${flag} — ${(err as Error).message}`);
+    throw new Error(`atAction ${a.action}: invalid regex /${a.findRegex}/${a.flag} — ${(err as Error).message}`);
   }
 
   const matched = regex.test(data);
-  // Reset lastIndex after .test (sticky for /g/) so subsequent .exec
-  // doesn't skip ahead.
   regex.lastIndex = 0;
 
   if (matched) {
-    switch (a.action) {
-      case "emo": {
-        // Risu strips the `@@emo ` prefix at scripts.ts.
-        const name = a.out.substring(6).trim();
-        if (name && ctx.api.characters.setExpression) {
-          await ctx.api.characters.setExpression(name);
-        }
-        return data;
+    if (a.action === "emo") {
+      const name = a.out.substring(6).trim();
+      if (name && ctx.api.characters.setExpression) {
+        await ctx.api.characters.setExpression(name);
       }
-      case "inject": {
-        // Risu scripts.ts: persists to chat.message[chatID].data then
-        // strips from data. We strip only; persist is a no-op (no per-message
-        // write path at edit-time).
-        if (ctx.chatIndex === -1) return data; // gate matches Risu :207
-        return data.replace(regex, "");
-      }
-      case "move_top":
-      case "move_bottom": {
-        const stripped = a.out
-          .replace(/^@@move_top\s+/, "")
-          .replace(/^@@move_bottom\s+/, "");
-        const m = data.match(regex);
-        if (!m) return data;
-        const cleaned = data.replace(regex, "");
-        const rendered = applyMatchTemplate(stripped, m);
-        if (a.action === "move_top") {
-          return rendered + "\n" + cleaned;
-        }
-        return cleaned + "\n" + rendered;
-      }
-      case "repeat_back": {
-        // repeat_back fires only on no-match (scripts.ts).
-        return data;
-      }
-      default:
-        return data;
-    }
-  } else {
-    if (a.action === "repeat_back") {
-      if (ctx.chatIndex === -1) return data; // gate matches Risu :252
-      return await applyRepeatBack(a, data, regex, ctx);
     }
     return data;
   }
+  if (a.action === "repeat_back") {
+    if (ctx.chatIndex === -1) return data; // Risu scripts.ts:252 gate
+    return await applyRepeatBack(a, data, regex, ctx);
+  }
+  return data;
 }
 
 async function applyRepeatBack(
@@ -181,7 +142,7 @@ export function coerceAtActions(raw: readonly unknown[]): RuntimeAtAtAction[] {
     } | null;
     if (!r || typeof r !== "object") continue;
     const action = r.action as AtAtActionKind | undefined;
-    if (action !== "emo" && action !== "inject" && action !== "move_top" && action !== "move_bottom" && action !== "repeat_back") continue;
+    if (action !== "emo" && action !== "repeat_back") continue;
     const findRegex = typeof r.script?.in === "string" ? r.script.in : "";
     const outStr = typeof r.script?.out === "string" ? r.script.out : "";
     if (!findRegex) continue;

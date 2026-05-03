@@ -21,6 +21,29 @@ const AT_ACTION_PREFIXES = [
   "@@repeat_back",
 ] as const;
 
+// PUA sentinels used to mark @@-action wrapped content for the second pass
+// (move_top/move_bottom) or the display+prompt strip rules (inject editoutput).
+// One PUA char each side, hash in the middle, paired per rule so multiple
+// @@-actions in the same card can't cross-contaminate.
+const SENTINEL_OPEN = "";
+const SENTINEL_CLOSE = "";
+
+function ruleHash(scriptId: string): string {
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < scriptId.length; i++) {
+    h ^= scriptId.charCodeAt(i);
+    h = Math.imul(h, 16777619) >>> 0;
+  }
+  return h.toString(36).padStart(7, "0").slice(0, 6);
+}
+
+function openSentinel(hash: string): string {
+  return `${SENTINEL_OPEN}${hash}${SENTINEL_OPEN}`;
+}
+function closeSentinel(hash: string): string {
+  return `${SENTINEL_CLOSE}${hash}${SENTINEL_CLOSE}`;
+}
+
 // Risu scripts.ts
 const ALLOWED_FLAG_LETTERS = "dgimsuvy";
 
@@ -84,45 +107,32 @@ export function mapRegex(
     const effectivePhase = phase ?? UNKNOWN_PHASE_FALLBACK;
 
     const normalised = normaliseFlag(s, i);
-    let outNormalised = s.out.replaceAll("$n", "\n");
+    const hasNoEndNl = normalised.actions.includes("no_end_nl");
+    const baseSortOrder = (normalised.order ?? i) * 10;
+
+    const outNormalised = s.out.replaceAll("$n", "\n");
     const action = detectAtAction(outNormalised);
+    let strippedOut = outNormalised;
     if (action) {
       const prefix = `@@${action}`;
-      const trimmed = outNormalised.slice(prefix.length).replace(/^\s+/, "");
-      if (action === "move_top" || action === "move_bottom") {
-        outNormalised = trimmed;
-      } else {
-        outNormalised = "";
-      }
+      strippedOut = outNormalised.slice(prefix.length).replace(/^\s+/, "");
     }
 
-    const hasNoEndNl = normalised.actions.includes("no_end_nl");
-
-    let replaceString = outNormalised;
-    if (replaceString.endsWith(">") && !hasNoEndNl) replaceString += "\n";
-
-    if (opts.catalog && replaceString.indexOf("{{") >= 0) {
-      try {
-        replaceString = rewriteText(replaceString, opts.catalog);
-      } catch (err) {
-        issues.push({
-          path,
-          message: `CBS rewrite of replace_string failed (keeping raw): ${err instanceof Error ? err.message : String(err)}`,
-        });
-      }
+    // emo / repeat_back need backend-side runtime context (active emotion sprite,
+    // sibling message walk). Stash for the render-MCP sliver in backend.ts and
+    // emit no Lumi rows.
+    if (action === "emo" || action === "repeat_back") {
+      skipped.push({
+        index: i,
+        action,
+        script: s,
+        flag: normalised.flag,
+        phase: s.type,
+        actions: normalised.actions,
+        order: normalised.order ?? i,
+      });
+      continue;
     }
-
-
-    // Runtime DOM lifter handles fixed-position content post-render via
-    // getComputedStyle. No translate-time partition.
-
-    if (effectivePhase.target === "display") {
-      replaceString = wrapIslandMergeIfNeeded(replaceString);
-    }
-
-    // Strip doc-boundary tags and lift style blocks so DOMPurify keeps CSS.
-    // Must run after island wrap.
-    replaceString = normalizeReplaceStringForSanitizer(replaceString);
 
     let findPattern = String(s.in ?? "");
     if (opts.catalog && findPattern.indexOf("{{") >= 0) {
@@ -135,52 +145,171 @@ export function mapRegex(
         });
       }
     }
-
-    // Collapse the state-conditional two-branch idiom to its literal-marker
-    // branch so chat-wide useDisplayRegex doesn't over-fire on `$` end-anchor.
+    // Collapse state-conditional two-branch idiom so chat-wide useDisplayRegex
+    // doesn't over-fire on `$` end-anchor.
     findPattern = simplifyStateConditionalAnchor(findPattern);
-
-    const hasMacros =
-      replaceString.indexOf("{{") >= 0 || findPattern.indexOf("{{") >= 0;
-
-    // Drop `u` when find_regex has CBS: `{{` is invalid in Unicode mode. Lumi pre-resolves it.
+    // Drop `u` when find_regex has CBS: `{{` is invalid in Unicode mode.
     const findHasCbs = findPattern.indexOf("{{") >= 0;
-    const emittedFlags = findHasCbs ? normalised.flag.replace(/u/g, "") : normalised.flag;
+    const baseFlags = findHasCbs ? normalised.flag.replace(/u/g, "") : normalised.flag;
 
-    const row: LumiRegexScript = {
-      id: uuid(),
+    let baseReplace = (action === "inject") ? "" : strippedOut;
+    if (baseReplace.endsWith(">") && !hasNoEndNl) baseReplace += "\n";
+    if (opts.catalog && baseReplace.indexOf("{{") >= 0) {
+      try {
+        baseReplace = rewriteText(baseReplace, opts.catalog);
+      } catch (err) {
+        issues.push({
+          path,
+          message: `CBS rewrite of replace_string failed (keeping raw): ${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
+    }
+    if (effectivePhase.target === "display" && !action) {
+      baseReplace = wrapIslandMergeIfNeeded(baseReplace);
+    }
+    baseReplace = normalizeReplaceStringForSanitizer(baseReplace);
+
+    const baseHasMacros = baseReplace.indexOf("{{") >= 0 || findHasCbs;
+    const baseSubstitute: LumiRegexMacroMode = baseHasMacros ? "raw" : "none";
+    const baseName = nonEmpty(s.comment, `risu_${effectivePhase.target}_${i}`);
+    const baseDescription = s.comment ?? "";
+    const baseMetadata: Record<string, unknown> = {
+      _risu: {
+        phase: s.type,
+        origin,
+        order_index: i,
+        has_meta: normalised.actions.length > 0,
+        ...(action ? { at_action: action } : {}),
+      },
+    };
+
+    const buildRow = (overrides: {
+      readonly id: string;
+      readonly script_id: string;
+      readonly name?: string;
+      readonly find: string;
+      readonly replace: string;
+      readonly flags?: string;
+      readonly placement?: readonly LumiRegexPlacement[];
+      readonly target?: LumiRegexTarget;
+      readonly maxDepth?: number | null;
+      readonly sortOrder: number;
+      readonly substituteMacros?: LumiRegexMacroMode;
+    }): LumiRegexScript => ({
+      id: overrides.id,
       user_id: opts.userId ?? "",
-      name: nonEmpty(s.comment, `risu_${effectivePhase.target}_${i}`),
-      script_id: uuid(),
-      find_regex: findPattern,
-      replace_string: replaceString,
-      flags: emittedFlags,
-      placement: effectivePhase.placement,
+      name: overrides.name ?? baseName,
+      script_id: overrides.script_id,
+      find_regex: overrides.find,
+      replace_string: overrides.replace,
+      flags: overrides.flags ?? baseFlags,
+      placement: (overrides.placement ?? effectivePhase.placement) as LumiRegexPlacement[],
       scope: "character",
       scope_id: opts.characterId,
-      target: effectivePhase.target,
+      target: overrides.target ?? effectivePhase.target,
       min_depth: null,
-      max_depth: effectivePhase.maxDepth ?? null,
+      max_depth: overrides.maxDepth !== undefined ? overrides.maxDepth : (effectivePhase.maxDepth ?? null),
       trim_strings: [],
       run_on_edit: false,
-      substitute_macros: (hasMacros ? "raw" : "none") as LumiRegexMacroMode,
+      substitute_macros: overrides.substituteMacros ?? baseSubstitute,
       disabled: effectivePhase.disabled,
-      sort_order: normalised.order ?? i,
-      description: s.comment ?? "",
+      sort_order: overrides.sortOrder,
+      description: baseDescription,
       folder: "",
       pack_id: null,
-      metadata: {
-        _risu: {
-          phase: s.type,
-          origin,
-          order_index: i,
-          has_meta: normalised.actions.length > 0,
-        },
-      },
+      metadata: baseMetadata,
       created_at: now,
       updated_at: now,
-    };
-    rows.push(row);
+    });
+
+    if (!action) {
+      rows.push(buildRow({
+        id: uuid(),
+        script_id: uuid(),
+        find: findPattern,
+        replace: baseReplace,
+        sortOrder: baseSortOrder,
+      }));
+      continue;
+    }
+
+    const wrapId = uuid();
+    const hash = ruleHash(wrapId);
+    const open = openSentinel(hash);
+    const close = closeSentinel(hash);
+
+    if (action === "inject") {
+      // @@inject ("save full text, hide from user, expose inner content to
+      // next-turn LLM") only matters when the rule mutates persisted storage
+      // (target=response). Other targets are in-memory only, strip is faithful.
+      if (effectivePhase.target === "response") {
+        rows.push(buildRow({
+          id: wrapId,
+          script_id: uuid(),
+          find: findPattern,
+          replace: `${open}$&${close}`,
+          sortOrder: baseSortOrder,
+        }));
+        rows.push(buildRow({
+          id: uuid(),
+          script_id: uuid(),
+          name: `${baseName}__display_strip`,
+          find: `${open}[\\s\\S]*?${close}`,
+          replace: "",
+          flags: "g",
+          placement: ["ai_output", "user_input"],
+          target: "display",
+          maxDepth: null,
+          sortOrder: baseSortOrder + 1,
+          substituteMacros: "none",
+        }));
+        rows.push(buildRow({
+          id: uuid(),
+          script_id: uuid(),
+          name: `${baseName}__prompt_strip`,
+          find: `${open}|${close}`,
+          replace: "",
+          flags: "g",
+          placement: ["ai_output", "user_input", "world_info"],
+          target: "prompt",
+          maxDepth: null,
+          sortOrder: baseSortOrder + 2,
+          substituteMacros: "none",
+        }));
+      } else {
+        rows.push(buildRow({
+          id: wrapId,
+          script_id: uuid(),
+          find: findPattern,
+          replace: "",
+          sortOrder: baseSortOrder,
+        }));
+      }
+      continue;
+    }
+
+    // move_top/move_bottom: pass 1 wraps the match with the substituted
+    // out-template. Pass 2 lifts the wrapped block to top/bottom of the
+    // message. Sentinels are consumed in the same chain so storage stays clean.
+    const moveWrapFlags = baseFlags.replace(/g/g, "") || "u";
+    rows.push(buildRow({
+      id: wrapId,
+      script_id: uuid(),
+      find: findPattern,
+      replace: `${open}${baseReplace}${close}`,
+      flags: moveWrapFlags,
+      sortOrder: baseSortOrder,
+    }));
+    rows.push(buildRow({
+      id: uuid(),
+      script_id: uuid(),
+      name: `${baseName}__${action}_apply`,
+      find: `^([\\s\\S]*?)${open}([\\s\\S]*?)${close}([\\s\\S]*)$`,
+      replace: action === "move_top" ? "$2\n$1$3" : "$1$3\n$2",
+      flags: "u",
+      sortOrder: baseSortOrder + 1,
+      substituteMacros: "none",
+    }));
   }
 
   return { rows, skipped, issues };

@@ -399,24 +399,10 @@ if (typeof registerMacroInterceptor === 'function') {
         }
       }
 
-      // Scaffolding: @@-action support is removed; at_actions is always empty
-      // and this branch never runs. Kept for the eventual reimplementation.
-      const atActions = coerceAtActions(active.card.risuPayload.at_actions);
-      if (atActions.length > 0) {
-        try {
-          const atApi = makeSpindleHost({
-            chatId,
-            characterId: active.card.character_id,
-            userId: ctx.userId ?? '',
-          });
-          resolved = await runAtActionsForPhase(atActions, 'editdisplay', resolved, {
-            api: atApi,
-            chatIndex: typeof envChat.lastMessageId === 'number' ? envChat.lastMessageId : -1,
-          });
-        } catch (err) {
-          log.warn(`macroInterceptor: at-actions editdisplay threw — ${errMsg(err)}. Continuing.`);
-        }
-      }
+      // @@emo / @@repeat_back fire from the messageContentProcessor 'render'
+      // origin (editdisplay) and runBinding('output') (editoutput). The
+      // macroInterceptor would over-trigger setExpression on every template
+      // eval, so we deliberately do not run at-actions here.
     }
 
     if (resolved === ctx.template) {
@@ -476,9 +462,10 @@ if (typeof registerMessageContentProcessor === 'function') {
         const hasLuaTrigger = triggers.some(
           (t) => t.effect?.[0]?.type === 'triggerlua',
         );
-        if (!hasLuaTrigger) {
+        const renderAtActions = coerceAtActions(active.card.risuPayload.at_actions);
+        if (!hasLuaTrigger && renderAtActions.length === 0) {
           log.info(
-            `messageContentProcessor.exit #${seq} path=render-no-lua chat=${ctx.chatId} ensure=${tB - tA}ms total=${Date.now() - tStart}ms`,
+            `messageContentProcessor.exit #${seq} path=render-no-hooks chat=${ctx.chatId} ensure=${tB - tA}ms total=${Date.now() - tStart}ms`,
           );
           return;
         }
@@ -496,16 +483,32 @@ if (typeof registerMessageContentProcessor === 'function') {
             userId: ctx.userId,
           });
           const editScriptNS = makeDispatcherScriptNS();
-          const transformed = await runListenEditChain<string>(
-            editChain,
-            'editDisplay',
-            ctx.content,
-            { index: risuChatIdx },
-            editApi,
-            { characterId: active.card.character_id, content: ctx.content },
-            editScriptNS,
-            { chatId: ctx.chatId, characterId: active.card.character_id },
-          );
+          let transformed = ctx.content;
+          if (hasLuaTrigger) {
+            transformed = await runListenEditChain<string>(
+              editChain,
+              'editDisplay',
+              transformed,
+              { index: risuChatIdx },
+              editApi,
+              { characterId: active.card.character_id, content: ctx.content },
+              editScriptNS,
+              { chatId: ctx.chatId, characterId: active.card.character_id },
+            );
+          }
+          if (renderAtActions.length > 0) {
+            try {
+              transformed = await runAtActionsForPhase(renderAtActions, 'editdisplay', transformed, {
+                api: editApi,
+                chatIndex: risuChatIdx,
+                role: 'assistant',
+              });
+            } catch (err) {
+              log.warn(
+                `messageContentProcessor.render at-actions threw — ${errMsg(err)}. Continuing with prior content.`,
+              );
+            }
+          }
           if (transformed === ctx.content) {
             log.info(
               `messageContentProcessor.exit #${seq} path=render-noop chat=${ctx.chatId} msg=${ctx.messageId ?? '<?>'} idx=${messageIndex} total=${Date.now() - tStart}ms`,
@@ -535,8 +538,9 @@ if (typeof registerMessageContentProcessor === 'function') {
       }
       const tC = Date.now();
 
-      // Scaffolding: @@-action support is removed; at_actions is always empty
-      // and this branch never runs. Kept for the eventual reimplementation.
+      // editoutput-phase @@emo / @@repeat_back fire here for write-time origins
+      // (create / update / swipe_*). The 'render' origin is handled separately
+      // above with phase=editdisplay.
       const isUserMessage = ctx.extra?.['is_user'] === true; // best-effort; may be undefined
       const isGreeting = ctx.extra?.['greeting'] === true;
       const atActions = coerceAtActions(active.card.risuPayload.at_actions);
@@ -548,9 +552,9 @@ if (typeof registerMessageContentProcessor === 'function') {
             characterId: active.card.character_id,
             userId: ctx.userId,
           });
-          afterAt = await runAtActionsForPhase(atActions, 'editdisplay', resolved, {
+          afterAt = await runAtActionsForPhase(atActions, 'editoutput', resolved, {
             api: atApi,
-            chatIndex: isGreeting ? -1 : 0, // best-effort — @@move_top/bottom don't gate on this
+            chatIndex: isGreeting ? -1 : 0,
             role: 'assistant',
           });
           if (afterAt !== resolved) {
@@ -2056,8 +2060,9 @@ async function runBinding(
     const hasLuaTrigger = triggers.some(
       (t) => t.effect?.[0]?.type === 'triggerlua',
     );
-    // Scaffolding: @@-action support is removed; at_actions is always empty
-    // and hasOutputAtActions is always false. Kept for the eventual reimplementation.
+    // editoutput / edittrans @@emo / @@repeat_back fire here, after the
+    // LLM stream and any editOutput listenEdit chain. Mutations persist via
+    // api.chat.editMessage below.
     const atActions = coerceAtActions(active.card.risuPayload.at_actions);
     const hasOutputAtActions = atActions.some(
       (a) => a.phase === 'editoutput' || a.phase === 'edittrans',
@@ -2919,8 +2924,10 @@ async function resolveAndPersist(
     return false;
   }
 
-  // Scaffolding: @@-action support is removed; at_actions is always empty
-  // and this branch never runs. Kept for the eventual reimplementation.
+  // resolveAndPersist re-resolves sidecar entries on state-tick. emo /
+  // repeat_back fire as editdisplay here since the sidecar feeds the rendered
+  // (post-display-regex) view. Side effects are idempotent so repeated runs
+  // converge.
   if (atActions.length > 0) {
     try {
       const atApi = makeSpindleHost({
