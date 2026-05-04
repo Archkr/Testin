@@ -7317,6 +7317,598 @@ var init_svg_rasterize = __esm(() => {
   PLACEHOLDER_RE = /<img\b[^>]*\bdata-lumirealm-svg-pending\s*=\s*["']?(\d+)["']?[^>]*>/gi;
 });
 
+// src/payload/lorebook-decorator-runtime.ts
+var exports_lorebook_decorator_runtime = {};
+__export(exports_lorebook_decorator_runtime, {
+  runWorldInfoInterceptor: () => runWorldInfoInterceptor,
+  readPositionPtName: () => readPositionPtName,
+  parseInjectPlan: () => parseInjectPlan,
+  keepActivateAfterMatchPredicate: () => keepActivateAfterMatchPredicate,
+  isGreetingPredicate: () => isGreetingPredicate,
+  excludeKeysPredicate: () => excludeKeysPredicate,
+  excludeKeysAllPredicate: () => excludeKeysAllPredicate,
+  evaluatePreActivationGates: () => evaluatePreActivationGates,
+  entryMatchedScanWindow: () => entryMatchedScanWindow,
+  dontActivateAfterMatchPredicate: () => dontActivateAfterMatchPredicate,
+  computeInjectAndPositionPlans: () => computeInjectAndPositionPlans,
+  applyInjectMerge: () => applyInjectMerge,
+  applyInjectAtToMessages: () => applyInjectAtToMessages,
+  activateOnlyEveryPredicate: () => activateOnlyEveryPredicate,
+  activateOnlyAfterPredicate: () => activateOnlyAfterPredicate,
+  TIER2_PRE_ACTIVATION_GATES: () => TIER2_PRE_ACTIVATION_GATES
+});
+function readDecorators(entry) {
+  const raw = entry.extensions["_risu_decorators"];
+  if (Array.isArray(raw) && raw.length > 0) {
+    const out = [];
+    for (const d of raw) {
+      if (!d || typeof d !== "object")
+        continue;
+      const obj = d;
+      if (typeof obj.name !== "string")
+        continue;
+      const args = Array.isArray(obj.args) ? obj.args.filter((a) => typeof a === "string") : [];
+      out.push({
+        name: obj.name,
+        args,
+        ...obj.fallback === true ? { fallback: true } : {}
+      });
+    }
+    return out;
+  }
+  return parseInlineDecorators(entry.content).decorators;
+}
+function parseInlineDecorators(content) {
+  if (typeof content !== "string" || content.length === 0 || !content.startsWith("@@")) {
+    return { decorators: [], remainingContent: content };
+  }
+  const lines = content.split(`
+`);
+  const decorators = [];
+  let cutoffIdx = 0;
+  for (let i = 0;i < lines.length; i++) {
+    let line3 = (lines[i] ?? "").trim();
+    if (line3 === "@@@end")
+      line3 = "@@end";
+    if (!line3.startsWith("@@")) {
+      cutoffIdx = i;
+      break;
+    }
+    cutoffIdx = i + 1;
+    const isFallback = line3.startsWith("@@@");
+    const prefixLen = isFallback ? 3 : 2;
+    let spaceIdx = line3.indexOf(" ");
+    if (spaceIdx === -1)
+      spaceIdx = line3.length;
+    const name = line3.slice(prefixLen, spaceIdx);
+    if (name === "")
+      continue;
+    const argString = line3.slice(spaceIdx);
+    const args = argString.split(",").map((s) => s.trim()).filter((s) => s !== "");
+    decorators.push({
+      name,
+      args,
+      ...isFallback ? { fallback: true } : {}
+    });
+  }
+  const remainingContent = lines.slice(cutoffIdx).join(`
+`).trim();
+  return { decorators, remainingContent };
+}
+function getStrippedContent(entry) {
+  const stash = entry.extensions["_risu_decorators"];
+  if (Array.isArray(stash) && stash.length > 0)
+    return entry.content;
+  return parseInlineDecorators(entry.content).remainingContent;
+}
+function getStickyState(metadata, prefix, entryId) {
+  const mv = metadata["macro_variables"];
+  if (!mv || typeof mv !== "object")
+    return false;
+  const local = mv.local;
+  if (!local || typeof local !== "object")
+    return false;
+  const key2 = `__internal_${prefix}_${entryId}`;
+  const v = local[key2];
+  return v === "true" || v === "1" || v === true;
+}
+function buildScanWindow(messages, scanDepth) {
+  const start = Math.max(0, messages.length - Math.max(0, scanDepth));
+  const out = [];
+  for (let i = start;i < messages.length; i++) {
+    const m = messages[i];
+    if (!m)
+      continue;
+    out.push(m.content);
+  }
+  return out;
+}
+function scanKeysMatch(windowMessages, keys, all) {
+  const trimmedKeys = keys.map((k) => k.trim()).filter((k) => k.length > 0);
+  if (trimmedKeys.length === 0)
+    return false;
+  const lowered = trimmedKeys.map((k) => k.toLocaleLowerCase().replace(/ /g, ""));
+  if (all) {
+    for (const key2 of lowered) {
+      let hit = false;
+      for (const msg of windowMessages) {
+        const m = msg.toLocaleLowerCase().replace(/ /g, "");
+        if (m.includes(key2)) {
+          hit = true;
+          break;
+        }
+      }
+      if (!hit)
+        return false;
+    }
+    return true;
+  }
+  for (const msg of windowMessages) {
+    const m = msg.toLocaleLowerCase().replace(/ /g, "");
+    for (const key2 of lowered) {
+      if (m.includes(key2))
+        return true;
+    }
+  }
+  return false;
+}
+function chatLengthRisuFrame(messages) {
+  if (messages.length === 0)
+    return 0;
+  const first = messages[0];
+  const firstIsGreeting = first.is_greeting === true || first.is_greeting === undefined && first.role !== "user";
+  if (firstIsGreeting)
+    return Math.max(0, messages.length - 1);
+  return messages.length;
+}
+function isGreetingPredicate(args, ctx) {
+  const wantRaw = args[0];
+  if (wantRaw === undefined)
+    return { keep: true };
+  const want = parseInt(wantRaw, 10);
+  if (!Number.isFinite(want))
+    return { keep: true };
+  const greeting = ctx.messages.find((m) => m.is_greeting === true);
+  if (!greeting) {
+    const first = ctx.messages[0];
+    const fallbackIsGreetingTurn = ctx.messages.length === 1 && first !== undefined && first.role !== "user";
+    if (!fallbackIsGreetingTurn)
+      return { keep: false, reason: "is_greeting:no_greeting" };
+    if (want === 0)
+      return { keep: true };
+    return { keep: false, reason: `is_greeting:swipe_unknown(want=${want})` };
+  }
+  const idx = greeting.greeting_index ?? 0;
+  if (idx === want)
+    return { keep: true };
+  return { keep: false, reason: `is_greeting:greeting_index=${idx}!=${want}` };
+}
+function activateOnlyAfterPredicate(args, ctx) {
+  const minRaw = args[0];
+  if (minRaw === undefined)
+    return { keep: true };
+  const min = parseInt(minRaw, 10);
+  if (!Number.isFinite(min))
+    return { keep: true };
+  const len = chatLengthRisuFrame(ctx.messages);
+  if (len >= min)
+    return { keep: true };
+  return { keep: false, reason: `activate_only_after:${len}<${min}` };
+}
+function activateOnlyEveryPredicate(args, ctx) {
+  const everyRaw = args[0];
+  if (everyRaw === undefined)
+    return { keep: true };
+  const every = parseInt(everyRaw, 10);
+  if (!Number.isFinite(every) || every <= 0)
+    return { keep: true };
+  const len = chatLengthRisuFrame(ctx.messages);
+  if (len % every === 0)
+    return { keep: true };
+  return { keep: false, reason: `activate_only_every:${len}%${every}!=0` };
+}
+function dontActivateAfterMatchPredicate(args, ctx, entryId) {
+  const sticky = getStickyState(ctx.chatMetadata, "da", entryId);
+  if (sticky)
+    return { keep: false, reason: "dont_activate_after_match:sticky" };
+  return { keep: true };
+}
+function keepActivateAfterMatchPredicate(args, ctx, entryId) {
+  const sticky = getStickyState(ctx.chatMetadata, "ka", entryId);
+  if (sticky)
+    return { keep: true, force: true, reason: "keep_activate_after_match:sticky" };
+  return { keep: true };
+}
+function excludeKeysPredicate(args, ctx) {
+  if (args.length === 0)
+    return { keep: true };
+  const scanDepth = ctx.defaultScanDepth ?? RISU_FALLBACK_SCAN_DEPTH;
+  const win = buildScanWindow(ctx.messages, scanDepth);
+  const matched = scanKeysMatch(win, args, false);
+  if (matched)
+    return { keep: false, reason: `exclude_keys:matched` };
+  return { keep: true };
+}
+function excludeKeysAllPredicate(args, ctx) {
+  if (args.length === 0)
+    return { keep: true };
+  const scanDepth = ctx.defaultScanDepth ?? RISU_FALLBACK_SCAN_DEPTH;
+  const win = buildScanWindow(ctx.messages, scanDepth);
+  const matched = scanKeysMatch(win, args, true);
+  if (matched)
+    return { keep: false, reason: `exclude_keys_all:all_matched` };
+  return { keep: true };
+}
+function entryMatchedScanWindow(entry, ctx) {
+  const allKeys = [...entry.key, ...entry.keysecondary];
+  if (allKeys.length === 0)
+    return false;
+  const scanDepth = ctx.defaultScanDepth ?? RISU_FALLBACK_SCAN_DEPTH;
+  const win = buildScanWindow(ctx.messages, scanDepth);
+  return scanKeysMatch(win, allKeys, false);
+}
+function evaluatePreActivationGates(entry, ctx, verbose) {
+  const decorators = readDecorators(entry);
+  if (decorators.length === 0)
+    return { keep: true };
+  let force = false;
+  for (const dec of decorators) {
+    if (!TIER2_PRE_ACTIVATION_GATES.has(dec.name))
+      continue;
+    let result;
+    switch (dec.name) {
+      case "is_greeting":
+        result = isGreetingPredicate(dec.args, ctx);
+        break;
+      case "activate_only_after":
+        result = activateOnlyAfterPredicate(dec.args, ctx);
+        break;
+      case "activate_only_every":
+        result = activateOnlyEveryPredicate(dec.args, ctx);
+        break;
+      case "dont_activate_after_match":
+        result = dontActivateAfterMatchPredicate(dec.args, ctx, entry.id);
+        break;
+      case "keep_activate_after_match":
+        result = keepActivateAfterMatchPredicate(dec.args, ctx, entry.id);
+        break;
+      case "exclude_keys":
+        result = excludeKeysPredicate(dec.args, ctx);
+        break;
+      case "exclude_keys_all":
+        result = excludeKeysAllPredicate(dec.args, ctx);
+        break;
+      default:
+        result = { keep: true };
+    }
+    if (verbose) {
+      verbose(`entry=${entry.id} dec=${dec.name}(${dec.args.join(",")}) keep=${result.keep}` + (result.force ? " force=true" : "") + (result.reason ? ` reason=${result.reason}` : ""));
+    }
+    if (!result.keep)
+      return result;
+    if (result.force)
+      force = true;
+  }
+  return force ? { keep: true, force: true, reason: "keep_activate_after_match:sticky" } : { keep: true };
+}
+function computeStickyWrites(entry, ctx) {
+  const decorators = readDecorators(entry);
+  if (decorators.length === 0)
+    return [];
+  const wantsKa = decorators.some((d) => d.name === "keep_activate_after_match");
+  const wantsDa = decorators.some((d) => d.name === "dont_activate_after_match");
+  if (!wantsKa && !wantsDa)
+    return [];
+  const kaSet = wantsKa ? getStickyState(ctx.chatMetadata, "ka", entry.id) : true;
+  const daSet = wantsDa ? getStickyState(ctx.chatMetadata, "da", entry.id) : true;
+  if (kaSet && daSet)
+    return [];
+  const matched = entryMatchedScanWindow(entry, ctx);
+  if (!matched)
+    return [];
+  const out = [];
+  if (wantsKa && !kaSet) {
+    out.push({ entryId: entry.id, varName: `__internal_ka_${entry.id}`, value: "1" });
+  }
+  if (wantsDa && !daSet) {
+    out.push({ entryId: entry.id, varName: `__internal_da_${entry.id}`, value: "1" });
+  }
+  return out;
+}
+function parseInjectPlan(decorators) {
+  let operation = null;
+  let location = null;
+  let param = "";
+  let lore = null;
+  for (const dec of decorators) {
+    if (!INJECT_DECORATOR_NAMES.has(dec.name))
+      continue;
+    switch (dec.name) {
+      case "inject_lore":
+        if (operation === null)
+          operation = "append";
+        location = dec.args.join(" ");
+        lore = true;
+        break;
+      case "inject_at":
+        if (operation === null)
+          operation = "append";
+        location = dec.args.join(" ");
+        lore = false;
+        break;
+      case "inject_replace":
+        if (operation === null)
+          operation = "replace";
+        else
+          operation = "replace";
+        if (lore === null)
+          lore = false;
+        if (location === null)
+          location = "";
+        param = dec.args.join(" ");
+        break;
+      case "inject_prepend":
+        if (operation === null)
+          operation = "prepend";
+        else
+          operation = "prepend";
+        if (lore === null)
+          lore = false;
+        if (location === null)
+          location = "";
+        param = dec.args.join(" ");
+        break;
+    }
+  }
+  if (operation === null || lore === null || location === null)
+    return null;
+  return { operation, location, param, lore };
+}
+function applyInjectMerge(targetContent, injectorContent, operation, param) {
+  switch (operation) {
+    case "append":
+      return `${targetContent} ${injectorContent}`;
+    case "prepend":
+      return `${injectorContent} ${targetContent}`;
+    case "replace":
+      return targetContent.replace(param, injectorContent);
+  }
+}
+function readPositionPtName(decorators) {
+  for (const dec of decorators) {
+    if (dec.name !== "position")
+      continue;
+    const v = dec.args[0];
+    if (typeof v === "string" && v.startsWith("pt_")) {
+      return v.slice("pt_".length);
+    }
+  }
+  return null;
+}
+function computeInjectAndPositionPlans(entries, disabledIds) {
+  const mutated = [];
+  const injectAt = [];
+  const positionPtByName = new Map;
+  const addDisabled = [];
+  const survivors = entries.filter((e) => !e.disabled && !disabledIds.has(e.id));
+  const sorted = [...survivors].sort((a, b) => {
+    if (b.priority !== a.priority)
+      return b.priority - a.priority;
+    return a.id.localeCompare(b.id);
+  });
+  const classified = sorted.map((entry) => {
+    const decorators = readDecorators(entry);
+    return {
+      entry,
+      plan: parseInjectPlan(decorators),
+      posPt: readPositionPtName(decorators)
+    };
+  });
+  const targetContent = new Map;
+  for (const c of classified) {
+    if (c.plan === null) {
+      targetContent.set(c.entry.id, getStrippedContent(c.entry));
+    }
+  }
+  for (const c of classified) {
+    if (c.plan === null)
+      continue;
+    if (!c.plan.lore)
+      continue;
+    const target = classified.find((t) => t.plan === null && t.entry.comment === c.plan.location);
+    if (!target)
+      continue;
+    const current = targetContent.get(target.entry.id) ?? getStrippedContent(target.entry);
+    const merged = applyInjectMerge(current, getStrippedContent(c.entry), c.plan.operation, c.plan.param);
+    targetContent.set(target.entry.id, merged);
+  }
+  for (const c of classified) {
+    if (c.posPt === null)
+      continue;
+    const content = c.plan === null ? targetContent.get(c.entry.id) ?? getStrippedContent(c.entry) : getStrippedContent(c.entry);
+    const list = positionPtByName.get(c.posPt) ?? [];
+    list.push(content);
+    positionPtByName.set(c.posPt, list);
+  }
+  for (const c of classified) {
+    if (c.plan === null)
+      continue;
+    if (c.plan.lore)
+      continue;
+    injectAt.push({
+      entryId: c.entry.id,
+      loc: c.plan.location,
+      operation: c.plan.operation,
+      content: c.entry.content,
+      param: c.plan.param
+    });
+  }
+  for (const c of classified) {
+    const isInjector = c.plan !== null;
+    const isSlotFiller = c.posPt !== null;
+    if (isInjector || isSlotFiller) {
+      addDisabled.push(c.entry.id);
+    }
+  }
+  for (const c of classified) {
+    if (c.plan !== null)
+      continue;
+    if (c.posPt !== null)
+      continue;
+    const final = targetContent.get(c.entry.id);
+    if (final !== undefined && final !== c.entry.content) {
+      mutated.push({ entryId: c.entry.id, content: final });
+    }
+  }
+  const positionPt = [];
+  for (const [name, parts] of positionPtByName) {
+    positionPt.push({ name, content: parts.join(`
+`) });
+  }
+  return { mutated, injectAt, positionPt, addDisabled };
+}
+function runWorldInfoInterceptor(ctx, verbose) {
+  const disabled = [];
+  const forced = [];
+  const reasonCounts = {};
+  const perEntry = [];
+  const stickyWrites = [];
+  for (const entry of ctx.entries) {
+    if (entry.disabled) {
+      perEntry.push({ entryId: entry.id, keep: false, reason: "already_disabled" });
+      continue;
+    }
+    const result = evaluatePreActivationGates(entry, ctx, verbose);
+    perEntry.push({
+      entryId: entry.id,
+      keep: result.keep,
+      ...result.force ? { force: true } : {},
+      ...result.reason ? { reason: result.reason } : {}
+    });
+    if (!result.keep) {
+      disabled.push(entry.id);
+      const decoratorName = (result.reason ?? "").split(":")[0] ?? "unknown";
+      reasonCounts[decoratorName] = (reasonCounts[decoratorName] ?? 0) + 1;
+    } else if (result.force) {
+      forced.push(entry.id);
+    }
+    const writes = computeStickyWrites(entry, ctx);
+    if (writes.length > 0)
+      stickyWrites.push(...writes);
+  }
+  const disabledSet = new Set(disabled);
+  const t3 = computeInjectAndPositionPlans(ctx.entries, disabledSet);
+  for (const id of t3.addDisabled) {
+    if (!disabledSet.has(id)) {
+      disabled.push(id);
+      disabledSet.add(id);
+      reasonCounts["inject"] = (reasonCounts["inject"] ?? 0) + 1;
+    }
+  }
+  return {
+    disabled,
+    forced,
+    reasons: reasonCounts,
+    perEntry,
+    stickyWrites,
+    mutated: t3.mutated,
+    injectAt: t3.injectAt,
+    positionPt: t3.positionPt
+  };
+}
+function applyInjectAtToMessages(messages, plans, slotText) {
+  const out = messages.slice();
+  let mutationCount = 0;
+  let synthesizedCount = 0;
+  let fallbackAppendCount = 0;
+  const perPlan = [];
+  for (const plan of plans) {
+    const anchor = slotText[plan.loc];
+    if (!anchor) {
+      const synthBody = plan.operation === "prepend" ? `${plan.content}
+[${plan.loc}]` : `[${plan.loc}]
+${plan.content}`;
+      out.push({ role: "system", content: synthBody });
+      synthesizedCount += 1;
+      perPlan.push({ entryId: plan.entryId, outcome: "synthesized:unknown_loc" });
+      continue;
+    }
+    let targetIdx = -1;
+    for (let i = 0;i < out.length; i++) {
+      const m = out[i];
+      if (!m || m.role !== "system")
+        continue;
+      if (m.content.includes(anchor)) {
+        targetIdx = i;
+        break;
+      }
+    }
+    if (targetIdx < 0) {
+      out.push({ role: "system", content: `[${plan.loc}]
+${plan.content}` });
+      synthesizedCount += 1;
+      perPlan.push({ entryId: plan.entryId, outcome: "synthesized:anchor_missing" });
+      continue;
+    }
+    const before = out[targetIdx].content;
+    let after;
+    let isFallbackAppend = false;
+    switch (plan.operation) {
+      case "append":
+        after = `${before} ${plan.content}`;
+        break;
+      case "prepend":
+        after = `${plan.content} ${before}`;
+        break;
+      case "replace": {
+        if (RISU_SLOT_TOKENS.has(plan.param)) {
+          after = before.replace(anchor, plan.content);
+          break;
+        }
+        if (!before.includes(plan.param)) {
+          after = `${before} ${plan.content}`;
+          isFallbackAppend = true;
+        } else {
+          after = before.replace(plan.param, plan.content);
+        }
+        break;
+      }
+    }
+    if (after !== before) {
+      out[targetIdx] = { ...out[targetIdx], content: after };
+      mutationCount += 1;
+      if (isFallbackAppend) {
+        fallbackAppendCount += 1;
+        perPlan.push({ entryId: plan.entryId, outcome: "fallback_append" });
+      } else {
+        perPlan.push({ entryId: plan.entryId, outcome: "mutated" });
+      }
+    } else {
+      perPlan.push({ entryId: plan.entryId, outcome: "noop" });
+    }
+  }
+  return { messages: out, mutationCount, synthesizedCount, fallbackAppendCount, perPlan };
+}
+var RISU_FALLBACK_SCAN_DEPTH = 4, TIER2_PRE_ACTIVATION_GATES, INJECT_DECORATOR_NAMES, RISU_SLOT_TOKENS;
+var init_lorebook_decorator_runtime = __esm(() => {
+  TIER2_PRE_ACTIVATION_GATES = new Set([
+    "is_greeting",
+    "activate_only_after",
+    "activate_only_every",
+    "dont_activate_after_match",
+    "keep_activate_after_match",
+    "exclude_keys",
+    "exclude_keys_all"
+  ]);
+  INJECT_DECORATOR_NAMES = new Set([
+    "inject_lore",
+    "inject_at",
+    "inject_replace",
+    "inject_prepend"
+  ]);
+  RISU_SLOT_TOKENS = new Set(["{{slot}}", "{{original}}", ""]);
+});
+
 // src/util/coerce.ts
 function errMsg(err) {
   return err instanceof Error ? err.message : String(err);
@@ -8706,6 +9298,275 @@ function nowMs() {
   return Date.now();
 }
 
+// src/core/mappers/lorebook-decorators.ts
+function parseDecorators(content) {
+  const lines = content.split(`
+`);
+  const decorators = [];
+  for (let i = 0;i < lines.length; i++) {
+    let line = (lines[i] ?? "").trim();
+    if (line === "@@@end")
+      line = "@@end";
+    if (!line.startsWith("@@")) {
+      const rest = lines.slice(i).join(`
+`).trim();
+      return { decorators, remainingContent: rest };
+    }
+    const isFallback = line.startsWith("@@@");
+    const prefixLen = isFallback ? 3 : 2;
+    let spaceIdx = line.indexOf(" ");
+    if (spaceIdx === -1)
+      spaceIdx = line.length;
+    const name = line.slice(prefixLen, spaceIdx);
+    if (name === "")
+      continue;
+    const argString = line.slice(spaceIdx);
+    const args = argString.split(",").map((s) => s.trim()).filter((s) => s !== "");
+    decorators.push({ name, args, isFallback, lineIndex: i });
+  }
+  return { decorators, remainingContent: "" };
+}
+var TIER1_DECORATOR_NAMES = new Set([
+  "position",
+  "depth",
+  "reverse_depth",
+  "role",
+  "scan_depth",
+  "priority",
+  "probability",
+  "ignore_on_max_context",
+  "additional_keys",
+  "match_full_word",
+  "match_partial_word",
+  "unrecursive",
+  "recursive",
+  "no_recursive_search",
+  "activate",
+  "dont_activate",
+  "end"
+]);
+function applyDecoratorsToEntry(entry, decorators) {
+  const state = {
+    additional_keys: [],
+    reverse_depth_seen: false
+  };
+  const applied = [];
+  const stashed = [];
+  const dropped = [];
+  let suspended = false;
+  for (const dec of decorators) {
+    if (dec.isFallback && !suspended) {
+      continue;
+    }
+    suspended = false;
+    const outcome = applyOne(dec, state);
+    if (outcome.kind === "applied") {
+      applied.push(dec);
+    } else if (outcome.kind === "stashed") {
+      stashed.push(dec);
+    } else {
+      dropped.push({ decorator: dec, reason: outcome.reason });
+      suspended = true;
+    }
+  }
+  const patch = {};
+  if (state.position !== undefined)
+    patch.position = state.position;
+  if (state.depth !== undefined)
+    patch.depth = state.depth;
+  if (state.role !== undefined)
+    patch.role = state.role;
+  if (state.scan_depth !== undefined)
+    patch.scan_depth = state.scan_depth;
+  if (state.priority !== undefined)
+    patch.priority = state.priority;
+  if (state.probability !== undefined) {
+    patch.probability = state.probability;
+    patch.use_probability = true;
+  }
+  if (state.match_whole_words !== undefined)
+    patch.match_whole_words = state.match_whole_words;
+  if (state.prevent_recursion !== undefined)
+    patch.prevent_recursion = state.prevent_recursion;
+  if (state.exclude_recursion !== undefined)
+    patch.exclude_recursion = state.exclude_recursion;
+  if (state.constant !== undefined)
+    patch.constant = state.constant;
+  if (state.disabled !== undefined)
+    patch.disabled = state.disabled;
+  if (state.additional_keys.length > 0) {
+    patch.key = [...entry.key, ...state.additional_keys];
+  }
+  if (stashed.length > 0 || state.reverse_depth_seen) {
+    const ext = { ...entry.extensions };
+    const stashedSerial = stashed.map((d) => ({
+      name: d.name,
+      args: [...d.args],
+      ...d.isFallback ? { fallback: true } : {}
+    }));
+    if (state.reverse_depth_seen) {
+      stashedSerial.push({ name: "_risu_reverse_depth_note", args: [
+        "reverse_depth was applied as Lumi position=4 depth=N; Risu's reverse-from-start semantic is not preserved without a runtime intercept."
+      ] });
+    }
+    ext["_risu_decorators"] = stashedSerial;
+    patch.extensions = ext;
+  }
+  return { patch, applied, stashed, dropped };
+}
+function applyOne(dec, state) {
+  const { name, args } = dec;
+  switch (name) {
+    case "position": {
+      const v = args[0];
+      if (v === undefined)
+        return { kind: "dropped", reason: "missing position arg" };
+      if (v === "before_desc") {
+        state.position = 0;
+        return { kind: "applied" };
+      }
+      if (v === "after_desc") {
+        state.position = 1;
+        return { kind: "applied" };
+      }
+      if (v === "personality" || v === "scenario" || v.startsWith("pt_")) {
+        return { kind: "stashed", reason: `position=${v} has no Lumi equivalent` };
+      }
+      return { kind: "dropped", reason: `unknown position value: ${v}` };
+    }
+    case "depth": {
+      const intArg = args[0];
+      if (intArg === undefined)
+        return { kind: "dropped", reason: "missing depth arg" };
+      const n = parseInt(intArg, 10);
+      if (Number.isNaN(n))
+        return { kind: "dropped", reason: `depth NaN: ${intArg}` };
+      state.position = 4;
+      state.depth = n;
+      return { kind: "applied" };
+    }
+    case "reverse_depth": {
+      const intArg = args[0];
+      if (intArg === undefined)
+        return { kind: "dropped", reason: "missing reverse_depth arg" };
+      const n = parseInt(intArg, 10);
+      if (Number.isNaN(n))
+        return { kind: "dropped", reason: `reverse_depth NaN: ${intArg}` };
+      state.position = 4;
+      state.depth = n;
+      state.reverse_depth_seen = true;
+      return { kind: "applied" };
+    }
+    case "role": {
+      const v = args[0];
+      if (v === "user" || v === "assistant" || v === "system") {
+        state.role = v;
+        return { kind: "applied" };
+      }
+      return { kind: "dropped", reason: `invalid role: ${v}` };
+    }
+    case "scan_depth": {
+      const intArg = args[0];
+      if (intArg === undefined)
+        return { kind: "applied" };
+      const n = parseInt(intArg, 10);
+      if (Number.isNaN(n))
+        return { kind: "applied" };
+      state.scan_depth = n;
+      return { kind: "applied" };
+    }
+    case "priority": {
+      const intArg = args[0];
+      if (intArg === undefined)
+        return { kind: "dropped", reason: "missing priority arg" };
+      const n = parseInt(intArg, 10);
+      if (Number.isNaN(n))
+        return { kind: "dropped", reason: `priority NaN: ${intArg}` };
+      state.priority = n;
+      return { kind: "applied" };
+    }
+    case "ignore_on_max_context": {
+      state.priority = -1000;
+      return { kind: "applied" };
+    }
+    case "probability": {
+      const intArg = args[0];
+      if (intArg === undefined)
+        return { kind: "dropped", reason: "missing probability arg" };
+      const n = parseInt(intArg, 10);
+      if (Number.isNaN(n))
+        return { kind: "dropped", reason: `probability NaN: ${intArg}` };
+      state.probability = n;
+      state.use_probability = true;
+      return { kind: "applied" };
+    }
+    case "additional_keys": {
+      if (args.length === 0)
+        return { kind: "applied" };
+      for (const k of args)
+        state.additional_keys.push(k);
+      return { kind: "applied" };
+    }
+    case "match_full_word": {
+      state.match_whole_words = true;
+      return { kind: "applied" };
+    }
+    case "match_partial_word": {
+      state.match_whole_words = false;
+      return { kind: "applied" };
+    }
+    case "unrecursive": {
+      state.prevent_recursion = true;
+      return { kind: "applied" };
+    }
+    case "recursive": {
+      state.prevent_recursion = false;
+      return { kind: "applied" };
+    }
+    case "no_recursive_search": {
+      state.exclude_recursion = true;
+      return { kind: "applied" };
+    }
+    case "activate": {
+      state.constant = true;
+      return { kind: "applied" };
+    }
+    case "dont_activate": {
+      state.disabled = true;
+      return { kind: "applied" };
+    }
+    case "end": {
+      state.position = 4;
+      state.depth = 0;
+      return { kind: "applied" };
+    }
+    default: {
+      if (TIER2_DECORATOR_NAMES.has(name)) {
+        return { kind: "stashed", reason: `Tier 2 \u2014 needs runtime intercept` };
+      }
+      return { kind: "dropped", reason: `unknown decorator: ${name}` };
+    }
+  }
+}
+var TIER2_DECORATOR_NAMES = new Set([
+  "is_greeting",
+  "activate_only_after",
+  "activate_only_every",
+  "keep_activate_after_match",
+  "dont_activate_after_match",
+  "exclude_keys",
+  "exclude_keys_all",
+  "disable_ui_prompt",
+  "is_user_icon",
+  "instruct_depth",
+  "reverse_instruct_depth",
+  "instruct_scan_depth",
+  "inject_lore",
+  "inject_at",
+  "inject_replace",
+  "inject_prepend"
+]);
+
 // src/core/mappers/lorebook.ts
 function buildFolderIndex(entries) {
   const byId = new Map;
@@ -8747,62 +9608,102 @@ function buildExtensions(e) {
     ext["risu_entry_id"] = e.id;
   return ext;
 }
-function mapLoreBookEntry(entry, worldBookId, folders, now, uuid) {
+function mapLoreBookEntryWithStats(entry, worldBookId, folders, now, uuid) {
   const { constant, disabled, position } = mapMode(entry);
   const groupName = resolveFolderName(entry, folders);
   const probability = entry.activationPercent !== undefined && entry.activationPercent !== null ? entry.activationPercent : 100;
   const caseSensitive = entry.extentions?.risu_case_sensitive === true;
+  const parsed = parseDecorators(entry.content);
+  const draftKey = splitKeywords(entry.key);
+  const draftExt = buildExtensions(entry);
+  const applied = applyDecoratorsToEntry({ key: draftKey, extensions: draftExt }, parsed.decorators);
+  const finalKey = applied.patch.key ?? draftKey;
+  const finalExtensions = applied.patch.extensions ?? draftExt;
+  const finalContent = parsed.decorators.length > 0 ? parsed.remainingContent : entry.content;
+  const stats = {
+    decoratorsSeen: parsed.decorators.length,
+    mapped: applied.applied.length,
+    stashed: applied.stashed.length,
+    dropped: applied.dropped.length
+  };
   return {
-    id: uuid(),
-    world_book_id: worldBookId,
-    uid: entry.id ?? uuid(),
-    key: splitKeywords(entry.key),
-    keysecondary: splitKeywords(entry.secondkey),
-    content: entry.content,
-    comment: entry.comment,
-    position,
-    depth: 0,
-    role: null,
-    order_value: entry.insertorder,
-    selective: entry.selective,
-    constant,
-    disabled,
-    group_name: groupName,
-    group_override: false,
-    group_weight: 1,
-    probability,
-    scan_depth: null,
-    case_sensitive: caseSensitive,
-    match_whole_words: false,
-    automation_id: null,
-    use_regex: entry.useRegex === true,
-    prevent_recursion: false,
-    exclude_recursion: false,
-    delay_until_recursion: false,
-    priority: 0,
-    sticky: 0,
-    cooldown: 0,
-    delay: 0,
-    selective_logic: 0,
-    use_probability: entry.activationPercent !== undefined && entry.activationPercent !== null,
-    vectorized: false,
-    vector_index_status: "not_enabled",
-    vector_indexed_at: null,
-    vector_index_error: null,
-    extensions: buildExtensions(entry),
-    created_at: now,
-    updated_at: now
+    entry: {
+      id: uuid(),
+      world_book_id: worldBookId,
+      uid: entry.id ?? uuid(),
+      key: finalKey,
+      keysecondary: splitKeywords(entry.secondkey),
+      content: finalContent,
+      comment: entry.comment,
+      position: applied.patch.position ?? position,
+      depth: applied.patch.depth ?? 0,
+      role: applied.patch.role ?? null,
+      order_value: entry.insertorder,
+      selective: entry.selective,
+      constant: applied.patch.constant ?? constant,
+      disabled: applied.patch.disabled ?? disabled,
+      group_name: groupName,
+      group_override: false,
+      group_weight: 1,
+      probability: applied.patch.probability ?? probability,
+      scan_depth: applied.patch.scan_depth ?? null,
+      case_sensitive: caseSensitive,
+      match_whole_words: applied.patch.match_whole_words ?? false,
+      automation_id: null,
+      use_regex: entry.useRegex === true,
+      prevent_recursion: applied.patch.prevent_recursion ?? false,
+      exclude_recursion: applied.patch.exclude_recursion ?? false,
+      delay_until_recursion: false,
+      priority: applied.patch.priority ?? 0,
+      sticky: 0,
+      cooldown: 0,
+      delay: 0,
+      selective_logic: 0,
+      use_probability: applied.patch.use_probability ?? (entry.activationPercent !== undefined && entry.activationPercent !== null),
+      vectorized: false,
+      vector_index_status: "not_enabled",
+      vector_indexed_at: null,
+      vector_index_error: null,
+      extensions: finalExtensions,
+      created_at: now,
+      updated_at: now
+    },
+    stats
   };
 }
 function mapLoreBook(entries, opts) {
+  return mapLoreBookWithStats(entries, opts).entries;
+}
+function mapLoreBookWithStats(entries, opts) {
   const now = (opts.now ?? nowMs)();
   const uuid = opts.uuid ?? newUuid;
   const folders = buildFolderIndex(entries);
   const out = new Array(entries.length);
+  let entries_with_decorators = 0;
+  let decorators_seen = 0;
+  let mapped = 0;
+  let stashed = 0;
+  let dropped = 0;
   for (let i = 0;i < entries.length; i++) {
-    out[i] = mapLoreBookEntry(entries[i], opts.worldBookId, folders, now, uuid);
+    const r = mapLoreBookEntryWithStats(entries[i], opts.worldBookId, folders, now, uuid);
+    out[i] = r.entry;
+    if (r.stats.decoratorsSeen > 0)
+      entries_with_decorators += 1;
+    decorators_seen += r.stats.decoratorsSeen;
+    mapped += r.stats.mapped;
+    stashed += r.stats.stashed;
+    dropped += r.stats.dropped;
   }
-  return out;
+  return {
+    entries: out,
+    decoratorStats: {
+      entries_with_decorators,
+      decorators_seen,
+      mapped,
+      stashed,
+      dropped
+    }
+  };
 }
 // src/core/errors.ts
 class TranslationError extends Error {
@@ -9834,6 +10735,87 @@ function normalizeReplaceStringForSanitizer(html) {
   return out;
 }
 
+// src/core/mappers/iframe-policy.ts
+var IFRAME_RE = /<iframe\b([^>]*)>[\s\S]*?<\/iframe\s*>|<iframe\b([^>]*?)\/?\s*>/gi;
+var SRC_ATTR_RE = /\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i;
+var YOUTUBE_EMBED_RE = /^https?:\/\/(?:www\.)?youtube(?:-nocookie)?\.com\/embed\/([A-Za-z0-9_-]{6,})(?:[/?#]|$)/i;
+var BOOL_PARAMS = new Set(["autoplay", "controls", "loop", "mute", "playsinline", "rel"]);
+var NUMBER_PARAMS = new Set(["end", "start"]);
+var TOKEN_PARAMS = new Set(["si"]);
+var ALLOWED_QUERY_PARAMS = new Set([...BOOL_PARAMS, ...NUMBER_PARAMS, ...TOKEN_PARAMS]);
+function parseYoutubeSrc(rawSrc) {
+  if (!rawSrc)
+    return null;
+  const trimmed = rawSrc.trim();
+  const m = YOUTUBE_EMBED_RE.exec(trimmed);
+  if (!m || !m[1])
+    return null;
+  const videoId = m[1];
+  const hashIdx = trimmed.indexOf("#");
+  if (hashIdx !== -1)
+    return null;
+  const qIdx = trimmed.indexOf("?");
+  const params = new URLSearchParams;
+  if (qIdx !== -1) {
+    let raw = trimmed.slice(qIdx + 1);
+    if (raw.includes("/"))
+      raw = raw.slice(0, raw.indexOf("/"));
+    let source;
+    try {
+      source = new URLSearchParams(raw);
+    } catch {
+      return null;
+    }
+    for (const [key, value] of source) {
+      if (!ALLOWED_QUERY_PARAMS.has(key)) {
+        continue;
+      }
+      if (BOOL_PARAMS.has(key)) {
+        if (value !== "0" && value !== "1")
+          continue;
+      } else if (NUMBER_PARAMS.has(key)) {
+        if (!/^\d{1,6}$/.test(value))
+          continue;
+      } else if (TOKEN_PARAMS.has(key)) {
+        if (!/^[A-Za-z0-9_-]{1,128}$/.test(value))
+          continue;
+      }
+      params.append(key, value);
+    }
+  }
+  return { videoId, query: params.toString() };
+}
+function getSrcFromAttrs(attrs) {
+  const m = SRC_ATTR_RE.exec(attrs);
+  if (!m)
+    return null;
+  return m[1] ?? m[2] ?? m[3] ?? null;
+}
+function trustedIframeMarkup(parsed) {
+  const path = `/embed/${parsed.videoId}`;
+  const url = parsed.query.length > 0 ? `https://www.youtube-nocookie.com${path}?${parsed.query}` : `https://www.youtube-nocookie.com${path}`;
+  return `<iframe src="${url}" title="YouTube video"></iframe>`;
+}
+function applyIframePolicy(html) {
+  if (!html || html.indexOf("<iframe") < 0) {
+    return { html, youtubeReplaced: 0, stripped: 0 };
+  }
+  let youtubeReplaced = 0;
+  let stripped = 0;
+  const out = html.replace(IFRAME_RE, (_match, pairedAttrs, selfAttrs) => {
+    const attrs = pairedAttrs ?? selfAttrs ?? "";
+    const src = getSrcFromAttrs(attrs);
+    const parsed = parseYoutubeSrc(src);
+    if (parsed) {
+      youtubeReplaced += 1;
+      return trustedIframeMarkup(parsed);
+    }
+    stripped += 1;
+    return "";
+  });
+  return { html: out, youtubeReplaced, stripped };
+}
+
 // src/core/mappers/regex.ts
 var AT_ACTION_PREFIXES = [
   "@@emo",
@@ -9842,6 +10824,22 @@ var AT_ACTION_PREFIXES = [
   "@@move_bottom",
   "@@repeat_back"
 ];
+var SENTINEL_OPEN = "\uE9D0";
+var SENTINEL_CLOSE = "\uE9D1";
+function ruleHash(scriptId) {
+  let h = 2166136261 >>> 0;
+  for (let i = 0;i < scriptId.length; i++) {
+    h ^= scriptId.charCodeAt(i);
+    h = Math.imul(h, 16777619) >>> 0;
+  }
+  return h.toString(36).padStart(7, "0").slice(0, 6);
+}
+function openSentinel(hash) {
+  return `${SENTINEL_OPEN}${hash}${SENTINEL_OPEN}`;
+}
+function closeSentinel(hash) {
+  return `${SENTINEL_CLOSE}${hash}${SENTINEL_CLOSE}`;
+}
 var ALLOWED_FLAG_LETTERS = "dgimsuvy";
 function mapRegex(scripts, opts) {
   const now = (opts.now ?? nowMs)();
@@ -9870,37 +10868,28 @@ function mapRegex(scripts, opts) {
     }
     const effectivePhase = phase ?? UNKNOWN_PHASE_FALLBACK;
     const normalised = normaliseFlag(s, i);
-    let outNormalised = s.out.replaceAll("$n", `
+    const hasNoEndNl = normalised.actions.includes("no_end_nl");
+    const baseSortOrder = (normalised.order ?? i) * 10;
+    const outNormalised = s.out.replaceAll("$n", `
 `);
     const action = detectAtAction(outNormalised);
+    let strippedOut = outNormalised;
     if (action) {
       const prefix = `@@${action}`;
-      const trimmed = outNormalised.slice(prefix.length).replace(/^\s+/, "");
-      if (action === "move_top" || action === "move_bottom") {
-        outNormalised = trimmed;
-      } else {
-        outNormalised = "";
-      }
+      strippedOut = outNormalised.slice(prefix.length).replace(/^\s+/, "");
     }
-    const hasNoEndNl = normalised.actions.includes("no_end_nl");
-    let replaceString = outNormalised;
-    if (replaceString.endsWith(">") && !hasNoEndNl)
-      replaceString += `
-`;
-    if (opts.catalog && replaceString.indexOf("{{") >= 0) {
-      try {
-        replaceString = rewriteText(replaceString, opts.catalog);
-      } catch (err) {
-        issues.push({
-          path,
-          message: `CBS rewrite of replace_string failed (keeping raw): ${err instanceof Error ? err.message : String(err)}`
-        });
-      }
+    if (action === "emo" || action === "repeat_back") {
+      skipped.push({
+        index: i,
+        action,
+        script: s,
+        flag: normalised.flag,
+        phase: s.type,
+        actions: normalised.actions,
+        order: normalised.order ?? i
+      });
+      continue;
     }
-    if (effectivePhase.target === "display") {
-      replaceString = wrapIslandMergeIfNeeded(replaceString);
-    }
-    replaceString = normalizeReplaceStringForSanitizer(replaceString);
     let findPattern = String(s.in ?? "");
     if (opts.catalog && findPattern.indexOf("{{") >= 0) {
       try {
@@ -9913,43 +10902,149 @@ function mapRegex(scripts, opts) {
       }
     }
     findPattern = simplifyStateConditionalAnchor(findPattern);
-    const hasMacros = replaceString.indexOf("{{") >= 0 || findPattern.indexOf("{{") >= 0;
     const findHasCbs = findPattern.indexOf("{{") >= 0;
-    const emittedFlags = findHasCbs ? normalised.flag.replace(/u/g, "") : normalised.flag;
-    const row = {
-      id: uuid(),
+    const baseFlags = findHasCbs ? normalised.flag.replace(/u/g, "") : normalised.flag;
+    let baseReplace = action === "inject" ? "" : strippedOut;
+    if (baseReplace.endsWith(">") && !hasNoEndNl)
+      baseReplace += `
+`;
+    if (opts.catalog && baseReplace.indexOf("{{") >= 0) {
+      try {
+        baseReplace = rewriteText(baseReplace, opts.catalog);
+      } catch (err) {
+        issues.push({
+          path,
+          message: `CBS rewrite of replace_string failed (keeping raw): ${err instanceof Error ? err.message : String(err)}`
+        });
+      }
+    }
+    if (effectivePhase.target === "display" && !action) {
+      baseReplace = wrapIslandMergeIfNeeded(baseReplace);
+    }
+    if (effectivePhase.target === "display") {
+      baseReplace = applyIframePolicy(baseReplace).html;
+    }
+    baseReplace = normalizeReplaceStringForSanitizer(baseReplace);
+    const baseHasMacros = baseReplace.indexOf("{{") >= 0 || findHasCbs;
+    const baseSubstitute = baseHasMacros ? "raw" : "none";
+    const baseName = nonEmpty(s.comment, `risu_${effectivePhase.target}_${i}`);
+    const baseDescription = s.comment ?? "";
+    const baseMetadata = {
+      _risu: {
+        phase: s.type,
+        origin,
+        order_index: i,
+        has_meta: normalised.actions.length > 0,
+        ...action ? { at_action: action } : {}
+      }
+    };
+    const buildRow = (overrides) => ({
+      id: overrides.id,
       user_id: opts.userId ?? "",
-      name: nonEmpty(s.comment, `risu_${effectivePhase.target}_${i}`),
-      script_id: uuid(),
-      find_regex: findPattern,
-      replace_string: replaceString,
-      flags: emittedFlags,
-      placement: effectivePhase.placement,
+      name: overrides.name ?? baseName,
+      script_id: overrides.script_id,
+      find_regex: overrides.find,
+      replace_string: overrides.replace,
+      flags: overrides.flags ?? baseFlags,
+      placement: overrides.placement ?? effectivePhase.placement,
       scope: "character",
       scope_id: opts.characterId,
-      target: effectivePhase.target,
+      target: overrides.target ?? effectivePhase.target,
       min_depth: null,
-      max_depth: effectivePhase.maxDepth ?? null,
+      max_depth: overrides.maxDepth !== undefined ? overrides.maxDepth : effectivePhase.maxDepth ?? null,
       trim_strings: [],
       run_on_edit: false,
-      substitute_macros: hasMacros ? "raw" : "none",
+      substitute_macros: overrides.substituteMacros ?? baseSubstitute,
       disabled: effectivePhase.disabled,
-      sort_order: normalised.order ?? i,
-      description: s.comment ?? "",
+      sort_order: overrides.sortOrder,
+      description: baseDescription,
       folder: "",
       pack_id: null,
-      metadata: {
-        _risu: {
-          phase: s.type,
-          origin,
-          order_index: i,
-          has_meta: normalised.actions.length > 0
-        }
-      },
+      metadata: baseMetadata,
       created_at: now,
       updated_at: now
-    };
-    rows.push(row);
+    });
+    if (!action) {
+      rows.push(buildRow({
+        id: uuid(),
+        script_id: uuid(),
+        find: findPattern,
+        replace: baseReplace,
+        sortOrder: baseSortOrder
+      }));
+      continue;
+    }
+    const wrapId = uuid();
+    const hash = ruleHash(wrapId);
+    const open = openSentinel(hash);
+    const close = closeSentinel(hash);
+    if (action === "inject") {
+      if (effectivePhase.target === "response") {
+        rows.push(buildRow({
+          id: wrapId,
+          script_id: uuid(),
+          find: findPattern,
+          replace: `${open}$&${close}`,
+          sortOrder: baseSortOrder
+        }));
+        rows.push(buildRow({
+          id: uuid(),
+          script_id: uuid(),
+          name: `${baseName}__display_strip`,
+          find: `${open}[\\s\\S]*?${close}`,
+          replace: "",
+          flags: "g",
+          placement: ["ai_output", "user_input"],
+          target: "display",
+          maxDepth: null,
+          sortOrder: baseSortOrder + 1,
+          substituteMacros: "none"
+        }));
+        rows.push(buildRow({
+          id: uuid(),
+          script_id: uuid(),
+          name: `${baseName}__prompt_strip`,
+          find: `${open}|${close}`,
+          replace: "",
+          flags: "g",
+          placement: ["ai_output", "user_input", "world_info"],
+          target: "prompt",
+          maxDepth: null,
+          sortOrder: baseSortOrder + 2,
+          substituteMacros: "none"
+        }));
+      } else {
+        rows.push(buildRow({
+          id: wrapId,
+          script_id: uuid(),
+          find: findPattern,
+          replace: "",
+          sortOrder: baseSortOrder
+        }));
+      }
+      continue;
+    }
+    const moveWrapFlags = baseFlags.replace(/g/g, "") || "u";
+    rows.push(buildRow({
+      id: wrapId,
+      script_id: uuid(),
+      find: findPattern,
+      replace: `${open}${baseReplace}${close}`,
+      flags: moveWrapFlags,
+      sortOrder: baseSortOrder
+    }));
+    rows.push(buildRow({
+      id: uuid(),
+      script_id: uuid(),
+      name: `${baseName}__${action}_apply`,
+      find: `^([\\s\\S]*?)${open}([\\s\\S]*?)${close}([\\s\\S]*)$`,
+      replace: action === "move_top" ? `$2
+$1$3` : `$1$3
+$2`,
+      flags: "u",
+      sortOrder: baseSortOrder + 1,
+      substituteMacros: "none"
+    }));
   }
   return { rows, skipped, issues };
 }
@@ -11497,7 +12592,8 @@ function buildBackgroundHtmlScript(html, opts) {
     return { file: null, issues: [] };
   const issues = [];
   const expanded = expandShorthand(html);
-  const rewritten = opts.catalog ? rewriteText(expanded, opts.catalog) : expanded;
+  const cbsRewritten = opts.catalog ? rewriteText(expanded, opts.catalog) : expanded;
+  const rewritten = applyIframePolicy(cbsRewritten).html;
   const bindings = [
     {
       type: "character",
@@ -20249,10 +21345,25 @@ function translateCharx(bytes, opts = {}) {
       });
     }
   }
-  const charBookEntries = extractCharacterBookEntries(charMap.extracted.characterBook, issues);
-  const allLoreEntries = [...moduleLorebook, ...charBookEntries];
+  const charBookEntriesRaw = extractCharacterBookEntries(charMap.extracted.characterBook, issues);
+  const haveModuleLore = moduleLorebook.length > 0;
+  const allLoreEntries = haveModuleLore ? [...moduleLorebook] : [...charBookEntriesRaw];
+  const dropped = haveModuleLore ? charBookEntriesRaw.length : 0;
+  if (dropped > 0) {
+    issues.push({
+      path: "lorebook",
+      message: `dropped ${dropped} character_book entr${dropped === 1 ? "y" : "ies"} \u2014 module.lorebook is the authoritative copy when .charx ships both (matches Risu characterCards.ts:153)`
+    });
+  }
   let worldBook = null;
   let worldBookEntries = [];
+  let decoratorStats = {
+    entries_with_decorators: 0,
+    decorators_seen: 0,
+    mapped: 0,
+    stashed: 0,
+    dropped: 0
+  };
   if (allLoreEntries.length > 0) {
     const wbId = uuid();
     const wbNow = now();
@@ -20267,14 +21378,17 @@ function translateCharx(bytes, opts = {}) {
           version: TRANSLATOR_VERSION,
           source_counts: {
             module_lorebook: moduleLorebook.length,
-            character_book: charBookEntries.length
+            character_book: charBookEntriesRaw.length,
+            character_book_dropped: dropped
           }
         }
       },
       created_at: wbNow,
       updated_at: wbNow
     };
-    worldBookEntries = mapLoreBook(allLoreEntries, { worldBookId: wbId, now, uuid });
+    const lbResult = mapLoreBookWithStats(allLoreEntries, { worldBookId: wbId, now, uuid });
+    worldBookEntries = lbResult.entries;
+    decoratorStats = lbResult.decoratorStats;
   }
   let rewriteNote = null;
   let finalCharacter = charMap.character;
@@ -20502,6 +21616,7 @@ function translateCharx(bytes, opts = {}) {
     assets: assetsMap,
     preferredAvatar,
     pendingSvgRasters: svgIndexer.getTasks(),
+    decoratorStats,
     manifest
   };
 }
@@ -24419,6 +25534,9 @@ async function importCard(args) {
     emitPackScripts: false
   });
   logInfo2(`(2) translate: done in ${Date.now() - tTranslate}ms \u2014 char="${bundle.character.name}" ` + `lore=${bundle.worldBookEntries.length} regex=${bundle.regexScripts.length} ` + `assets=${bundle.assets.size} payload.triggers=${bundle.risuPayload?.triggers.length ?? 0} ` + `payload.lua=${bundle.risuPayload?.lua_scripts.length ?? 0}`);
+  if (bundle.decoratorStats.decorators_seen > 0) {
+    logInfo2(`(2.1) lorebook decorators: ` + `entries_with_decorators=${bundle.decoratorStats.entries_with_decorators}/${bundle.worldBookEntries.length} ` + `seen=${bundle.decoratorStats.decorators_seen} ` + `mapped=${bundle.decoratorStats.mapped} ` + `stashed=${bundle.decoratorStats.stashed} ` + `dropped=${bundle.decoratorStats.dropped}`);
+  }
   const issues = bundle.manifest.issues;
   if (issues.length > 0) {
     logWarn2(`(2) translate produced ${issues.length} issue(s):`);
@@ -24491,7 +25609,13 @@ async function importCard(args) {
     try {
       const wbName = bundle.worldBook?.name ?? `${bundle.character.name} \u2014 lore`;
       logInfo2(`(4a) create world_book name="${wbName}" for ${bundle.worldBookEntries.length} entries`);
-      const book = await args.spindle.world_books.create({ name: wbName }, args.userId);
+      const book = await args.spindle.world_books.create({
+        name: wbName,
+        metadata: {
+          source: "character",
+          auto_managed_by_character: true
+        }
+      }, args.userId);
       worldBookId = book.id;
       logInfo2(`(4a) world_book created id=${worldBookId} in ${Date.now() - tBook}ms`);
     } catch (err) {
@@ -24524,6 +25648,20 @@ async function importCard(args) {
   const created = await args.spindle.characters.create(characterInput, args.userId);
   const characterId = created.id;
   logInfo2(`(4b) spindle.characters.create -> id=${characterId} in ${Date.now() - tChar}ms`);
+  if (worldBookId && args.spindle.world_books) {
+    try {
+      await args.spindle.world_books.update(worldBookId, {
+        metadata: {
+          source: "character",
+          source_character_id: characterId,
+          auto_managed_by_character: true
+        }
+      }, args.userId);
+      logInfo2(`(4c) world_book metadata patched with source_character_id=${characterId}`);
+    } catch (err) {
+      logWarn2(`(4c) world_book metadata patch failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
   let avatarImageId = null;
   if (args.spindle.characters.setAvatar) {
     const preferred = bundle.preferredAvatar;
@@ -24814,6 +25952,69 @@ function buildAssetIndexes(payload, uploads) {
     mappedCount++;
   }
   return { assetIndex, emotionIndex, mappedCount };
+}
+
+// src/payload/lorebook-direct-import.ts
+function joinList(arr) {
+  if (!Array.isArray(arr))
+    return "";
+  return arr.filter((x) => typeof x === "string").join(", ");
+}
+function convertCCSv3Entry(raw) {
+  const keyJoined = joinList(raw.key) || joinList(raw.keys) || joinList(raw.keywords) || "";
+  const order = typeof raw.order === "number" ? raw.order : typeof raw.priority === "number" ? raw.priority : typeof raw.contextConfig?.budgetPriority === "number" ? raw.contextConfig.budgetPriority : 0;
+  return {
+    key: keyJoined,
+    secondkey: joinList(raw.secondary_keys),
+    insertorder: order,
+    comment: typeof raw.comment === "string" && raw.comment.length > 0 ? raw.comment : typeof raw.name === "string" && raw.name.length > 0 ? raw.name : typeof raw.displayName === "string" ? raw.displayName : "",
+    content: typeof raw.content === "string" && raw.content.length > 0 ? raw.content : typeof raw.entry === "string" && raw.entry.length > 0 ? raw.entry : typeof raw.text === "string" ? raw.text : "",
+    mode: "normal",
+    alwaysActive: raw.constant === true || raw.forceActivation === true,
+    selective: raw.selective === true
+  };
+}
+function parseDirectLorebook(json) {
+  let parsed;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    return { entries: [], dropped: 0, format: "unknown" };
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return { entries: [], dropped: 0, format: "unknown" };
+  }
+  const obj = parsed;
+  if (obj["type"] === "risu" && Array.isArray(obj["data"])) {
+    const out = [];
+    let dropped = 0;
+    for (const e of obj["data"]) {
+      if (!e || typeof e !== "object" || Array.isArray(e)) {
+        dropped += 1;
+        continue;
+      }
+      out.push(e);
+    }
+    return { entries: out, dropped, format: "risu" };
+  }
+  if (obj["entries"] && typeof obj["entries"] === "object" && !Array.isArray(obj["entries"])) {
+    const entries = obj["entries"];
+    const out = [];
+    let dropped = 0;
+    for (const k of Object.keys(entries)) {
+      const e = entries[k];
+      if (!e || typeof e !== "object" || Array.isArray(e)) {
+        dropped += 1;
+        continue;
+      }
+      out.push(convertCCSv3Entry(e));
+    }
+    return { entries: out, dropped, format: "ccsv3" };
+  }
+  if (Array.isArray(obj)) {
+    return { entries: [], dropped: 0, format: "unknown" };
+  }
+  return { entries: [], dropped: 0, format: "unknown" };
 }
 
 // src/risu-compat/registry.ts
@@ -26004,7 +27205,7 @@ register8("hiddenkey", () => "", "A key that activates lorebook entries without 
 register8("risu_comment", (ctx, a) => {
   if (ctx.commit)
     return "";
-  return `<div class="risu-comment">${a[0] ?? ""}</div>`;
+  return `<div class="x-risu-risu-comment">${a[0] ?? ""}</div>`;
 }, 'Comment macro. Empty at prompt time; displays as <div class="risu-comment">\u2026</div> at render time.');
 registry.register({
   name: "//",
@@ -26025,7 +27226,7 @@ register8("risu", (_c, a) => {
   const size = a[0] || "45";
   return `<img src="/logo2.png" style="height:${size}px;width:${size}px" />`;
 }, "Embeds the RisuAI logo image.");
-register8("button", (_c, a) => `<button class="button-default" risu-trigger="${a[1] ?? ""}">${a[0] ?? ""}</button>`, "HTML button that fires the named risu-trigger when clicked.");
+register8("button", (_c, a) => `<button class="x-risu-button-default" risu-trigger="${a[1] ?? ""}">${a[0] ?? ""}</button>`, "HTML button that fires the named risu-trigger when clicked.");
 register8("screenwidth", (ctx) => String(ctx.screenWidth ?? 0), "Viewport width in pixels. Read from the frontend-reported value; 0 before the first report.");
 register8("screenheight", (ctx) => String(ctx.screenHeight ?? 0), "Viewport height in pixels. Read from the frontend-reported value; 0 before the first report.");
 register8("moduleenabled", (ctx, a) => {
@@ -26183,8 +27384,16 @@ register10("cbr", (_c, a) => {
   const n = Math.max(1, Number(a[0] ?? "1"));
   return "\\n".repeat(n);
 }, "Returns a literal '\\n'. With numeric arg, repeats that many times.");
+register10("position", (ctx, args) => {
+  const name = args[0];
+  if (typeof name !== "string" || name.length === 0)
+    return "";
+  const map = ctx.positionPt;
+  if (!map)
+    return "";
+  return map[name] ?? "";
+}, "Risu {{position::NAME}}: joined content of active entries with @@position pt_<NAME>.");
 var DOC_ONLY = [
-  ["position", "@@position decorator marker \u2014 shim at prompt stage."],
   ["slot", "{{slot::VAR}} inside a scoped block. Resolved by #each/#func/call handlers."]
 ];
 for (const [name, desc] of DOC_ONLY) {
@@ -26217,7 +27426,7 @@ register11("prefillsupported", (ctx) => {
 }, "'1' if the current AI model id starts with 'claude' (Claude supports prefill).");
 register11("file", (ctx, a) => {
   if (!ctx.commit) {
-    return `<br><div class="risu-file">${a[0] ?? ""}</div><br>`;
+    return `<br><div class="x-risu-risu-file">${a[0] ?? ""}</div><br>`;
   }
   const content = a[1] ?? "";
   try {
@@ -26354,7 +27563,7 @@ register12("image", (ctx, args) => {
   const hit = findAsset(ctx, ctx.character.additionalAssets, name, ctx.legacyMediaFindings);
   if (!hit)
     return "";
-  return `<div class="risu-inlay-image"><img src="${hit.src}" alt="${hit.src}" style="${ASSET_WIDTH_STYLE}"/></div>
+  return `<div class="x-risu-risu-inlay-image"><img src="${hit.src}" alt="${hit.src}" style="${ASSET_WIDTH_STYLE}"/></div>
 `;
 }, "Inlay image wrapper. parser.svelte.ts.");
 register12("emotion", (ctx, args) => {
@@ -26436,7 +27645,7 @@ register12("inlayed", (_ctx, args) => {
   const id = String(args[0] ?? "");
   if (!id)
     return "";
-  return `<div class="risu-inlay-image"><img src="/api/v1/images/${id}"/></div>
+  return `<div class="x-risu-risu-inlay-image"><img src="/api/v1/images/${id}"/></div>
 
 `;
 }, "Wrapped inlay image. Risu parser.svelte.ts + 688.");
@@ -26444,7 +27653,7 @@ register12("inlayeddata", (_ctx, args) => {
   const id = String(args[0] ?? "");
   if (!id)
     return "";
-  return `<div class="risu-inlay-image"><img src="/api/v1/images/${id}"/></div>
+  return `<div class="x-risu-risu-inlay-image"><img src="/api/v1/images/${id}"/></div>
 
 `;
 }, "Wrapped inlay image (data variant). Risu parser.svelte.ts + 688.");
@@ -26488,6 +27697,26 @@ function getActiveModulesByNamespace(chatId) {
   if (!characterId)
     return null;
   return byCharacter2.get(characterId) ?? null;
+}
+
+// src/interpreter/decorator-buffers.ts
+var TTL_MS = 60000;
+var buffersByChat = new Map;
+function setDecoratorBuffers(chatId, buffers) {
+  buffersByChat.set(chatId, { ...buffers, ts: Date.now() });
+}
+function getDecoratorBuffers(chatId) {
+  const buf = buffersByChat.get(chatId);
+  if (!buf)
+    return null;
+  if (Date.now() - buf.ts > TTL_MS) {
+    buffersByChat.delete(chatId);
+    return null;
+  }
+  return buf;
+}
+function clearDecoratorBuffers(chatId) {
+  buffersByChat.delete(chatId);
 }
 
 // src/interpreter/image-cache.ts
@@ -26780,7 +28009,8 @@ function buildRuntimeContext(mctx) {
     screenHeight: 0,
     commit: committing,
     legacyMediaFindings: false,
-    ...getActiveModulesByNamespace(chatId) ? { modulesByNamespace: getActiveModulesByNamespace(chatId) } : {}
+    ...getActiveModulesByNamespace(chatId) ? { modulesByNamespace: getActiveModulesByNamespace(chatId) } : {},
+    ...getDecoratorBuffers(chatId)?.positionPt ? { positionPt: getDecoratorBuffers(chatId).positionPt } : {}
   };
 }
 function reconstructRaw(name, args) {
@@ -27293,8 +28523,6 @@ function parseUTCOffset(s) {
   return sign * (h + mm / 60);
 }
 function registerBuiltins(register13) {
-  register13("user", (ctx) => ctx.identity.userName, false);
-  register13("char", (ctx) => ctx.identity.charName, false);
   register13("bot", (ctx) => ctx.identity.charName, false);
   register13("newline", () => `
 `, false);
@@ -27868,7 +29096,8 @@ function buildEvaluatorContext(input) {
     commit,
     legacyMediaFindings: input.legacyMediaFindings === true,
     callStack: 0,
-    ...input.modulesByNamespace ? { modulesByNamespace: input.modulesByNamespace } : {}
+    ...input.modulesByNamespace ? { modulesByNamespace: input.modulesByNamespace } : {},
+    ...input.positionPt ? { positionPt: input.positionPt } : {}
   };
 }
 
@@ -27892,6 +29121,7 @@ function runPipeline(input) {
     ...input.currentMessageIndexOverride !== undefined ? { currentMessageIndexOverride: input.currentMessageIndexOverride } : {},
     ...input.legacyMediaFindings !== undefined ? { legacyMediaFindings: input.legacyMediaFindings } : {},
     ...input.modulesByNamespace ? { modulesByNamespace: input.modulesByNamespace } : {},
+    ...input.positionPt ? { positionPt: input.positionPt } : {},
     commit
   });
   return evaluate(input.template, ctx);
@@ -27965,69 +29195,37 @@ async function runAtActionsForPhase(actions, phase, data, ctx) {
   for (let i = 0;i < eligible.length; i++) {
     const a = eligible[i];
     try {
-      current = await applyOne(a, current, ctx);
+      current = await applyOne2(a, current, ctx);
     } catch (err) {
       log3.warn(`action[${i}] kind=${a.action} phase=${phase} THREW \u2014 ${errMsg(err)}; keeping prior data`);
     }
   }
   return current;
 }
-async function applyOne(a, data, ctx) {
-  let flag = a.flag;
-  if ((a.action === "move_top" || a.action === "move_bottom") && flag.includes("g")) {
-    flag = flag.replace(/g/g, "");
-  }
+async function applyOne2(a, data, ctx) {
   let regex2;
   try {
-    regex2 = new RegExp(a.findRegex, flag);
+    regex2 = new RegExp(a.findRegex, a.flag);
   } catch (err) {
-    throw new Error(`atAction ${a.action}: invalid regex /${a.findRegex}/${flag} \u2014 ${err.message}`);
+    throw new Error(`atAction ${a.action}: invalid regex /${a.findRegex}/${a.flag} \u2014 ${err.message}`);
   }
   const matched = regex2.test(data);
   regex2.lastIndex = 0;
   if (matched) {
-    switch (a.action) {
-      case "emo": {
-        const name = a.out.substring(6).trim();
-        if (name && ctx.api.characters.setExpression) {
-          await ctx.api.characters.setExpression(name);
-        }
-        return data;
+    if (a.action === "emo") {
+      const name = a.out.substring(6).trim();
+      if (name && ctx.api.characters.setExpression) {
+        await ctx.api.characters.setExpression(name);
       }
-      case "inject": {
-        if (ctx.chatIndex === -1)
-          return data;
-        return data.replace(regex2, "");
-      }
-      case "move_top":
-      case "move_bottom": {
-        const stripped = a.out.replace(/^@@move_top\s+/, "").replace(/^@@move_bottom\s+/, "");
-        const m = data.match(regex2);
-        if (!m)
-          return data;
-        const cleaned = data.replace(regex2, "");
-        const rendered = applyMatchTemplate(stripped, m);
-        if (a.action === "move_top") {
-          return rendered + `
-` + cleaned;
-        }
-        return cleaned + `
-` + rendered;
-      }
-      case "repeat_back": {
-        return data;
-      }
-      default:
-        return data;
-    }
-  } else {
-    if (a.action === "repeat_back") {
-      if (ctx.chatIndex === -1)
-        return data;
-      return await applyRepeatBack(a, data, regex2, ctx);
     }
     return data;
   }
+  if (a.action === "repeat_back") {
+    if (ctx.chatIndex === -1)
+      return data;
+    return await applyRepeatBack(a, data, regex2, ctx);
+  }
+  return data;
 }
 async function applyRepeatBack(a, data, regex2, ctx) {
   const messages = await ctx.api.chat.getMessages();
@@ -28072,7 +29270,7 @@ function coerceAtActions(raw) {
     if (!r || typeof r !== "object")
       continue;
     const action = r.action;
-    if (action !== "emo" && action !== "inject" && action !== "move_top" && action !== "move_bottom" && action !== "repeat_back")
+    if (action !== "emo" && action !== "repeat_back")
       continue;
     const findRegex = typeof r.script?.in === "string" ? r.script.in : "";
     const outStr = typeof r.script?.out === "string" ? r.script.out : "";
@@ -28432,7 +29630,7 @@ function extractToggleKeys(flat) {
 
 // src/state/recent-writes.ts
 var log4 = makeSafeLogger("recent-writes");
-var TTL_MS = 60000;
+var TTL_MS2 = 60000;
 var MAX_ENTRIES = 100;
 var RAPID_CONSUME_MS = 100;
 var cache = new Map;
@@ -28443,7 +29641,7 @@ function rememberOurWrite(chatId, msgId, content) {
   const now = Date.now();
   if (cache.size >= MAX_ENTRIES) {
     for (const [k, v] of cache) {
-      if (now - v.ts > TTL_MS)
+      if (now - v.ts > TTL_MS2)
         cache.delete(k);
     }
     if (cache.size >= MAX_ENTRIES) {
@@ -28467,7 +29665,7 @@ function consumeIfOurWrite(chatId, msgId, content) {
   if (!entry)
     return false;
   const elapsed = Date.now() - entry.ts;
-  if (elapsed > TTL_MS) {
+  if (elapsed > TTL_MS2) {
     cache.delete(k);
     return false;
   }
@@ -28757,6 +29955,32 @@ function buildCharacterViewerData(input) {
   assets.sort((a, b) => a.name.localeCompare(b.name));
   const bgRaw = input.data.payload.background_html;
   const backgroundHtml = typeof bgRaw === "string" && bgRaw.length > 0 ? bgRaw : null;
+  const cardDefaults = input.data.payload.scriptstate_defaults ?? {};
+  const overrides = input.data.user_overrides.default_variables_overrides ?? {};
+  const defaultVariables = [];
+  const seen = new Set;
+  for (const name of Object.keys(cardDefaults)) {
+    seen.add(name);
+    const cardValue = cardDefaults[name] ?? "";
+    const overrideValue = Object.prototype.hasOwnProperty.call(overrides, name) ? overrides[name] ?? "" : null;
+    defaultVariables.push({
+      name,
+      value: overrideValue ?? cardValue,
+      cardDefault: cardValue,
+      overridden: overrideValue !== null
+    });
+  }
+  for (const name of Object.keys(overrides)) {
+    if (seen.has(name))
+      continue;
+    defaultVariables.push({
+      name,
+      value: overrides[name] ?? "",
+      cardDefault: "",
+      overridden: true
+    });
+  }
+  defaultVariables.sort((a, b) => a.name.localeCompare(b.name));
   return {
     source: { kind: "character", characterId: input.characterId, name: input.characterName },
     lorebook: [],
@@ -28765,6 +29989,7 @@ function buildCharacterViewerData(input) {
     assets,
     cjs: null,
     backgroundHtml,
+    defaultVariables,
     ts: input.ts ?? Date.now(),
     fetchWarnings: input.fetchWarnings ?? []
   };
@@ -28863,6 +30088,7 @@ function buildModuleViewerData(input) {
     assets,
     cjs: typeof m.cjs === "string" && m.cjs.length > 0 ? m.cjs : null,
     backgroundHtml: null,
+    defaultVariables: [],
     ts: input.ts ?? Date.now(),
     fetchWarnings: []
   };
@@ -29058,6 +30284,10 @@ var log5 = {
     if (logStore.isEnabled())
       spindle.log.info(`[lumirealm] ${msg}`);
     logStore.push("debug", "backend", msg);
+  },
+  always(msg) {
+    spindle.log.info(`[lumirealm] ${msg}`);
+    logStore.push("info", "backend", msg);
   }
 };
 log5.info(`backend boot: version=${EXTENSION_VERSION}`);
@@ -29153,7 +30383,8 @@ if (typeof registerMacroInterceptor === "function") {
         ...scriptstateDefaults && Object.keys(scriptstateDefaults).length > 0 ? { scriptstateDefaults } : {},
         ...screenDims ? { screenWidth: screenDims.width, screenHeight: screenDims.height } : {},
         legacyMediaFindings: getCachedSettingsSync(ctx.userId).legacyMediaFindings,
-        ...modulesByNamespaceFromCard(active.card) ? { modulesByNamespace: modulesByNamespaceFromCard(active.card) } : {}
+        ...modulesByNamespaceFromCard(active.card) ? { modulesByNamespace: modulesByNamespaceFromCard(active.card) } : {},
+        ...getDecoratorBuffers(chatId)?.positionPt ? { positionPt: getDecoratorBuffers(chatId).positionPt } : {}
       });
     } catch (err) {
       log5.warn(`macroInterceptor: runPipeline threw chat=${chatId} phase=${ctx.phase} \u2014 ${errMsg(err)}. Passing through.`);
@@ -29183,22 +30414,6 @@ if (typeof registerMacroInterceptor === "function") {
           });
         } catch (err) {
           log5.warn(`macroInterceptor: listenEdit chain threw \u2014 ${errMsg(err)}. Continuing with pre-hook resolved.`);
-        }
-      }
-      const atActions = coerceAtActions(active.card.risuPayload.at_actions);
-      if (atActions.length > 0) {
-        try {
-          const atApi = makeSpindleHost({
-            chatId,
-            characterId: active.card.character_id,
-            userId: ctx.userId ?? ""
-          });
-          resolved = await runAtActionsForPhase(atActions, "editdisplay", resolved, {
-            api: atApi,
-            chatIndex: typeof envChat.lastMessageId === "number" ? envChat.lastMessageId : -1
-          });
-        } catch (err) {
-          log5.warn(`macroInterceptor: at-actions editdisplay threw \u2014 ${errMsg(err)}. Continuing.`);
         }
       }
     }
@@ -29234,8 +30449,9 @@ if (typeof registerMessageContentProcessor === "function") {
         const triggers2 = active.card.risuPayload.triggers;
         const luaScripts = active.card.risuPayload.lua_scripts;
         const hasLuaTrigger = triggers2.some((t) => t.effect?.[0]?.type === "triggerlua");
-        if (!hasLuaTrigger) {
-          log5.info(`messageContentProcessor.exit #${seq} path=render-no-lua chat=${ctx.chatId} ensure=${tB - tA}ms total=${Date.now() - tStart}ms`);
+        const renderAtActions = coerceAtActions(active.card.risuPayload.at_actions);
+        if (!hasLuaTrigger && renderAtActions.length === 0) {
+          log5.info(`messageContentProcessor.exit #${seq} path=render-no-hooks chat=${ctx.chatId} ensure=${tB - tA}ms total=${Date.now() - tStart}ms`);
           return;
         }
         const rawIdx = ctx.extra?.["messageIndex"];
@@ -29252,7 +30468,21 @@ if (typeof registerMessageContentProcessor === "function") {
             userId: ctx.userId
           });
           const editScriptNS = makeDispatcherScriptNS();
-          const transformed = await runListenEditChain(editChain, "editDisplay", ctx.content, { index: risuChatIdx }, editApi, { characterId: active.card.character_id, content: ctx.content }, editScriptNS, { chatId: ctx.chatId, characterId: active.card.character_id });
+          let transformed = ctx.content;
+          if (hasLuaTrigger) {
+            transformed = await runListenEditChain(editChain, "editDisplay", transformed, { index: risuChatIdx }, editApi, { characterId: active.card.character_id, content: ctx.content }, editScriptNS, { chatId: ctx.chatId, characterId: active.card.character_id });
+          }
+          if (renderAtActions.length > 0) {
+            try {
+              transformed = await runAtActionsForPhase(renderAtActions, "editdisplay", transformed, {
+                api: editApi,
+                chatIndex: risuChatIdx,
+                role: "assistant"
+              });
+            } catch (err) {
+              log5.warn(`messageContentProcessor.render at-actions threw \u2014 ${errMsg(err)}. Continuing with prior content.`);
+            }
+          }
           if (transformed === ctx.content) {
             log5.info(`messageContentProcessor.exit #${seq} path=render-noop chat=${ctx.chatId} msg=${ctx.messageId ?? "<?>"} idx=${messageIndex} total=${Date.now() - tStart}ms`);
             return;
@@ -29283,7 +30513,7 @@ if (typeof registerMessageContentProcessor === "function") {
             characterId: active.card.character_id,
             userId: ctx.userId
           });
-          afterAt = await runAtActionsForPhase(atActions, "editdisplay", resolved, {
+          afterAt = await runAtActionsForPhase(atActions, "editoutput", resolved, {
             api: atApi,
             chatIndex: isGreeting ? -1 : 0,
             role: "assistant"
@@ -29330,11 +30560,54 @@ if (typeof registerInterceptor === "function") {
     const active = await ensureActiveCardForChat(chatId, null);
     if (!active)
       return messages;
+    let out = messages;
+    const buffers = getDecoratorBuffers(chatId);
+    if (buffers && buffers.injectAt.length > 0) {
+      const character2 = await spindle.characters.get(active.card.character_id, userId).catch(() => null);
+      const persona = await spindle.personas.getActive(userId).catch(() => null);
+      const authorsNote = (() => {
+        const meta = active.card.risuPayload.extra;
+        const c = meta?.authors_note?.content;
+        return typeof c === "string" ? c : "";
+      })();
+      const slotText = {};
+      const charDesc = character2?.description;
+      if (typeof charDesc === "string" && charDesc.length > 0)
+        slotText["description"] = charDesc;
+      const charPersona = character2?.persona;
+      if (typeof charPersona === "string" && charPersona.length > 0)
+        slotText["persona"] = charPersona;
+      const charScenario = character2?.scenario;
+      if (typeof charScenario === "string" && charScenario.length > 0)
+        slotText["scenario"] = charScenario;
+      const charSysPrompt = character2?.system_prompt;
+      if (typeof charSysPrompt === "string" && charSysPrompt.length > 0)
+        slotText["main"] = charSysPrompt;
+      const charPostHist = character2?.post_history_instructions;
+      if (typeof charPostHist === "string" && charPostHist.length > 0) {
+        slotText["globalNote"] = charPostHist;
+        slotText["jailbreak"] = charPostHist;
+        slotText["cot"] = charPostHist;
+      }
+      const personaDesc = persona?.description;
+      if (typeof personaDesc === "string" && personaDesc.length > 0 && !slotText["persona"]) {
+        slotText["persona"] = personaDesc;
+      }
+      if (authorsNote.length > 0)
+        slotText["authornote"] = authorsNote;
+      const { applyInjectAtToMessages: applyInjectAtToMessages2 } = await Promise.resolve().then(() => (init_lorebook_decorator_runtime(), exports_lorebook_decorator_runtime));
+      const applyResult = applyInjectAtToMessages2(out, buffers.injectAt, slotText);
+      out = applyResult.messages.slice();
+      if (applyResult.mutationCount > 0 || applyResult.synthesizedCount > 0 || applyResult.fallbackAppendCount > 0) {
+        log5.info(`[decorators] injectAt applied chat=${chatId} mutations=${applyResult.mutationCount}/${buffers.injectAt.length} synthesized=${applyResult.synthesizedCount} fallback_append=${applyResult.fallbackAppendCount}`);
+      }
+      clearDecoratorBuffers(chatId);
+    }
     const triggers2 = active.card.risuPayload.triggers;
     const luaScripts = active.card.risuPayload.lua_scripts;
     const hasLuaTrigger = triggers2.some((t) => t.effect?.[0]?.type === "triggerlua");
     if (!hasLuaTrigger)
-      return messages;
+      return out;
     const editApi = makeSpindleHost({
       chatId,
       characterId: active.card.character_id,
@@ -29345,7 +30618,6 @@ if (typeof registerInterceptor === "function") {
       source: t,
       luaCode: luaScripts[i] ?? ""
     }));
-    let out = messages;
     if (ctx.generationType === "normal") {
       let userIdx = -1;
       for (let i = out.length - 1;i >= 0; i--) {
@@ -29359,7 +30631,7 @@ if (typeof registerInterceptor === "function") {
         try {
           const mutated = await runListenEditChain(editChain, "editInput", orig, { index: userIdx - 1 }, editApi, { characterId: active.card.character_id, content: orig }, editScriptNS, { chatId, characterId: active.card.character_id });
           if (mutated !== orig) {
-            log5.info(`interceptor.editInput: chat=${chatId} userIdx=${userIdx} ` + `before_len=${orig.length} after_len=${mutated.length}`);
+            log5.info(`interceptor.editInput: chat=${chatId} userIdx=${userIdx} before_len=${orig.length} after_len=${mutated.length}`);
             out = out.slice();
             out[userIdx] = { ...out[userIdx], content: mutated };
           }
@@ -29372,7 +30644,7 @@ if (typeof registerInterceptor === "function") {
       const mutated = await runListenEditChain(editChain, "editRequest", out, { generationType: ctx.generationType ?? "normal" }, editApi, { characterId: active.card.character_id, content: "" }, editScriptNS, { chatId, characterId: active.card.character_id });
       if (Array.isArray(mutated)) {
         if (mutated.length !== out.length) {
-          log5.info(`interceptor.editRequest: chat=${chatId} array length changed ` + `before=${out.length} after=${mutated.length}`);
+          log5.info(`interceptor.editRequest: chat=${chatId} array length changed before=${out.length} after=${mutated.length}`);
         }
         out = mutated;
       }
@@ -29384,6 +30656,114 @@ if (typeof registerInterceptor === "function") {
   log5.info("interceptor: registered (editInput + editRequest)");
 } else {
   log5.info("interceptor: not available on this Lumi build \u2014 listenEdit editInput/editRequest will not fire");
+}
+var registerWorldInfoInterceptor = typeof spindle.registerWorldInfoInterceptor === "function" ? spindle.registerWorldInfoInterceptor.bind(spindle) : null;
+if (registerWorldInfoInterceptor) {
+  log5.always(`[decorators] registerWorldInfoInterceptor wired at boot`);
+  registerWorldInfoInterceptor(async (ctx) => {
+    log5.always(`[decorators] worldInfoInterceptor ENTER chat=${ctx.chatId} entries=${ctx.entries.length}`);
+    const verbose = (() => {
+      try {
+        const env = globalThis.Bun?.env;
+        return env?.RISU_COMPAT_VERBOSE === "1";
+      } catch {
+        return false;
+      }
+    })();
+    const { runWorldInfoInterceptor: runWorldInfoInterceptor2 } = await Promise.resolve().then(() => (init_lorebook_decorator_runtime(), exports_lorebook_decorator_runtime));
+    const verboseFn = verbose ? (m) => log5.info(`[decorators] ${m}`) : undefined;
+    const RISU_DEFAULT_LORE_DEPTH = 4;
+    let stashedDecCount = 0;
+    let inlineDecCount = 0;
+    for (const e of ctx.entries) {
+      const stash = e.extensions?.["_risu_decorators"];
+      if (Array.isArray(stash) && stash.length > 0) {
+        stashedDecCount += 1;
+      } else if (typeof e.content === "string" && e.content.startsWith("@@")) {
+        inlineDecCount += 1;
+      }
+    }
+    const outcome = runWorldInfoInterceptor2({
+      entries: ctx.entries.map((e) => ({
+        id: e.id,
+        disabled: e.disabled,
+        comment: typeof e.comment === "string" ? e.comment : "",
+        key: Array.isArray(e.key) ? e.key : [],
+        keysecondary: Array.isArray(e.keysecondary) ? e.keysecondary : [],
+        content: typeof e.content === "string" ? e.content : "",
+        priority: typeof e.priority === "number" ? e.priority : 0,
+        extensions: e.extensions
+      })),
+      messages: ctx.messages.map((m) => ({
+        role: m.role,
+        content: m.content,
+        is_user: m.is_user,
+        is_greeting: m.is_greeting,
+        ...m.greeting_index !== undefined ? { greeting_index: m.greeting_index } : {}
+      })),
+      chatTurn: ctx.chatTurn,
+      chatMetadata: ctx.chatMetadata,
+      defaultScanDepth: RISU_DEFAULT_LORE_DEPTH
+    }, verboseFn);
+    if (stashedDecCount + inlineDecCount > 0 || outcome.positionPt.length > 0 || outcome.injectAt.length > 0) {
+      const ptNames = outcome.positionPt.map((p) => `${p.name}(${p.content.length})`).join(",");
+      const injAtLocs = outcome.injectAt.map((p) => `${p.loc}/${p.operation}`).join(",");
+      log5.always(`[decorators] worldInfoInterceptor chat=${ctx.chatId} entries_in=${ctx.entries.length} dec_carriers=stashed:${stashedDecCount}+inline:${inlineDecCount} outcome: disabled=${outcome.disabled.length} forced=${outcome.forced.length} mutated=${outcome.mutated.length} stickyWrites=${outcome.stickyWrites.length} positionPt=[${ptNames}] injectAt=[${injAtLocs}]`);
+    }
+    if (outcome.stickyWrites.length > 0 && ctx.userId) {
+      try {
+        const chat = await spindle.chats.get(ctx.chatId, ctx.userId);
+        const meta = chat?.metadata ?? {};
+        const mv = meta["macro_variables"] && typeof meta["macro_variables"] === "object" ? { ...meta["macro_variables"] } : {};
+        const local = mv["local"] && typeof mv["local"] === "object" ? { ...mv["local"] } : {};
+        let changed = 0;
+        for (const w of outcome.stickyWrites) {
+          if (local[w.varName] === w.value)
+            continue;
+          local[w.varName] = w.value;
+          changed += 1;
+        }
+        if (changed > 0) {
+          mv["local"] = local;
+          expectChatChange(ctx.chatId);
+          await spindle.chats.update(ctx.chatId, { metadata: { ...meta, macro_variables: mv } }, ctx.userId);
+          log5.always(`[decorators] sticky_writes chat=${ctx.chatId} count=${changed}/${outcome.stickyWrites.length} keys=[${outcome.stickyWrites.slice(0, 3).map((w) => w.varName).join(",")}${outcome.stickyWrites.length > 3 ? ",\u2026" : ""}]`);
+        }
+      } catch (err) {
+        log5.warn(`[decorators] sticky_writes failed chat=${ctx.chatId}: ${errMsg(err)}`);
+      }
+    }
+    if (outcome.injectAt.length > 0 || outcome.positionPt.length > 0) {
+      const positionPt = {};
+      for (const p of outcome.positionPt)
+        positionPt[p.name] = p.content;
+      setDecoratorBuffers(ctx.chatId, {
+        injectAt: outcome.injectAt,
+        positionPt
+      });
+      log5.always(`[decorators] tier3_buffer chat=${ctx.chatId} injectAt=${outcome.injectAt.length} positionPt=${outcome.positionPt.length}`);
+    } else {
+      clearDecoratorBuffers(ctx.chatId);
+    }
+    if (outcome.disabled.length > 0 || outcome.forced.length > 0 || outcome.mutated.length > 0) {
+      const reasons = Object.entries(outcome.reasons).map(([n, c]) => `${n}:${c}`).join(",");
+      log5.info(`[decorators] chat=${ctx.chatId} entries=${ctx.entries.length} disabled=${outcome.disabled.length} forced=${outcome.forced.length} mutated=${outcome.mutated.length} sticky_writes=${outcome.stickyWrites.length} reasons=[${reasons}]`);
+    }
+    if (outcome.disabled.length === 0 && outcome.forced.length === 0 && outcome.mutated.length === 0)
+      return;
+    const result = {};
+    if (outcome.disabled.length > 0)
+      result.disabled = outcome.disabled;
+    if (outcome.forced.length > 0)
+      result.forced = outcome.forced;
+    if (outcome.mutated.length > 0) {
+      result.mutated = outcome.mutated.map((m) => ({ id: m.entryId, content: m.content }));
+    }
+    return result;
+  }, 100);
+  log5.info("worldInfoInterceptor: registered");
+} else {
+  log5.info("worldInfoInterceptor: not available on this Lumi build \u2014 Tier 2 lorebook decorators will not gate");
 }
 var variableState = new VariableStateStore;
 var toggleState = new ToggleStateStore;
@@ -29915,6 +31295,7 @@ async function importCardFromBytes(bytesB64, fileName) {
           return { id: w.id };
         });
       },
+      update: (bookId, input, uid) => spindle.world_books.update(bookId, input, uid),
       entries: {
         create: (bookId, input, uid) => spindle.world_books.entries.create(bookId, input, uid).then((e) => ({ id: e.id }))
       }
@@ -30846,7 +32227,8 @@ async function resolveReadonlyInWorker(template, chatId, characterId, userId) {
     },
     legacyMediaFindings: getCachedSettingsSync(userId).legacyMediaFindings,
     wrapIslands: false,
-    ...activeCard && modulesByNamespaceFromCard(activeCard) ? { modulesByNamespace: modulesByNamespaceFromCard(activeCard) } : {}
+    ...activeCard && modulesByNamespaceFromCard(activeCard) ? { modulesByNamespace: modulesByNamespaceFromCard(activeCard) } : {},
+    ...getDecoratorBuffers(chatId)?.positionPt ? { positionPt: getDecoratorBuffers(chatId).positionPt } : {}
   });
 }
 async function fetchChatMessages(chatId) {
@@ -31684,12 +33066,128 @@ async function refreshRisuAssetMap(characterId, userId) {
     log5.warn(`refreshRisuAssetMap: char=${characterId} update failed: ${errMsg(err)}`);
   }
 }
+async function handleImportLorebook(msg, userId) {
+  const t0 = Date.now();
+  const fetched = await readLumirealm(charactersApi(), msg.characterId, userId);
+  if (!fetched || !fetched.data) {
+    send({
+      type: "lorebook_import_result",
+      characterId: msg.characterId,
+      ok: false,
+      written: 0,
+      dropped: 0,
+      reason: "not a lumirealm character"
+    });
+    return;
+  }
+  const parsed = parseDirectLorebook(msg.json);
+  if (parsed.format === "unknown") {
+    send({
+      type: "lorebook_import_result",
+      characterId: msg.characterId,
+      ok: false,
+      written: 0,
+      dropped: parsed.dropped,
+      reason: "unrecognized lorebook format (expected Risu native or CCSv3)"
+    });
+    return;
+  }
+  if (parsed.entries.length === 0) {
+    send({
+      type: "lorebook_import_result",
+      characterId: msg.characterId,
+      ok: false,
+      written: 0,
+      dropped: parsed.dropped,
+      reason: "no entries found in lorebook file"
+    });
+    return;
+  }
+  const existing = fetched.character.world_book_ids ?? [];
+  let targetBookId = null;
+  if (existing.length > 0) {
+    targetBookId = existing[0] ?? null;
+  }
+  if (!targetBookId) {
+    try {
+      const wbName = `${fetched.character.name ?? "character"}  - lore (imported)`;
+      const wb = await spindle.world_books.create({ name: wbName }, userId);
+      targetBookId = wb.id;
+      expectCharacterEdit(msg.characterId);
+      await spindle.characters.update(msg.characterId, { world_book_ids: [...existing, wb.id] }, userId);
+      log5.info(`import_lorebook: created world_book ${wb.id} for char=${msg.characterId}`);
+    } catch (err) {
+      send({
+        type: "lorebook_import_result",
+        characterId: msg.characterId,
+        ok: false,
+        written: 0,
+        dropped: parsed.dropped,
+        reason: `world_book create failed: ${errMsg(err)}`
+      });
+      return;
+    }
+  }
+  const lumiEntries = mapLoreBook(parsed.entries, { worldBookId: targetBookId });
+  let written = 0;
+  let entryWriteFailures = 0;
+  for (const entry of lumiEntries) {
+    try {
+      const entryInput = {
+        key: entry.key,
+        keysecondary: entry.keysecondary,
+        content: entry.content,
+        comment: entry.comment,
+        position: entry.position,
+        depth: entry.depth,
+        order_value: entry.order_value,
+        selective: entry.selective,
+        constant: entry.constant,
+        disabled: entry.disabled,
+        group_name: entry.group_name,
+        group_override: entry.group_override,
+        group_weight: entry.group_weight,
+        probability: entry.probability,
+        case_sensitive: entry.case_sensitive,
+        match_whole_words: entry.match_whole_words,
+        use_regex: entry.use_regex,
+        prevent_recursion: entry.prevent_recursion,
+        exclude_recursion: entry.exclude_recursion,
+        delay_until_recursion: entry.delay_until_recursion,
+        priority: entry.priority,
+        sticky: entry.sticky,
+        cooldown: entry.cooldown,
+        delay: entry.delay,
+        selective_logic: entry.selective_logic,
+        use_probability: entry.use_probability,
+        ...entry.role !== null ? { role: entry.role } : {},
+        ...entry.scan_depth !== null ? { scan_depth: entry.scan_depth } : {},
+        ...entry.automation_id !== null ? { automation_id: entry.automation_id } : {},
+        ...entry.extensions ? { extensions: entry.extensions } : {}
+      };
+      await spindle.world_books.entries.create(targetBookId, entryInput, userId);
+      written += 1;
+    } catch (err) {
+      entryWriteFailures += 1;
+      log5.warn(`import_lorebook: entry "${entry.comment}" failed: ${errMsg(err)}`);
+    }
+  }
+  log5.info(`import_lorebook: char=${msg.characterId} format=${parsed.format} written=${written}/${parsed.entries.length} drops=${parsed.dropped} entry_write_failures=${entryWriteFailures} elapsed=${Date.now() - t0}ms file=${msg.filename ?? "<unnamed>"}`);
+  send({
+    type: "lorebook_import_result",
+    characterId: msg.characterId,
+    ok: written > 0,
+    written,
+    dropped: parsed.dropped + entryWriteFailures,
+    ...written === 0 && entryWriteFailures > 0 ? { reason: "all entry writes failed; see log for details" } : {}
+  });
+}
 function buildModuleWorldBookEntryInput(raw, moduleId) {
   if (!raw || typeof raw !== "object")
     return null;
   const eo = raw;
   const keyRaw = eo["key"];
-  const key2 = Array.isArray(keyRaw) ? keyRaw.filter((x) => typeof x === "string") : typeof keyRaw === "string" ? [keyRaw] : [];
+  const key2 = Array.isArray(keyRaw) ? keyRaw.filter((x) => typeof x === "string") : typeof keyRaw === "string" ? keyRaw.split(",").map((s) => s.trim()).filter((s) => s.length > 0) : [];
   const content = typeof eo["content"] === "string" ? eo["content"] : "";
   if (key2.length === 0 && content.length === 0)
     return null;
@@ -31700,21 +33198,39 @@ function buildModuleWorldBookEntryInput(raw, moduleId) {
   };
   if (typeof eo["comment"] === "string")
     input["comment"] = eo["comment"];
-  if (typeof eo["constant"] === "boolean")
-    input["constant"] = eo["constant"];
-  if (typeof eo["disabled"] === "boolean")
+  const isConstant = eo["constant"] === true || eo["alwaysActive"] === true || eo["mode"] === "constant";
+  if (isConstant)
+    input["constant"] = true;
+  const isFolder = eo["mode"] === "folder";
+  if (isFolder) {
+    input["disabled"] = true;
+    input["constant"] = false;
+  } else if (typeof eo["disabled"] === "boolean") {
     input["disabled"] = eo["disabled"];
+  }
   if (typeof eo["position"] === "string")
     input["position"] = eo["position"];
   if (typeof eo["priority"] === "number")
     input["priority"] = eo["priority"];
-  if (typeof eo["order"] === "number")
+  if (typeof eo["insertorder"] === "number")
+    input["order_value"] = eo["insertorder"];
+  else if (typeof eo["order"] === "number")
     input["order_value"] = eo["order"];
   if (Array.isArray(eo["secondary_keys"])) {
     input["keysecondary"] = eo["secondary_keys"].filter((x) => typeof x === "string");
+  } else if (typeof eo["secondkey"] === "string" && eo["secondkey"].length > 0) {
+    input["keysecondary"] = eo["secondkey"].split(",").map((s) => s.trim()).filter((s) => s.length > 0);
   }
   if (typeof eo["selective"] === "boolean")
     input["selective"] = eo["selective"];
+  if (eo["extentions"] && typeof eo["extentions"] === "object" && !Array.isArray(eo["extentions"])) {
+    const ex = eo["extentions"];
+    if (ex["risu_case_sensitive"] === true)
+      input["case_sensitive"] = true;
+    if (typeof ex["risu_activationPercent"] === "number") {
+      input["probability"] = ex["risu_activationPercent"];
+    }
+  }
   return input;
 }
 async function syncModuleWorldBook(env, userId) {
@@ -32735,13 +34251,68 @@ spindle.onFrontendMessage(async (raw, userId) => {
           const attached = await charactersAttachedTo(msg.source.moduleId, userId);
           for (const charId of attached) {
             invalidateActiveForCharacter(charId);
+            await refreshRisuAssetMap(charId, userId).catch((err) => {
+              log5.warn(`${msg.type}: refreshRisuAssetMap failed char=${charId}: ${errMsg(err)}`);
+            });
           }
           if (attached.length > 0) {
             log5.info(`${msg.type}: invalidated ${attached.length} attached character(s) for module ${msg.source.moduleId}`);
           }
         } else {
           invalidateActiveForCharacter(msg.source.characterId);
+          await refreshRisuAssetMap(msg.source.characterId, userId).catch((err) => {
+            log5.warn(`${msg.type}: refreshRisuAssetMap failed char=${msg.source.kind === "character" ? msg.source.characterId : "?"}: ${errMsg(err)}`);
+          });
         }
+        break;
+      }
+      case "set_default_variable":
+      case "delete_default_variable": {
+        if (!userId) {
+          send({ type: "error", message: `${msg.type}: no userId` });
+          break;
+        }
+        const updated = await updateLumirealm(charactersApi(), msg.characterId, userId, (cur) => {
+          const overrides = { ...cur.user_overrides.default_variables_overrides ?? {} };
+          if (msg.type === "set_default_variable") {
+            const trimmedName = msg.name.trim();
+            if (trimmedName.length === 0)
+              return cur;
+            overrides[trimmedName] = String(msg.value);
+          } else {
+            if (!Object.prototype.hasOwnProperty.call(overrides, msg.name))
+              return cur;
+            delete overrides[msg.name];
+          }
+          return {
+            ...cur,
+            user_overrides: {
+              ...cur.user_overrides,
+              ...Object.keys(overrides).length > 0 ? { default_variables_overrides: overrides } : {}
+            }
+          };
+        });
+        if (!updated) {
+          send({ type: "error", message: `${msg.type}: not a lumirealm character` });
+          break;
+        }
+        try {
+          const data = await assembleCharacterViewerData(msg.characterId, userId);
+          if (data)
+            send({ type: "viewer_data_pushed", data });
+        } catch (err) {
+          log5.warn(`${msg.type}: viewer re-push failed: ${errMsg(err)}`);
+        }
+        invalidateActiveForCharacter(msg.characterId);
+        log5.info(`${msg.type}: char=${msg.characterId} name=${msg.name}` + (msg.type === "set_default_variable" ? ` len=${String(msg.value).length}` : " (override removed)"));
+        break;
+      }
+      case "import_lorebook": {
+        if (!userId) {
+          send({ type: "error", message: "import_lorebook: no userId" });
+          break;
+        }
+        await handleImportLorebook(msg, userId);
         break;
       }
       case "set_trigger_lua": {

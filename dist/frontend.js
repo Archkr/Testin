@@ -1734,6 +1734,102 @@ var styles_default = `.risu-compat-drawer {\r
   content: '\\25BC';\r
 }\r
 \r
+.lr-viewer-drawer .lrv-redirect-actions {\r
+  display: flex;\r
+  gap: 8px;\r
+  align-items: center;\r
+  padding: 8px 10px 10px;\r
+  flex-wrap: wrap;\r
+}\r
+\r
+/* Sub-tab bar inside the viewer panel — picks one section to render at a time. */\r
+.lr-viewer-drawer .lrv-subtab-bar {\r
+  display: flex;\r
+  gap: 2px;\r
+  padding: 6px 10px 0;\r
+  border-bottom: 1px solid var(--lumiverse-border, rgba(255, 255, 255, 0.08));\r
+  flex-wrap: wrap;\r
+  margin-bottom: 8px;\r
+}\r
+.lr-viewer-drawer .lrv-subtab {\r
+  background: transparent;\r
+  border: 1px solid transparent;\r
+  border-bottom: none;\r
+  color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.55));\r
+  font-size: 12px;\r
+  padding: 5px 10px 6px;\r
+  border-radius: 5px 5px 0 0;\r
+  cursor: pointer;\r
+  transition: background 80ms, color 80ms;\r
+}\r
+.lr-viewer-drawer .lrv-subtab:hover {\r
+  color: var(--lumiverse-text, inherit);\r
+  background: var(--lumiverse-bg-elevated, rgba(255, 255, 255, 0.04));\r
+}\r
+.lr-viewer-drawer .lrv-subtab-active {\r
+  color: var(--lumiverse-text, inherit);\r
+  background: var(--lumiverse-bg-elevated, rgba(255, 255, 255, 0.06));\r
+  border-color: var(--lumiverse-border, rgba(255, 255, 255, 0.12));\r
+}\r
+\r
+/* "Show more" pagination button under the asset grid. */\r
+.lr-viewer-drawer .lrv-asset-show-more {\r
+  display: block;\r
+  margin: 8px auto;\r
+}\r
+\r
+/* Default-variables section: name → value rows with optional Reset button. */\r
+.lr-viewer-drawer .lrv-section-note {\r
+  font-size: 11px;\r
+  color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.6));\r
+  margin: 4px 10px 8px;\r
+  line-height: 1.45;\r
+}\r
+.lr-viewer-drawer .lrv-defvar-list {\r
+  display: flex;\r
+  flex-direction: column;\r
+  gap: 4px;\r
+  padding: 4px 10px 8px;\r
+}\r
+.lr-viewer-drawer .lrv-defvar-row {\r
+  display: grid;\r
+  grid-template-columns: minmax(120px, 1fr) minmax(160px, 2fr) auto;\r
+  gap: 8px;\r
+  align-items: center;\r
+}\r
+.lr-viewer-drawer .lrv-defvar-row-overridden .lrv-defvar-input {\r
+  border-color: var(--lumiverse-primary, rgba(120, 160, 255, 0.5));\r
+}\r
+.lr-viewer-drawer .lrv-defvar-name {\r
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;\r
+  font-size: 12px;\r
+  color: var(--lumiverse-text, inherit);\r
+  overflow: hidden;\r
+  text-overflow: ellipsis;\r
+  white-space: nowrap;\r
+}\r
+.lr-viewer-drawer .lrv-defvar-input,\r
+.lr-viewer-drawer .lrv-defvar-name-input {\r
+  background: var(--lumiverse-bg-elevated, rgba(255, 255, 255, 0.04));\r
+  border: 1px solid var(--lumiverse-border, rgba(255, 255, 255, 0.1));\r
+  color: var(--lumiverse-text, inherit);\r
+  padding: 4px 6px;\r
+  border-radius: 4px;\r
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;\r
+  font-size: 12px;\r
+  min-width: 0;\r
+}\r
+.lr-viewer-drawer .lrv-defvar-spacer {\r
+  display: inline-block;\r
+  min-width: 56px;\r
+}\r
+.lr-viewer-drawer .lrv-defvar-row-new {\r
+  border: 1px dashed var(--lumiverse-border, rgba(255, 255, 255, 0.15));\r
+  border-radius: 4px;\r
+  padding: 4px;\r
+  grid-template-columns: minmax(120px, 1fr) minmax(160px, 2fr) auto auto;\r
+}\r
+\r
 /* Asset toolbar (Add asset button + upload status) */\r
 .lr-viewer-drawer .lrv-asset-toolbar {\r
   display: flex;\r
@@ -4856,6 +4952,12 @@ function mountViewerPanel(opts) {
   let viewerData = null;
   let loading = false;
   let lastError = null;
+  const defaultVarEditBuffers = new Map;
+  let addingDefaultVarRow = false;
+  let lorebookImportStatus = null;
+  let activeSubTab = "assets";
+  const ASSET_PAGE_SIZE = 60;
+  let assetPagesShown = 1;
   const attachedByCharacter = new Map;
   let assetUploadStatus = null;
   let renamingAssetName = null;
@@ -4960,6 +5062,11 @@ function mountViewerPanel(opts) {
     loading = true;
     viewerData = null;
     lastError = null;
+    activeSubTab = "assets";
+    assetPagesShown = 1;
+    addingDefaultVarRow = false;
+    defaultVarEditBuffers.clear();
+    lorebookImportStatus = null;
     renderStatus();
     renderSurfaces();
     log.info(`viewer-panel: request data kind=${o.kind} id=${o.id}`);
@@ -4989,6 +5096,87 @@ function mountViewerPanel(opts) {
     status.style.display = "none";
     status.textContent = "";
   }
+  function buildSubTabs(d) {
+    const isCharacter = d.source.kind === "character";
+    const tabs = [];
+    tabs.push({
+      id: "assets",
+      label: "Assets",
+      count: d.assets.length,
+      render: () => renderAssetsSection(d.assets)
+    });
+    if (isCharacter) {
+      tabs.push({
+        id: "defaults",
+        label: "Default vars",
+        count: d.defaultVariables.length,
+        render: () => renderDefaultVariablesSection(d.defaultVariables)
+      });
+    }
+    tabs.push({
+      id: "triggers",
+      label: "Triggers",
+      count: d.triggers.length,
+      render: () => renderTriggersSection(d.triggers)
+    });
+    if (d.backgroundHtml) {
+      tabs.push({
+        id: "background",
+        label: "Background HTML",
+        render: () => renderBackgroundHtmlSection(d.backgroundHtml ?? "")
+      });
+    }
+    if (isCharacter) {
+      tabs.push({
+        id: "lorebook",
+        label: "Lorebook",
+        render: () => renderLumiverseRedirect()
+      });
+    } else {
+      tabs.push({
+        id: "regex",
+        label: "Regex",
+        count: d.regex.length,
+        render: () => renderRegexSection(d.regex)
+      });
+      tabs.push({
+        id: "lorebook",
+        label: "Lorebook",
+        count: d.lorebook.reduce((s, g) => s + g.entries.length, 0),
+        render: () => renderLorebookSection(d.lorebook)
+      });
+    }
+    if (d.cjs) {
+      tabs.push({
+        id: "cjs",
+        label: "CJS",
+        render: () => renderCjsSection(d.cjs ?? "")
+      });
+    }
+    return tabs;
+  }
+  function renderSubTabBar(tabs) {
+    const bar = document.createElement("div");
+    bar.className = "lrv-subtab-bar";
+    for (const t of tabs) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "lrv-subtab";
+      if (t.id === activeSubTab)
+        btn.classList.add("lrv-subtab-active");
+      btn.textContent = typeof t.count === "number" ? `${t.label} · ${t.count}` : t.label;
+      btn.addEventListener("click", () => {
+        if (activeSubTab === t.id)
+          return;
+        activeSubTab = t.id;
+        if (t.id !== "assets")
+          assetPagesShown = 1;
+        render();
+      });
+      bar.appendChild(btn);
+    }
+    return bar;
+  }
   function renderSurfaces() {
     surfaceHost.replaceChildren();
     if (loading)
@@ -4996,27 +5184,21 @@ function mountViewerPanel(opts) {
     if (!viewerData)
       return;
     const d = viewerData;
-    const isCharacter = d.source.kind === "character";
     if (d.fetchWarnings.length > 0) {
       const wb = document.createElement("div");
       wb.className = "lrv-warning";
       wb.textContent = d.fetchWarnings.join(" ");
       surfaceHost.appendChild(wb);
     }
-    surfaceHost.appendChild(renderAssetsSection(d.assets));
-    surfaceHost.appendChild(renderTriggersSection(d.triggers));
-    if (d.backgroundHtml) {
-      surfaceHost.appendChild(renderBackgroundHtmlSection(d.backgroundHtml));
+    const tabs = buildSubTabs(d);
+    if (tabs.length === 0)
+      return;
+    if (!tabs.some((t) => t.id === activeSubTab)) {
+      activeSubTab = tabs[0].id;
     }
-    if (isCharacter) {
-      surfaceHost.appendChild(renderLumiverseRedirect());
-    } else {
-      surfaceHost.appendChild(renderRegexSection(d.regex));
-      surfaceHost.appendChild(renderLorebookSection(d.lorebook));
-    }
-    if (d.cjs) {
-      surfaceHost.appendChild(renderCjsSection(d.cjs));
-    }
+    surfaceHost.appendChild(renderSubTabBar(tabs));
+    const active = tabs.find((t) => t.id === activeSubTab) ?? tabs[0];
+    surfaceHost.appendChild(active.render());
   }
   function renderBackgroundHtmlSection(html) {
     const det = document.createElement("details");
@@ -5133,7 +5315,268 @@ function mountViewerPanel(opts) {
     body.className = "lrv-redirect-body";
     body.textContent = "Edit and view this character's lorebook + regex rules through Lumiverse's native UI.";
     wrap.appendChild(body);
+    const importRow = document.createElement("div");
+    importRow.className = "lrv-redirect-actions";
+    const importBtn = document.createElement("button");
+    importBtn.type = "button";
+    importBtn.className = "lrv-btn";
+    importBtn.textContent = "+ Import lorebook…";
+    importBtn.title = "Append entries from a Risu/CCSv3 JSON file to this character's world book.";
+    importBtn.addEventListener("click", () => {
+      onImportLorebookClicked();
+    });
+    importRow.appendChild(importBtn);
+    if (lorebookImportStatus !== null) {
+      const status2 = document.createElement("span");
+      status2.className = "lrv-asset-upload-status";
+      if (lorebookImportStatus.kind === "error") {
+        status2.classList.add("lrv-asset-upload-status-error");
+      }
+      status2.textContent = lorebookImportStatus.message;
+      importRow.appendChild(status2);
+    }
+    wrap.appendChild(importRow);
     return wrap;
+  }
+  async function onImportLorebookClicked() {
+    if (!viewerData || viewerData.source.kind !== "character")
+      return;
+    const characterId = viewerData.source.characterId;
+    let file;
+    try {
+      file = await pickJsonFile();
+    } catch (err) {
+      lorebookImportStatus = { kind: "error", message: `File pick failed: ${errMsg2(err)}` };
+      render();
+      return;
+    }
+    if (!file)
+      return;
+    let text;
+    try {
+      text = await file.text();
+    } catch (err) {
+      lorebookImportStatus = { kind: "error", message: `Read failed: ${errMsg2(err)}` };
+      render();
+      return;
+    }
+    lorebookImportStatus = { kind: "info", message: `Importing "${file.name}"…` };
+    render();
+    log.info(`viewer-panel: import_lorebook char=${characterId} file=${file.name} bytes=${text.length}`);
+    sendToBackend({
+      type: "import_lorebook",
+      characterId,
+      json: text,
+      filename: file.name
+    });
+  }
+  function pickJsonFile() {
+    return new Promise((resolve, reject) => {
+      const input = document.createElement("input");
+      input.type = "file";
+      input.accept = ".json,.lorebook,application/json";
+      input.style.display = "none";
+      document.body.appendChild(input);
+      let settled = false;
+      const done = (f, err) => {
+        if (settled)
+          return;
+        settled = true;
+        try {
+          document.body.removeChild(input);
+        } catch {}
+        if (err)
+          reject(err);
+        else
+          resolve(f);
+      };
+      input.addEventListener("change", () => {
+        const list = input.files;
+        done(list && list.length > 0 ? list.item(0) : null);
+      });
+      input.addEventListener("cancel", () => done(null));
+      input.click();
+    });
+  }
+  function renderDefaultVariablesSection(vars) {
+    const det = document.createElement("details");
+    det.className = "lrv-section";
+    det.open = vars.length > 0;
+    const sum = document.createElement("summary");
+    sum.className = "lrv-section-summary";
+    const overrideCount = vars.filter((v) => v.overridden).length;
+    sum.textContent = `Default variables · ${vars.length}` + (overrideCount > 0 ? ` (${overrideCount} overridden)` : "");
+    det.appendChild(sum);
+    const note = document.createElement("p");
+    note.className = "lrv-section-note";
+    note.textContent = "Initial values that seed each new chat. CBS reads via {{getvar::name}} " + "until overwritten by triggers or {{setvar}}. Overrides are stored " + 'per-character; "Reset" restores the card-side default.';
+    det.appendChild(note);
+    if (vars.length === 0 && !addingDefaultVarRow) {
+      const empty = document.createElement("div");
+      empty.className = "lrv-empty";
+      empty.textContent = "No default variables.";
+      det.appendChild(empty);
+    }
+    const list = document.createElement("div");
+    list.className = "lrv-defvar-list";
+    for (const v of vars)
+      list.appendChild(renderDefaultVariableRow(v));
+    if (addingDefaultVarRow)
+      list.appendChild(renderDefaultVariableNewRow());
+    det.appendChild(list);
+    if (!addingDefaultVarRow) {
+      const addBtn = document.createElement("button");
+      addBtn.type = "button";
+      addBtn.className = "lrv-btn";
+      addBtn.textContent = "+ Add default variable";
+      addBtn.addEventListener("click", () => {
+        addingDefaultVarRow = true;
+        render();
+      });
+      det.appendChild(addBtn);
+    }
+    return det;
+  }
+  function renderDefaultVariableRow(v) {
+    const row = document.createElement("div");
+    row.className = "lrv-defvar-row";
+    if (v.overridden)
+      row.classList.add("lrv-defvar-row-overridden");
+    const nameEl = document.createElement("span");
+    nameEl.className = "lrv-defvar-name";
+    nameEl.textContent = v.name;
+    nameEl.title = v.name;
+    row.appendChild(nameEl);
+    const buffered = defaultVarEditBuffers.get(v.name);
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "lrv-defvar-input";
+    input.value = buffered ?? v.value;
+    input.spellcheck = false;
+    input.addEventListener("input", () => {
+      defaultVarEditBuffers.set(v.name, input.value);
+    });
+    input.addEventListener("change", commit);
+    input.addEventListener("blur", commit);
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        commit();
+        input.blur();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        input.value = v.value;
+        defaultVarEditBuffers.delete(v.name);
+        input.blur();
+      }
+    });
+    row.appendChild(input);
+    if (v.overridden) {
+      const reset = document.createElement("button");
+      reset.type = "button";
+      reset.className = "lrv-asset-action";
+      reset.textContent = "Reset";
+      reset.title = `Restore card default: "${v.cardDefault}"`;
+      reset.addEventListener("click", () => {
+        sendDeleteDefaultVariable(v.name);
+        defaultVarEditBuffers.delete(v.name);
+      });
+      row.appendChild(reset);
+    } else {
+      const spacer = document.createElement("span");
+      spacer.className = "lrv-defvar-spacer";
+      row.appendChild(spacer);
+    }
+    return row;
+    function commit() {
+      const next = input.value;
+      defaultVarEditBuffers.delete(v.name);
+      if (next !== v.value)
+        sendSetDefaultVariable(v.name, next);
+    }
+  }
+  function renderDefaultVariableNewRow() {
+    const row = document.createElement("div");
+    row.className = "lrv-defvar-row lrv-defvar-row-new";
+    const nameInput = document.createElement("input");
+    nameInput.type = "text";
+    nameInput.className = "lrv-defvar-name-input";
+    nameInput.placeholder = "name";
+    nameInput.spellcheck = false;
+    row.appendChild(nameInput);
+    const valueInput = document.createElement("input");
+    valueInput.type = "text";
+    valueInput.className = "lrv-defvar-input";
+    valueInput.placeholder = "value";
+    valueInput.spellcheck = false;
+    row.appendChild(valueInput);
+    const saveBtn = document.createElement("button");
+    saveBtn.type = "button";
+    saveBtn.className = "lrv-asset-action lrv-asset-action-primary";
+    saveBtn.textContent = "Add";
+    saveBtn.addEventListener("click", commit);
+    row.appendChild(saveBtn);
+    const cancelBtn = document.createElement("button");
+    cancelBtn.type = "button";
+    cancelBtn.className = "lrv-asset-action";
+    cancelBtn.textContent = "Cancel";
+    cancelBtn.addEventListener("click", () => {
+      addingDefaultVarRow = false;
+      render();
+    });
+    row.appendChild(cancelBtn);
+    nameInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        valueInput.focus();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        addingDefaultVarRow = false;
+        render();
+      }
+    });
+    valueInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        commit();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        addingDefaultVarRow = false;
+        render();
+      }
+    });
+    queueMicrotask(() => nameInput.focus());
+    return row;
+    function commit() {
+      const name = nameInput.value.trim();
+      if (name.length === 0) {
+        nameInput.focus();
+        return;
+      }
+      sendSetDefaultVariable(name, valueInput.value);
+      addingDefaultVarRow = false;
+    }
+  }
+  function sendSetDefaultVariable(name, value) {
+    if (!viewerData || viewerData.source.kind !== "character")
+      return;
+    log.info(`viewer-panel: set_default_variable name=${name} len=${value.length}`);
+    sendToBackend({
+      type: "set_default_variable",
+      characterId: viewerData.source.characterId,
+      name,
+      value
+    });
+  }
+  function sendDeleteDefaultVariable(name) {
+    if (!viewerData || viewerData.source.kind !== "character")
+      return;
+    log.info(`viewer-panel: delete_default_variable name=${name}`);
+    sendToBackend({
+      type: "delete_default_variable",
+      characterId: viewerData.source.characterId,
+      name
+    });
   }
   function renderAssetsSection(assets) {
     const det = document.createElement("details");
@@ -5170,12 +5613,37 @@ function mountViewerPanel(opts) {
       det.appendChild(empty);
       return det;
     }
+    const limit = ASSET_PAGE_SIZE * assetPagesShown;
+    const visible = assets.slice(0, limit);
     const grid = document.createElement("div");
     grid.className = "lrv-asset-grid";
-    for (const a of assets) {
+    for (const a of visible) {
       grid.appendChild(renderAssetTile(a));
     }
     det.appendChild(grid);
+    if (assets.length > limit) {
+      const more = document.createElement("button");
+      more.type = "button";
+      more.className = "lrv-btn lrv-asset-show-more";
+      const remaining = assets.length - limit;
+      more.textContent = `Show ${Math.min(ASSET_PAGE_SIZE, remaining)} more (${remaining} hidden)`;
+      more.addEventListener("click", () => {
+        assetPagesShown += 1;
+        render();
+      });
+      det.appendChild(more);
+      if (assets.length > limit + ASSET_PAGE_SIZE) {
+        const allBtn = document.createElement("button");
+        allBtn.type = "button";
+        allBtn.className = "lrv-btn lrv-asset-show-more";
+        allBtn.textContent = `Show all (${assets.length})`;
+        allBtn.addEventListener("click", () => {
+          assetPagesShown = Math.ceil(assets.length / ASSET_PAGE_SIZE) + 1;
+          render();
+        });
+        det.appendChild(allBtn);
+      }
+    }
     return det;
   }
   function renderAssetTile(a) {
@@ -5318,6 +5786,7 @@ function mountViewerPanel(opts) {
   async function uploadAssetsBatch(files) {
     if (!viewerData)
       return;
+    const startSource = viewerData.source.kind === "character" ? { kind: "character", characterId: viewerData.source.characterId } : { kind: "module", moduleId: viewerData.source.moduleId };
     const existingNames = new Set(viewerData.assets.map((a) => a.name));
     const planned = [];
     const failures = [];
@@ -5390,7 +5859,8 @@ function mountViewerPanel(opts) {
       message: `Saving ${results.length} asset${results.length === 1 ? "" : "s"}${tail}…`
     };
     render();
-    sendCurrentSourceMutation({ type: "add_assets", entries: results });
+    log.info(`viewer-panel: add_assets via snapshot source kind=${startSource.kind} entries=${results.length}`);
+    sendToBackend({ type: "add_assets", source: startSource, entries: results });
   }
   function formatFailureList(failures) {
     if (failures.length === 0)
@@ -5780,6 +6250,21 @@ function mountViewerPanel(opts) {
         lastError = null;
         if (assetUploadStatus !== null && assetUploadStatus.kind === "info") {
           assetUploadStatus = null;
+        }
+        render();
+        break;
+      }
+      case "lorebook_import_result": {
+        if (msg.ok) {
+          lorebookImportStatus = {
+            kind: "info",
+            message: `Imported ${msg.written} entr${msg.written === 1 ? "y" : "ies"}` + (msg.dropped > 0 ? ` (${msg.dropped} dropped)` : "")
+          };
+        } else {
+          lorebookImportStatus = {
+            kind: "error",
+            message: msg.reason ?? `Import failed (dropped=${msg.dropped})`
+          };
         }
         render();
         break;
