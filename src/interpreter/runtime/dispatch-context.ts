@@ -43,7 +43,15 @@ export interface DispatchContext {
 
 export interface AuxDebugCaptureEvent {
   readonly kind: 'request' | 'response' | 'error';
+  /** Which LLM channel fired this. `aux` = `axLLMMain`/`axLLM`/`LLMMain`,
+   *  `submodel` = V2-effect `runLLM(model='submodel')`. The settings flags
+   *  (`auxDebugCaptureRequest`/`Response`) gate BOTH channels uniformly. */
+  readonly channel: 'aux' | 'submodel';
+  /** Connection actually dispatched against. For `channel: 'aux'` this is
+   *  `settings.auxConnectionId`; for `'submodel'` this is
+   *  `settings.submodelConnectionId` (or aux as fallback). `null` = "use user's default". */
   readonly auxConnectionId: string | null;
+  /** Model actually dispatched against (per-channel). `null` = "use connection's own model". */
   readonly auxModelOverride: string | null;
   /** Milliseconds since dispatch start. `null` for `kind:'request'`. */
   readonly elapsedMs: number | null;

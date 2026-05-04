@@ -3,9 +3,9 @@
 
 import type { HostApi, DispatchData, ScriptNS } from "./host.js";
 import { makeRisuTriggerRuntime } from "./runtime.js";
-import { execute as luaExecute } from "./lua-bridge.js";
 import { errMsg } from "../util/coerce.js";
 import { makeSafeLogger } from "../util/safe-log.js";
+import { preloadForListenEditChain } from "./listenedit-preload.js";
 
 const log = makeSafeLogger("listenEdit.runChain");
 
@@ -42,21 +42,50 @@ export async function runListenEditChain<T>(
   });
   if (eligible.length === 0) return value;
 
+  const chainStart = Date.now();
+  // valueLen is what we ship to the Lua across the JSON wire — the actual
+  // payload size matters for both Lua-bridge ser/de cost and downstream
+  // parse cost on each trigger.
   log.info(
-    `mode=${mode} eligible=${eligible.length}/${triggers.length} ` +
+    `chain.start mode=${mode} eligible=${eligible.length}/${triggers.length} ` +
+      `value_len=${typeof value === 'string' ? value.length : Array.isArray(value) ? value.length : -1} ` +
       `chatId=${opts.chatId ?? "<none>"} characterId=${opts.characterId ?? "<none>"}`,
   );
+
+  // PER-CHAIN PRELOAD: fetch chat-state ONCE for the whole chain instead of
+  // once per trigger. Risu's listenEdit chain runs each trigger in a fresh
+  // Lua VM (preserved); the data the Lua reads is identical across triggers
+  // in the same chain (no chat mutations between triggers — editDisplay's
+  // commit:false gates writes), so the snapshot is safely shareable.
+  //
+  // Mortal Realm: 16 triggers × 3 outbound IPCs (loadVars + getMessages +
+  // characters.get/lorebook) → 1× preload + 16× Lua. Drops 48 outbound IPCs
+  // to 3 (or 0 if cross-chain cache hits), which kills the IPC channel
+  // contention that caused 4.5s stalls in the editDisplay path.
+  const tPreload = Date.now();
+  const preloaded = await preloadForListenEditChain(
+    api,
+    opts.chatId,
+    opts.characterId ?? null,
+  );
+  const preloadMs = Date.now() - tPreload;
 
   // Risu scriptings.ts uses a generator; character id is stable enough.
   const accessKey = opts.characterId ?? "edit-trigger";
 
   let current = value;
+  // Per-step timing buckets so the post-chain summary attributes wall clock
+  // to factory work vs. Lua execute vs. JSON ser/de.
+  let totalFactoryMs = 0;
+  let totalRunLuaMs = 0;
+  let totalSerdeMs = 0;
 
   for (let i = 0; i < eligible.length; i++) {
     const t = eligible[i]!;
     const tStart = Date.now();
     try {
       // Risu scriptings.ts: lowLevelAccess false; edit hooks are text transforms.
+      const tFactoryStart = Date.now();
       const runtime = await makeRisuTriggerRuntime(
         api,
         data,
@@ -66,14 +95,25 @@ export async function runListenEditChain<T>(
           lowLevelAccess: false,
           ...(opts.chatId !== undefined ? { chatId: opts.chatId } : {}),
           ...(opts.characterId !== undefined ? { characterId: opts.characterId } : {}),
+          // Hand the per-chain snapshot to the runtime so it skips its own
+          // 3 IPC fetches (loadVars/getMessages/characters.get+lorebook).
+          preloaded,
         },
       );
+      const factoryMs = Date.now() - tFactoryStart;
+      totalFactoryMs += factoryMs;
+      const tSerdeStart = Date.now();
       const valueJson = JSON.stringify(current);
       const metaJson = JSON.stringify(meta ?? {});
+      const serdeMs = Date.now() - tSerdeStart;
+      totalSerdeMs += serdeMs;
+      const tRunLuaStart = Date.now();
       const result = await runtime.runLua(t.luaCode, {
         entry: "callListenMain",
         args: [mode, accessKey, valueJson, metaJson],
       });
+      const runLuaMs = Date.now() - tRunLuaStart;
+      totalRunLuaMs += runLuaMs;
       if (typeof result === "string") {
         try {
           const parsed = JSON.parse(result) as T;
@@ -90,7 +130,18 @@ export async function runListenEditChain<T>(
           `trigger[${i}] returned unexpected type=${typeof result}; keeping prior value`,
         );
       }
-      log.info(`trigger[${i}] mode=${mode} elapsed=${Date.now() - tStart}ms`);
+      const triggerTotal = Date.now() - tStart;
+      // Per-trigger breakdown — when triggerTotal >> (factory+serde+runLua),
+      // the gap is JS event loop time spent on concurrently queued Spindle
+      // IPC (e.g. Lumi's display-regex pipeline calling our macroInterceptor
+      // on adjacent fragments while we're awaiting). That "queued" cost is
+      // not under listenEdit's control; the factory cost IS.
+      const otherMs = triggerTotal - factoryMs - serdeMs - runLuaMs;
+      log.info(
+        `trigger[${i}] mode=${mode} elapsed=${triggerTotal}ms ` +
+          `factory=${factoryMs}ms serde=${serdeMs}ms runLua=${runLuaMs}ms ` +
+          `other=${otherMs}ms (lua_len=${t.luaCode.length})`,
+      );
     } catch (err) {
       // Risu scriptings.ts: on throw, keep prior value and continue.
       log.warn(
@@ -98,6 +149,16 @@ export async function runListenEditChain<T>(
       );
     }
   }
+
+  const chainTotal = Date.now() - chainStart;
+  log.info(
+    `chain.done mode=${mode} elapsed=${chainTotal}ms eligible=${eligible.length} ` +
+      `preload=${preloadMs}ms ` +
+      `factory_sum=${totalFactoryMs}ms runLua_sum=${totalRunLuaMs}ms ` +
+      `serde_sum=${totalSerdeMs}ms ` +
+      `other=${chainTotal - preloadMs - totalFactoryMs - totalRunLuaMs - totalSerdeMs}ms ` +
+      `chatId=${opts.chatId ?? '<none>'}`,
+  );
 
   return current;
 }

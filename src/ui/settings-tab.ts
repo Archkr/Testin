@@ -3,6 +3,7 @@ import type {
   FrontendToBackend,
 } from '../types/messages.js';
 import type { FrontendLog } from './drawer.js';
+import { mountLogsPanel } from './logs-tab.js';
 
 // Settings UI for aux/submodel LLM connections.
 // Every change is sent as update_settings; state is reflected back via settings_pushed.
@@ -121,17 +122,45 @@ export function mountSettingsPanel(
   let connections: readonly ConnectionSummary[] | null = null;
   let lastSavedTs: number = 0;
 
-  const auxSection = document.createElement('section');
-  auxSection.className = 'rs-section';
+  // Status pinned at the top so it stays visible across subtabs.
+  const status = document.createElement('div');
+  status.className = 'rs-status';
+  root.appendChild(status);
 
-  const auxHeader = document.createElement('div');
-  auxHeader.className = 'rs-section-header';
-  const auxTitle = document.createElement('h3');
-  auxTitle.className = 'rs-section-title';
-  auxTitle.textContent = 'Aux model';
-  auxTitle.title = "Used by Lua's axLLMMain calls.";
-  auxHeader.appendChild(auxTitle);
-  auxSection.appendChild(auxHeader);
+  // Subtab nav (Auxiliary / Sub / Debug).
+  type SettingsSubTabId = 'aux' | 'sub' | 'debug';
+  const SUB_TABS: ReadonlyArray<{ id: SettingsSubTabId; label: string; title: string }> = [
+    { id: 'aux',   label: 'Auxiliary', title: "Aux model — used by Lua's axLLMMain / axLLM calls." },
+    { id: 'sub',   label: 'Sub',       title: "Submodel — used by V2 runLLM(model='submodel'). Falls back to Aux when empty." },
+    { id: 'debug', label: 'Debug',     title: 'Capture toggles, parity toggles, and diagnostic logs.' },
+  ];
+  const subnav = document.createElement('div');
+  subnav.className = 'lr-subtabs';
+  subnav.setAttribute('role', 'tablist');
+  root.appendChild(subnav);
+  const subnavBtns = new Map<SettingsSubTabId, HTMLButtonElement>();
+  for (const def of SUB_TABS) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'lr-subtab';
+    btn.textContent = def.label;
+    btn.title = def.title;
+    btn.setAttribute('role', 'tab');
+    btn.setAttribute('aria-selected', 'false');
+    btn.addEventListener('click', () => activateSubTab(def.id));
+    subnav.appendChild(btn);
+    subnavBtns.set(def.id, btn);
+  }
+  let activeSubTab: SettingsSubTabId = 'aux';
+
+  // ---------- Auxiliary subtab body ----------------------------------------
+  const auxBody = document.createElement('section');
+  auxBody.className = 'lr-settings-tab-body';
+
+  const auxIntro = document.createElement('p');
+  auxIntro.className = 'lr-settings-intro';
+  auxIntro.textContent = "Routes Lua's axLLMMain / axLLM calls through this connection. Useful for status-window updaters / classifiers separate from the main chat model.";
+  auxBody.appendChild(auxIntro);
 
   const connRow = document.createElement('div');
   connRow.className = 'rs-row';
@@ -144,7 +173,7 @@ export function mountSettingsPanel(
   connSelect.id = 'rs-aux-conn';
   connSelect.className = 'rs-select';
   connRow.appendChild(connSelect);
-  auxSection.appendChild(connRow);
+  auxBody.appendChild(connRow);
 
   const modelRow = document.createElement('div');
   modelRow.className = 'rs-row';
@@ -160,7 +189,7 @@ export function mountSettingsPanel(
   modelInput.placeholder = '(use connection default)';
   modelInput.spellcheck = false;
   modelRow.appendChild(modelInput);
-  auxSection.appendChild(modelRow);
+  auxBody.appendChild(modelRow);
 
   const buttonRow = document.createElement('div');
   buttonRow.className = 'rs-row rs-row-buttons';
@@ -182,7 +211,7 @@ export function mountSettingsPanel(
   refreshBtn.textContent = 'Refresh';
   refreshBtn.title = 'Re-fetch connection list.';
   buttonRow.appendChild(refreshBtn);
-  auxSection.appendChild(buttonRow);
+  auxBody.appendChild(buttonRow);
 
   const samplersSection = document.createElement('div');
   samplersSection.className = 'rs-subsection';
@@ -194,67 +223,19 @@ export function mountSettingsPanel(
   samplersTitle.title = 'Drag to set, double-click to reset, empty falls back to connection preset.';
   samplersHeader.appendChild(samplersTitle);
   samplersSection.appendChild(samplersHeader);
-
   const samplersListEl = document.createElement('div');
   samplersListEl.className = 'rs-samplers-list';
   samplersSection.appendChild(samplersListEl);
+  auxBody.appendChild(samplersSection);
 
-  auxSection.appendChild(samplersSection);
+  // ---------- Sub subtab body ----------------------------------------------
+  const subBody = document.createElement('section');
+  subBody.className = 'lr-settings-tab-body';
 
-  const debugSection = document.createElement('div');
-  debugSection.className = 'rs-subsection';
-  const debugHeader = document.createElement('div');
-  debugHeader.className = 'rs-subsection-header';
-  const debugTitle = document.createElement('h4');
-  debugTitle.className = 'rs-subsection-title';
-  debugTitle.textContent = 'Debug capture';
-  debugTitle.title = 'Surface aux-model requests and responses in a corner panel.';
-  debugHeader.appendChild(debugTitle);
-  debugSection.appendChild(debugHeader);
-
-  const reqCheckRow = document.createElement('label');
-  reqCheckRow.className = 'rs-checkbox-row';
-  const reqCheck = document.createElement('input');
-  reqCheck.type = 'checkbox';
-  reqCheck.className = 'rs-checkbox';
-  reqCheck.id = 'rs-aux-debug-req';
-  reqCheckRow.htmlFor = 'rs-aux-debug-req';
-  const reqText = document.createElement('span');
-  reqText.className = 'rs-checkbox-label';
-  reqText.textContent = 'Capture requests';
-  reqText.title = 'Show outgoing aux call payloads in the panel.';
-  reqCheckRow.appendChild(reqCheck);
-  reqCheckRow.appendChild(reqText);
-  debugSection.appendChild(reqCheckRow);
-
-  const resCheckRow = document.createElement('label');
-  resCheckRow.className = 'rs-checkbox-row';
-  const resCheck = document.createElement('input');
-  resCheck.type = 'checkbox';
-  resCheck.className = 'rs-checkbox';
-  resCheck.id = 'rs-aux-debug-res';
-  resCheckRow.htmlFor = 'rs-aux-debug-res';
-  const resText = document.createElement('span');
-  resText.className = 'rs-checkbox-label';
-  resText.textContent = 'Capture responses';
-  resText.title = 'Show aux call responses (and errors) in the panel.';
-  resCheckRow.appendChild(resCheck);
-  resCheckRow.appendChild(resText);
-  debugSection.appendChild(resCheckRow);
-
-  auxSection.appendChild(debugSection);
-
-  const submodelSection = document.createElement('section');
-  submodelSection.className = 'rs-section';
-
-  const submodelHeader = document.createElement('div');
-  submodelHeader.className = 'rs-section-header';
-  const submodelTitle = document.createElement('h3');
-  submodelTitle.className = 'rs-section-title';
-  submodelTitle.textContent = 'Submodel';
-  submodelTitle.title = "Used by V2 runLLM(model='submodel') calls. Falls back to Aux when empty.";
-  submodelHeader.appendChild(submodelTitle);
-  submodelSection.appendChild(submodelHeader);
+  const subIntro = document.createElement('p');
+  subIntro.className = 'lr-settings-intro';
+  subIntro.textContent = "Routes V2-effect runLLM(model='submodel') calls through this connection. Cards use this for lightweight classifiers / status updaters separate from the main and aux models. Empty fields inherit from Aux.";
+  subBody.appendChild(subIntro);
 
   const submodelConnRow = document.createElement('div');
   submodelConnRow.className = 'rs-row';
@@ -267,7 +248,7 @@ export function mountSettingsPanel(
   submodelConnSelect.id = 'rs-submodel-conn';
   submodelConnSelect.className = 'rs-select';
   submodelConnRow.appendChild(submodelConnSelect);
-  submodelSection.appendChild(submodelConnRow);
+  subBody.appendChild(submodelConnRow);
 
   const submodelModelRow = document.createElement('div');
   submodelModelRow.className = 'rs-row';
@@ -283,7 +264,7 @@ export function mountSettingsPanel(
   submodelModelInput.placeholder = '(use connection default)';
   submodelModelInput.spellcheck = false;
   submodelModelRow.appendChild(submodelModelInput);
-  submodelSection.appendChild(submodelModelRow);
+  subBody.appendChild(submodelModelRow);
 
   const submodelButtonRow = document.createElement('div');
   submodelButtonRow.className = 'rs-row rs-row-buttons';
@@ -299,7 +280,7 @@ export function mountSettingsPanel(
   submodelResetBtn.textContent = 'Reset';
   submodelResetBtn.title = 'Clear submodel fields.';
   submodelButtonRow.appendChild(submodelResetBtn);
-  submodelSection.appendChild(submodelButtonRow);
+  subBody.appendChild(submodelButtonRow);
 
   const submodelSamplersSection = document.createElement('div');
   submodelSamplersSection.className = 'rs-subsection';
@@ -307,26 +288,76 @@ export function mountSettingsPanel(
   submodelSamplersHeader.className = 'rs-subsection-header';
   const submodelSamplersTitle = document.createElement('h4');
   submodelSamplersTitle.className = 'rs-subsection-title';
-  submodelSamplersTitle.textContent = 'Submodel samplers';
+  submodelSamplersTitle.textContent = 'Samplers';
   submodelSamplersTitle.title = 'Drag to set, double-click to reset.';
   submodelSamplersHeader.appendChild(submodelSamplersTitle);
   submodelSamplersSection.appendChild(submodelSamplersHeader);
   const submodelSamplersListEl = document.createElement('div');
   submodelSamplersListEl.className = 'rs-samplers-list';
   submodelSamplersSection.appendChild(submodelSamplersListEl);
-  submodelSection.appendChild(submodelSamplersSection);
+  subBody.appendChild(submodelSamplersSection);
 
+  // ---------- Debug subtab body --------------------------------------------
+  const debugBody = document.createElement('section');
+  debugBody.className = 'lr-settings-tab-body';
+
+  const debugIntro = document.createElement('p');
+  debugIntro.className = 'lr-settings-intro';
+  debugIntro.textContent = 'Surface aux/submodel call payloads, capture diagnostic logs for bug reports, and tune Risu-parity toggles.';
+  debugBody.appendChild(debugIntro);
+
+  const debugCaptureSection = document.createElement('div');
+  debugCaptureSection.className = 'rs-subsection';
+  const debugCaptureHeader = document.createElement('div');
+  debugCaptureHeader.className = 'rs-subsection-header';
+  const debugCaptureTitle = document.createElement('h4');
+  debugCaptureTitle.className = 'rs-subsection-title';
+  debugCaptureTitle.textContent = 'Debug capture';
+  debugCaptureTitle.title = 'Surface aux/submodel requests and responses in a corner panel.';
+  debugCaptureHeader.appendChild(debugCaptureTitle);
+  debugCaptureSection.appendChild(debugCaptureHeader);
+
+  const reqCheckRow = document.createElement('label');
+  reqCheckRow.className = 'rs-checkbox-row';
+  const reqCheck = document.createElement('input');
+  reqCheck.type = 'checkbox';
+  reqCheck.className = 'rs-checkbox';
+  reqCheck.id = 'rs-aux-debug-req';
+  reqCheckRow.htmlFor = 'rs-aux-debug-req';
+  const reqText = document.createElement('span');
+  reqText.className = 'rs-checkbox-label';
+  reqText.textContent = 'Capture requests';
+  reqText.title = 'Show outgoing aux/submodel call payloads in the panel.';
+  reqCheckRow.appendChild(reqCheck);
+  reqCheckRow.appendChild(reqText);
+  debugCaptureSection.appendChild(reqCheckRow);
+
+  const resCheckRow = document.createElement('label');
+  resCheckRow.className = 'rs-checkbox-row';
+  const resCheck = document.createElement('input');
+  resCheck.type = 'checkbox';
+  resCheck.className = 'rs-checkbox';
+  resCheck.id = 'rs-aux-debug-res';
+  resCheckRow.htmlFor = 'rs-aux-debug-res';
+  const resText = document.createElement('span');
+  resText.className = 'rs-checkbox-label';
+  resText.textContent = 'Capture responses';
+  resText.title = 'Show aux/submodel call responses (and errors) in the panel.';
+  resCheckRow.appendChild(resCheck);
+  resCheckRow.appendChild(resText);
+  debugCaptureSection.appendChild(resCheckRow);
+  debugBody.appendChild(debugCaptureSection);
+
+  const paritySectionHost = document.createElement('div');
+  paritySectionHost.className = 'rs-subsection';
   const parityHeader = document.createElement('div');
-  parityHeader.className = 'rs-section-header';
-  const parityTitle = document.createElement('h3');
-  parityTitle.className = 'rs-section-title';
+  parityHeader.className = 'rs-subsection-header';
+  const parityTitle = document.createElement('h4');
+  parityTitle.className = 'rs-subsection-title';
   parityTitle.textContent = 'Parity toggles';
   parityTitle.title = "Behaviour toggles ported from Risu's Advanced Settings. Flip only if a card needs legacy behaviour.";
   parityHeader.appendChild(parityTitle);
-
-  const paritySection = document.createElement('section');
-  paritySection.className = 'rs-section';
-  paritySection.appendChild(parityHeader);
+  paritySectionHost.appendChild(parityHeader);
 
   const legacyMediaRow = document.createElement('label');
   legacyMediaRow.className = 'rs-checkbox-row';
@@ -341,15 +372,45 @@ export function mountSettingsPanel(
   legacyMediaText.title = 'Disable the fuzzy-match fallback for asset macros. On = strict exact-match (Risu legacy).';
   legacyMediaRow.appendChild(legacyMediaCheck);
   legacyMediaRow.appendChild(legacyMediaText);
-  paritySection.appendChild(legacyMediaRow);
+  paritySectionHost.appendChild(legacyMediaRow);
+  debugBody.appendChild(paritySectionHost);
 
-  const status = document.createElement('div');
-  status.className = 'rs-status';
-  auxSection.appendChild(status);
+  // Logs panel mounts inline inside the Debug subtab.
+  const logsHost = document.createElement('div');
+  logsHost.className = 'rs-subsection lr-settings-logs-host';
+  const logsHeader = document.createElement('div');
+  logsHeader.className = 'rs-subsection-header';
+  const logsTitle = document.createElement('h4');
+  logsTitle.className = 'rs-subsection-title';
+  logsTitle.textContent = 'Logs';
+  logsTitle.title = 'Capture diagnostics for a bug report.';
+  logsHeader.appendChild(logsTitle);
+  logsHost.appendChild(logsHeader);
+  const logsMount = document.createElement('div');
+  logsHost.appendChild(logsMount);
+  debugBody.appendChild(logsHost);
+  const logsHandle = mountLogsPanel({ root: logsMount, sendToBackend, log });
 
-  root.appendChild(auxSection);
-  root.appendChild(submodelSection);
-  root.appendChild(paritySection);
+  // ---------- Subtab activation -------------------------------------------
+  const panelsHost = document.createElement('div');
+  panelsHost.className = 'lr-subtab-panels';
+  panelsHost.appendChild(auxBody);
+  panelsHost.appendChild(subBody);
+  panelsHost.appendChild(debugBody);
+  root.appendChild(panelsHost);
+
+  function activateSubTab(id: SettingsSubTabId): void {
+    activeSubTab = id;
+    for (const [k, btn] of subnavBtns) {
+      const sel = k === id;
+      btn.classList.toggle('lr-subtab-active', sel);
+      btn.setAttribute('aria-selected', sel ? 'true' : 'false');
+    }
+    auxBody.hidden = id !== 'aux';
+    subBody.hidden = id !== 'sub';
+    debugBody.hidden = id !== 'debug';
+  }
+  activateSubTab(activeSubTab);
 
   function renderConnectionSelect(): void {
     connSelect.innerHTML = '';
@@ -791,6 +852,8 @@ export function mountSettingsPanel(
       render();
       return;
     }
+    // Forward to the inline logs panel (Debug subtab).
+    try { logsHandle.handleBackendMessage(msg); } catch (err) { log.warn('settings-tab: logs panel handler threw:', err); }
   }
 
   render();
@@ -800,6 +863,7 @@ export function mountSettingsPanel(
     handleBackendMessage,
     destroy(): void {
       log.info('settings-panel: destroy');
+      try { logsHandle.destroy(); } catch { /* */ }
       try { root.replaceChildren(); } catch { /* */ }
     },
   };

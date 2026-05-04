@@ -49,22 +49,26 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
   let viewerData: ViewerData | null = null;
   let loading = false;
   let lastError: string | null = null;
-  // Per-name buffer preserves in-progress text for default-variable rows
-  // across backend-pushed re-renders (matches the toggles-tab pattern).
-  const defaultVarEditBuffers = new Map<string, string>();
-  let addingDefaultVarRow = false;
-  // Lorebook-import status — surfaced next to the "+ Import lorebook…" button.
-  let lorebookImportStatus: { kind: 'info' | 'error'; message: string } | null = null;
   // Active sub-tab inside the viewer panel. Persists across re-renders within
-  // a session; switching the source resets to 'assets'.
-  type ViewerSubTab = 'assets' | 'triggers' | 'lorebook' | 'regex' | 'background' | 'defaults' | 'cjs';
+  // a session; switching the source resets to 'assets'. Default vars moved
+  // to State → Variables → Default in Phase B; lorebook import moved to
+  // Import → Lorebooks in Phase E. The 'defaults' subtab no longer renders
+  // here — `_risu_decorators` lookups still go through the viewer-data API
+  // for character introspection, but the editor is gone.
+  type ViewerSubTab = 'assets' | 'triggers' | 'lorebook' | 'regex' | 'background' | 'cjs';
   let activeSubTab: ViewerSubTab = 'assets';
-  // Asset pagination — render at most ASSET_PAGE_SIZE tiles up front; "Show
-  // more" expands. Risu-grade modules ship 1500+ assets (Cheongwon); building
-  // 1500 DOM nodes synchronously freezes the panel for ~400 ms. Paginating
-  // keeps initial render under one frame.
-  const ASSET_PAGE_SIZE = 60;
-  let assetPagesShown = 1;
+  // Asset virtualization — only the visible window of tiles is mounted at any
+  // time. Module-grade asset counts (Cheongwon ships 1500+) used to require
+  // pagination; now scrolling reveals tiles on demand without DOM blowup.
+  // Tile dimensions are fixed so absolute positioning works.
+  const ASSET_TILE_MIN_W = 140;
+  const ASSET_TILE_H = 220;
+  const ASSET_OVERSCAN_ROWS = 2;
+  // Search persists across re-renders (asset rename/delete/upload).
+  let assetSearchTerm = '';
+  // Pagination is dead — kept the variable name elsewhere for now to minimise
+  // diff churn; ignored in the new windowed renderer.
+  let assetPagesShown = 1; void assetPagesShown;
   const attachedByCharacter = new Map<string, readonly AttachedModuleSummary[]>();
   // Cleared on the next viewer_data_pushed (backend re-push = success signal).
   let assetUploadStatus: { kind: 'info' | 'error'; message: string } | null = null;
@@ -182,9 +186,6 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
     lastError = null;
     activeSubTab = 'assets';
     assetPagesShown = 1;
-    addingDefaultVarRow = false;
-    defaultVarEditBuffers.clear();
-    lorebookImportStatus = null;
     renderStatus();
     renderSurfaces();
     log.info(`viewer-panel: request data kind=${o.kind} id=${o.id}`);
@@ -237,14 +238,7 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
       count: d.assets.length,
       render: () => renderAssetsSection(d.assets),
     });
-    if (isCharacter) {
-      tabs.push({
-        id: 'defaults',
-        label: 'Default vars',
-        count: d.defaultVariables.length,
-        render: () => renderDefaultVariablesSection(d.defaultVariables),
-      });
-    }
+    // Default vars editor moved to State → Variables → Default (Phase B).
     tabs.push({
       id: 'triggers',
       label: 'Triggers',
@@ -332,10 +326,10 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
     surfaceHost.appendChild(active.render());
   }
 
-  function renderBackgroundHtmlSection(html: string): HTMLDetailsElement {
-    const det = document.createElement('details');
+  function renderBackgroundHtmlSection(html: string): HTMLElement {
+    const det = document.createElement('section');
     det.className = 'lrv-section';
-    const sum = document.createElement('summary');
+    const sum = document.createElement('div');
     sum.className = 'lrv-section-summary';
     sum.textContent = `Background HTML · ${html.length} chars`;
     det.appendChild(sum);
@@ -444,281 +438,22 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
     const body = document.createElement('div');
     body.className = 'lrv-redirect-body';
     body.textContent =
-      'Edit and view this character\'s lorebook + regex rules through Lumiverse\'s native UI.';
+      "Edit and view this character's lorebook + regex rules through Lumiverse's native UI. " +
+      'To import a standalone lorebook file, use the Import → Lorebooks tab.';
     wrap.appendChild(body);
-
-    // Direct lorebook import — Risu parity (importLoreBook 'global'). Appends
-    // entries to the character's existing world_book (creates one if missing).
-    const importRow = document.createElement('div');
-    importRow.className = 'lrv-redirect-actions';
-    const importBtn = document.createElement('button');
-    importBtn.type = 'button';
-    importBtn.className = 'lrv-btn';
-    importBtn.textContent = '+ Import lorebook…';
-    importBtn.title = 'Append entries from a Risu/CCSv3 JSON file to this character\'s world book.';
-    importBtn.addEventListener('click', () => { void onImportLorebookClicked(); });
-    importRow.appendChild(importBtn);
-    if (lorebookImportStatus !== null) {
-      const status = document.createElement('span');
-      status.className = 'lrv-asset-upload-status';
-      if (lorebookImportStatus.kind === 'error') {
-        status.classList.add('lrv-asset-upload-status-error');
-      }
-      status.textContent = lorebookImportStatus.message;
-      importRow.appendChild(status);
-    }
-    wrap.appendChild(importRow);
     return wrap;
   }
 
-  async function onImportLorebookClicked(): Promise<void> {
-    if (!viewerData || viewerData.source.kind !== 'character') return;
-    const characterId = viewerData.source.characterId;
-    let file: File | null;
-    try {
-      file = await pickJsonFile();
-    } catch (err) {
-      lorebookImportStatus = { kind: 'error', message: `File pick failed: ${errMsg(err)}` };
-      render();
-      return;
-    }
-    if (!file) return;
-    let text: string;
-    try {
-      text = await file.text();
-    } catch (err) {
-      lorebookImportStatus = { kind: 'error', message: `Read failed: ${errMsg(err)}` };
-      render();
-      return;
-    }
-    lorebookImportStatus = { kind: 'info', message: `Importing "${file.name}"…` };
-    render();
-    log.info(`viewer-panel: import_lorebook char=${characterId} file=${file.name} bytes=${text.length}`);
-    sendToBackend({
-      type: 'import_lorebook',
-      characterId,
-      json: text,
-      filename: file.name,
-    });
-  }
+  // Default-variable editor moved to State → Variables → Default in Phase B.
+  // The wire shape (`set_default_variable`/`delete_default_variable`,
+  // `ViewerDefaultVariable` etc.) is still exported on the data; the editor UI
+  // for it just lives in a different tab now.
 
-  function pickJsonFile(): Promise<File | null> {
-    return new Promise((resolve, reject) => {
-      const input = document.createElement('input');
-      input.type = 'file';
-      input.accept = '.json,.lorebook,application/json';
-      input.style.display = 'none';
-      document.body.appendChild(input);
-      let settled = false;
-      const done = (f: File | null, err?: Error): void => {
-        if (settled) return;
-        settled = true;
-        try { document.body.removeChild(input); } catch { /* */ }
-        if (err) reject(err);
-        else resolve(f);
-      };
-      input.addEventListener('change', () => {
-        const list = input.files;
-        done(list && list.length > 0 ? list.item(0) : null);
-      });
-      input.addEventListener('cancel', () => done(null));
-      input.click();
-    });
-  }
-
-  function renderDefaultVariablesSection(
-    vars: readonly import('../types/messages.js').ViewerDefaultVariable[],
-  ): HTMLDetailsElement {
-    const det = document.createElement('details');
+  function renderAssetsSection(assets: readonly ViewerAssetEntry[]): HTMLElement {
+    const det = document.createElement('section');
     det.className = 'lrv-section';
-    det.open = vars.length > 0;
-    const sum = document.createElement('summary');
+    const sum = document.createElement('div');
     sum.className = 'lrv-section-summary';
-    const overrideCount = vars.filter((v) => v.overridden).length;
-    sum.textContent =
-      `Default variables · ${vars.length}` +
-      (overrideCount > 0 ? ` (${overrideCount} overridden)` : '');
-    det.appendChild(sum);
-
-    const note = document.createElement('p');
-    note.className = 'lrv-section-note';
-    note.textContent =
-      'Initial values that seed each new chat. CBS reads via {{getvar::name}} ' +
-      'until overwritten by triggers or {{setvar}}. Overrides are stored ' +
-      'per-character; "Reset" restores the card-side default.';
-    det.appendChild(note);
-
-    if (vars.length === 0 && !addingDefaultVarRow) {
-      const empty = document.createElement('div');
-      empty.className = 'lrv-empty';
-      empty.textContent = 'No default variables.';
-      det.appendChild(empty);
-    }
-
-    const list = document.createElement('div');
-    list.className = 'lrv-defvar-list';
-    for (const v of vars) list.appendChild(renderDefaultVariableRow(v));
-    if (addingDefaultVarRow) list.appendChild(renderDefaultVariableNewRow());
-    det.appendChild(list);
-
-    if (!addingDefaultVarRow) {
-      const addBtn = document.createElement('button');
-      addBtn.type = 'button';
-      addBtn.className = 'lrv-btn';
-      addBtn.textContent = '+ Add default variable';
-      addBtn.addEventListener('click', () => {
-        addingDefaultVarRow = true;
-        render();
-      });
-      det.appendChild(addBtn);
-    }
-    return det;
-  }
-
-  function renderDefaultVariableRow(
-    v: import('../types/messages.js').ViewerDefaultVariable,
-  ): HTMLDivElement {
-    const row = document.createElement('div');
-    row.className = 'lrv-defvar-row';
-    if (v.overridden) row.classList.add('lrv-defvar-row-overridden');
-
-    const nameEl = document.createElement('span');
-    nameEl.className = 'lrv-defvar-name';
-    nameEl.textContent = v.name;
-    nameEl.title = v.name;
-    row.appendChild(nameEl);
-
-    const buffered = defaultVarEditBuffers.get(v.name);
-    const input = document.createElement('input');
-    input.type = 'text';
-    input.className = 'lrv-defvar-input';
-    input.value = buffered ?? v.value;
-    input.spellcheck = false;
-    input.addEventListener('input', () => {
-      defaultVarEditBuffers.set(v.name, input.value);
-    });
-    input.addEventListener('change', commit);
-    input.addEventListener('blur', commit);
-    input.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') { e.preventDefault(); commit(); input.blur(); }
-      else if (e.key === 'Escape') { e.preventDefault(); input.value = v.value; defaultVarEditBuffers.delete(v.name); input.blur(); }
-    });
-    row.appendChild(input);
-
-    if (v.overridden) {
-      const reset = document.createElement('button');
-      reset.type = 'button';
-      reset.className = 'lrv-asset-action';
-      reset.textContent = 'Reset';
-      reset.title = `Restore card default: "${v.cardDefault}"`;
-      reset.addEventListener('click', () => {
-        sendDeleteDefaultVariable(v.name);
-        defaultVarEditBuffers.delete(v.name);
-      });
-      row.appendChild(reset);
-    } else {
-      // No-op spacer to keep grid alignment.
-      const spacer = document.createElement('span');
-      spacer.className = 'lrv-defvar-spacer';
-      row.appendChild(spacer);
-    }
-
-    return row;
-
-    function commit(): void {
-      const next = input.value;
-      defaultVarEditBuffers.delete(v.name);
-      if (next !== v.value) sendSetDefaultVariable(v.name, next);
-    }
-  }
-
-  function renderDefaultVariableNewRow(): HTMLDivElement {
-    const row = document.createElement('div');
-    row.className = 'lrv-defvar-row lrv-defvar-row-new';
-
-    const nameInput = document.createElement('input');
-    nameInput.type = 'text';
-    nameInput.className = 'lrv-defvar-name-input';
-    nameInput.placeholder = 'name';
-    nameInput.spellcheck = false;
-    row.appendChild(nameInput);
-
-    const valueInput = document.createElement('input');
-    valueInput.type = 'text';
-    valueInput.className = 'lrv-defvar-input';
-    valueInput.placeholder = 'value';
-    valueInput.spellcheck = false;
-    row.appendChild(valueInput);
-
-    const saveBtn = document.createElement('button');
-    saveBtn.type = 'button';
-    saveBtn.className = 'lrv-asset-action lrv-asset-action-primary';
-    saveBtn.textContent = 'Add';
-    saveBtn.addEventListener('click', commit);
-    row.appendChild(saveBtn);
-
-    const cancelBtn = document.createElement('button');
-    cancelBtn.type = 'button';
-    cancelBtn.className = 'lrv-asset-action';
-    cancelBtn.textContent = 'Cancel';
-    cancelBtn.addEventListener('click', () => {
-      addingDefaultVarRow = false;
-      render();
-    });
-    row.appendChild(cancelBtn);
-
-    nameInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') { e.preventDefault(); valueInput.focus(); }
-      else if (e.key === 'Escape') { e.preventDefault(); addingDefaultVarRow = false; render(); }
-    });
-    valueInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') { e.preventDefault(); commit(); }
-      else if (e.key === 'Escape') { e.preventDefault(); addingDefaultVarRow = false; render(); }
-    });
-
-    queueMicrotask(() => nameInput.focus());
-
-    return row;
-
-    function commit(): void {
-      const name = nameInput.value.trim();
-      if (name.length === 0) {
-        nameInput.focus();
-        return;
-      }
-      sendSetDefaultVariable(name, valueInput.value);
-      addingDefaultVarRow = false;
-    }
-  }
-
-  function sendSetDefaultVariable(name: string, value: string): void {
-    if (!viewerData || viewerData.source.kind !== 'character') return;
-    log.info(`viewer-panel: set_default_variable name=${name} len=${value.length}`);
-    sendToBackend({
-      type: 'set_default_variable',
-      characterId: viewerData.source.characterId,
-      name,
-      value,
-    });
-  }
-
-  function sendDeleteDefaultVariable(name: string): void {
-    if (!viewerData || viewerData.source.kind !== 'character') return;
-    log.info(`viewer-panel: delete_default_variable name=${name}`);
-    sendToBackend({
-      type: 'delete_default_variable',
-      characterId: viewerData.source.characterId,
-      name,
-    });
-  }
-
-  function renderAssetsSection(assets: readonly ViewerAssetEntry[]): HTMLDetailsElement {
-    const det = document.createElement('details');
-    det.className = 'lrv-section';
-    det.open = true;
-    const sum = document.createElement('summary');
-    sum.className = 'lrv-section-summary';
-    sum.textContent = `Assets · ${assets.length}`;
     det.appendChild(sum);
 
     const toolbar = document.createElement('div');
@@ -729,6 +464,13 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
     addBtn.textContent = '+ Add asset';
     addBtn.addEventListener('click', () => { void onAddAssetClicked(); });
     toolbar.appendChild(addBtn);
+    const search = document.createElement('input');
+    search.type = 'search';
+    search.className = 'lrv-asset-search';
+    search.placeholder = `Search ${assets.length} asset${assets.length === 1 ? '' : 's'}…`;
+    search.value = assetSearchTerm;
+    search.spellcheck = false;
+    toolbar.appendChild(search);
     if (assetUploadStatus !== null) {
       const status = document.createElement('span');
       status.className = 'lrv-asset-upload-status';
@@ -740,6 +482,15 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
     }
     det.appendChild(toolbar);
 
+    // Filter (case-insensitive substring match on asset name).
+    const term = assetSearchTerm.trim().toLowerCase();
+    const filtered = term
+      ? assets.filter((a) => a.name.toLowerCase().includes(term))
+      : assets;
+    sum.textContent = term
+      ? `Assets · ${filtered.length} of ${assets.length}`
+      : `Assets · ${assets.length}`;
+
     if (assets.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'lrv-empty';
@@ -747,39 +498,136 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
       det.appendChild(empty);
       return det;
     }
-    // Paginate to keep initial DOM construction under one frame for
-    // module-grade asset counts (Cheongwon ships 1500+ images).
-    const limit = ASSET_PAGE_SIZE * assetPagesShown;
-    const visible = assets.slice(0, limit);
-    const grid = document.createElement('div');
-    grid.className = 'lrv-asset-grid';
-    for (const a of visible) {
-      grid.appendChild(renderAssetTile(a));
+    if (filtered.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'lrv-empty';
+      empty.textContent = `No matches for "${assetSearchTerm}".`;
+      det.appendChild(empty);
+      // Search input still wired below.
     }
-    det.appendChild(grid);
-    if (assets.length > limit) {
-      const more = document.createElement('button');
-      more.type = 'button';
-      more.className = 'lrv-btn lrv-asset-show-more';
-      const remaining = assets.length - limit;
-      more.textContent = `Show ${Math.min(ASSET_PAGE_SIZE, remaining)} more (${remaining} hidden)`;
-      more.addEventListener('click', () => {
-        assetPagesShown += 1;
-        render();
-      });
-      det.appendChild(more);
-      if (assets.length > limit + ASSET_PAGE_SIZE) {
-        const allBtn = document.createElement('button');
-        allBtn.type = 'button';
-        allBtn.className = 'lrv-btn lrv-asset-show-more';
-        allBtn.textContent = `Show all (${assets.length})`;
-        allBtn.addEventListener('click', () => {
-          assetPagesShown = Math.ceil(assets.length / ASSET_PAGE_SIZE) + 1;
-          render();
-        });
-        det.appendChild(allBtn);
+
+    // Windowed virtualization. Mounts only the visible row range (+ overscan)
+    // plus the inline-edited tile if any. Scroll/resize trigger re-renders.
+    const scrollHost = document.createElement('div');
+    scrollHost.className = 'lrv-asset-virt-host';
+    const inner = document.createElement('div');
+    inner.className = 'lrv-asset-virt-inner';
+    scrollHost.appendChild(inner);
+    if (filtered.length > 0) det.appendChild(scrollHost);
+
+    let columns = 1;
+    let tileW = ASSET_TILE_MIN_W;
+    let containerW = ASSET_TILE_MIN_W;
+    const tileNodes = new Map<number, HTMLElement>();
+
+    function recomputeLayout(): void {
+      containerW = scrollHost.clientWidth || ASSET_TILE_MIN_W;
+      columns = Math.max(1, Math.floor(containerW / ASSET_TILE_MIN_W));
+      tileW = containerW / columns;
+      const rows = Math.ceil(filtered.length / columns);
+      inner.style.height = `${rows * ASSET_TILE_H}px`;
+    }
+
+    function placeTile(node: HTMLElement, idx: number): void {
+      const row = Math.floor(idx / columns);
+      const col = idx % columns;
+      node.style.position = 'absolute';
+      node.style.top = `${row * ASSET_TILE_H}px`;
+      node.style.left = `${col * tileW}px`;
+      node.style.width = `${tileW}px`;
+      node.style.height = `${ASSET_TILE_H}px`;
+    }
+
+    function renderWindow(): void {
+      if (filtered.length === 0) return;
+      const top = scrollHost.scrollTop;
+      const bottom = top + (scrollHost.clientHeight || 1);
+      const totalRows = Math.ceil(filtered.length / columns);
+      const startRow = Math.max(0, Math.floor(top / ASSET_TILE_H) - ASSET_OVERSCAN_ROWS);
+      const endRow = Math.min(totalRows, Math.ceil(bottom / ASSET_TILE_H) + ASSET_OVERSCAN_ROWS);
+      const startIdx = startRow * columns;
+      const endIdx = Math.min(filtered.length, endRow * columns);
+
+      const wanted = new Set<number>();
+      for (let i = startIdx; i < endIdx; i++) wanted.add(i);
+      // Pin the inline-edit tile in the DOM regardless of scroll position so
+      // the user's input doesn't lose focus when they accidentally scroll.
+      if (renamingAssetName !== null) {
+        const idx = filtered.findIndex((a) => a.name === renamingAssetName);
+        if (idx >= 0) wanted.add(idx);
+      }
+
+      for (const [i, node] of tileNodes) {
+        if (!wanted.has(i)) {
+          node.remove();
+          tileNodes.delete(i);
+        }
+      }
+      for (const i of wanted) {
+        if (tileNodes.has(i)) {
+          // Reposition in case columns/tileW changed.
+          placeTile(tileNodes.get(i)!, i);
+          continue;
+        }
+        const a = filtered[i];
+        if (!a) continue;
+        const tile = renderAssetTile(a);
+        placeTile(tile, i);
+        inner.appendChild(tile);
+        tileNodes.set(i, tile);
       }
     }
+
+    function rerenderAll(): void {
+      inner.replaceChildren();
+      tileNodes.clear();
+      recomputeLayout();
+      renderWindow();
+    }
+
+    let scrollPending = false;
+    scrollHost.addEventListener('scroll', () => {
+      if (scrollPending) return;
+      scrollPending = true;
+      requestAnimationFrame(() => {
+        scrollPending = false;
+        renderWindow();
+      });
+    });
+
+    if (typeof ResizeObserver !== 'undefined') {
+      let firstObservation = true;
+      const ro = new ResizeObserver(() => {
+        const prevColumns = columns;
+        const prevTileW = tileW;
+        recomputeLayout();
+        if (firstObservation || columns !== prevColumns || Math.abs(tileW - prevTileW) > 0.5) {
+          rerenderAll();
+          firstObservation = false;
+        } else {
+          renderWindow();
+        }
+      });
+      ro.observe(scrollHost);
+    } else {
+      // Fallback: layout once on next frame after mount.
+      requestAnimationFrame(() => {
+        recomputeLayout();
+        renderWindow();
+      });
+    }
+
+    // Search wiring — debounce + full re-render of the subtab so the new
+    // filter is consumed by the re-mounted virtualized grid.
+    let searchTimer: number | undefined;
+    search.addEventListener('input', () => {
+      if (searchTimer !== undefined) window.clearTimeout(searchTimer);
+      searchTimer = window.setTimeout(() => {
+        assetSearchTerm = search.value;
+        render();
+      }, 80);
+    });
+
     return det;
   }
 
@@ -1088,10 +936,10 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
     return err instanceof Error ? err.message : String(err);
   }
 
-  function renderTriggersSection(triggers: readonly ViewerTriggerEntry[]): HTMLDetailsElement {
-    const det = document.createElement('details');
+  function renderTriggersSection(triggers: readonly ViewerTriggerEntry[]): HTMLElement {
+    const det = document.createElement('section');
     det.className = 'lrv-section';
-    const sum = document.createElement('summary');
+    const sum = document.createElement('div');
     sum.className = 'lrv-section-summary';
     sum.textContent = `Triggers · ${triggers.length}`;
     det.appendChild(sum);
@@ -1216,10 +1064,10 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
     editingTriggerLua = '';
   }
 
-  function renderRegexSection(regex: readonly ViewerRegexEntry[]): HTMLDetailsElement {
-    const det = document.createElement('details');
+  function renderRegexSection(regex: readonly ViewerRegexEntry[]): HTMLElement {
+    const det = document.createElement('section');
     det.className = 'lrv-section';
-    const sum = document.createElement('summary');
+    const sum = document.createElement('div');
     sum.className = 'lrv-section-summary';
     sum.textContent = `Regex · ${regex.length}`;
     det.appendChild(sum);
@@ -1278,10 +1126,10 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
     return det;
   }
 
-  function renderLorebookSection(groups: readonly ViewerLorebookGroup[]): HTMLDetailsElement {
-    const det = document.createElement('details');
+  function renderLorebookSection(groups: readonly ViewerLorebookGroup[]): HTMLElement {
+    const det = document.createElement('section');
     det.className = 'lrv-section';
-    const sum = document.createElement('summary');
+    const sum = document.createElement('div');
     sum.className = 'lrv-section-summary';
     const totalEntries = groups.reduce((acc, g) => acc + g.entries.length, 0);
     sum.textContent = `Lorebook · ${groups.length} group${groups.length === 1 ? '' : 's'} · ${totalEntries} entr${totalEntries === 1 ? 'y' : 'ies'}`;
@@ -1325,10 +1173,10 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
     return det;
   }
 
-  function renderCjsSection(cjs: string): HTMLDetailsElement {
-    const det = document.createElement('details');
+  function renderCjsSection(cjs: string): HTMLElement {
+    const det = document.createElement('section');
     det.className = 'lrv-section';
-    const sum = document.createElement('summary');
+    const sum = document.createElement('div');
     sum.className = 'lrv-section-summary';
     sum.textContent = `CJS module body · ${cjs.length} chars`;
     det.appendChild(sum);
@@ -1402,22 +1250,9 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
         render();
         break;
       }
-      case 'lorebook_import_result': {
-        if (msg.ok) {
-          lorebookImportStatus = {
-            kind: 'info',
-            message: `Imported ${msg.written} entr${msg.written === 1 ? 'y' : 'ies'}` +
-              (msg.dropped > 0 ? ` (${msg.dropped} dropped)` : ''),
-          };
-        } else {
-          lorebookImportStatus = {
-            kind: 'error',
-            message: msg.reason ?? `Import failed (dropped=${msg.dropped})`,
-          };
-        }
-        render();
-        break;
-      }
+      // `lorebook_import_result` is consumed by the Import → Lorebooks tab
+      // (Phase E) for standalone imports. Per-character imports no longer
+      // surface UI here either — moved to that tab.
       case 'error':
         if (loading) {
           loading = false;

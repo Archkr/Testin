@@ -122,10 +122,11 @@ export function createAuxDebugPanel(log: FrontendLog): AuxDebugHandle {
     const hh = String(ts.getHours()).padStart(2, '0');
     const mm = String(ts.getMinutes()).padStart(2, '0');
     const ss = String(ts.getSeconds()).padStart(2, '0');
+    const channel = msg.channel ?? 'aux';
     const conn = msg.auxConnectionId ? msg.auxConnectionId.slice(0, 8) + '…' : '<default>';
     const model = msg.auxModelOverride ?? '<connection>';
     const chat = msg.chatId ? msg.chatId.slice(0, 8) + '…' : '<no-chat>';
-    return `${hh}:${mm}:${ss} · conn=${conn} · model=${model} · chat=${chat}`;
+    return `${hh}:${mm}:${ss} · ${channel} · conn=${conn} · model=${model} · chat=${chat}`;
   }
 
   function buildEntry(msg: CaptureMsg): HTMLElement {
@@ -134,6 +135,15 @@ export function createAuxDebugPanel(log: FrontendLog): AuxDebugHandle {
 
     const headerRow = document.createElement('div');
     headerRow.className = 'risu-aux-debug-entry-header';
+
+    const channel = msg.channel ?? 'aux';
+    const channelBadge = document.createElement('span');
+    channelBadge.className = `risu-aux-debug-channel risu-aux-debug-channel-${channel}`;
+    channelBadge.textContent = channel;
+    channelBadge.title = channel === 'submodel'
+      ? "V2 runLLM(model='submodel') call"
+      : "Aux model (axLLMMain / LLMMain) call";
+    headerRow.appendChild(channelBadge);
 
     const kindBadge = document.createElement('span');
     kindBadge.className = `risu-aux-debug-kind risu-aux-debug-kind-${msg.kind}`;
@@ -200,7 +210,7 @@ export function createAuxDebugPanel(log: FrontendLog): AuxDebugHandle {
   function handleBackendMessage(msg: BackendToFrontend): void {
     if (msg.type !== 'aux_debug_capture') return;
     log.info(
-      `aux-debug: capture id=${msg.id} kind=${msg.kind} ` +
+      `aux-debug: capture id=${msg.id} channel=${msg.channel ?? 'aux'} kind=${msg.kind} ` +
         `chatId=${msg.chatId ?? '<none>'} elapsed=${msg.elapsedMs ?? '—'}ms`,
     );
     addEntry(msg);

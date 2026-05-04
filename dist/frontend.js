@@ -467,6 +467,185 @@ var styles_default = `.risu-compat-drawer {\r
   justify-content: flex-end;\r
 }\r
 \r
+/* Inline variable row — shared between Default/Local subtabs (and viewer Default\r
+   editor in Phase F). Layout: name+flags | value-input | actions, all on one\r
+   line. Mirrors the Default-vars look the user prefers. */\r
+.lr-vars-body {\r
+  display: flex;\r
+  flex-direction: column;\r
+  min-width: 0;\r
+}\r
+.lr-var-section {\r
+  display: flex;\r
+  flex-direction: column;\r
+  gap: 8px;\r
+  min-width: 0;\r
+}\r
+.lr-var-section + .lr-var-section {\r
+  margin-top: 18px;\r
+}\r
+.lr-var-note {\r
+  margin: 0 0 4px 0;\r
+  font-size: 11px;\r
+  line-height: 1.45;\r
+  color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.55));\r
+}\r
+.lr-var-subsection {\r
+  display: flex;\r
+  flex-direction: column;\r
+  gap: 6px;\r
+  min-width: 0;\r
+}\r
+.lr-var-subsection + .lr-var-subsection {\r
+  margin-top: 14px;\r
+}\r
+.lr-var-subsection-title {\r
+  margin: 0;\r
+  font-size: 12px;\r
+  font-weight: 600;\r
+  letter-spacing: 0.2px;\r
+  color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.7));\r
+  text-transform: uppercase;\r
+  border-bottom: 1px solid var(--lumiverse-border, rgba(255, 255, 255, 0.08));\r
+  padding-bottom: 4px;\r
+}\r
+.lr-var-list {\r
+  display: flex;\r
+  flex-direction: column;\r
+  gap: 4px;\r
+  min-width: 0;\r
+}\r
+.lr-var-row {\r
+  display: grid;\r
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) auto;\r
+  align-items: center;\r
+  gap: 8px;\r
+  padding: 4px 8px;\r
+  border-radius: 4px;\r
+}\r
+.lr-var-row:hover {\r
+  background: var(--lumiverse-fill, rgba(255, 255, 255, 0.03));\r
+}\r
+.lr-var-row-overridden {\r
+  background: var(--lumiverse-fill, rgba(120, 160, 255, 0.05));\r
+}\r
+.lr-var-row-readonly {\r
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);\r
+}\r
+.lr-var-row-add {\r
+  background: var(--lumiverse-fill, rgba(255, 255, 255, 0.04));\r
+  outline: 1px solid var(--lumiverse-primary, rgba(120, 160, 255, 0.4));\r
+  padding: 6px 8px;\r
+}\r
+.lr-var-head {\r
+  display: flex;\r
+  align-items: center;\r
+  gap: 4px;\r
+  min-width: 0;\r
+}\r
+.lr-var-name {\r
+  font-family: var(--lumiverse-mono, ui-monospace, SFMono-Regular, Menlo, monospace);\r
+  font-size: 12px;\r
+  white-space: nowrap;\r
+  overflow: hidden;\r
+  text-overflow: ellipsis;\r
+  color: var(--lumiverse-text, inherit);\r
+}\r
+.lr-var-flag {\r
+  font-size: 9px;\r
+  text-transform: uppercase;\r
+  letter-spacing: 0.4px;\r
+  padding: 1px 5px;\r
+  border-radius: 3px;\r
+  background: var(--lumiverse-fill, rgba(120, 160, 255, 0.15));\r
+  color: var(--lumiverse-text-muted, rgba(160, 200, 255, 0.85));\r
+  flex-shrink: 0;\r
+}\r
+.lr-var-flag-lua {\r
+  background: var(--lumiverse-fill, rgba(140, 100, 220, 0.18));\r
+  color: rgba(200, 180, 240, 0.9);\r
+}\r
+.lr-var-input,\r
+.lr-var-name-input {\r
+  appearance: none;\r
+  background: var(--lumiverse-bg-input, rgba(0, 0, 0, 0.25));\r
+  border: 1px solid var(--lumiverse-border, rgba(255, 255, 255, 0.08));\r
+  color: var(--lumiverse-text, inherit);\r
+  font: inherit;\r
+  font-size: 12px;\r
+  font-family: var(--lumiverse-mono, ui-monospace, SFMono-Regular, Menlo, monospace);\r
+  padding: 4px 6px;\r
+  border-radius: 4px;\r
+  min-width: 0;\r
+}\r
+.lr-var-input:focus,\r
+.lr-var-name-input:focus {\r
+  outline: none;\r
+  border-color: var(--lumiverse-primary, #6c9cff);\r
+  background: var(--lumiverse-bg-input-focus, rgba(0, 0, 0, 0.35));\r
+}\r
+.lr-var-value-readonly {\r
+  font-family: var(--lumiverse-mono, ui-monospace, SFMono-Regular, Menlo, monospace);\r
+  font-size: 12px;\r
+  color: var(--lumiverse-text, inherit);\r
+  word-break: break-word;\r
+  overflow-wrap: anywhere;\r
+  white-space: pre-wrap;\r
+  padding: 4px 6px;\r
+  background: var(--lumiverse-bg-input, rgba(0, 0, 0, 0.18));\r
+  border-radius: 4px;\r
+}\r
+.lr-var-value-long {\r
+  cursor: pointer;\r
+}\r
+.lr-var-value-long::after {\r
+  content: ' (click to expand)';\r
+  color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.45));\r
+  font-size: 10px;\r
+}\r
+.lr-var-value-long.lr-var-value-expanded::after {\r
+  content: ' (click to collapse)';\r
+}\r
+.lr-var-actions {\r
+  display: flex;\r
+  align-items: center;\r
+  gap: 4px;\r
+  flex-shrink: 0;\r
+}\r
+.lr-var-action {\r
+  appearance: none;\r
+  background: transparent;\r
+  border: 1px solid var(--lumiverse-border, rgba(255, 255, 255, 0.1));\r
+  color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.65));\r
+  font: inherit;\r
+  font-size: 11px;\r
+  padding: 3px 8px;\r
+  border-radius: 3px;\r
+  cursor: pointer;\r
+  transition: background 80ms, color 80ms, border-color 80ms;\r
+}\r
+.lr-var-action:hover {\r
+  color: var(--lumiverse-text, inherit);\r
+  background: var(--lumiverse-fill, rgba(255, 255, 255, 0.06));\r
+  border-color: var(--lumiverse-border, rgba(255, 255, 255, 0.2));\r
+}\r
+.lr-var-action-primary {\r
+  border-color: var(--lumiverse-primary, rgba(120, 160, 255, 0.5));\r
+  color: var(--lumiverse-primary, #b6cdff);\r
+}\r
+.lr-var-action-primary:hover {\r
+  background: var(--lumiverse-fill, rgba(120, 160, 255, 0.12));\r
+}\r
+.lr-var-action-danger:hover {\r
+  border-color: rgba(220, 100, 100, 0.4);\r
+  color: rgba(255, 160, 160, 0.95);\r
+}\r
+.lr-var-add-btn {\r
+  align-self: flex-start;\r
+  margin-top: 4px;\r
+  font-size: 12px;\r
+}\r
+\r
 /* ─── Settings tab ────────────────────────────────────────────────────── */\r
 \r
 .risu-settings-drawer {\r
@@ -484,52 +663,84 @@ var styles_default = `.risu-compat-drawer {\r
   margin-top: 12px;\r
 }\r
 \r
-.lr-settings-aux,\r
-.lr-settings-logs {\r
-  display: block;\r
+/* Settings subtab body — no outer chrome, just stacked rows + samplers.\r
+   The legacy \`.rs-section\` outer-box style still exists in case anything\r
+   else references it, but the live settings panel uses these instead. */\r
+.lr-settings-tab-body {\r
+  display: flex;\r
+  flex-direction: column;\r
+  gap: 14px;\r
+  padding: 0;\r
+  background: transparent;\r
+  border: none;\r
+  min-width: 0;\r
 }\r
-.lr-settings-aux {\r
-  margin-bottom: 40px;\r
+.lr-settings-tab-body[hidden] { display: none; }\r
+.lr-settings-intro {\r
+  margin: 0 0 4px 0;\r
+  font-size: 11px;\r
+  line-height: 1.45;\r
+  color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.55));\r
+}\r
+/* Inline-logs host inside the Debug subtab. Tightens spacing vs the original\r
+   standalone panel which had its own intro + frame chrome. */\r
+.lr-settings-logs-host > .lr-logs::before {\r
+  content: none;\r
+}\r
+.lr-settings-logs-host > .lr-logs {\r
+  background: transparent;\r
+  border: none;\r
+  padding: 0;\r
 }\r
 \r
+/* Canonical subtab bar — shared across State/Variables/Settings/Import/Viewer.\r
+   Pill-style: rounded top corners, transparent background, light bottom rule\r
+   spans the bar. Active tab gets an elevated fill + bordered outline. The\r
+   \`.lrv-subtab-*\` rules below mirror these for backwards compat with\r
+   viewer-tab.ts; both class trees produce identical visuals. */\r
+.lr-subtabs,\r
 .lr-subnav {\r
   display: flex;\r
-  flex-wrap: wrap;\r
   gap: 2px;\r
-  padding: 8px 8px 0 8px;\r
+  padding: 6px 10px 0;\r
   border-bottom: 1px solid var(--lumiverse-border, rgba(255, 255, 255, 0.08));\r
-  background: var(--lumiverse-fill-subtle, rgba(255, 255, 255, 0.02));\r
-  margin-bottom: 20px;\r
+  flex-wrap: wrap;\r
+  margin-bottom: 8px;\r
 }\r
+.lr-subtab,\r
 .lr-subnav-btn {\r
   appearance: none;\r
   background: transparent;\r
-  border: none;\r
-  border-bottom: 2px solid transparent;\r
-  color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.6));\r
-  cursor: pointer;\r
-  padding: 8px 12px;\r
+  border: 1px solid transparent;\r
+  border-bottom: none;\r
+  color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.55));\r
   font: inherit;\r
   font-size: 12px;\r
-  font-weight: 500;\r
-  border-radius: 4px 4px 0 0;\r
-  transition: color 100ms, background 100ms, border-color 100ms;\r
+  padding: 5px 10px 6px;\r
+  border-radius: 5px 5px 0 0;\r
+  cursor: pointer;\r
+  transition: background 80ms, color 80ms, border-color 80ms;\r
 }\r
+.lr-subtab:hover,\r
 .lr-subnav-btn:hover {\r
   color: var(--lumiverse-text, inherit);\r
-  background: var(--lumiverse-fill, rgba(255, 255, 255, 0.04));\r
+  background: var(--lumiverse-bg-elevated, rgba(255, 255, 255, 0.04));\r
 }\r
+.lr-subtab-active,\r
 .lr-subnav-btn-active {\r
   color: var(--lumiverse-text, inherit);\r
-  border-bottom-color: var(--lumiverse-primary, #6c9cff);\r
-  background: var(--lumiverse-fill, rgba(120, 160, 255, 0.08));\r
+  background: var(--lumiverse-bg-elevated, rgba(255, 255, 255, 0.06));\r
+  border-color: var(--lumiverse-border, rgba(255, 255, 255, 0.12));\r
 }\r
-.lr-subnav-panels { min-width: 0; }\r
-.lr-subnav-panel {\r
+.lr-subnav-panels,\r
+.lr-subtab-panels { min-width: 0; }\r
+.lr-subnav-panel,\r
+.lr-subtab-panel {\r
   display: block;\r
   min-width: 0;\r
 }\r
-.lr-subnav-panel[hidden] {\r
+.lr-subnav-panel[hidden],\r
+.lr-subtab-panel[hidden] {\r
   display: none;\r
 }\r
 .risu-settings-drawer .rs-intro {\r
@@ -964,6 +1175,24 @@ var styles_default = `.risu-compat-drawer {\r
   background: rgba(255, 110, 110, 0.2);\r
   color: #ffb0b0;\r
 }\r
+.risu-aux-debug-channel {\r
+  display: inline-block;\r
+  padding: 1px 6px;\r
+  border-radius: 4px;\r
+  font-size: 10px;\r
+  font-weight: 600;\r
+  text-transform: uppercase;\r
+  letter-spacing: 0.05em;\r
+  margin-right: 4px;\r
+}\r
+.risu-aux-debug-channel-aux {\r
+  background: rgba(180, 140, 220, 0.2);\r
+  color: #d4b8e8;\r
+}\r
+.risu-aux-debug-channel-submodel {\r
+  background: rgba(220, 180, 120, 0.2);\r
+  color: #e8d0a0;\r
+}\r
 .risu-aux-debug-meta {\r
   color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.55));\r
   font-size: 11px;\r
@@ -1365,6 +1594,29 @@ var styles_default = `.risu-compat-drawer {\r
   flex-direction: column;\r
   gap: 8px;\r
   min-width: 0;\r
+}\r
+/* Subtab body — same as section-body but no inherited dropdown chrome. */\r
+.lr-modules-drawer .lrm-tab-body {\r
+  padding: 6px 0 0 0;\r
+}\r
+.lr-modules-drawer .lrm-tab-body[hidden] { display: none; }\r
+.lr-modules-drawer .lrm-lorebook-status {\r
+  margin-top: 8px;\r
+  padding: 8px 10px;\r
+  font-size: 12px;\r
+  border-radius: 4px;\r
+  background: var(--lumiverse-fill-subtle, rgba(255, 255, 255, 0.025));\r
+  color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.65));\r
+  min-height: 1em;\r
+}\r
+.lr-modules-drawer .lrm-lorebook-status:empty {\r
+  background: transparent;\r
+  padding: 0;\r
+  min-height: 0;\r
+}\r
+.lr-modules-drawer .lrm-lorebook-status-error {\r
+  background: rgba(255, 110, 110, 0.12);\r
+  color: rgba(255, 180, 180, 0.95);\r
 }\r
 .lr-modules-drawer .lrm-section-title {\r
   margin: 0;\r
@@ -1912,6 +2164,48 @@ var styles_default = `.risu-compat-drawer {\r
   grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));\r
   gap: 8px;\r
   padding: 8px;\r
+}\r
+/* Windowed asset list — only the visible row range is mounted at any time.\r
+   Scrollable host + absolute-positioned tiles inside an explicit-height\r
+   spacer. Mirrors tanstack-virtual's principle in vanilla DOM. */\r
+.lr-viewer-drawer .lrv-asset-virt-host {\r
+  position: relative;\r
+  overflow-y: auto;\r
+  max-height: 60vh;\r
+  min-height: 240px;\r
+  background: rgba(0, 0, 0, 0.12);\r
+  border-radius: 4px;\r
+  border: 1px solid var(--lumiverse-border, rgba(255, 255, 255, 0.06));\r
+  margin: 8px 10px;\r
+}\r
+.lr-viewer-drawer .lrv-asset-virt-inner {\r
+  position: relative;\r
+  width: 100%;\r
+}\r
+/* Tiles rendered inside the virt-inner host get absolute positioning by JS;\r
+   neutralise any flex-related defaults from the legacy \`.lrv-asset-tile\`\r
+   rules so the JS-set top/left/width/height take effect cleanly. */\r
+.lr-viewer-drawer .lrv-asset-virt-inner > .lrv-asset-tile {\r
+  position: absolute;\r
+  margin: 0;\r
+  box-sizing: border-box;\r
+}\r
+.lr-viewer-drawer .lrv-asset-search {\r
+  appearance: none;\r
+  background: var(--lumiverse-bg-input, rgba(0, 0, 0, 0.25));\r
+  border: 1px solid var(--lumiverse-border, rgba(255, 255, 255, 0.08));\r
+  color: var(--lumiverse-text, inherit);\r
+  font: inherit;\r
+  font-size: 12px;\r
+  padding: 4px 8px;\r
+  border-radius: 4px;\r
+  flex: 1 1 auto;\r
+  min-width: 100px;\r
+}\r
+.lr-viewer-drawer .lrv-asset-search:focus {\r
+  outline: none;\r
+  border-color: var(--lumiverse-primary, #6c9cff);\r
+  background: var(--lumiverse-bg-input-focus, rgba(0, 0, 0, 0.35));\r
 }\r
 .lr-viewer-drawer .lrv-asset-tile {\r
   display: flex;\r
@@ -3166,6 +3460,11 @@ function generateSessionId() {
 }
 
 // src/ui/variables-tab.ts
+var SUB_TABS = [
+  { id: "default", label: "Default", title: "Character-level default variables. Persist across chats with this character." },
+  { id: "local", label: "Local", title: "Chat-scoped variables. setvar / setChatVar / Lua setState write here." },
+  { id: "lumi", label: "Lumi", title: "Lumi-native global + chat scopes. Read-only — Risu cards don't use these." }
+];
 function mountVariablesPanel(opts) {
   const { sendToBackend, log } = opts;
   log.info("variables-panel: mounting");
@@ -3199,195 +3498,360 @@ function mountVariablesPanel(opts) {
   const status = document.createElement("div");
   status.className = "rv-status";
   root.appendChild(status);
-  const sectionsHost = document.createElement("div");
-  sectionsHost.className = "rv-sections";
-  root.appendChild(sectionsHost);
+  const subnav = document.createElement("div");
+  subnav.className = "lr-subtabs";
+  subnav.setAttribute("role", "tablist");
+  root.appendChild(subnav);
+  const subnavBtns = new Map;
+  for (const def of SUB_TABS) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "lr-subtab";
+    btn.textContent = def.label;
+    btn.title = def.title;
+    btn.setAttribute("role", "tab");
+    btn.setAttribute("aria-selected", "false");
+    btn.addEventListener("click", () => activateSubTab(def.id));
+    subnav.appendChild(btn);
+    subnavBtns.set(def.id, btn);
+  }
+  const body = document.createElement("div");
+  body.className = "lr-vars-body";
+  root.appendChild(body);
   let activeChatId = null;
   let snapshot = null;
   let filterTerm = "";
-  let editingKey = null;
-  let addingNew = false;
-  let editBuffer = "";
-  let addBufferKey = "";
-  let addBufferValue = "";
+  let activeSubTab = "default";
+  const editBuffers = new Map;
+  const addRow = {
+    default: { open: false, name: "", value: "" },
+    local: { open: false, name: "", value: "" },
+    lumi: { open: false, name: "", value: "" }
+  };
+  function activateSubTab(id) {
+    if (activeSubTab === id)
+      return;
+    activeSubTab = id;
+    log.info(`variables-tab: subtab → ${id}`);
+    render();
+  }
+  function renderSubnav() {
+    for (const [id, btn] of subnavBtns) {
+      const sel = id === activeSubTab;
+      btn.classList.toggle("lr-subtab-active", sel);
+      btn.setAttribute("aria-selected", sel ? "true" : "false");
+    }
+  }
   function renderStatus() {
     if (!activeChatId) {
       status.textContent = "Open a Risu chat to see variables.";
       status.classList.remove("rv-status-error");
       return;
     }
-    if (!snapshot) {
+    if (!snapshot || snapshot.chatId !== activeChatId) {
       status.textContent = `Loading variables for chat ${shortId(activeChatId)}…`;
       status.classList.remove("rv-status-error");
       return;
     }
-    if (snapshot.chatId !== activeChatId) {
-      status.textContent = `Loading variables for chat ${shortId(activeChatId)}…`;
-      status.classList.remove("rv-status-error");
-      return;
-    }
-    const totals = countTotals(snapshot);
+    const t = countTotals(snapshot);
     const ts = formatTime(snapshot.ts);
-    status.textContent = `chat ${shortId(snapshot.chatId)} · seq ${snapshot.seq} · ` + `local=${totals.local} global=${totals.global} chat=${totals.chat} defaults=${totals.defaults} · ` + `updated ${ts}`;
+    status.textContent = `chat ${shortId(snapshot.chatId)} · seq ${snapshot.seq} · ` + `default=${t.defaults} local=${t.local} lumi=${t.global + t.chat} · ` + `updated ${ts}`;
     status.classList.remove("rv-status-error");
   }
-  function renderSections() {
-    sectionsHost.innerHTML = "";
+  function renderBody() {
+    body.replaceChildren();
     if (!activeChatId || !snapshot || snapshot.chatId !== activeChatId) {
       const empty = document.createElement("div");
       empty.className = "rv-empty";
       empty.textContent = activeChatId ? "Waiting for backend…" : "No active Risu chat.";
-      sectionsHost.appendChild(empty);
+      body.appendChild(empty);
       return;
     }
+    switch (activeSubTab) {
+      case "default":
+        body.appendChild(renderDefaultPanel());
+        break;
+      case "local":
+        body.appendChild(renderLocalPanel());
+        break;
+      case "lumi":
+        body.appendChild(renderLumiPanel());
+        break;
+    }
+  }
+  function renderDefaultPanel() {
+    const wrap = document.createElement("section");
+    wrap.className = "lr-var-section";
+    const note = document.createElement("p");
+    note.className = "lr-var-note";
+    note.textContent = "Initial values that seed each new chat. CBS reads via {{getvar::name}} " + "until overwritten by triggers or {{setvar}}. Overrides persist per-character " + "and propagate across all chats with this character.";
+    wrap.appendChild(note);
+    if (!snapshot.characterId) {
+      const empty = document.createElement("div");
+      empty.className = "rv-empty";
+      empty.textContent = "No character associated with this chat.";
+      wrap.appendChild(empty);
+      return wrap;
+    }
     const term = filterTerm.toLowerCase();
-    const sections = [
-      {
-        title: "Local (chat-scoped)",
-        desc: "Main store. setvar / setChatVar / Lua setState write here.",
-        entries: sortedEntries(snapshot.scopes.local),
-        kind: "local"
-      },
-      {
-        title: "Defaults (character)",
-        desc: "Character-level defaults. getChatVar falls back here when a key is unset.",
-        entries: sortedEntries(snapshot.defaults),
-        kind: "defaults"
-      },
-      {
-        title: "Global",
-        desc: "Lumi-native global scope (rarely used by Risu cards).",
-        entries: sortedEntries(snapshot.scopes.global),
-        kind: "global"
-      },
-      {
-        title: "Chat",
-        desc: "Lumi-native chat scope (rarely used by Risu cards).",
-        entries: sortedEntries(snapshot.scopes.chat),
-        kind: "chat"
+    const cardSide = snapshot.defaultsCardSide;
+    const merged = snapshot.defaults;
+    const allNames = new Set([...Object.keys(cardSide), ...Object.keys(merged)]);
+    const rows = [...allNames].sort((a, b) => a.localeCompare(b)).filter((name) => {
+      if (!term)
+        return true;
+      const v = merged[name] ?? "";
+      return name.toLowerCase().includes(term) || v.toLowerCase().includes(term);
+    });
+    const list = document.createElement("div");
+    list.className = "lr-var-list";
+    if (rows.length === 0 && !addRow.default.open) {
+      const empty = document.createElement("div");
+      empty.className = "rv-empty";
+      empty.textContent = term ? `No matches for "${filterTerm}".` : "No default variables.";
+      list.appendChild(empty);
+    } else {
+      for (const name of rows) {
+        const value = merged[name] ?? "";
+        const original = cardSide[name];
+        const overridden = original === undefined || original !== value;
+        list.appendChild(renderEditableRow({
+          subtab: "default",
+          name,
+          value,
+          isOverride: overridden,
+          originalValue: original,
+          onCommit: (next) => sendSetDefault(name, next),
+          onReset: overridden && original !== undefined ? () => sendDeleteDefault(name) : null,
+          allowDelete: false
+        }));
       }
-    ];
-    let hadAnyVisible = false;
-    for (const sec of sections) {
-      const filtered = term ? sec.entries.filter(([k, v]) => k.toLowerCase().includes(term) || v.toLowerCase().includes(term)) : sec.entries;
-      const sectionEl = document.createElement("section");
-      sectionEl.className = "rv-section";
-      sectionEl.dataset["kind"] = sec.kind;
-      const header = document.createElement("div");
-      header.className = "rv-section-header";
-      const titleEl = document.createElement("h3");
-      titleEl.className = "rv-section-title";
-      titleEl.textContent = `${sec.title}  ·  ${filtered.length}${term ? ` of ${sec.entries.length}` : ""}`;
-      header.appendChild(titleEl);
-      const descEl = document.createElement("span");
-      descEl.className = "rv-section-desc";
-      descEl.textContent = sec.desc;
-      header.appendChild(descEl);
-      sectionEl.appendChild(header);
-      if (filtered.length === 0) {
+    }
+    if (addRow.default.open)
+      list.appendChild(renderAddRow("default"));
+    wrap.appendChild(list);
+    if (!addRow.default.open) {
+      const addBtn = document.createElement("button");
+      addBtn.type = "button";
+      addBtn.className = "lrm-btn lr-var-add-btn";
+      addBtn.textContent = "+ Add default variable";
+      addBtn.addEventListener("click", () => {
+        addRow.default = { open: true, name: "", value: "" };
+        render();
+      });
+      wrap.appendChild(addBtn);
+    }
+    return wrap;
+  }
+  function renderLocalPanel() {
+    const wrap = document.createElement("section");
+    wrap.className = "lr-var-section";
+    const note = document.createElement("p");
+    note.className = "lr-var-note";
+    note.textContent = "Chat-scoped variables. Risu setvar / setChatVar / Lua setState write here. " + "Lua state keys (__name) are JSON-encoded.";
+    wrap.appendChild(note);
+    const term = filterTerm.toLowerCase();
+    const local = snapshot.scopes.local;
+    const rows = sortedKeys(local).filter((name) => {
+      if (!term)
+        return true;
+      const v = local[name] ?? "";
+      return name.toLowerCase().includes(term) || v.toLowerCase().includes(term);
+    });
+    const list = document.createElement("div");
+    list.className = "lr-var-list";
+    if (rows.length === 0 && !addRow.local.open) {
+      const empty = document.createElement("div");
+      empty.className = "rv-empty";
+      empty.textContent = term ? `No matches for "${filterTerm}".` : "(empty)";
+      list.appendChild(empty);
+    } else {
+      for (const name of rows) {
+        const value = local[name] ?? "";
+        list.appendChild(renderEditableRow({
+          subtab: "local",
+          name,
+          value,
+          isLuaState: name.startsWith("__"),
+          onCommit: (next) => sendSetLocal(name, next),
+          onReset: null,
+          allowDelete: true,
+          onDelete: () => sendDeleteLocal(name)
+        }));
+      }
+    }
+    if (addRow.local.open)
+      list.appendChild(renderAddRow("local"));
+    wrap.appendChild(list);
+    if (!addRow.local.open) {
+      const addBtn = document.createElement("button");
+      addBtn.type = "button";
+      addBtn.className = "lrm-btn lr-var-add-btn";
+      addBtn.textContent = "+ Add variable";
+      addBtn.addEventListener("click", () => {
+        addRow.local = { open: true, name: "", value: "" };
+        render();
+      });
+      wrap.appendChild(addBtn);
+    }
+    return wrap;
+  }
+  function renderLumiPanel() {
+    const wrap = document.createElement("section");
+    wrap.className = "lr-var-section";
+    const note = document.createElement("p");
+    note.className = "lr-var-note";
+    note.textContent = "Lumi-native scopes (read-only). Most Risu cards don't touch these; " + "surfaced for diagnostics and Lumi-native card interop.";
+    wrap.appendChild(note);
+    const term = filterTerm.toLowerCase();
+    let any = false;
+    for (const [label, rec] of [
+      ["Global", snapshot.scopes.global],
+      ["Chat", snapshot.scopes.chat]
+    ]) {
+      const keys = sortedKeys(rec).filter((name) => {
+        if (!term)
+          return true;
+        const v = rec[name] ?? "";
+        return name.toLowerCase().includes(term) || v.toLowerCase().includes(term);
+      });
+      const sec = document.createElement("div");
+      sec.className = "lr-var-subsection";
+      const head = document.createElement("h4");
+      head.className = "lr-var-subsection-title";
+      head.textContent = `${label} · ${keys.length}${term ? ` of ${Object.keys(rec).length}` : ""}`;
+      sec.appendChild(head);
+      const list = document.createElement("div");
+      list.className = "lr-var-list";
+      if (keys.length === 0) {
         const empty = document.createElement("div");
-        empty.className = "rv-section-empty";
-        empty.textContent = term ? "No matches." : "(empty)";
-        sectionEl.appendChild(empty);
+        empty.className = "rv-empty";
+        empty.textContent = term ? "(no matches)" : "(empty)";
+        list.appendChild(empty);
       } else {
-        hadAnyVisible = true;
-        const list = document.createElement("div");
-        list.className = "rv-list";
-        for (const [k, v] of filtered) {
-          list.appendChild(buildRow(k, v, sec.kind, snapshot));
+        any = true;
+        for (const name of keys) {
+          list.appendChild(renderReadonlyRow(name, rec[name] ?? ""));
         }
-        sectionEl.appendChild(list);
       }
-      if (sec.kind === "local") {
-        sectionEl.appendChild(buildLocalAddRow());
-      }
-      sectionsHost.appendChild(sectionEl);
+      sec.appendChild(list);
+      wrap.appendChild(sec);
     }
-    if (!hadAnyVisible && term) {
-      const note = document.createElement("div");
-      note.className = "rv-empty";
-      note.textContent = `No variables match "${filterTerm}".`;
-      sectionsHost.appendChild(note);
+    if (!any && !term) {
+      const note2 = document.createElement("div");
+      note2.className = "rv-empty";
+      note2.textContent = "Both Lumi-native scopes are empty for this chat.";
+      wrap.appendChild(note2);
     }
+    return wrap;
   }
-  function render() {
-    renderStatus();
-    renderSections();
-  }
-  function buildRow(key, value, kind, snap) {
+  function renderEditableRow(o) {
     const row = document.createElement("div");
-    row.className = "rv-row";
-    row.dataset["kind"] = kind;
-    if (kind === "local" && editingKey === key) {
-      row.classList.add("rv-row-editing");
-      buildLocalEditor(row, key, value);
-      return row;
-    }
+    row.className = "lr-var-row";
+    if (o.isOverride)
+      row.classList.add("lr-var-row-overridden");
     const head = document.createElement("div");
-    head.className = "rv-row-head";
-    const keyEl = document.createElement("span");
-    keyEl.className = "rv-key";
-    keyEl.textContent = key;
-    keyEl.title = key;
-    head.appendChild(keyEl);
-    if (kind === "local" && Object.prototype.hasOwnProperty.call(snap.defaults, key)) {
+    head.className = "lr-var-head";
+    const nameEl = document.createElement("span");
+    nameEl.className = "lr-var-name";
+    nameEl.textContent = o.name;
+    nameEl.title = o.name;
+    head.appendChild(nameEl);
+    if (o.isOverride) {
       const flag = document.createElement("span");
-      flag.className = "rv-flag";
+      flag.className = "lr-var-flag";
       flag.textContent = "override";
-      flag.title = `Default: ${snap.defaults[key]}`;
+      flag.title = o.originalValue !== undefined ? `Card default: ${o.originalValue}` : "No card default — override-only.";
       head.appendChild(flag);
     }
-    if (kind === "local" && key.startsWith("__")) {
+    if (o.isLuaState) {
       const flag = document.createElement("span");
-      flag.className = "rv-flag rv-flag-lua";
+      flag.className = "lr-var-flag lr-var-flag-lua";
       flag.textContent = "lua";
       flag.title = "Lua state. Value is JSON-encoded.";
       head.appendChild(flag);
     }
-    if (kind === "local") {
-      const actions = document.createElement("span");
-      actions.className = "rv-row-actions";
-      const editBtn = document.createElement("button");
-      editBtn.type = "button";
-      editBtn.className = "rv-row-btn";
-      editBtn.textContent = "Edit";
-      editBtn.title = "Edit this variable";
-      editBtn.addEventListener("click", (e) => {
+    row.appendChild(head);
+    const bufKey = `${o.subtab}:${o.name}`;
+    const buffered = editBuffers.get(bufKey);
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "lr-var-input";
+    input.value = buffered ?? o.value;
+    input.spellcheck = false;
+    input.addEventListener("input", () => {
+      editBuffers.set(bufKey, input.value);
+    });
+    input.addEventListener("change", commit);
+    input.addEventListener("blur", commit);
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        commit();
+        input.blur();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        input.value = o.value;
+        editBuffers.delete(bufKey);
+        input.blur();
+      }
+    });
+    row.appendChild(input);
+    const actions = document.createElement("span");
+    actions.className = "lr-var-actions";
+    if (o.onReset) {
+      const reset = document.createElement("button");
+      reset.type = "button";
+      reset.className = "lr-var-action";
+      reset.textContent = "Reset";
+      reset.title = o.originalValue !== undefined ? `Restore card default: "${o.originalValue}"` : "Remove this override.";
+      reset.addEventListener("click", (e) => {
         e.stopPropagation();
-        editingKey = key;
-        editBuffer = value;
-        addingNew = false;
-        renderSections();
+        editBuffers.delete(bufKey);
+        o.onReset?.();
       });
-      actions.appendChild(editBtn);
-      const delBtn = document.createElement("button");
-      delBtn.type = "button";
-      delBtn.className = "rv-row-btn rv-row-btn-danger";
-      delBtn.textContent = "×";
-      delBtn.title = "Delete this variable";
-      delBtn.setAttribute("aria-label", `Delete ${key}`);
-      delBtn.addEventListener("click", (e) => {
+      actions.appendChild(reset);
+    }
+    if (o.allowDelete && o.onDelete) {
+      const del = document.createElement("button");
+      del.type = "button";
+      del.className = "lr-var-action lr-var-action-danger";
+      del.textContent = "×";
+      del.title = `Delete "${o.name}"`;
+      del.setAttribute("aria-label", `Delete ${o.name}`);
+      del.addEventListener("click", (e) => {
         e.stopPropagation();
-        if (!activeChatId)
-          return;
-        if (!confirm(`Delete variable "${key}"?
+        if (!window.confirm(`Delete variable "${o.name}"?
 
 If the character has a default for this key, getChatVar will fall back to it. Otherwise reads return the literal string "null".`))
           return;
-        log.info(`variables-tab: delete chatId=${activeChatId} key=${key}`);
-        sendToBackend({
-          type: "delete_variable",
-          chatId: activeChatId,
-          scope: "local",
-          key
-        });
+        editBuffers.delete(bufKey);
+        o.onDelete?.();
       });
-      actions.appendChild(delBtn);
-      head.appendChild(actions);
+      actions.appendChild(del);
     }
+    row.appendChild(actions);
+    return row;
+    function commit() {
+      const next = input.value;
+      editBuffers.delete(bufKey);
+      if (next !== o.value)
+        o.onCommit(next);
+    }
+  }
+  function renderReadonlyRow(name, value) {
+    const row = document.createElement("div");
+    row.className = "lr-var-row lr-var-row-readonly";
+    const head = document.createElement("div");
+    head.className = "lr-var-head";
+    const nameEl = document.createElement("span");
+    nameEl.className = "lr-var-name";
+    nameEl.textContent = name;
+    nameEl.title = name;
+    head.appendChild(nameEl);
     row.appendChild(head);
     const valEl = document.createElement("div");
-    valEl.className = "rv-value";
+    valEl.className = "lr-var-value-readonly";
     const isLong = value.length > 200 || value.includes(`
 `);
     if (!isLong) {
@@ -3396,60 +3860,53 @@ If the character has a default for this key, getChatVar will fall back to it. Ot
     } else {
       valEl.textContent = value.slice(0, 200) + "…";
       valEl.title = "Click to expand";
-      valEl.classList.add("rv-value-long");
+      valEl.classList.add("lr-var-value-long");
       valEl.addEventListener("click", () => {
-        if (valEl.classList.contains("rv-value-expanded")) {
+        if (valEl.classList.contains("lr-var-value-expanded")) {
           valEl.textContent = value.slice(0, 200) + "…";
-          valEl.classList.remove("rv-value-expanded");
+          valEl.classList.remove("lr-var-value-expanded");
         } else {
           valEl.textContent = value;
-          valEl.classList.add("rv-value-expanded");
+          valEl.classList.add("lr-var-value-expanded");
         }
       });
     }
     row.appendChild(valEl);
     return row;
   }
-  function buildLocalEditor(row, key, originalValue) {
-    const head = document.createElement("div");
-    head.className = "rv-row-head";
-    const keyEl = document.createElement("span");
-    keyEl.className = "rv-key";
-    keyEl.textContent = key;
-    keyEl.title = key;
-    head.appendChild(keyEl);
-    const actions = document.createElement("span");
-    actions.className = "rv-edit-actions";
-    const saveBtn = document.createElement("button");
-    saveBtn.type = "button";
-    saveBtn.className = "rv-row-btn rv-row-btn-primary";
-    saveBtn.textContent = "Save";
-    saveBtn.title = "Save (Ctrl+Enter)";
-    saveBtn.addEventListener("click", commit);
-    actions.appendChild(saveBtn);
-    const cancelBtn = document.createElement("button");
-    cancelBtn.type = "button";
-    cancelBtn.className = "rv-row-btn";
-    cancelBtn.textContent = "Cancel";
-    cancelBtn.title = "Cancel (Esc)";
-    cancelBtn.addEventListener("click", cancel);
-    actions.appendChild(cancelBtn);
-    head.appendChild(actions);
-    row.appendChild(head);
-    const textarea = document.createElement("textarea");
-    textarea.className = "rv-edit-input";
-    textarea.spellcheck = false;
-    textarea.value = editBuffer;
-    textarea.rows = Math.max(2, Math.min(12, editBuffer.split(`
-`).length + 1));
-    textarea.addEventListener("input", () => {
-      editBuffer = textarea.value;
-      const lines = editBuffer.split(`
-`).length;
-      textarea.rows = Math.max(2, Math.min(12, lines + 1));
+  function renderAddRow(subtab) {
+    const wrap = document.createElement("div");
+    wrap.className = "lr-var-row lr-var-row-add";
+    const buf = addRow[subtab];
+    const nameInput = document.createElement("input");
+    nameInput.type = "text";
+    nameInput.className = "lr-var-name-input";
+    nameInput.placeholder = "name";
+    nameInput.value = buf.name;
+    nameInput.spellcheck = false;
+    nameInput.addEventListener("input", () => {
+      buf.name = nameInput.value;
     });
-    textarea.addEventListener("keydown", (e) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+    nameInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        valueInput.focus();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        cancel();
+      }
+    });
+    const valueInput = document.createElement("input");
+    valueInput.type = "text";
+    valueInput.className = "lr-var-input";
+    valueInput.placeholder = "value";
+    valueInput.value = buf.value;
+    valueInput.spellcheck = false;
+    valueInput.addEventListener("input", () => {
+      buf.value = valueInput.value;
+    });
+    valueInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
         e.preventDefault();
         commit();
       } else if (e.key === "Escape") {
@@ -3457,141 +3914,91 @@ If the character has a default for this key, getChatVar will fall back to it. Ot
         cancel();
       }
     });
-    row.appendChild(textarea);
-    queueMicrotask(() => {
-      textarea.focus();
-      textarea.setSelectionRange(textarea.value.length, textarea.value.length);
-    });
-    function commit() {
-      if (!activeChatId)
-        return;
-      const newValue = editBuffer;
-      if (newValue === originalValue) {
-        cancel();
-        return;
-      }
-      log.info(`variables-tab: set chatId=${activeChatId} key=${key} ` + `oldLen=${originalValue.length} newLen=${newValue.length}`);
-      sendToBackend({
-        type: "set_variable",
-        chatId: activeChatId,
-        scope: "local",
-        key,
-        value: newValue
-      });
-      editingKey = null;
-      editBuffer = "";
-      renderSections();
-    }
-    function cancel() {
-      editingKey = null;
-      editBuffer = "";
-      renderSections();
-    }
-  }
-  function buildLocalAddRow() {
-    const wrap = document.createElement("div");
-    wrap.className = "rv-add-wrap";
-    if (!addingNew) {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "rv-row-btn rv-add-btn";
-      btn.textContent = "+ Add variable";
-      btn.addEventListener("click", () => {
-        addingNew = true;
-        editingKey = null;
-        addBufferKey = "";
-        addBufferValue = "";
-        renderSections();
-      });
-      wrap.appendChild(btn);
-      return wrap;
-    }
-    wrap.classList.add("rv-add-form");
-    const keyInput = document.createElement("input");
-    keyInput.type = "text";
-    keyInput.className = "rv-edit-input rv-add-key";
-    keyInput.placeholder = "variable_name";
-    keyInput.value = addBufferKey;
-    keyInput.spellcheck = false;
-    keyInput.addEventListener("input", () => {
-      addBufferKey = keyInput.value;
-    });
-    keyInput.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") {
-        e.preventDefault();
-        valInput.focus();
-      } else if (e.key === "Escape") {
-        e.preventDefault();
-        cancelAdd();
-      }
-    });
-    wrap.appendChild(keyInput);
-    const valInput = document.createElement("textarea");
-    valInput.className = "rv-edit-input rv-add-value";
-    valInput.placeholder = "value";
-    valInput.value = addBufferValue;
-    valInput.spellcheck = false;
-    valInput.rows = 1;
-    valInput.addEventListener("input", () => {
-      addBufferValue = valInput.value;
-      const lines = addBufferValue.split(`
-`).length;
-      valInput.rows = Math.max(1, Math.min(10, lines));
-    });
-    valInput.addEventListener("keydown", (e) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
-        e.preventDefault();
-        commitAdd();
-      } else if (e.key === "Escape") {
-        e.preventDefault();
-        cancelAdd();
-      }
-    });
-    wrap.appendChild(valInput);
     const actions = document.createElement("span");
-    actions.className = "rv-edit-actions";
+    actions.className = "lr-var-actions";
     const saveBtn = document.createElement("button");
     saveBtn.type = "button";
-    saveBtn.className = "rv-row-btn rv-row-btn-primary";
+    saveBtn.className = "lr-var-action lr-var-action-primary";
     saveBtn.textContent = "Add";
-    saveBtn.addEventListener("click", commitAdd);
+    saveBtn.addEventListener("click", commit);
     actions.appendChild(saveBtn);
     const cancelBtn = document.createElement("button");
     cancelBtn.type = "button";
-    cancelBtn.className = "rv-row-btn";
+    cancelBtn.className = "lr-var-action";
     cancelBtn.textContent = "Cancel";
-    cancelBtn.addEventListener("click", cancelAdd);
+    cancelBtn.addEventListener("click", cancel);
     actions.appendChild(cancelBtn);
+    wrap.appendChild(nameInput);
+    wrap.appendChild(valueInput);
     wrap.appendChild(actions);
-    queueMicrotask(() => keyInput.focus());
+    queueMicrotask(() => nameInput.focus());
     return wrap;
-    function commitAdd() {
-      if (!activeChatId)
-        return;
-      const k = addBufferKey.trim();
-      if (k.length === 0) {
-        keyInput.focus();
+    function commit() {
+      const name = buf.name.trim();
+      if (name.length === 0) {
+        nameInput.focus();
         return;
       }
-      log.info(`variables-tab: add chatId=${activeChatId} key=${k} valueLen=${addBufferValue.length}`);
-      sendToBackend({
-        type: "set_variable",
-        chatId: activeChatId,
-        scope: "local",
-        key: k,
-        value: addBufferValue
-      });
-      addingNew = false;
-      addBufferKey = "";
-      addBufferValue = "";
-      renderSections();
+      if (subtab === "default")
+        sendSetDefault(name, buf.value);
+      else if (subtab === "local")
+        sendSetLocal(name, buf.value);
+      addRow[subtab] = { open: false, name: "", value: "" };
+      render();
     }
-    function cancelAdd() {
-      addingNew = false;
-      addBufferKey = "";
-      addBufferValue = "";
-      renderSections();
+    function cancel() {
+      addRow[subtab] = { open: false, name: "", value: "" };
+      render();
     }
+  }
+  function sendSetDefault(name, value) {
+    if (!snapshot?.characterId)
+      return;
+    log.info(`variables-tab: set_default_variable char=${snapshot.characterId} name=${name} len=${value.length}`);
+    sendToBackend({
+      type: "set_default_variable",
+      characterId: snapshot.characterId,
+      name,
+      value
+    });
+  }
+  function sendDeleteDefault(name) {
+    if (!snapshot?.characterId)
+      return;
+    log.info(`variables-tab: delete_default_variable char=${snapshot.characterId} name=${name}`);
+    sendToBackend({
+      type: "delete_default_variable",
+      characterId: snapshot.characterId,
+      name
+    });
+  }
+  function sendSetLocal(key, value) {
+    if (!activeChatId)
+      return;
+    log.info(`variables-tab: set_variable chat=${activeChatId} key=${key} len=${value.length}`);
+    sendToBackend({
+      type: "set_variable",
+      chatId: activeChatId,
+      scope: "local",
+      key,
+      value
+    });
+  }
+  function sendDeleteLocal(key) {
+    if (!activeChatId)
+      return;
+    log.info(`variables-tab: delete_variable chat=${activeChatId} key=${key}`);
+    sendToBackend({
+      type: "delete_variable",
+      chatId: activeChatId,
+      scope: "local",
+      key
+    });
+  }
+  function render() {
+    renderSubnav();
+    renderStatus();
+    renderBody();
   }
   let filterTimer;
   filterInput.addEventListener("input", () => {
@@ -3599,7 +4006,7 @@ If the character has a default for this key, getChatVar will fall back to it. Ot
       window.clearTimeout(filterTimer);
     filterTimer = window.setTimeout(() => {
       filterTerm = filterInput.value.trim();
-      renderSections();
+      renderBody();
     }, 60);
   });
   refreshBtn.addEventListener("click", () => {
@@ -3607,19 +4014,13 @@ If the character has a default for this key, getChatVar will fall back to it. Ot
       log.info("variables-tab: refresh clicked but no active chat");
       return;
     }
-    log.info(`variables-tab: refresh clicked, requesting chatId=${activeChatId}`);
+    log.info(`variables-tab: refresh chat=${activeChatId}`);
     sendToBackend({ type: "request_variables_snapshot", chatId: activeChatId });
   });
   copyBtn.addEventListener("click", () => {
     if (!snapshot)
       return;
-    const payload = JSON.stringify({
-      chatId: snapshot.chatId,
-      seq: snapshot.seq,
-      ts: snapshot.ts,
-      scopes: snapshot.scopes,
-      defaults: snapshot.defaults
-    }, null, 2);
+    const payload = JSON.stringify(snapshot, null, 2);
     navigator.clipboard?.writeText(payload).then(() => {
       const original = copyBtn.textContent;
       copyBtn.textContent = "Copied!";
@@ -3641,6 +4042,8 @@ If the character has a default for this key, getChatVar will fall back to it. Ot
       seq: msg.seq,
       scopes: msg.scopes,
       defaults: msg.defaults,
+      defaultsCardSide: msg.defaultsCardSide ?? msg.defaults,
+      characterId: msg.characterId ?? null,
       ts: msg.ts
     };
     render();
@@ -3650,10 +4053,12 @@ If the character has a default for this key, getChatVar will fall back to it. Ot
       return;
     log.info(`variables-tab.setActiveChatId: ${activeChatId ?? "null"} -> ${chatId ?? "null"}`);
     activeChatId = chatId;
+    editBuffers.clear();
+    addRow.default = { open: false, name: "", value: "" };
+    addRow.local = { open: false, name: "", value: "" };
     if (chatId) {
-      if (snapshot && snapshot.chatId !== chatId) {
+      if (snapshot && snapshot.chatId !== chatId)
         snapshot = null;
-      }
       sendToBackend({ type: "request_variables_snapshot", chatId });
     } else {
       snapshot = null;
@@ -3673,8 +4078,8 @@ If the character has a default for this key, getChatVar will fall back to it. Ot
     }
   };
 }
-function sortedEntries(rec) {
-  return Object.keys(rec).sort((a, b) => a.localeCompare(b)).map((k) => [k, rec[k] ?? ""]);
+function sortedKeys(rec) {
+  return Object.keys(rec).sort((a, b) => a.localeCompare(b));
 }
 function shortId(id) {
   return id.length > 12 ? id.slice(0, 8) + "…" : id;
@@ -3691,8 +4096,143 @@ function countTotals(snap) {
     local: Object.keys(snap.scopes.local).length,
     global: Object.keys(snap.scopes.global).length,
     chat: Object.keys(snap.scopes.chat).length,
-    defaults: Object.keys(snap.defaults).length
+    defaults: new Set([...Object.keys(snap.defaults), ...Object.keys(snap.defaultsCardSide)]).size
   };
+}
+
+// src/ui/logs-tab.ts
+function mountLogsPanel(opts) {
+  const { root, sendToBackend, log } = opts;
+  log.info("logs-tab: mounting");
+  const state = {
+    enabled: false,
+    includeChatData: false,
+    eventCount: 0,
+    bufferBytes: 0,
+    lastDownloadAt: null,
+    lastError: null
+  };
+  root.classList.add("lr-logs-panel");
+  const wrap = document.createElement("div");
+  wrap.className = "lr-logs";
+  root.appendChild(wrap);
+  const intro = document.createElement("p");
+  intro.className = "lr-logs-intro";
+  intro.textContent = "Capture diagnostics for a bug report. Download turns logging off.";
+  wrap.appendChild(intro);
+  const enableRow = makeCheckboxRow({
+    id: "lr-logs-enable",
+    label: "Enable logging",
+    title: "Capture events into a downloadable bundle.",
+    onChange: (checked) => {
+      sendToBackend({
+        type: "log_set_state",
+        enabled: checked,
+        includeChatData: state.includeChatData
+      });
+    }
+  });
+  wrap.appendChild(enableRow.row);
+  const chatRow = makeCheckboxRow({
+    id: "lr-logs-include-chat",
+    label: "Include chat data",
+    title: "Off: message content and DOM are redacted. On: full chat data captured.",
+    onChange: (checked) => {
+      sendToBackend({
+        type: "log_set_state",
+        enabled: state.enabled,
+        includeChatData: checked
+      });
+    }
+  });
+  wrap.appendChild(chatRow.row);
+  const status = document.createElement("div");
+  status.className = "lr-logs-status";
+  wrap.appendChild(status);
+  const downloadBtn = document.createElement("button");
+  downloadBtn.type = "button";
+  downloadBtn.className = "lr-logs-download";
+  downloadBtn.textContent = "Download";
+  downloadBtn.title = "Save the bundle and turn logging off.";
+  downloadBtn.addEventListener("click", () => {
+    if (!state.enabled && state.eventCount === 0) {
+      flash("Nothing to download. Enable logging first.");
+      return;
+    }
+    log.info("logs-tab: requesting export");
+    sendToBackend({ type: "log_request_export" });
+    flash("Preparing bundle…");
+  });
+  wrap.appendChild(downloadBtn);
+  const clearBtn = document.createElement("button");
+  clearBtn.type = "button";
+  clearBtn.className = "lr-logs-clear";
+  clearBtn.textContent = "Clear";
+  clearBtn.title = "Drop buffered events.";
+  clearBtn.addEventListener("click", () => {
+    sendToBackend({ type: "log_clear" });
+  });
+  wrap.appendChild(clearBtn);
+  const flashEl = document.createElement("div");
+  flashEl.className = "lr-logs-flash";
+  wrap.appendChild(flashEl);
+  let flashTimer;
+  function flash(text) {
+    flashEl.textContent = text;
+    if (flashTimer !== undefined)
+      window.clearTimeout(flashTimer);
+    flashTimer = window.setTimeout(() => {
+      flashEl.textContent = "";
+    }, 6000);
+  }
+  function render() {
+    enableRow.input.checked = state.enabled;
+    chatRow.input.checked = state.includeChatData;
+    chatRow.input.disabled = !state.enabled;
+    chatRow.row.classList.toggle("lr-logs-row-disabled", !state.enabled);
+    const kb = (state.bufferBytes / 1024).toFixed(1);
+    status.textContent = state.enabled ? `${state.eventCount} events, ${kb} KB` : `Off. ${state.eventCount} events, ${kb} KB.`;
+    if (state.lastError) {
+      status.textContent += `  ·  ${state.lastError}`;
+    }
+  }
+  sendToBackend({ type: "log_request_state" });
+  render();
+  function handleBackendMessage(msg) {
+    if (msg.type === "log_state_pushed") {
+      state.enabled = msg.enabled;
+      state.includeChatData = msg.includeChatData;
+      state.eventCount = msg.eventCount;
+      state.bufferBytes = msg.bufferBytes;
+      render();
+    } else if (msg.type === "log_export_pushed") {
+      state.lastDownloadAt = Date.now();
+      flash("Bundle downloaded. Logging is off.");
+    }
+  }
+  function destroy() {
+    log.info("logs-tab: destroy");
+    if (flashTimer !== undefined)
+      window.clearTimeout(flashTimer);
+    while (root.firstChild)
+      root.removeChild(root.firstChild);
+  }
+  return { handleBackendMessage, destroy };
+}
+function makeCheckboxRow(opts) {
+  const row = document.createElement("div");
+  row.className = "lr-logs-row";
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  input.id = opts.id;
+  const label = document.createElement("label");
+  label.htmlFor = opts.id;
+  label.textContent = opts.label;
+  label.title = opts.title;
+  input.addEventListener("change", () => opts.onChange(input.checked));
+  row.appendChild(input);
+  row.appendChild(label);
+  return { row, input };
 }
 
 // src/ui/settings-tab.ts
@@ -3715,16 +4255,38 @@ function mountSettingsPanel(opts) {
   let settings = null;
   let connections = null;
   let lastSavedTs = 0;
-  const auxSection = document.createElement("section");
-  auxSection.className = "rs-section";
-  const auxHeader = document.createElement("div");
-  auxHeader.className = "rs-section-header";
-  const auxTitle = document.createElement("h3");
-  auxTitle.className = "rs-section-title";
-  auxTitle.textContent = "Aux model";
-  auxTitle.title = "Used by Lua's axLLMMain calls.";
-  auxHeader.appendChild(auxTitle);
-  auxSection.appendChild(auxHeader);
+  const status = document.createElement("div");
+  status.className = "rs-status";
+  root.appendChild(status);
+  const SUB_TABS2 = [
+    { id: "aux", label: "Auxiliary", title: "Aux model — used by Lua's axLLMMain / axLLM calls." },
+    { id: "sub", label: "Sub", title: "Submodel — used by V2 runLLM(model='submodel'). Falls back to Aux when empty." },
+    { id: "debug", label: "Debug", title: "Capture toggles, parity toggles, and diagnostic logs." }
+  ];
+  const subnav = document.createElement("div");
+  subnav.className = "lr-subtabs";
+  subnav.setAttribute("role", "tablist");
+  root.appendChild(subnav);
+  const subnavBtns = new Map;
+  for (const def of SUB_TABS2) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "lr-subtab";
+    btn.textContent = def.label;
+    btn.title = def.title;
+    btn.setAttribute("role", "tab");
+    btn.setAttribute("aria-selected", "false");
+    btn.addEventListener("click", () => activateSubTab(def.id));
+    subnav.appendChild(btn);
+    subnavBtns.set(def.id, btn);
+  }
+  let activeSubTab = "aux";
+  const auxBody = document.createElement("section");
+  auxBody.className = "lr-settings-tab-body";
+  const auxIntro = document.createElement("p");
+  auxIntro.className = "lr-settings-intro";
+  auxIntro.textContent = "Routes Lua's axLLMMain / axLLM calls through this connection. Useful for status-window updaters / classifiers separate from the main chat model.";
+  auxBody.appendChild(auxIntro);
   const connRow = document.createElement("div");
   connRow.className = "rs-row";
   const connLabel = document.createElement("label");
@@ -3736,7 +4298,7 @@ function mountSettingsPanel(opts) {
   connSelect.id = "rs-aux-conn";
   connSelect.className = "rs-select";
   connRow.appendChild(connSelect);
-  auxSection.appendChild(connRow);
+  auxBody.appendChild(connRow);
   const modelRow = document.createElement("div");
   modelRow.className = "rs-row";
   const modelLabel = document.createElement("label");
@@ -3751,7 +4313,7 @@ function mountSettingsPanel(opts) {
   modelInput.placeholder = "(use connection default)";
   modelInput.spellcheck = false;
   modelRow.appendChild(modelInput);
-  auxSection.appendChild(modelRow);
+  auxBody.appendChild(modelRow);
   const buttonRow = document.createElement("div");
   buttonRow.className = "rs-row rs-row-buttons";
   const saveModelBtn = document.createElement("button");
@@ -3772,7 +4334,7 @@ function mountSettingsPanel(opts) {
   refreshBtn.textContent = "Refresh";
   refreshBtn.title = "Re-fetch connection list.";
   buttonRow.appendChild(refreshBtn);
-  auxSection.appendChild(buttonRow);
+  auxBody.appendChild(buttonRow);
   const samplersSection = document.createElement("div");
   samplersSection.className = "rs-subsection";
   const samplersHeader = document.createElement("div");
@@ -3786,56 +4348,13 @@ function mountSettingsPanel(opts) {
   const samplersListEl = document.createElement("div");
   samplersListEl.className = "rs-samplers-list";
   samplersSection.appendChild(samplersListEl);
-  auxSection.appendChild(samplersSection);
-  const debugSection = document.createElement("div");
-  debugSection.className = "rs-subsection";
-  const debugHeader = document.createElement("div");
-  debugHeader.className = "rs-subsection-header";
-  const debugTitle = document.createElement("h4");
-  debugTitle.className = "rs-subsection-title";
-  debugTitle.textContent = "Debug capture";
-  debugTitle.title = "Surface aux-model requests and responses in a corner panel.";
-  debugHeader.appendChild(debugTitle);
-  debugSection.appendChild(debugHeader);
-  const reqCheckRow = document.createElement("label");
-  reqCheckRow.className = "rs-checkbox-row";
-  const reqCheck = document.createElement("input");
-  reqCheck.type = "checkbox";
-  reqCheck.className = "rs-checkbox";
-  reqCheck.id = "rs-aux-debug-req";
-  reqCheckRow.htmlFor = "rs-aux-debug-req";
-  const reqText = document.createElement("span");
-  reqText.className = "rs-checkbox-label";
-  reqText.textContent = "Capture requests";
-  reqText.title = "Show outgoing aux call payloads in the panel.";
-  reqCheckRow.appendChild(reqCheck);
-  reqCheckRow.appendChild(reqText);
-  debugSection.appendChild(reqCheckRow);
-  const resCheckRow = document.createElement("label");
-  resCheckRow.className = "rs-checkbox-row";
-  const resCheck = document.createElement("input");
-  resCheck.type = "checkbox";
-  resCheck.className = "rs-checkbox";
-  resCheck.id = "rs-aux-debug-res";
-  resCheckRow.htmlFor = "rs-aux-debug-res";
-  const resText = document.createElement("span");
-  resText.className = "rs-checkbox-label";
-  resText.textContent = "Capture responses";
-  resText.title = "Show aux call responses (and errors) in the panel.";
-  resCheckRow.appendChild(resCheck);
-  resCheckRow.appendChild(resText);
-  debugSection.appendChild(resCheckRow);
-  auxSection.appendChild(debugSection);
-  const submodelSection = document.createElement("section");
-  submodelSection.className = "rs-section";
-  const submodelHeader = document.createElement("div");
-  submodelHeader.className = "rs-section-header";
-  const submodelTitle = document.createElement("h3");
-  submodelTitle.className = "rs-section-title";
-  submodelTitle.textContent = "Submodel";
-  submodelTitle.title = "Used by V2 runLLM(model='submodel') calls. Falls back to Aux when empty.";
-  submodelHeader.appendChild(submodelTitle);
-  submodelSection.appendChild(submodelHeader);
+  auxBody.appendChild(samplersSection);
+  const subBody = document.createElement("section");
+  subBody.className = "lr-settings-tab-body";
+  const subIntro = document.createElement("p");
+  subIntro.className = "lr-settings-intro";
+  subIntro.textContent = "Routes V2-effect runLLM(model='submodel') calls through this connection. Cards use this for lightweight classifiers / status updaters separate from the main and aux models. Empty fields inherit from Aux.";
+  subBody.appendChild(subIntro);
   const submodelConnRow = document.createElement("div");
   submodelConnRow.className = "rs-row";
   const submodelConnLabel = document.createElement("label");
@@ -3847,7 +4366,7 @@ function mountSettingsPanel(opts) {
   submodelConnSelect.id = "rs-submodel-conn";
   submodelConnSelect.className = "rs-select";
   submodelConnRow.appendChild(submodelConnSelect);
-  submodelSection.appendChild(submodelConnRow);
+  subBody.appendChild(submodelConnRow);
   const submodelModelRow = document.createElement("div");
   submodelModelRow.className = "rs-row";
   const submodelModelLabel = document.createElement("label");
@@ -3862,7 +4381,7 @@ function mountSettingsPanel(opts) {
   submodelModelInput.placeholder = "(use connection default)";
   submodelModelInput.spellcheck = false;
   submodelModelRow.appendChild(submodelModelInput);
-  submodelSection.appendChild(submodelModelRow);
+  subBody.appendChild(submodelModelRow);
   const submodelButtonRow = document.createElement("div");
   submodelButtonRow.className = "rs-row rs-row-buttons";
   const submodelSaveModelBtn = document.createElement("button");
@@ -3877,31 +4396,76 @@ function mountSettingsPanel(opts) {
   submodelResetBtn.textContent = "Reset";
   submodelResetBtn.title = "Clear submodel fields.";
   submodelButtonRow.appendChild(submodelResetBtn);
-  submodelSection.appendChild(submodelButtonRow);
+  subBody.appendChild(submodelButtonRow);
   const submodelSamplersSection = document.createElement("div");
   submodelSamplersSection.className = "rs-subsection";
   const submodelSamplersHeader = document.createElement("div");
   submodelSamplersHeader.className = "rs-subsection-header";
   const submodelSamplersTitle = document.createElement("h4");
   submodelSamplersTitle.className = "rs-subsection-title";
-  submodelSamplersTitle.textContent = "Submodel samplers";
+  submodelSamplersTitle.textContent = "Samplers";
   submodelSamplersTitle.title = "Drag to set, double-click to reset.";
   submodelSamplersHeader.appendChild(submodelSamplersTitle);
   submodelSamplersSection.appendChild(submodelSamplersHeader);
   const submodelSamplersListEl = document.createElement("div");
   submodelSamplersListEl.className = "rs-samplers-list";
   submodelSamplersSection.appendChild(submodelSamplersListEl);
-  submodelSection.appendChild(submodelSamplersSection);
+  subBody.appendChild(submodelSamplersSection);
+  const debugBody = document.createElement("section");
+  debugBody.className = "lr-settings-tab-body";
+  const debugIntro = document.createElement("p");
+  debugIntro.className = "lr-settings-intro";
+  debugIntro.textContent = "Surface aux/submodel call payloads, capture diagnostic logs for bug reports, and tune Risu-parity toggles.";
+  debugBody.appendChild(debugIntro);
+  const debugCaptureSection = document.createElement("div");
+  debugCaptureSection.className = "rs-subsection";
+  const debugCaptureHeader = document.createElement("div");
+  debugCaptureHeader.className = "rs-subsection-header";
+  const debugCaptureTitle = document.createElement("h4");
+  debugCaptureTitle.className = "rs-subsection-title";
+  debugCaptureTitle.textContent = "Debug capture";
+  debugCaptureTitle.title = "Surface aux/submodel requests and responses in a corner panel.";
+  debugCaptureHeader.appendChild(debugCaptureTitle);
+  debugCaptureSection.appendChild(debugCaptureHeader);
+  const reqCheckRow = document.createElement("label");
+  reqCheckRow.className = "rs-checkbox-row";
+  const reqCheck = document.createElement("input");
+  reqCheck.type = "checkbox";
+  reqCheck.className = "rs-checkbox";
+  reqCheck.id = "rs-aux-debug-req";
+  reqCheckRow.htmlFor = "rs-aux-debug-req";
+  const reqText = document.createElement("span");
+  reqText.className = "rs-checkbox-label";
+  reqText.textContent = "Capture requests";
+  reqText.title = "Show outgoing aux/submodel call payloads in the panel.";
+  reqCheckRow.appendChild(reqCheck);
+  reqCheckRow.appendChild(reqText);
+  debugCaptureSection.appendChild(reqCheckRow);
+  const resCheckRow = document.createElement("label");
+  resCheckRow.className = "rs-checkbox-row";
+  const resCheck = document.createElement("input");
+  resCheck.type = "checkbox";
+  resCheck.className = "rs-checkbox";
+  resCheck.id = "rs-aux-debug-res";
+  resCheckRow.htmlFor = "rs-aux-debug-res";
+  const resText = document.createElement("span");
+  resText.className = "rs-checkbox-label";
+  resText.textContent = "Capture responses";
+  resText.title = "Show aux/submodel call responses (and errors) in the panel.";
+  resCheckRow.appendChild(resCheck);
+  resCheckRow.appendChild(resText);
+  debugCaptureSection.appendChild(resCheckRow);
+  debugBody.appendChild(debugCaptureSection);
+  const paritySectionHost = document.createElement("div");
+  paritySectionHost.className = "rs-subsection";
   const parityHeader = document.createElement("div");
-  parityHeader.className = "rs-section-header";
-  const parityTitle = document.createElement("h3");
-  parityTitle.className = "rs-section-title";
+  parityHeader.className = "rs-subsection-header";
+  const parityTitle = document.createElement("h4");
+  parityTitle.className = "rs-subsection-title";
   parityTitle.textContent = "Parity toggles";
   parityTitle.title = "Behaviour toggles ported from Risu's Advanced Settings. Flip only if a card needs legacy behaviour.";
   parityHeader.appendChild(parityTitle);
-  const paritySection = document.createElement("section");
-  paritySection.className = "rs-section";
-  paritySection.appendChild(parityHeader);
+  paritySectionHost.appendChild(parityHeader);
   const legacyMediaRow = document.createElement("label");
   legacyMediaRow.className = "rs-checkbox-row";
   const legacyMediaCheck = document.createElement("input");
@@ -3915,13 +4479,40 @@ function mountSettingsPanel(opts) {
   legacyMediaText.title = "Disable the fuzzy-match fallback for asset macros. On = strict exact-match (Risu legacy).";
   legacyMediaRow.appendChild(legacyMediaCheck);
   legacyMediaRow.appendChild(legacyMediaText);
-  paritySection.appendChild(legacyMediaRow);
-  const status = document.createElement("div");
-  status.className = "rs-status";
-  auxSection.appendChild(status);
-  root.appendChild(auxSection);
-  root.appendChild(submodelSection);
-  root.appendChild(paritySection);
+  paritySectionHost.appendChild(legacyMediaRow);
+  debugBody.appendChild(paritySectionHost);
+  const logsHost = document.createElement("div");
+  logsHost.className = "rs-subsection lr-settings-logs-host";
+  const logsHeader = document.createElement("div");
+  logsHeader.className = "rs-subsection-header";
+  const logsTitle = document.createElement("h4");
+  logsTitle.className = "rs-subsection-title";
+  logsTitle.textContent = "Logs";
+  logsTitle.title = "Capture diagnostics for a bug report.";
+  logsHeader.appendChild(logsTitle);
+  logsHost.appendChild(logsHeader);
+  const logsMount = document.createElement("div");
+  logsHost.appendChild(logsMount);
+  debugBody.appendChild(logsHost);
+  const logsHandle = mountLogsPanel({ root: logsMount, sendToBackend, log });
+  const panelsHost = document.createElement("div");
+  panelsHost.className = "lr-subtab-panels";
+  panelsHost.appendChild(auxBody);
+  panelsHost.appendChild(subBody);
+  panelsHost.appendChild(debugBody);
+  root.appendChild(panelsHost);
+  function activateSubTab(id) {
+    activeSubTab = id;
+    for (const [k, btn] of subnavBtns) {
+      const sel = k === id;
+      btn.classList.toggle("lr-subtab-active", sel);
+      btn.setAttribute("aria-selected", sel ? "true" : "false");
+    }
+    auxBody.hidden = id !== "aux";
+    subBody.hidden = id !== "sub";
+    debugBody.hidden = id !== "debug";
+  }
+  activateSubTab(activeSubTab);
   function renderConnectionSelect() {
     connSelect.innerHTML = "";
     const defaultOpt = document.createElement("option");
@@ -4337,6 +4928,11 @@ function mountSettingsPanel(opts) {
       render();
       return;
     }
+    try {
+      logsHandle.handleBackendMessage(msg);
+    } catch (err) {
+      log.warn("settings-tab: logs panel handler threw:", err);
+    }
   }
   render();
   log.info("settings-panel: ready");
@@ -4344,6 +4940,9 @@ function mountSettingsPanel(opts) {
     handleBackendMessage,
     destroy() {
       log.info("settings-panel: destroy");
+      try {
+        logsHandle.destroy();
+      } catch {}
       try {
         root.replaceChildren();
       } catch {}
@@ -4371,26 +4970,47 @@ function mountModulesPanel(opts) {
   const expandedCharacters = new Set;
   const expandedModules = new Set;
   let lastError = null;
-  const intro = document.createElement("p");
-  intro.className = "lrm-intro";
-  intro.textContent = "Upload .risum modules to your library, then attach them to characters. Attached modules layer their lorebook, regex, Lua, and assets onto the character at runtime.";
-  root.appendChild(intro);
-  const libSection = document.createElement("details");
-  libSection.className = "lrm-section";
-  libSection.open = true;
-  const libSummary = document.createElement("summary");
-  libSummary.className = "lrm-section-header";
-  const libTitle = document.createElement("h3");
-  libTitle.className = "lrm-section-title";
-  libTitle.textContent = "Module library";
-  libSummary.appendChild(libTitle);
-  libSection.appendChild(libSummary);
-  const libBody = document.createElement("div");
-  libBody.className = "lrm-section-body";
-  libSection.appendChild(libBody);
+  const SUB_TABS2 = [
+    { id: "characters", label: "Characters", title: "Imported Risu cards. Click any row to manage attached modules." },
+    { id: "modules", label: "Modules", title: "Module library. Click any row for details / delete." },
+    { id: "lorebooks", label: "Lorebooks", title: "Standalone lorebook import. Creates an unattached world_book; attach via Lumiverse." }
+  ];
+  const subnav = document.createElement("div");
+  subnav.className = "lr-subtabs";
+  subnav.setAttribute("role", "tablist");
+  root.appendChild(subnav);
+  const subnavBtns = new Map;
+  for (const def of SUB_TABS2) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "lr-subtab";
+    btn.textContent = def.label;
+    btn.title = def.title;
+    btn.setAttribute("role", "tab");
+    btn.setAttribute("aria-selected", "false");
+    btn.addEventListener("click", () => activateSubTab(def.id));
+    subnav.appendChild(btn);
+    subnavBtns.set(def.id, btn);
+  }
+  let activeSubTab = "characters";
+  const charBody = document.createElement("section");
+  charBody.className = "lrm-section-body lrm-tab-body";
+  const charHeaderSlot = document.createElement("div");
+  charHeaderSlot.className = "lrm-character-header-slot";
+  charBody.appendChild(charHeaderSlot);
+  const charHeaderHandle = opts.mountCharactersHeader ? opts.mountCharactersHeader(charHeaderSlot) : null;
+  const charDesc = document.createElement("div");
+  charDesc.className = "lrm-section-desc";
+  charDesc.textContent = "Click any row to manage attached modules. Delete characters through Lumiverse.";
+  charBody.appendChild(charDesc);
+  const charList = document.createElement("div");
+  charList.className = "lrm-characters-list";
+  charBody.appendChild(charList);
+  const libBody = document.createElement("section");
+  libBody.className = "lrm-section-body lrm-tab-body";
   const libDesc = document.createElement("div");
   libDesc.className = "lrm-section-desc";
-  libDesc.textContent = "Upload .risum modules and attach them to characters.";
+  libDesc.textContent = "Upload .risum modules. Click a row for details + delete.";
   libBody.appendChild(libDesc);
   const libToolbar = document.createElement("div");
   libToolbar.className = "lrm-toolbar";
@@ -4410,32 +5030,42 @@ function mountModulesPanel(opts) {
   const libList = document.createElement("div");
   libList.className = "lrm-modules-list";
   libBody.appendChild(libList);
-  const charSection = document.createElement("details");
-  charSection.className = "lrm-section";
-  charSection.open = true;
-  const charSummary = document.createElement("summary");
-  charSummary.className = "lrm-section-header";
-  const charTitle = document.createElement("h3");
-  charTitle.className = "lrm-section-title";
-  charTitle.textContent = "Characters";
-  charSummary.appendChild(charTitle);
-  charSection.appendChild(charSummary);
-  const charBody = document.createElement("div");
-  charBody.className = "lrm-section-body";
-  charSection.appendChild(charBody);
-  const charHeaderSlot = document.createElement("div");
-  charHeaderSlot.className = "lrm-character-header-slot";
-  charBody.appendChild(charHeaderSlot);
-  const charHeaderHandle = opts.mountCharactersHeader ? opts.mountCharactersHeader(charHeaderSlot) : null;
-  const charDesc = document.createElement("div");
-  charDesc.className = "lrm-section-desc";
-  charDesc.textContent = "Note: delete characters through Lumiverse.";
-  charBody.appendChild(charDesc);
-  const charList = document.createElement("div");
-  charList.className = "lrm-characters-list";
-  charBody.appendChild(charList);
-  root.appendChild(charSection);
-  root.appendChild(libSection);
+  const lorebooksBody = document.createElement("section");
+  lorebooksBody.className = "lrm-section-body lrm-tab-body";
+  const lbDesc = document.createElement("div");
+  lbDesc.className = "lrm-section-desc";
+  lbDesc.textContent = "Upload a standalone lorebook (Risu native or CCSv3 JSON). Lumiverse stores it as an unattached world_book — attach to characters via Lumiverse's UI. Risu decorators (@@position, @@depth, @@is_greeting, etc.) still apply at runtime when a Risu-imported character uses the book.";
+  lorebooksBody.appendChild(lbDesc);
+  const lbToolbar = document.createElement("div");
+  lbToolbar.className = "lrm-toolbar";
+  const lbUploadBtn = document.createElement("button");
+  lbUploadBtn.type = "button";
+  lbUploadBtn.className = "lrm-btn lrm-btn-primary";
+  lbUploadBtn.textContent = "Upload lorebook…";
+  lbUploadBtn.title = "Pick a Risu native or CCSv3 lorebook JSON file.";
+  lbToolbar.appendChild(lbUploadBtn);
+  lorebooksBody.appendChild(lbToolbar);
+  const lbStatus = document.createElement("div");
+  lbStatus.className = "lrm-lorebook-status";
+  lorebooksBody.appendChild(lbStatus);
+  const panelsHost = document.createElement("div");
+  panelsHost.className = "lr-subtab-panels";
+  panelsHost.appendChild(charBody);
+  panelsHost.appendChild(libBody);
+  panelsHost.appendChild(lorebooksBody);
+  root.appendChild(panelsHost);
+  function activateSubTab(id) {
+    activeSubTab = id;
+    for (const [k, btn] of subnavBtns) {
+      const sel = k === id;
+      btn.classList.toggle("lr-subtab-active", sel);
+      btn.setAttribute("aria-selected", sel ? "true" : "false");
+    }
+    charBody.hidden = id !== "characters";
+    libBody.hidden = id !== "modules";
+    lorebooksBody.hidden = id !== "lorebooks";
+  }
+  activateSubTab(activeSubTab);
   function setStatus(_msg, _isError = false) {}
   function renderModuleList() {
     libList.replaceChildren();
@@ -4563,7 +5193,8 @@ filename: ${m.filename}`;
     const attachedList = attachedByCharacter.get(card.character_id) ?? [];
     const summaryCount = document.createElement("span");
     summaryCount.className = "lrm-character-count";
-    summaryCount.textContent = `${attachedList.length} attached`;
+    summaryCount.textContent = attachedList.length === 0 ? "manage modules" : `manage modules · ${attachedList.length} attached`;
+    summaryCount.title = "Open to attach or detach modules for this character.";
     summary.appendChild(summaryCount);
     det.appendChild(summary);
     const body = document.createElement("div");
@@ -4695,6 +5326,44 @@ filename: ${m.filename}`;
     log.info("modules-panel: refresh clicked");
     sendToBackend({ type: "request_modules" });
   });
+  let lorebookImportInFlight = false;
+  lbUploadBtn.addEventListener("click", () => {
+    onLorebookUploadClicked();
+  });
+  async function onLorebookUploadClicked() {
+    if (lorebookImportInFlight)
+      return;
+    let file;
+    try {
+      file = await pickLorebookFile();
+    } catch (err) {
+      setLorebookStatus(`File pick failed: ${errMsg(err)}`, true);
+      return;
+    }
+    if (!file)
+      return;
+    let text;
+    try {
+      text = await file.text();
+    } catch (err) {
+      setLorebookStatus(`Read failed: ${errMsg(err)}`, true);
+      return;
+    }
+    lorebookImportInFlight = true;
+    lbUploadBtn.disabled = true;
+    setLorebookStatus(`Importing "${file.name}" (${(text.length / 1024).toFixed(1)} KB)…`, false);
+    log.info(`modules-panel: import_lorebook standalone file=${file.name} bytes=${text.length}`);
+    sendToBackend({
+      type: "import_lorebook",
+      characterId: null,
+      json: text,
+      filename: file.name
+    });
+  }
+  function setLorebookStatus(msg, isError) {
+    lbStatus.textContent = msg;
+    lbStatus.classList.toggle("lrm-lorebook-status-error", isError);
+  }
   async function onUploadClicked() {
     if (uploadBtn.disabled)
       return;
@@ -4868,6 +5537,19 @@ filename: ${m.filename}`;
       case "module_upload_ack":
         onUploadAck(msg.sessionId, msg.seq, msg.receivedBytes);
         break;
+      case "lorebook_import_result":
+        if (msg.characterId === null) {
+          lorebookImportInFlight = false;
+          lbUploadBtn.disabled = false;
+          if (msg.ok) {
+            const nameSuffix = msg.worldBookName ? ` as "${msg.worldBookName}"` : "";
+            const dropSuffix = msg.dropped > 0 ? ` (${msg.dropped} dropped)` : "";
+            setLorebookStatus(`Imported ${msg.written} entr${msg.written === 1 ? "y" : "ies"}${nameSuffix}${dropSuffix}. Attach via Lumiverse to use.`, false);
+          } else {
+            setLorebookStatus(msg.reason ?? "Import failed.", true);
+          }
+        }
+        break;
       case "error":
         if (lastError === null) {
           lastError = msg.message;
@@ -4923,6 +5605,34 @@ function pickViaInput() {
     input.click();
   });
 }
+function pickLorebookFile() {
+  return new Promise((resolve, reject) => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".json,.lorebook,application/json";
+    input.style.display = "none";
+    document.body.appendChild(input);
+    let settled = false;
+    const done = (f, err) => {
+      if (settled)
+        return;
+      settled = true;
+      try {
+        document.body.removeChild(input);
+      } catch {}
+      if (err)
+        reject(err);
+      else
+        resolve(f);
+    };
+    input.addEventListener("change", () => {
+      const list = input.files;
+      done(list && list.length > 0 ? list.item(0) : null);
+    });
+    input.addEventListener("cancel", () => done(null));
+    input.click();
+  });
+}
 function bytesToBase642(bytes) {
   let binary = "";
   const chunk = 32768;
@@ -4952,11 +5662,11 @@ function mountViewerPanel(opts) {
   let viewerData = null;
   let loading = false;
   let lastError = null;
-  const defaultVarEditBuffers = new Map;
-  let addingDefaultVarRow = false;
-  let lorebookImportStatus = null;
   let activeSubTab = "assets";
-  const ASSET_PAGE_SIZE = 60;
+  const ASSET_TILE_MIN_W = 140;
+  const ASSET_TILE_H = 220;
+  const ASSET_OVERSCAN_ROWS = 2;
+  let assetSearchTerm = "";
   let assetPagesShown = 1;
   const attachedByCharacter = new Map;
   let assetUploadStatus = null;
@@ -5064,9 +5774,6 @@ function mountViewerPanel(opts) {
     lastError = null;
     activeSubTab = "assets";
     assetPagesShown = 1;
-    addingDefaultVarRow = false;
-    defaultVarEditBuffers.clear();
-    lorebookImportStatus = null;
     renderStatus();
     renderSurfaces();
     log.info(`viewer-panel: request data kind=${o.kind} id=${o.id}`);
@@ -5105,14 +5812,6 @@ function mountViewerPanel(opts) {
       count: d.assets.length,
       render: () => renderAssetsSection(d.assets)
     });
-    if (isCharacter) {
-      tabs.push({
-        id: "defaults",
-        label: "Default vars",
-        count: d.defaultVariables.length,
-        render: () => renderDefaultVariablesSection(d.defaultVariables)
-      });
-    }
     tabs.push({
       id: "triggers",
       label: "Triggers",
@@ -5201,9 +5900,9 @@ function mountViewerPanel(opts) {
     surfaceHost.appendChild(active.render());
   }
   function renderBackgroundHtmlSection(html) {
-    const det = document.createElement("details");
+    const det = document.createElement("section");
     det.className = "lrv-section";
-    const sum = document.createElement("summary");
+    const sum = document.createElement("div");
     sum.className = "lrv-section-summary";
     sum.textContent = `Background HTML · ${html.length} chars`;
     det.appendChild(sum);
@@ -5313,278 +6012,15 @@ function mountViewerPanel(opts) {
     wrap.appendChild(head);
     const body = document.createElement("div");
     body.className = "lrv-redirect-body";
-    body.textContent = "Edit and view this character's lorebook + regex rules through Lumiverse's native UI.";
+    body.textContent = "Edit and view this character's lorebook + regex rules through Lumiverse's native UI. " + "To import a standalone lorebook file, use the Import → Lorebooks tab.";
     wrap.appendChild(body);
-    const importRow = document.createElement("div");
-    importRow.className = "lrv-redirect-actions";
-    const importBtn = document.createElement("button");
-    importBtn.type = "button";
-    importBtn.className = "lrv-btn";
-    importBtn.textContent = "+ Import lorebook…";
-    importBtn.title = "Append entries from a Risu/CCSv3 JSON file to this character's world book.";
-    importBtn.addEventListener("click", () => {
-      onImportLorebookClicked();
-    });
-    importRow.appendChild(importBtn);
-    if (lorebookImportStatus !== null) {
-      const status2 = document.createElement("span");
-      status2.className = "lrv-asset-upload-status";
-      if (lorebookImportStatus.kind === "error") {
-        status2.classList.add("lrv-asset-upload-status-error");
-      }
-      status2.textContent = lorebookImportStatus.message;
-      importRow.appendChild(status2);
-    }
-    wrap.appendChild(importRow);
     return wrap;
   }
-  async function onImportLorebookClicked() {
-    if (!viewerData || viewerData.source.kind !== "character")
-      return;
-    const characterId = viewerData.source.characterId;
-    let file;
-    try {
-      file = await pickJsonFile();
-    } catch (err) {
-      lorebookImportStatus = { kind: "error", message: `File pick failed: ${errMsg2(err)}` };
-      render();
-      return;
-    }
-    if (!file)
-      return;
-    let text;
-    try {
-      text = await file.text();
-    } catch (err) {
-      lorebookImportStatus = { kind: "error", message: `Read failed: ${errMsg2(err)}` };
-      render();
-      return;
-    }
-    lorebookImportStatus = { kind: "info", message: `Importing "${file.name}"…` };
-    render();
-    log.info(`viewer-panel: import_lorebook char=${characterId} file=${file.name} bytes=${text.length}`);
-    sendToBackend({
-      type: "import_lorebook",
-      characterId,
-      json: text,
-      filename: file.name
-    });
-  }
-  function pickJsonFile() {
-    return new Promise((resolve, reject) => {
-      const input = document.createElement("input");
-      input.type = "file";
-      input.accept = ".json,.lorebook,application/json";
-      input.style.display = "none";
-      document.body.appendChild(input);
-      let settled = false;
-      const done = (f, err) => {
-        if (settled)
-          return;
-        settled = true;
-        try {
-          document.body.removeChild(input);
-        } catch {}
-        if (err)
-          reject(err);
-        else
-          resolve(f);
-      };
-      input.addEventListener("change", () => {
-        const list = input.files;
-        done(list && list.length > 0 ? list.item(0) : null);
-      });
-      input.addEventListener("cancel", () => done(null));
-      input.click();
-    });
-  }
-  function renderDefaultVariablesSection(vars) {
-    const det = document.createElement("details");
-    det.className = "lrv-section";
-    det.open = vars.length > 0;
-    const sum = document.createElement("summary");
-    sum.className = "lrv-section-summary";
-    const overrideCount = vars.filter((v) => v.overridden).length;
-    sum.textContent = `Default variables · ${vars.length}` + (overrideCount > 0 ? ` (${overrideCount} overridden)` : "");
-    det.appendChild(sum);
-    const note = document.createElement("p");
-    note.className = "lrv-section-note";
-    note.textContent = "Initial values that seed each new chat. CBS reads via {{getvar::name}} " + "until overwritten by triggers or {{setvar}}. Overrides are stored " + 'per-character; "Reset" restores the card-side default.';
-    det.appendChild(note);
-    if (vars.length === 0 && !addingDefaultVarRow) {
-      const empty = document.createElement("div");
-      empty.className = "lrv-empty";
-      empty.textContent = "No default variables.";
-      det.appendChild(empty);
-    }
-    const list = document.createElement("div");
-    list.className = "lrv-defvar-list";
-    for (const v of vars)
-      list.appendChild(renderDefaultVariableRow(v));
-    if (addingDefaultVarRow)
-      list.appendChild(renderDefaultVariableNewRow());
-    det.appendChild(list);
-    if (!addingDefaultVarRow) {
-      const addBtn = document.createElement("button");
-      addBtn.type = "button";
-      addBtn.className = "lrv-btn";
-      addBtn.textContent = "+ Add default variable";
-      addBtn.addEventListener("click", () => {
-        addingDefaultVarRow = true;
-        render();
-      });
-      det.appendChild(addBtn);
-    }
-    return det;
-  }
-  function renderDefaultVariableRow(v) {
-    const row = document.createElement("div");
-    row.className = "lrv-defvar-row";
-    if (v.overridden)
-      row.classList.add("lrv-defvar-row-overridden");
-    const nameEl = document.createElement("span");
-    nameEl.className = "lrv-defvar-name";
-    nameEl.textContent = v.name;
-    nameEl.title = v.name;
-    row.appendChild(nameEl);
-    const buffered = defaultVarEditBuffers.get(v.name);
-    const input = document.createElement("input");
-    input.type = "text";
-    input.className = "lrv-defvar-input";
-    input.value = buffered ?? v.value;
-    input.spellcheck = false;
-    input.addEventListener("input", () => {
-      defaultVarEditBuffers.set(v.name, input.value);
-    });
-    input.addEventListener("change", commit);
-    input.addEventListener("blur", commit);
-    input.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") {
-        e.preventDefault();
-        commit();
-        input.blur();
-      } else if (e.key === "Escape") {
-        e.preventDefault();
-        input.value = v.value;
-        defaultVarEditBuffers.delete(v.name);
-        input.blur();
-      }
-    });
-    row.appendChild(input);
-    if (v.overridden) {
-      const reset = document.createElement("button");
-      reset.type = "button";
-      reset.className = "lrv-asset-action";
-      reset.textContent = "Reset";
-      reset.title = `Restore card default: "${v.cardDefault}"`;
-      reset.addEventListener("click", () => {
-        sendDeleteDefaultVariable(v.name);
-        defaultVarEditBuffers.delete(v.name);
-      });
-      row.appendChild(reset);
-    } else {
-      const spacer = document.createElement("span");
-      spacer.className = "lrv-defvar-spacer";
-      row.appendChild(spacer);
-    }
-    return row;
-    function commit() {
-      const next = input.value;
-      defaultVarEditBuffers.delete(v.name);
-      if (next !== v.value)
-        sendSetDefaultVariable(v.name, next);
-    }
-  }
-  function renderDefaultVariableNewRow() {
-    const row = document.createElement("div");
-    row.className = "lrv-defvar-row lrv-defvar-row-new";
-    const nameInput = document.createElement("input");
-    nameInput.type = "text";
-    nameInput.className = "lrv-defvar-name-input";
-    nameInput.placeholder = "name";
-    nameInput.spellcheck = false;
-    row.appendChild(nameInput);
-    const valueInput = document.createElement("input");
-    valueInput.type = "text";
-    valueInput.className = "lrv-defvar-input";
-    valueInput.placeholder = "value";
-    valueInput.spellcheck = false;
-    row.appendChild(valueInput);
-    const saveBtn = document.createElement("button");
-    saveBtn.type = "button";
-    saveBtn.className = "lrv-asset-action lrv-asset-action-primary";
-    saveBtn.textContent = "Add";
-    saveBtn.addEventListener("click", commit);
-    row.appendChild(saveBtn);
-    const cancelBtn = document.createElement("button");
-    cancelBtn.type = "button";
-    cancelBtn.className = "lrv-asset-action";
-    cancelBtn.textContent = "Cancel";
-    cancelBtn.addEventListener("click", () => {
-      addingDefaultVarRow = false;
-      render();
-    });
-    row.appendChild(cancelBtn);
-    nameInput.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") {
-        e.preventDefault();
-        valueInput.focus();
-      } else if (e.key === "Escape") {
-        e.preventDefault();
-        addingDefaultVarRow = false;
-        render();
-      }
-    });
-    valueInput.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") {
-        e.preventDefault();
-        commit();
-      } else if (e.key === "Escape") {
-        e.preventDefault();
-        addingDefaultVarRow = false;
-        render();
-      }
-    });
-    queueMicrotask(() => nameInput.focus());
-    return row;
-    function commit() {
-      const name = nameInput.value.trim();
-      if (name.length === 0) {
-        nameInput.focus();
-        return;
-      }
-      sendSetDefaultVariable(name, valueInput.value);
-      addingDefaultVarRow = false;
-    }
-  }
-  function sendSetDefaultVariable(name, value) {
-    if (!viewerData || viewerData.source.kind !== "character")
-      return;
-    log.info(`viewer-panel: set_default_variable name=${name} len=${value.length}`);
-    sendToBackend({
-      type: "set_default_variable",
-      characterId: viewerData.source.characterId,
-      name,
-      value
-    });
-  }
-  function sendDeleteDefaultVariable(name) {
-    if (!viewerData || viewerData.source.kind !== "character")
-      return;
-    log.info(`viewer-panel: delete_default_variable name=${name}`);
-    sendToBackend({
-      type: "delete_default_variable",
-      characterId: viewerData.source.characterId,
-      name
-    });
-  }
   function renderAssetsSection(assets) {
-    const det = document.createElement("details");
+    const det = document.createElement("section");
     det.className = "lrv-section";
-    det.open = true;
-    const sum = document.createElement("summary");
+    const sum = document.createElement("div");
     sum.className = "lrv-section-summary";
-    sum.textContent = `Assets · ${assets.length}`;
     det.appendChild(sum);
     const toolbar2 = document.createElement("div");
     toolbar2.className = "lrv-asset-toolbar";
@@ -5596,6 +6032,13 @@ function mountViewerPanel(opts) {
       onAddAssetClicked();
     });
     toolbar2.appendChild(addBtn);
+    const search = document.createElement("input");
+    search.type = "search";
+    search.className = "lrv-asset-search";
+    search.placeholder = `Search ${assets.length} asset${assets.length === 1 ? "" : "s"}…`;
+    search.value = assetSearchTerm;
+    search.spellcheck = false;
+    toolbar2.appendChild(search);
     if (assetUploadStatus !== null) {
       const status2 = document.createElement("span");
       status2.className = "lrv-asset-upload-status";
@@ -5606,6 +6049,9 @@ function mountViewerPanel(opts) {
       toolbar2.appendChild(status2);
     }
     det.appendChild(toolbar2);
+    const term = assetSearchTerm.trim().toLowerCase();
+    const filtered = term ? assets.filter((a) => a.name.toLowerCase().includes(term)) : assets;
+    sum.textContent = term ? `Assets · ${filtered.length} of ${assets.length}` : `Assets · ${assets.length}`;
     if (assets.length === 0) {
       const empty = document.createElement("div");
       empty.className = "lrv-empty";
@@ -5613,37 +6059,122 @@ function mountViewerPanel(opts) {
       det.appendChild(empty);
       return det;
     }
-    const limit = ASSET_PAGE_SIZE * assetPagesShown;
-    const visible = assets.slice(0, limit);
-    const grid = document.createElement("div");
-    grid.className = "lrv-asset-grid";
-    for (const a of visible) {
-      grid.appendChild(renderAssetTile(a));
+    if (filtered.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "lrv-empty";
+      empty.textContent = `No matches for "${assetSearchTerm}".`;
+      det.appendChild(empty);
     }
-    det.appendChild(grid);
-    if (assets.length > limit) {
-      const more = document.createElement("button");
-      more.type = "button";
-      more.className = "lrv-btn lrv-asset-show-more";
-      const remaining = assets.length - limit;
-      more.textContent = `Show ${Math.min(ASSET_PAGE_SIZE, remaining)} more (${remaining} hidden)`;
-      more.addEventListener("click", () => {
-        assetPagesShown += 1;
-        render();
-      });
-      det.appendChild(more);
-      if (assets.length > limit + ASSET_PAGE_SIZE) {
-        const allBtn = document.createElement("button");
-        allBtn.type = "button";
-        allBtn.className = "lrv-btn lrv-asset-show-more";
-        allBtn.textContent = `Show all (${assets.length})`;
-        allBtn.addEventListener("click", () => {
-          assetPagesShown = Math.ceil(assets.length / ASSET_PAGE_SIZE) + 1;
-          render();
-        });
-        det.appendChild(allBtn);
+    const scrollHost = document.createElement("div");
+    scrollHost.className = "lrv-asset-virt-host";
+    const inner = document.createElement("div");
+    inner.className = "lrv-asset-virt-inner";
+    scrollHost.appendChild(inner);
+    if (filtered.length > 0)
+      det.appendChild(scrollHost);
+    let columns = 1;
+    let tileW = ASSET_TILE_MIN_W;
+    let containerW = ASSET_TILE_MIN_W;
+    const tileNodes = new Map;
+    function recomputeLayout() {
+      containerW = scrollHost.clientWidth || ASSET_TILE_MIN_W;
+      columns = Math.max(1, Math.floor(containerW / ASSET_TILE_MIN_W));
+      tileW = containerW / columns;
+      const rows = Math.ceil(filtered.length / columns);
+      inner.style.height = `${rows * ASSET_TILE_H}px`;
+    }
+    function placeTile(node, idx) {
+      const row = Math.floor(idx / columns);
+      const col = idx % columns;
+      node.style.position = "absolute";
+      node.style.top = `${row * ASSET_TILE_H}px`;
+      node.style.left = `${col * tileW}px`;
+      node.style.width = `${tileW}px`;
+      node.style.height = `${ASSET_TILE_H}px`;
+    }
+    function renderWindow() {
+      if (filtered.length === 0)
+        return;
+      const top = scrollHost.scrollTop;
+      const bottom = top + (scrollHost.clientHeight || 1);
+      const totalRows = Math.ceil(filtered.length / columns);
+      const startRow = Math.max(0, Math.floor(top / ASSET_TILE_H) - ASSET_OVERSCAN_ROWS);
+      const endRow = Math.min(totalRows, Math.ceil(bottom / ASSET_TILE_H) + ASSET_OVERSCAN_ROWS);
+      const startIdx = startRow * columns;
+      const endIdx = Math.min(filtered.length, endRow * columns);
+      const wanted = new Set;
+      for (let i = startIdx;i < endIdx; i++)
+        wanted.add(i);
+      if (renamingAssetName !== null) {
+        const idx = filtered.findIndex((a) => a.name === renamingAssetName);
+        if (idx >= 0)
+          wanted.add(idx);
+      }
+      for (const [i, node] of tileNodes) {
+        if (!wanted.has(i)) {
+          node.remove();
+          tileNodes.delete(i);
+        }
+      }
+      for (const i of wanted) {
+        if (tileNodes.has(i)) {
+          placeTile(tileNodes.get(i), i);
+          continue;
+        }
+        const a = filtered[i];
+        if (!a)
+          continue;
+        const tile = renderAssetTile(a);
+        placeTile(tile, i);
+        inner.appendChild(tile);
+        tileNodes.set(i, tile);
       }
     }
+    function rerenderAll() {
+      inner.replaceChildren();
+      tileNodes.clear();
+      recomputeLayout();
+      renderWindow();
+    }
+    let scrollPending = false;
+    scrollHost.addEventListener("scroll", () => {
+      if (scrollPending)
+        return;
+      scrollPending = true;
+      requestAnimationFrame(() => {
+        scrollPending = false;
+        renderWindow();
+      });
+    });
+    if (typeof ResizeObserver !== "undefined") {
+      let firstObservation = true;
+      const ro = new ResizeObserver(() => {
+        const prevColumns = columns;
+        const prevTileW = tileW;
+        recomputeLayout();
+        if (firstObservation || columns !== prevColumns || Math.abs(tileW - prevTileW) > 0.5) {
+          rerenderAll();
+          firstObservation = false;
+        } else {
+          renderWindow();
+        }
+      });
+      ro.observe(scrollHost);
+    } else {
+      requestAnimationFrame(() => {
+        recomputeLayout();
+        renderWindow();
+      });
+    }
+    let searchTimer;
+    search.addEventListener("input", () => {
+      if (searchTimer !== undefined)
+        window.clearTimeout(searchTimer);
+      searchTimer = window.setTimeout(() => {
+        assetSearchTerm = search.value;
+        render();
+      }, 80);
+    });
     return det;
   }
   function renderAssetTile(a) {
@@ -5948,9 +6479,9 @@ function mountViewerPanel(opts) {
     return err instanceof Error ? err.message : String(err);
   }
   function renderTriggersSection(triggers) {
-    const det = document.createElement("details");
+    const det = document.createElement("section");
     det.className = "lrv-section";
-    const sum = document.createElement("summary");
+    const sum = document.createElement("div");
     sum.className = "lrv-section-summary";
     sum.textContent = `Triggers · ${triggers.length}`;
     det.appendChild(sum);
@@ -6074,9 +6605,9 @@ function mountViewerPanel(opts) {
     editingTriggerLua = "";
   }
   function renderRegexSection(regex) {
-    const det = document.createElement("details");
+    const det = document.createElement("section");
     det.className = "lrv-section";
-    const sum = document.createElement("summary");
+    const sum = document.createElement("div");
     sum.className = "lrv-section-summary";
     sum.textContent = `Regex · ${regex.length}`;
     det.appendChild(sum);
@@ -6136,9 +6667,9 @@ function mountViewerPanel(opts) {
     return det;
   }
   function renderLorebookSection(groups) {
-    const det = document.createElement("details");
+    const det = document.createElement("section");
     det.className = "lrv-section";
-    const sum = document.createElement("summary");
+    const sum = document.createElement("div");
     sum.className = "lrv-section-summary";
     const totalEntries = groups.reduce((acc, g) => acc + g.entries.length, 0);
     sum.textContent = `Lorebook · ${groups.length} group${groups.length === 1 ? "" : "s"} · ${totalEntries} entr${totalEntries === 1 ? "y" : "ies"}`;
@@ -6183,9 +6714,9 @@ function mountViewerPanel(opts) {
     return det;
   }
   function renderCjsSection(cjs) {
-    const det = document.createElement("details");
+    const det = document.createElement("section");
     det.className = "lrv-section";
-    const sum = document.createElement("summary");
+    const sum = document.createElement("div");
     sum.className = "lrv-section-summary";
     sum.textContent = `CJS module body · ${cjs.length} chars`;
     det.appendChild(sum);
@@ -6250,21 +6781,6 @@ function mountViewerPanel(opts) {
         lastError = null;
         if (assetUploadStatus !== null && assetUploadStatus.kind === "info") {
           assetUploadStatus = null;
-        }
-        render();
-        break;
-      }
-      case "lorebook_import_result": {
-        if (msg.ok) {
-          lorebookImportStatus = {
-            kind: "info",
-            message: `Imported ${msg.written} entr${msg.written === 1 ? "y" : "ies"}` + (msg.dropped > 0 ? ` (${msg.dropped} dropped)` : "")
-          };
-        } else {
-          lorebookImportStatus = {
-            kind: "error",
-            message: msg.reason ?? `Import failed (dropped=${msg.dropped})`
-          };
         }
         render();
         break;
@@ -6622,146 +7138,11 @@ function groupFlat(flat) {
   return out;
 }
 
-// src/ui/logs-tab.ts
-function mountLogsPanel(opts) {
-  const { root, sendToBackend, log } = opts;
-  log.info("logs-tab: mounting");
-  const state = {
-    enabled: false,
-    includeChatData: false,
-    eventCount: 0,
-    bufferBytes: 0,
-    lastDownloadAt: null,
-    lastError: null
-  };
-  root.classList.add("lr-logs-panel");
-  const wrap = document.createElement("div");
-  wrap.className = "lr-logs";
-  root.appendChild(wrap);
-  const intro = document.createElement("p");
-  intro.className = "lr-logs-intro";
-  intro.textContent = "Capture diagnostics for a bug report. Download turns logging off.";
-  wrap.appendChild(intro);
-  const enableRow = makeCheckboxRow({
-    id: "lr-logs-enable",
-    label: "Enable logging",
-    title: "Capture events into a downloadable bundle.",
-    onChange: (checked) => {
-      sendToBackend({
-        type: "log_set_state",
-        enabled: checked,
-        includeChatData: state.includeChatData
-      });
-    }
-  });
-  wrap.appendChild(enableRow.row);
-  const chatRow = makeCheckboxRow({
-    id: "lr-logs-include-chat",
-    label: "Include chat data",
-    title: "Off: message content and DOM are redacted. On: full chat data captured.",
-    onChange: (checked) => {
-      sendToBackend({
-        type: "log_set_state",
-        enabled: state.enabled,
-        includeChatData: checked
-      });
-    }
-  });
-  wrap.appendChild(chatRow.row);
-  const status = document.createElement("div");
-  status.className = "lr-logs-status";
-  wrap.appendChild(status);
-  const downloadBtn = document.createElement("button");
-  downloadBtn.type = "button";
-  downloadBtn.className = "lr-logs-download";
-  downloadBtn.textContent = "Download";
-  downloadBtn.title = "Save the bundle and turn logging off.";
-  downloadBtn.addEventListener("click", () => {
-    if (!state.enabled && state.eventCount === 0) {
-      flash("Nothing to download. Enable logging first.");
-      return;
-    }
-    log.info("logs-tab: requesting export");
-    sendToBackend({ type: "log_request_export" });
-    flash("Preparing bundle…");
-  });
-  wrap.appendChild(downloadBtn);
-  const clearBtn = document.createElement("button");
-  clearBtn.type = "button";
-  clearBtn.className = "lr-logs-clear";
-  clearBtn.textContent = "Clear";
-  clearBtn.title = "Drop buffered events.";
-  clearBtn.addEventListener("click", () => {
-    sendToBackend({ type: "log_clear" });
-  });
-  wrap.appendChild(clearBtn);
-  const flashEl = document.createElement("div");
-  flashEl.className = "lr-logs-flash";
-  wrap.appendChild(flashEl);
-  let flashTimer;
-  function flash(text) {
-    flashEl.textContent = text;
-    if (flashTimer !== undefined)
-      window.clearTimeout(flashTimer);
-    flashTimer = window.setTimeout(() => {
-      flashEl.textContent = "";
-    }, 6000);
-  }
-  function render() {
-    enableRow.input.checked = state.enabled;
-    chatRow.input.checked = state.includeChatData;
-    chatRow.input.disabled = !state.enabled;
-    chatRow.row.classList.toggle("lr-logs-row-disabled", !state.enabled);
-    const kb = (state.bufferBytes / 1024).toFixed(1);
-    status.textContent = state.enabled ? `${state.eventCount} events, ${kb} KB` : `Off. ${state.eventCount} events, ${kb} KB.`;
-    if (state.lastError) {
-      status.textContent += `  ·  ${state.lastError}`;
-    }
-  }
-  sendToBackend({ type: "log_request_state" });
-  render();
-  function handleBackendMessage(msg) {
-    if (msg.type === "log_state_pushed") {
-      state.enabled = msg.enabled;
-      state.includeChatData = msg.includeChatData;
-      state.eventCount = msg.eventCount;
-      state.bufferBytes = msg.bufferBytes;
-      render();
-    } else if (msg.type === "log_export_pushed") {
-      state.lastDownloadAt = Date.now();
-      flash("Bundle downloaded. Logging is off.");
-    }
-  }
-  function destroy() {
-    log.info("logs-tab: destroy");
-    if (flashTimer !== undefined)
-      window.clearTimeout(flashTimer);
-    while (root.firstChild)
-      root.removeChild(root.firstChild);
-  }
-  return { handleBackendMessage, destroy };
-}
-function makeCheckboxRow(opts) {
-  const row = document.createElement("div");
-  row.className = "lr-logs-row";
-  const input = document.createElement("input");
-  input.type = "checkbox";
-  input.id = opts.id;
-  const label = document.createElement("label");
-  label.htmlFor = opts.id;
-  label.textContent = opts.label;
-  label.title = opts.title;
-  input.addEventListener("change", () => opts.onChange(input.checked));
-  row.appendChild(input);
-  row.appendChild(label);
-  return { row, input };
-}
-
 // src/ui/icons/sidebar.svg
 var sidebar_default = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-pyramid-icon lucide-pyramid"><path d="M2.5 16.88a1 1 0 0 1-.32-1.43l9-13.02a1 1 0 0 1 1.64 0l9 13.01a1 1 0 0 1-.32 1.44l-8.51 4.86a2 2 0 0 1-1.98 0Z"/><path d="M12 2v20"/></svg>';
 
 // src/ui/sidebar.ts
-var SUB_TABS = [
+var SUB_TABS2 = [
   { id: "import", label: "Import", title: "Import cards and manage modules." },
   { id: "viewer", label: "Viewer", title: "Inspect character and module contents." },
   { id: "state", label: "State", title: "Variables, toggles, and persistent UIs for the active chat." },
@@ -6808,7 +7189,7 @@ function createSidebar(opts) {
   navEl.setAttribute("role", "tablist");
   root.appendChild(navEl);
   const navButtons = new Map;
-  for (const sub of SUB_TABS) {
+  for (const sub of SUB_TABS2) {
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "lr-sidebar-nav-btn";
@@ -6828,7 +7209,7 @@ function createSidebar(opts) {
   root.appendChild(panelsHost);
   const panelHosts = new Map;
   const panels = new Map;
-  for (const sub of SUB_TABS) {
+  for (const sub of SUB_TABS2) {
     const host = document.createElement("div");
     host.className = "lr-sidebar-panel";
     host.dataset["subtab"] = sub.id;
@@ -6985,25 +7366,14 @@ function createSidebar(opts) {
         break;
       }
       case "settings": {
-        const settingsHost = document.createElement("div");
-        settingsHost.className = "lr-settings-aux";
-        host.appendChild(settingsHost);
-        const logsHost = document.createElement("div");
-        logsHost.className = "lr-settings-logs";
-        host.appendChild(logsHost);
-        const settingsHandle = mountSettingsPanel({ root: settingsHost, sendToBackend, log });
-        const logsHandle = mountLogsPanel({ root: logsHost, sendToBackend, log });
+        const settingsHandle = mountSettingsPanel({ root: host, sendToBackend, log });
         handle = {
           handleBackendMessage(msg) {
             settingsHandle.handleBackendMessage(msg);
-            logsHandle.handleBackendMessage(msg);
           },
           destroy() {
             try {
               settingsHandle.destroy();
-            } catch {}
-            try {
-              logsHandle.destroy();
             } catch {}
             try {
               host.replaceChildren();
@@ -7178,16 +7548,23 @@ function createAuxDebugPanel(log) {
     const hh = String(ts.getHours()).padStart(2, "0");
     const mm = String(ts.getMinutes()).padStart(2, "0");
     const ss = String(ts.getSeconds()).padStart(2, "0");
+    const channel = msg.channel ?? "aux";
     const conn = msg.auxConnectionId ? msg.auxConnectionId.slice(0, 8) + "…" : "<default>";
     const model = msg.auxModelOverride ?? "<connection>";
     const chat = msg.chatId ? msg.chatId.slice(0, 8) + "…" : "<no-chat>";
-    return `${hh}:${mm}:${ss} · conn=${conn} · model=${model} · chat=${chat}`;
+    return `${hh}:${mm}:${ss} · ${channel} · conn=${conn} · model=${model} · chat=${chat}`;
   }
   function buildEntry(msg) {
     const entryEl = document.createElement("div");
     entryEl.className = "risu-aux-debug-entry";
     const headerRow = document.createElement("div");
     headerRow.className = "risu-aux-debug-entry-header";
+    const channel = msg.channel ?? "aux";
+    const channelBadge = document.createElement("span");
+    channelBadge.className = `risu-aux-debug-channel risu-aux-debug-channel-${channel}`;
+    channelBadge.textContent = channel;
+    channelBadge.title = channel === "submodel" ? "V2 runLLM(model='submodel') call" : "Aux model (axLLMMain / LLMMain) call";
+    headerRow.appendChild(channelBadge);
     const kindBadge = document.createElement("span");
     kindBadge.className = `risu-aux-debug-kind risu-aux-debug-kind-${msg.kind}`;
     kindBadge.textContent = msg.kind;
@@ -7244,7 +7621,7 @@ function createAuxDebugPanel(log) {
   function handleBackendMessage(msg) {
     if (msg.type !== "aux_debug_capture")
       return;
-    log.info(`aux-debug: capture id=${msg.id} kind=${msg.kind} ` + `chatId=${msg.chatId ?? "<none>"} elapsed=${msg.elapsedMs ?? "—"}ms`);
+    log.info(`aux-debug: capture id=${msg.id} channel=${msg.channel ?? "aux"} kind=${msg.kind} ` + `chatId=${msg.chatId ?? "<none>"} elapsed=${msg.elapsedMs ?? "—"}ms`);
     addEntry(msg);
   }
   function destroy() {
@@ -7873,7 +8250,7 @@ function setupBgHtmlRenderer(ctx, flog, islandStyles) {
         const bubbleContainment = `[data-message-id] { overflow: visible !important; contain: none !important; }
 `;
         const crossRuleParts = msg.crossRuleStyles ?? [];
-        const wrappedCrossRule = crossRuleParts.map((p) => stripCssImports(p)).filter((p) => p.trim().length > 0).map((p) => `[data-message-id] {
+        const wrappedCrossRule = crossRuleParts.map((p) => stripCssImports(p)).filter((p) => p.trim().length > 0).map((p) => `[data-message-id] [data-component="MessageContent"], .lumi-message-portal-wrapper {
 ${p}
 }
 `).join(`
@@ -8067,6 +8444,8 @@ function setupIslandStyles(flog, opts = {}) {
     };
   }
   let crossRuleSheets = [];
+  let lastSheetCss = null;
+  let lastCrossRuleKey = null;
   if (opts.riskuEnvironmentCss && opts.riskuEnvironmentCss.length > 0) {
     try {
       const rescoped = rescopeRisuEnvironment(opts.riskuEnvironmentCss);
@@ -8243,8 +8622,13 @@ function setupIslandStyles(flog, opts = {}) {
     setStylesheet(css) {
       if (!sheet)
         return;
+      if (lastSheetCss !== null && lastSheetCss === css) {
+        flog.info(`island-styles: setStylesheet skipped — content unchanged (${css.length} bytes)`);
+        return;
+      }
       try {
         sheet.replaceSync(css);
+        lastSheetCss = css;
         nudgeAdopters("setStylesheet");
       } catch (err) {
         flog.error("island-styles: replaceSync failed", err);
@@ -8252,6 +8636,11 @@ function setupIslandStyles(flog, opts = {}) {
       fireUpdated();
     },
     setCrossRuleSheets(cssParts) {
+      const key = cssParts.length + "\x1F" + cssParts.join("\x1E");
+      if (lastCrossRuleKey === key) {
+        flog.info(`island-styles: setCrossRuleSheets skipped — content unchanged (parts=${cssParts.length})`);
+        return;
+      }
       const next = [];
       let okCount = 0;
       let failCount = 0;
@@ -8271,6 +8660,7 @@ function setupIslandStyles(flog, opts = {}) {
         }
       }
       crossRuleSheets = next;
+      lastCrossRuleKey = key;
       reAdoptAll();
       flog.info(`island-styles: cross-rule sheets set ok=${okCount} failed=${failCount} total_parts=${cssParts.length}`);
       fireUpdated();

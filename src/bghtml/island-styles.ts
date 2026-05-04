@@ -51,6 +51,13 @@ export function setupIslandStyles(flog: Flog, opts: SetupIslandStylesOptions = {
   }
 
   let crossRuleSheets: CSSStyleSheet[] = [];
+  // Last-applied snapshots so we can short-circuit no-op refreshes. Mortal
+  // Realm fires bg-html refresh 3x on chat-open (SETTINGS_UPDATED + CHAT_CHANGED
+  // + …) with byte-identical content; without this gate each re-applies
+  // chat-scope CSS + nudges 35 live shadow-roots × 11 sheets = ~385
+  // adoption operations on the no-op pass alone.
+  let lastSheetCss: string | null = null;
+  let lastCrossRuleKey: string | null = null;
 
   if (opts.riskuEnvironmentCss && opts.riskuEnvironmentCss.length > 0) {
     try {
@@ -270,8 +277,17 @@ export function setupIslandStyles(flog: Flog, opts: SetupIslandStylesOptions = {
   return {
     setStylesheet(css: string): void {
       if (!sheet) return;
+      // Skip the work when content is byte-identical to the last apply.
+      // bg-html refresh fires multiple times on chat-open with identical
+      // payload; without this gate every refresh re-parses + re-adopts into
+      // every live shadow root.
+      if (lastSheetCss !== null && lastSheetCss === css) {
+        flog.info(`island-styles: setStylesheet skipped — content unchanged (${css.length} bytes)`);
+        return;
+      }
       try {
         sheet.replaceSync(css);
+        lastSheetCss = css;
         nudgeAdopters('setStylesheet');
       } catch (err) {
         flog.error('island-styles: replaceSync failed', err);
@@ -279,6 +295,17 @@ export function setupIslandStyles(flog: Flog, opts: SetupIslandStylesOptions = {
       fireUpdated();
     },
     setCrossRuleSheets(cssParts: readonly string[]): void {
+      // Same content-skip as setStylesheet. Cross-rule sheets fire
+      // alongside setStylesheet on every bg-html refresh. The 9-sheet
+      // bundle is ~62KB on Mortal Realm — re-parsing on byte-identical
+      // input was the bulk of the chat-open lag.
+      const key = cssParts.length + '\x1f' + cssParts.join('\x1e');
+      if (lastCrossRuleKey === key) {
+        flog.info(
+          `island-styles: setCrossRuleSheets skipped — content unchanged (parts=${cssParts.length})`,
+        );
+        return;
+      }
       const next: CSSStyleSheet[] = [];
       let okCount = 0;
       let failCount = 0;
@@ -299,6 +326,7 @@ export function setupIslandStyles(flog: Flog, opts: SetupIslandStylesOptions = {
         }
       }
       crossRuleSheets = next;
+      lastCrossRuleKey = key;
       reAdoptAll();
       flog.info(
         `island-styles: cross-rule sheets set ok=${okCount} failed=${failCount} total_parts=${cssParts.length}`,

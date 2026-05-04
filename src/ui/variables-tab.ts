@@ -5,16 +5,37 @@ import type {
 } from '../types/messages.js';
 import type { FrontendLog } from './drawer.js';
 
-// Live view of chat.metadata.macro_variables + defaultVariables.
-// Mounts into a host element provided by ui/sidebar.ts.
+// State → Variables. Three subtabs:
+//   Default  — character-level defaults (cardSide + user_overrides). Editable;
+//              per-character storage propagates across all chats with that
+//              character, mirroring Risu's defaultVariables semantics.
+//   Local    — chat.metadata.macro_variables.local — what Risu's
+//              setvar/setChatVar/Lua setState write to. Editable per-chat.
+//   Lumi     — global + chat Lumi-native scopes. Read-only (Risu cards don't
+//              touch these; surfaced for diagnostics).
+//
+// The same row component renders all three subtabs so the visual is uniform —
+// inline `name | value-input | actions`. (Pre-fix the Default editor used the
+// inline pattern but Local used a separate-textarea modal pattern; user found
+// the inconsistency confusing.)
 
 interface Snapshot {
   readonly chatId: string;
   readonly seq: number;
   readonly scopes: VariableScopes;
   readonly defaults: Readonly<Record<string, string>>;
+  readonly defaultsCardSide: Readonly<Record<string, string>>;
+  readonly characterId: string | null;
   readonly ts: number;
 }
+
+type SubTabId = 'default' | 'local' | 'lumi';
+
+const SUB_TABS: ReadonlyArray<{ id: SubTabId; label: string; title: string }> = [
+  { id: 'default', label: 'Default', title: 'Character-level default variables. Persist across chats with this character.' },
+  { id: 'local',   label: 'Local',   title: 'Chat-scoped variables. setvar / setChatVar / Lua setState write here.' },
+  { id: 'lumi',    label: 'Lumi',    title: 'Lumi-native global + chat scopes. Read-only — Risu cards don\'t use these.' },
+];
 
 export interface VariablesTabHandle {
   handleBackendMessage(msg: BackendToFrontend): void;
@@ -72,19 +93,58 @@ export function mountVariablesPanel(
   status.className = 'rv-status';
   root.appendChild(status);
 
-  const sectionsHost = document.createElement('div');
-  sectionsHost.className = 'rv-sections';
-  root.appendChild(sectionsHost);
+  // Inner subtab bar (Default / Local / Lumi).
+  const subnav = document.createElement('div');
+  subnav.className = 'lr-subtabs';
+  subnav.setAttribute('role', 'tablist');
+  root.appendChild(subnav);
+
+  const subnavBtns = new Map<SubTabId, HTMLButtonElement>();
+  for (const def of SUB_TABS) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'lr-subtab';
+    btn.textContent = def.label;
+    btn.title = def.title;
+    btn.setAttribute('role', 'tab');
+    btn.setAttribute('aria-selected', 'false');
+    btn.addEventListener('click', () => activateSubTab(def.id));
+    subnav.appendChild(btn);
+    subnavBtns.set(def.id, btn);
+  }
+
+  const body = document.createElement('div');
+  body.className = 'lr-vars-body';
+  root.appendChild(body);
 
   let activeChatId: string | null = null;
   let snapshot: Snapshot | null = null;
   let filterTerm = '';
-  let editingKey: string | null = null;
-  let addingNew = false;
-  // Edit buffers survive backend re-renders mid-edit.
-  let editBuffer = '';
-  let addBufferKey = '';
-  let addBufferValue = '';
+  let activeSubTab: SubTabId = 'default';
+  // Per-key edit buffers keyed by `${subtab}:${name}` so the same name in
+  // different scopes doesn't share a buffer. Survive backend re-pushes mid-edit.
+  const editBuffers = new Map<string, string>();
+  // Add-row state per subtab.
+  const addRow: Record<SubTabId, { open: boolean; name: string; value: string }> = {
+    default: { open: false, name: '', value: '' },
+    local:   { open: false, name: '', value: '' },
+    lumi:    { open: false, name: '', value: '' },
+  };
+
+  function activateSubTab(id: SubTabId): void {
+    if (activeSubTab === id) return;
+    activeSubTab = id;
+    log.info(`variables-tab: subtab → ${id}`);
+    render();
+  }
+
+  function renderSubnav(): void {
+    for (const [id, btn] of subnavBtns) {
+      const sel = id === activeSubTab;
+      btn.classList.toggle('lr-subtab-active', sel);
+      btn.setAttribute('aria-selected', sel ? 'true' : 'false');
+    }
+  }
 
   function renderStatus(): void {
     if (!activeChatId) {
@@ -92,210 +152,351 @@ export function mountVariablesPanel(
       status.classList.remove('rv-status-error');
       return;
     }
-    if (!snapshot) {
+    if (!snapshot || snapshot.chatId !== activeChatId) {
       status.textContent = `Loading variables for chat ${shortId(activeChatId)}…`;
       status.classList.remove('rv-status-error');
       return;
     }
-    if (snapshot.chatId !== activeChatId) {
-      // Snapshot is for a different chat (we sent a request, response
-      // hasn't landed yet). Show loading.
-      status.textContent = `Loading variables for chat ${shortId(activeChatId)}…`;
-      status.classList.remove('rv-status-error');
-      return;
-    }
-    const totals = countTotals(snapshot);
+    const t = countTotals(snapshot);
     const ts = formatTime(snapshot.ts);
     status.textContent =
       `chat ${shortId(snapshot.chatId)} · seq ${snapshot.seq} · ` +
-      `local=${totals.local} global=${totals.global} chat=${totals.chat} defaults=${totals.defaults} · ` +
+      `default=${t.defaults} local=${t.local} lumi=${t.global + t.chat} · ` +
       `updated ${ts}`;
     status.classList.remove('rv-status-error');
   }
 
-  function renderSections(): void {
-    sectionsHost.innerHTML = '';
+  function renderBody(): void {
+    body.replaceChildren();
     if (!activeChatId || !snapshot || snapshot.chatId !== activeChatId) {
       const empty = document.createElement('div');
       empty.className = 'rv-empty';
-      empty.textContent = activeChatId
-        ? 'Waiting for backend…'
-        : 'No active Risu chat.';
-      sectionsHost.appendChild(empty);
+      empty.textContent = activeChatId ? 'Waiting for backend…' : 'No active Risu chat.';
+      body.appendChild(empty);
       return;
     }
+    switch (activeSubTab) {
+      case 'default': body.appendChild(renderDefaultPanel()); break;
+      case 'local':   body.appendChild(renderLocalPanel());   break;
+      case 'lumi':    body.appendChild(renderLumiPanel());    break;
+    }
+  }
+
+  // ---------- Default subtab -------------------------------------------------
+
+  function renderDefaultPanel(): HTMLElement {
+    const wrap = document.createElement('section');
+    wrap.className = 'lr-var-section';
+
+    const note = document.createElement('p');
+    note.className = 'lr-var-note';
+    note.textContent =
+      'Initial values that seed each new chat. CBS reads via {{getvar::name}} ' +
+      'until overwritten by triggers or {{setvar}}. Overrides persist per-character ' +
+      'and propagate across all chats with this character.';
+    wrap.appendChild(note);
+
+    if (!snapshot!.characterId) {
+      const empty = document.createElement('div');
+      empty.className = 'rv-empty';
+      empty.textContent = 'No character associated with this chat.';
+      wrap.appendChild(empty);
+      return wrap;
+    }
+
     const term = filterTerm.toLowerCase();
-    const sections: Array<{
-      title: string;
-      desc: string;
-      entries: Array<[string, string]>;
-      kind: 'local' | 'global' | 'chat' | 'defaults';
-    }> = [
-      {
-        title: 'Local (chat-scoped)',
-        desc: 'Main store. setvar / setChatVar / Lua setState write here.',
-        entries: sortedEntries(snapshot.scopes.local),
-        kind: 'local',
-      },
-      {
-        title: 'Defaults (character)',
-        desc: 'Character-level defaults. getChatVar falls back here when a key is unset.',
-        entries: sortedEntries(snapshot.defaults),
-        kind: 'defaults',
-      },
-      {
-        title: 'Global',
-        desc: 'Lumi-native global scope (rarely used by Risu cards).',
-        entries: sortedEntries(snapshot.scopes.global),
-        kind: 'global',
-      },
-      {
-        title: 'Chat',
-        desc: 'Lumi-native chat scope (rarely used by Risu cards).',
-        entries: sortedEntries(snapshot.scopes.chat),
-        kind: 'chat',
-      },
-    ];
+    const cardSide = snapshot!.defaultsCardSide;
+    const merged = snapshot!.defaults;
+    // Union of names across cardSide + overrides.
+    const allNames = new Set<string>([...Object.keys(cardSide), ...Object.keys(merged)]);
+    const rows = [...allNames].sort((a, b) => a.localeCompare(b))
+      .filter((name) => {
+        if (!term) return true;
+        const v = merged[name] ?? '';
+        return name.toLowerCase().includes(term) || v.toLowerCase().includes(term);
+      });
 
-    let hadAnyVisible = false;
-    for (const sec of sections) {
-      const filtered = term
-        ? sec.entries.filter(
-            ([k, v]) => k.toLowerCase().includes(term) || v.toLowerCase().includes(term),
-          )
-        : sec.entries;
-      const sectionEl = document.createElement('section');
-      sectionEl.className = 'rv-section';
-      sectionEl.dataset['kind'] = sec.kind;
-      const header = document.createElement('div');
-      header.className = 'rv-section-header';
-      const titleEl = document.createElement('h3');
-      titleEl.className = 'rv-section-title';
-      titleEl.textContent = `${sec.title}  ·  ${filtered.length}${term ? ` of ${sec.entries.length}` : ''}`;
-      header.appendChild(titleEl);
-      const descEl = document.createElement('span');
-      descEl.className = 'rv-section-desc';
-      descEl.textContent = sec.desc;
-      header.appendChild(descEl);
-      sectionEl.appendChild(header);
+    const list = document.createElement('div');
+    list.className = 'lr-var-list';
+    if (rows.length === 0 && !addRow.default.open) {
+      const empty = document.createElement('div');
+      empty.className = 'rv-empty';
+      empty.textContent = term ? `No matches for "${filterTerm}".` : 'No default variables.';
+      list.appendChild(empty);
+    } else {
+      for (const name of rows) {
+        const value = merged[name] ?? '';
+        const original = cardSide[name];
+        const overridden = original === undefined || original !== value;
+        list.appendChild(renderEditableRow({
+          subtab: 'default',
+          name,
+          value,
+          isOverride: overridden,
+          originalValue: original,
+          onCommit: (next) => sendSetDefault(name, next),
+          onReset: overridden && original !== undefined
+            ? () => sendDeleteDefault(name)
+            : null,
+          // Defaults never delete — sending delete reverts to card side.
+          allowDelete: false,
+        }));
+      }
+    }
 
-      if (filtered.length === 0) {
+    if (addRow.default.open) list.appendChild(renderAddRow('default'));
+    wrap.appendChild(list);
+
+    if (!addRow.default.open) {
+      const addBtn = document.createElement('button');
+      addBtn.type = 'button';
+      addBtn.className = 'lrm-btn lr-var-add-btn';
+      addBtn.textContent = '+ Add default variable';
+      addBtn.addEventListener('click', () => {
+        addRow.default = { open: true, name: '', value: '' };
+        render();
+      });
+      wrap.appendChild(addBtn);
+    }
+    return wrap;
+  }
+
+  // ---------- Local subtab ---------------------------------------------------
+
+  function renderLocalPanel(): HTMLElement {
+    const wrap = document.createElement('section');
+    wrap.className = 'lr-var-section';
+
+    const note = document.createElement('p');
+    note.className = 'lr-var-note';
+    note.textContent =
+      'Chat-scoped variables. Risu setvar / setChatVar / Lua setState write here. ' +
+      'Lua state keys (__name) are JSON-encoded.';
+    wrap.appendChild(note);
+
+    const term = filterTerm.toLowerCase();
+    const local = snapshot!.scopes.local;
+    const rows = sortedKeys(local).filter((name) => {
+      if (!term) return true;
+      const v = local[name] ?? '';
+      return name.toLowerCase().includes(term) || v.toLowerCase().includes(term);
+    });
+
+    const list = document.createElement('div');
+    list.className = 'lr-var-list';
+    if (rows.length === 0 && !addRow.local.open) {
+      const empty = document.createElement('div');
+      empty.className = 'rv-empty';
+      empty.textContent = term ? `No matches for "${filterTerm}".` : '(empty)';
+      list.appendChild(empty);
+    } else {
+      for (const name of rows) {
+        const value = local[name] ?? '';
+        list.appendChild(renderEditableRow({
+          subtab: 'local',
+          name,
+          value,
+          isLuaState: name.startsWith('__'),
+          onCommit: (next) => sendSetLocal(name, next),
+          onReset: null,
+          allowDelete: true,
+          onDelete: () => sendDeleteLocal(name),
+        }));
+      }
+    }
+
+    if (addRow.local.open) list.appendChild(renderAddRow('local'));
+    wrap.appendChild(list);
+
+    if (!addRow.local.open) {
+      const addBtn = document.createElement('button');
+      addBtn.type = 'button';
+      addBtn.className = 'lrm-btn lr-var-add-btn';
+      addBtn.textContent = '+ Add variable';
+      addBtn.addEventListener('click', () => {
+        addRow.local = { open: true, name: '', value: '' };
+        render();
+      });
+      wrap.appendChild(addBtn);
+    }
+    return wrap;
+  }
+
+  // ---------- Lumi subtab (read-only) ---------------------------------------
+
+  function renderLumiPanel(): HTMLElement {
+    const wrap = document.createElement('section');
+    wrap.className = 'lr-var-section';
+
+    const note = document.createElement('p');
+    note.className = 'lr-var-note';
+    note.textContent =
+      'Lumi-native scopes (read-only). Most Risu cards don\'t touch these; ' +
+      'surfaced for diagnostics and Lumi-native card interop.';
+    wrap.appendChild(note);
+
+    const term = filterTerm.toLowerCase();
+    let any = false;
+    for (const [label, rec] of [
+      ['Global', snapshot!.scopes.global] as const,
+      ['Chat',   snapshot!.scopes.chat]   as const,
+    ]) {
+      const keys = sortedKeys(rec).filter((name) => {
+        if (!term) return true;
+        const v = rec[name] ?? '';
+        return name.toLowerCase().includes(term) || v.toLowerCase().includes(term);
+      });
+      const sec = document.createElement('div');
+      sec.className = 'lr-var-subsection';
+      const head = document.createElement('h4');
+      head.className = 'lr-var-subsection-title';
+      head.textContent = `${label} · ${keys.length}${term ? ` of ${Object.keys(rec).length}` : ''}`;
+      sec.appendChild(head);
+      const list = document.createElement('div');
+      list.className = 'lr-var-list';
+      if (keys.length === 0) {
         const empty = document.createElement('div');
-        empty.className = 'rv-section-empty';
-        empty.textContent = term ? 'No matches.' : '(empty)';
-        sectionEl.appendChild(empty);
+        empty.className = 'rv-empty';
+        empty.textContent = term ? '(no matches)' : '(empty)';
+        list.appendChild(empty);
       } else {
-        hadAnyVisible = true;
-        const list = document.createElement('div');
-        list.className = 'rv-list';
-        for (const [k, v] of filtered) {
-          list.appendChild(buildRow(k, v, sec.kind, snapshot));
+        any = true;
+        for (const name of keys) {
+          list.appendChild(renderReadonlyRow(name, rec[name] ?? ''));
         }
-        sectionEl.appendChild(list);
       }
-
-      // Only the local scope is editable; defaults/global/chat are read-only.
-      if (sec.kind === 'local') {
-        sectionEl.appendChild(buildLocalAddRow());
-      }
-      sectionsHost.appendChild(sectionEl);
+      sec.appendChild(list);
+      wrap.appendChild(sec);
     }
-
-    if (!hadAnyVisible && term) {
-      const note = document.createElement('div');
-      note.className = 'rv-empty';
-      note.textContent = `No variables match "${filterTerm}".`;
-      sectionsHost.appendChild(note);
+    if (!any && !term) {
+      const note2 = document.createElement('div');
+      note2.className = 'rv-empty';
+      note2.textContent = 'Both Lumi-native scopes are empty for this chat.';
+      wrap.appendChild(note2);
     }
+    return wrap;
   }
 
-  function render(): void {
-    renderStatus();
-    renderSections();
+  // ---------- Row components -------------------------------------------------
+
+  interface EditableRowOpts {
+    readonly subtab: SubTabId;
+    readonly name: string;
+    readonly value: string;
+    readonly isOverride?: boolean;
+    readonly isLuaState?: boolean;
+    readonly originalValue?: string | undefined;
+    readonly onCommit: (next: string) => void;
+    readonly onReset: (() => void) | null;
+    readonly allowDelete: boolean;
+    readonly onDelete?: () => void;
   }
 
-  function buildRow(
-    key: string,
-    value: string,
-    kind: 'local' | 'global' | 'chat' | 'defaults',
-    snap: Snapshot,
-  ): HTMLDivElement {
+  function renderEditableRow(o: EditableRowOpts): HTMLDivElement {
     const row = document.createElement('div');
-    row.className = 'rv-row';
-    row.dataset['kind'] = kind;
-
-    if (kind === 'local' && editingKey === key) {
-      row.classList.add('rv-row-editing');
-      buildLocalEditor(row, key, value);
-      return row;
-    }
+    row.className = 'lr-var-row';
+    if (o.isOverride) row.classList.add('lr-var-row-overridden');
 
     const head = document.createElement('div');
-    head.className = 'rv-row-head';
-
-    const keyEl = document.createElement('span');
-    keyEl.className = 'rv-key';
-    keyEl.textContent = key;
-    keyEl.title = key;
-    head.appendChild(keyEl);
-
-    if (kind === 'local' && Object.prototype.hasOwnProperty.call(snap.defaults, key)) {
+    head.className = 'lr-var-head';
+    const nameEl = document.createElement('span');
+    nameEl.className = 'lr-var-name';
+    nameEl.textContent = o.name;
+    nameEl.title = o.name;
+    head.appendChild(nameEl);
+    if (o.isOverride) {
       const flag = document.createElement('span');
-      flag.className = 'rv-flag';
+      flag.className = 'lr-var-flag';
       flag.textContent = 'override';
-      flag.title = `Default: ${snap.defaults[key]}`;
+      flag.title = o.originalValue !== undefined ? `Card default: ${o.originalValue}` : 'No card default — override-only.';
       head.appendChild(flag);
     }
-    // Risu uses __name keys for JSON-encoded Lua state.
-    if (kind === 'local' && key.startsWith('__')) {
+    if (o.isLuaState) {
       const flag = document.createElement('span');
-      flag.className = 'rv-flag rv-flag-lua';
+      flag.className = 'lr-var-flag lr-var-flag-lua';
       flag.textContent = 'lua';
       flag.title = 'Lua state. Value is JSON-encoded.';
       head.appendChild(flag);
     }
-
-    if (kind === 'local') {
-      const actions = document.createElement('span');
-      actions.className = 'rv-row-actions';
-      const editBtn = document.createElement('button');
-      editBtn.type = 'button';
-      editBtn.className = 'rv-row-btn';
-      editBtn.textContent = 'Edit';
-      editBtn.title = 'Edit this variable';
-      editBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        editingKey = key;
-        editBuffer = value;
-        addingNew = false;
-        renderSections();
-      });
-      actions.appendChild(editBtn);
-      const delBtn = document.createElement('button');
-      delBtn.type = 'button';
-      delBtn.className = 'rv-row-btn rv-row-btn-danger';
-      delBtn.textContent = '×';
-      delBtn.title = 'Delete this variable';
-      delBtn.setAttribute('aria-label', `Delete ${key}`);
-      delBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        if (!activeChatId) return;
-        if (!confirm(`Delete variable "${key}"?\n\nIf the character has a default for this key, getChatVar will fall back to it. Otherwise reads return the literal string "null".`)) return;
-        log.info(`variables-tab: delete chatId=${activeChatId} key=${key}`);
-        sendToBackend({
-          type: 'delete_variable',
-          chatId: activeChatId,
-          scope: 'local',
-          key,
-        });
-      });
-      actions.appendChild(delBtn);
-      head.appendChild(actions);
-    }
     row.appendChild(head);
 
+    const bufKey = `${o.subtab}:${o.name}`;
+    const buffered = editBuffers.get(bufKey);
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'lr-var-input';
+    input.value = buffered ?? o.value;
+    input.spellcheck = false;
+    input.addEventListener('input', () => {
+      editBuffers.set(bufKey, input.value);
+    });
+    input.addEventListener('change', commit);
+    input.addEventListener('blur', commit);
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); commit(); input.blur(); }
+      else if (e.key === 'Escape') {
+        e.preventDefault();
+        input.value = o.value;
+        editBuffers.delete(bufKey);
+        input.blur();
+      }
+    });
+    row.appendChild(input);
+
+    const actions = document.createElement('span');
+    actions.className = 'lr-var-actions';
+    if (o.onReset) {
+      const reset = document.createElement('button');
+      reset.type = 'button';
+      reset.className = 'lr-var-action';
+      reset.textContent = 'Reset';
+      reset.title = o.originalValue !== undefined ? `Restore card default: "${o.originalValue}"` : 'Remove this override.';
+      reset.addEventListener('click', (e) => {
+        e.stopPropagation();
+        editBuffers.delete(bufKey);
+        o.onReset?.();
+      });
+      actions.appendChild(reset);
+    }
+    if (o.allowDelete && o.onDelete) {
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'lr-var-action lr-var-action-danger';
+      del.textContent = '×';
+      del.title = `Delete "${o.name}"`;
+      del.setAttribute('aria-label', `Delete ${o.name}`);
+      del.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (!window.confirm(`Delete variable "${o.name}"?\n\nIf the character has a default for this key, getChatVar will fall back to it. Otherwise reads return the literal string "null".`)) return;
+        editBuffers.delete(bufKey);
+        o.onDelete?.();
+      });
+      actions.appendChild(del);
+    }
+    row.appendChild(actions);
+
+    return row;
+
+    function commit(): void {
+      const next = input.value;
+      editBuffers.delete(bufKey);
+      if (next !== o.value) o.onCommit(next);
+    }
+  }
+
+  function renderReadonlyRow(name: string, value: string): HTMLDivElement {
+    const row = document.createElement('div');
+    row.className = 'lr-var-row lr-var-row-readonly';
+    const head = document.createElement('div');
+    head.className = 'lr-var-head';
+    const nameEl = document.createElement('span');
+    nameEl.className = 'lr-var-name';
+    nameEl.textContent = name;
+    nameEl.title = name;
+    head.appendChild(nameEl);
+    row.appendChild(head);
     const valEl = document.createElement('div');
-    valEl.className = 'rv-value';
+    valEl.className = 'lr-var-value-readonly';
     const isLong = value.length > 200 || value.includes('\n');
     if (!isLong) {
       valEl.textContent = value;
@@ -303,206 +504,136 @@ export function mountVariablesPanel(
     } else {
       valEl.textContent = value.slice(0, 200) + '…';
       valEl.title = 'Click to expand';
-      valEl.classList.add('rv-value-long');
+      valEl.classList.add('lr-var-value-long');
       valEl.addEventListener('click', () => {
-        if (valEl.classList.contains('rv-value-expanded')) {
+        if (valEl.classList.contains('lr-var-value-expanded')) {
           valEl.textContent = value.slice(0, 200) + '…';
-          valEl.classList.remove('rv-value-expanded');
+          valEl.classList.remove('lr-var-value-expanded');
         } else {
           valEl.textContent = value;
-          valEl.classList.add('rv-value-expanded');
+          valEl.classList.add('lr-var-value-expanded');
         }
       });
     }
     row.appendChild(valEl);
-
     return row;
   }
 
-  function buildLocalEditor(row: HTMLDivElement, key: string, originalValue: string): void {
-    const head = document.createElement('div');
-    head.className = 'rv-row-head';
+  function renderAddRow(subtab: SubTabId): HTMLDivElement {
+    const wrap = document.createElement('div');
+    wrap.className = 'lr-var-row lr-var-row-add';
+    const buf = addRow[subtab];
 
-    const keyEl = document.createElement('span');
-    keyEl.className = 'rv-key';
-    keyEl.textContent = key;
-    keyEl.title = key;
-    head.appendChild(keyEl);
+    const nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    nameInput.className = 'lr-var-name-input';
+    nameInput.placeholder = 'name';
+    nameInput.value = buf.name;
+    nameInput.spellcheck = false;
+    nameInput.addEventListener('input', () => { buf.name = nameInput.value; });
+    nameInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); valueInput.focus(); }
+      else if (e.key === 'Escape') { e.preventDefault(); cancel(); }
+    });
+
+    const valueInput = document.createElement('input');
+    valueInput.type = 'text';
+    valueInput.className = 'lr-var-input';
+    valueInput.placeholder = 'value';
+    valueInput.value = buf.value;
+    valueInput.spellcheck = false;
+    valueInput.addEventListener('input', () => { buf.value = valueInput.value; });
+    valueInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); commit(); }
+      else if (e.key === 'Escape') { e.preventDefault(); cancel(); }
+    });
 
     const actions = document.createElement('span');
-    actions.className = 'rv-edit-actions';
+    actions.className = 'lr-var-actions';
     const saveBtn = document.createElement('button');
     saveBtn.type = 'button';
-    saveBtn.className = 'rv-row-btn rv-row-btn-primary';
-    saveBtn.textContent = 'Save';
-    saveBtn.title = 'Save (Ctrl+Enter)';
+    saveBtn.className = 'lr-var-action lr-var-action-primary';
+    saveBtn.textContent = 'Add';
     saveBtn.addEventListener('click', commit);
     actions.appendChild(saveBtn);
     const cancelBtn = document.createElement('button');
     cancelBtn.type = 'button';
-    cancelBtn.className = 'rv-row-btn';
+    cancelBtn.className = 'lr-var-action';
     cancelBtn.textContent = 'Cancel';
-    cancelBtn.title = 'Cancel (Esc)';
     cancelBtn.addEventListener('click', cancel);
     actions.appendChild(cancelBtn);
-    head.appendChild(actions);
 
-    row.appendChild(head);
-
-    const textarea = document.createElement('textarea');
-    textarea.className = 'rv-edit-input';
-    textarea.spellcheck = false;
-    textarea.value = editBuffer;
-    textarea.rows = Math.max(2, Math.min(12, editBuffer.split('\n').length + 1));
-    textarea.addEventListener('input', () => {
-      editBuffer = textarea.value;
-      const lines = editBuffer.split('\n').length;
-      textarea.rows = Math.max(2, Math.min(12, lines + 1));
-    });
-    textarea.addEventListener('keydown', (e) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
-        e.preventDefault();
-        commit();
-      } else if (e.key === 'Escape') {
-        e.preventDefault();
-        cancel();
-      }
-    });
-    row.appendChild(textarea);
-
-    queueMicrotask(() => {
-      textarea.focus();
-      textarea.setSelectionRange(textarea.value.length, textarea.value.length);
-    });
-
-    function commit(): void {
-      if (!activeChatId) return;
-      const newValue = editBuffer;
-      if (newValue === originalValue) {
-        cancel();
-        return;
-      }
-      log.info(
-        `variables-tab: set chatId=${activeChatId} key=${key} ` +
-          `oldLen=${originalValue.length} newLen=${newValue.length}`,
-      );
-      sendToBackend({
-        type: 'set_variable',
-        chatId: activeChatId,
-        scope: 'local',
-        key,
-        value: newValue,
-      });
-      editingKey = null;
-      editBuffer = '';
-      renderSections();
-    }
-
-    function cancel(): void {
-      editingKey = null;
-      editBuffer = '';
-      renderSections();
-    }
-  }
-
-  function buildLocalAddRow(): HTMLDivElement {
-    const wrap = document.createElement('div');
-    wrap.className = 'rv-add-wrap';
-    if (!addingNew) {
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'rv-row-btn rv-add-btn';
-      btn.textContent = '+ Add variable';
-      btn.addEventListener('click', () => {
-        addingNew = true;
-        editingKey = null;
-        addBufferKey = '';
-        addBufferValue = '';
-        renderSections();
-      });
-      wrap.appendChild(btn);
-      return wrap;
-    }
-    wrap.classList.add('rv-add-form');
-    const keyInput = document.createElement('input');
-    keyInput.type = 'text';
-    keyInput.className = 'rv-edit-input rv-add-key';
-    keyInput.placeholder = 'variable_name';
-    keyInput.value = addBufferKey;
-    keyInput.spellcheck = false;
-    keyInput.addEventListener('input', () => { addBufferKey = keyInput.value; });
-    keyInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') { e.preventDefault(); valInput.focus(); }
-      else if (e.key === 'Escape') { e.preventDefault(); cancelAdd(); }
-    });
-    wrap.appendChild(keyInput);
-
-    const valInput = document.createElement('textarea');
-    valInput.className = 'rv-edit-input rv-add-value';
-    valInput.placeholder = 'value';
-    valInput.value = addBufferValue;
-    valInput.spellcheck = false;
-    valInput.rows = 1;
-    valInput.addEventListener('input', () => {
-      addBufferValue = valInput.value;
-      const lines = addBufferValue.split('\n').length;
-      valInput.rows = Math.max(1, Math.min(10, lines));
-    });
-    valInput.addEventListener('keydown', (e) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); commitAdd(); }
-      else if (e.key === 'Escape') { e.preventDefault(); cancelAdd(); }
-    });
-    wrap.appendChild(valInput);
-
-    const actions = document.createElement('span');
-    actions.className = 'rv-edit-actions';
-    const saveBtn = document.createElement('button');
-    saveBtn.type = 'button';
-    saveBtn.className = 'rv-row-btn rv-row-btn-primary';
-    saveBtn.textContent = 'Add';
-    saveBtn.addEventListener('click', commitAdd);
-    actions.appendChild(saveBtn);
-    const cancelBtn = document.createElement('button');
-    cancelBtn.type = 'button';
-    cancelBtn.className = 'rv-row-btn';
-    cancelBtn.textContent = 'Cancel';
-    cancelBtn.addEventListener('click', cancelAdd);
-    actions.appendChild(cancelBtn);
+    wrap.appendChild(nameInput);
+    wrap.appendChild(valueInput);
     wrap.appendChild(actions);
 
-    queueMicrotask(() => keyInput.focus());
+    queueMicrotask(() => nameInput.focus());
 
     return wrap;
 
-    function commitAdd(): void {
-      if (!activeChatId) return;
-      const k = addBufferKey.trim();
-      if (k.length === 0) {
-        keyInput.focus();
-        return;
-      }
-      log.info(
-        `variables-tab: add chatId=${activeChatId} key=${k} valueLen=${addBufferValue.length}`,
-      );
-      sendToBackend({
-        type: 'set_variable',
-        chatId: activeChatId,
-        scope: 'local',
-        key: k,
-        value: addBufferValue,
-      });
-      addingNew = false;
-      addBufferKey = '';
-      addBufferValue = '';
-      renderSections();
+    function commit(): void {
+      const name = buf.name.trim();
+      if (name.length === 0) { nameInput.focus(); return; }
+      if (subtab === 'default') sendSetDefault(name, buf.value);
+      else if (subtab === 'local') sendSetLocal(name, buf.value);
+      addRow[subtab] = { open: false, name: '', value: '' };
+      render();
     }
+    function cancel(): void {
+      addRow[subtab] = { open: false, name: '', value: '' };
+      render();
+    }
+  }
 
-    function cancelAdd(): void {
-      addingNew = false;
-      addBufferKey = '';
-      addBufferValue = '';
-      renderSections();
-    }
+  // ---------- Backend sends --------------------------------------------------
+
+  function sendSetDefault(name: string, value: string): void {
+    if (!snapshot?.characterId) return;
+    log.info(`variables-tab: set_default_variable char=${snapshot.characterId} name=${name} len=${value.length}`);
+    sendToBackend({
+      type: 'set_default_variable',
+      characterId: snapshot.characterId,
+      name,
+      value,
+    });
+  }
+  function sendDeleteDefault(name: string): void {
+    if (!snapshot?.characterId) return;
+    log.info(`variables-tab: delete_default_variable char=${snapshot.characterId} name=${name}`);
+    sendToBackend({
+      type: 'delete_default_variable',
+      characterId: snapshot.characterId,
+      name,
+    });
+  }
+  function sendSetLocal(key: string, value: string): void {
+    if (!activeChatId) return;
+    log.info(`variables-tab: set_variable chat=${activeChatId} key=${key} len=${value.length}`);
+    sendToBackend({
+      type: 'set_variable',
+      chatId: activeChatId,
+      scope: 'local',
+      key,
+      value,
+    });
+  }
+  function sendDeleteLocal(key: string): void {
+    if (!activeChatId) return;
+    log.info(`variables-tab: delete_variable chat=${activeChatId} key=${key}`);
+    sendToBackend({
+      type: 'delete_variable',
+      chatId: activeChatId,
+      scope: 'local',
+      key,
+    });
+  }
+
+  // ---------- Wiring ---------------------------------------------------------
+
+  function render(): void {
+    renderSubnav();
+    renderStatus();
+    renderBody();
   }
 
   let filterTimer: number | undefined;
@@ -510,7 +641,7 @@ export function mountVariablesPanel(
     if (filterTimer !== undefined) window.clearTimeout(filterTimer);
     filterTimer = window.setTimeout(() => {
       filterTerm = filterInput.value.trim();
-      renderSections();
+      renderBody();
     }, 60);
   });
 
@@ -519,23 +650,13 @@ export function mountVariablesPanel(
       log.info('variables-tab: refresh clicked but no active chat');
       return;
     }
-    log.info(`variables-tab: refresh clicked, requesting chatId=${activeChatId}`);
+    log.info(`variables-tab: refresh chat=${activeChatId}`);
     sendToBackend({ type: 'request_variables_snapshot', chatId: activeChatId });
   });
 
   copyBtn.addEventListener('click', () => {
     if (!snapshot) return;
-    const payload = JSON.stringify(
-      {
-        chatId: snapshot.chatId,
-        seq: snapshot.seq,
-        ts: snapshot.ts,
-        scopes: snapshot.scopes,
-        defaults: snapshot.defaults,
-      },
-      null,
-      2,
-    );
+    const payload = JSON.stringify(snapshot, null, 2);
     void navigator.clipboard?.writeText(payload).then(
       () => {
         const original = copyBtn.textContent;
@@ -549,11 +670,8 @@ export function mountVariablesPanel(
   function handleBackendMessage(msg: BackendToFrontend): void {
     if (msg.type !== 'set_variables') return;
     log.info(`variables-tab.set_variables: chatId=${msg.chatId} seq=${msg.seq} ts=${msg.ts}`);
-    // snapshot requests can race with state-tick pushes; drop stale ones.
     if (snapshot && snapshot.chatId === msg.chatId && snapshot.seq > msg.seq) {
-      log.info(
-        `variables-tab: ignoring older snapshot seq=${msg.seq} (have=${snapshot.seq})`,
-      );
+      log.info(`variables-tab: ignoring older snapshot seq=${msg.seq} (have=${snapshot.seq})`);
       return;
     }
     snapshot = {
@@ -561,6 +679,8 @@ export function mountVariablesPanel(
       seq: msg.seq,
       scopes: msg.scopes,
       defaults: msg.defaults,
+      defaultsCardSide: msg.defaultsCardSide ?? msg.defaults,
+      characterId: msg.characterId ?? null,
       ts: msg.ts,
     };
     render();
@@ -570,10 +690,11 @@ export function mountVariablesPanel(
     if (activeChatId === chatId) return;
     log.info(`variables-tab.setActiveChatId: ${activeChatId ?? 'null'} -> ${chatId ?? 'null'}`);
     activeChatId = chatId;
+    editBuffers.clear();
+    addRow.default = { open: false, name: '', value: '' };
+    addRow.local = { open: false, name: '', value: '' };
     if (chatId) {
-      if (snapshot && snapshot.chatId !== chatId) {
-        snapshot = null;
-      }
+      if (snapshot && snapshot.chatId !== chatId) snapshot = null;
       sendToBackend({ type: 'request_variables_snapshot', chatId });
     } else {
       snapshot = null;
@@ -594,9 +715,8 @@ export function mountVariablesPanel(
   };
 }
 
-
-function sortedEntries(rec: Readonly<Record<string, string>>): Array<[string, string]> {
-  return Object.keys(rec).sort((a, b) => a.localeCompare(b)).map((k) => [k, rec[k] ?? ''] as [string, string]);
+function sortedKeys(rec: Readonly<Record<string, string>>): string[] {
+  return Object.keys(rec).sort((a, b) => a.localeCompare(b));
 }
 
 function shortId(id: string): string {
@@ -611,16 +731,11 @@ function formatTime(ts: number): string {
   return `${hh}:${mm}:${ss}`;
 }
 
-function countTotals(snap: Snapshot): {
-  local: number;
-  global: number;
-  chat: number;
-  defaults: number;
-} {
+function countTotals(snap: Snapshot): { local: number; global: number; chat: number; defaults: number } {
   return {
     local: Object.keys(snap.scopes.local).length,
     global: Object.keys(snap.scopes.global).length,
     chat: Object.keys(snap.scopes.chat).length,
-    defaults: Object.keys(snap.defaults).length,
+    defaults: new Set([...Object.keys(snap.defaults), ...Object.keys(snap.defaultsCardSide)]).size,
   };
 }

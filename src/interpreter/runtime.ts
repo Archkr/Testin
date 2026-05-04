@@ -256,44 +256,118 @@ export async function makeRisuTriggerRuntime(
   }
 
   // Nested runTrigger reuses parent varsCache; only outermost runtime flushes.
+  // Per-await timing: every step here is an IPC round-trip in Spindle; the
+  // editDisplay listenEdit chain creates a fresh runtime per trigger (16x for
+  // Mortal Realm), so the factory cost dominates the wall-clock budget.
+  //
+  // PRELOAD FAST-PATH: when caller passes `opts.preloaded`, we skip the
+  // matching IPC fetch and reuse the provided snapshot. Used by
+  // `runListenEditChain` to share one snapshot across all triggers in the
+  // same chain (Mortal Realm: 48 outbound IPCs → 3, drops the Spindle
+  // worker IPC channel pressure that caused 4.5s stalls per stuck call).
+  const preloaded = opts.preloaded;
+  const _factoryStart = Date.now();
   let varsCache: Record<string, string>;
   let isInheritedVarsCache = false;
+  let _tVars = 0;
+  let _varsSrc: 'inherited' | 'preloaded' | 'fetched' = 'fetched';
   if (_inheritedVarsCacheStack.length > 0) {
     varsCache = _inheritedVarsCacheStack[_inheritedVarsCacheStack.length - 1]!;
     isInheritedVarsCache = true;
+    _varsSrc = 'inherited';
+  } else if (preloaded?.varsCache) {
+    // Shallow-clone so per-trigger writes don't corrupt the shared snapshot.
+    // Risu's listenEdit chain runs each trigger in fresh Lua state — varsCache
+    // mutations from one trigger should not leak into the next via the
+    // shared preload (they'd leak via flush() at chain end if needed).
+    varsCache = { ...preloaded.varsCache };
+    _varsSrc = 'preloaded';
   } else {
+    const _t0 = Date.now();
     varsCache = await loadVars(api);
+    _tVars = Date.now() - _t0;
   }
   let messagesCache: HostMessage[] = [];
+  let _msgsCount = 0;
+  let _msgsSrc: 'preloaded' | 'fetched' = 'fetched';
+  const _tMsgsStart = Date.now();
   try {
-    const msgs = await api.chat.getMessages();
-    const view = buildRisuChatView({ messages: msgs.map((m) => ({ ...m })) });
-    messagesCache = view.messages;
-    if (view.adjustments.length > 0) {
-      _logMake.info(`chat-view from-len=${msgs.length} to-len=${messagesCache.length} adjustments=[${view.adjustments.join(', ')}]`);
-    }
-  } catch { messagesCache = []; }
-
-  const lorebook: LorebookCache = { entries: [], primaryBookId: null };
-  try {
-    const cid = characterId || (data && (data as { characterId?: string }).characterId);
-    if (cid && api.characters && typeof api.characters.get === 'function') {
-      const char = await api.characters.get(cid);
-      const bookIds = char && Array.isArray(char.worldBookIds) ? char.worldBookIds : [];
-      if (bookIds.length > 0 && api.worldInfo && api.worldInfo.entries) {
-        lorebook.primaryBookId = bookIds[0] ?? null;
-        for (const bid of bookIds) {
-          try {
-            const res = await api.worldInfo.entries.list(bid, { limit: 1000 });
-            if (res && Array.isArray(res.data)) {
-              for (const e of res.data) lorebook.entries.push({ ...e, worldBookId: e.worldBookId || bid });
-            }
-          } catch { /* skip */ }
-        }
-        lorebook.entries.sort((a, b) => Number(b.orderValue || 0) - Number(a.orderValue || 0));
+    if (preloaded?.messagesRaw) {
+      _msgsSrc = 'preloaded';
+      _msgsCount = preloaded.messagesRaw.length;
+      const view = buildRisuChatView({ messages: preloaded.messagesRaw.map((m) => ({ ...m })) });
+      messagesCache = view.messages;
+      if (view.adjustments.length > 0) {
+        _logMake.info(`chat-view from-len=${_msgsCount} to-len=${messagesCache.length} adjustments=[${view.adjustments.join(', ')}] src=preloaded`);
+      }
+    } else {
+      const msgs = await api.chat.getMessages();
+      _msgsCount = msgs.length;
+      const view = buildRisuChatView({ messages: msgs.map((m) => ({ ...m })) });
+      messagesCache = view.messages;
+      if (view.adjustments.length > 0) {
+        _logMake.info(`chat-view from-len=${msgs.length} to-len=${messagesCache.length} adjustments=[${view.adjustments.join(', ')}]`);
       }
     }
-  } catch { /* world_books permission not granted */ }
+  } catch { messagesCache = []; }
+  const _tMsgs = _msgsSrc === 'preloaded' ? 0 : Date.now() - _tMsgsStart;
+
+  const lorebook: LorebookCache = { entries: [], primaryBookId: null };
+  let _tCharGet = 0;
+  let _tLore = 0;
+  let _bookCount = 0;
+  let _entryCount = 0;
+  let _loreSrc: 'preloaded' | 'fetched' = 'fetched';
+  if (preloaded?.lorebook) {
+    _loreSrc = 'preloaded';
+    // Reuse the entries array by reference — entries are read-only in the
+    // listenEdit case (editDisplay can't write lorebook). The primaryBookId
+    // carries through for `getLorebookCount`/etc.
+    lorebook.entries = preloaded.lorebook.entries;
+    lorebook.primaryBookId = preloaded.lorebook.primaryBookId;
+    _entryCount = lorebook.entries.length;
+    _bookCount = lorebook.primaryBookId ? 1 : 0;
+  } else {
+    try {
+      const cid = characterId || (data && (data as { characterId?: string }).characterId);
+      if (cid && api.characters && typeof api.characters.get === 'function') {
+        const _tCharStart = Date.now();
+        const char = await api.characters.get(cid);
+        _tCharGet = Date.now() - _tCharStart;
+        const bookIds = char && Array.isArray(char.worldBookIds) ? char.worldBookIds : [];
+        _bookCount = bookIds.length;
+        if (bookIds.length > 0 && api.worldInfo && api.worldInfo.entries) {
+          lorebook.primaryBookId = bookIds[0] ?? null;
+          const _tLoreStart = Date.now();
+          for (const bid of bookIds) {
+            try {
+              const res = await api.worldInfo.entries.list(bid, { limit: 1000 });
+              if (res && Array.isArray(res.data)) {
+                _entryCount += res.data.length;
+                for (const e of res.data) lorebook.entries.push({ ...e, worldBookId: e.worldBookId || bid });
+              }
+            } catch { /* skip */ }
+          }
+          lorebook.entries.sort((a, b) => Number(b.orderValue || 0) - Number(a.orderValue || 0));
+          _tLore = Date.now() - _tLoreStart;
+        }
+      }
+    } catch { /* world_books permission not granted */ }
+  }
+
+  const _factoryTotal = Date.now() - _factoryStart;
+  // Always emit so we capture per-trigger factory cost in editDisplay chains.
+  // The chain creates a fresh runtime per trigger; with 16 triggers and an
+  // IPC cost per await, even "fast" individual factories add up to seconds.
+  // src= field tells you which preload path actually fired (preloaded vs.
+  // fetched vs. inherited from a parent runTrigger).
+  _logMake.info(
+    `factory.timing total=${_factoryTotal}ms vars=${_tVars}ms (src=${_varsSrc}) ` +
+      `msgs=${_tMsgs}ms (n=${_msgsCount} src=${_msgsSrc}) chars.get=${_tCharGet}ms ` +
+      `lore=${_tLore}ms (books=${_bookCount} entries=${_entryCount} src=${_loreSrc}) ` +
+      `inherited=${isInheritedVarsCache} chatId=${portalChatId ?? '<none>'} ` +
+      `binding=${binding} characterId=${characterId ?? '<none>'}`,
+  );
 
   // `dirty` boxed so flush() observes setVar writes across the closure boundary.
   const dirty: { value: boolean } = { value: false };
@@ -397,7 +471,18 @@ export async function makeRisuTriggerRuntime(
   }
 
   async function runLLM(value: unknown, model: string, _streaming?: boolean): Promise<string> {
-    return _runLLM(api, { submodelConnectionId, submodelModelOverride, submodelParamsWire }, value, model, _streaming);
+    return _runLLM(
+      api,
+      {
+        submodelConnectionId,
+        submodelModelOverride,
+        submodelParamsWire,
+        ...(auxDebugCapture ? { auxDebugCapture } : {}),
+      },
+      value,
+      model,
+      _streaming,
+    );
   }
 
   async function checkSimilarity(value: unknown, source: unknown): Promise<never> {
@@ -733,6 +818,7 @@ export async function makeRisuTriggerRuntime(
           try {
             auxDebugCapture({
               kind: 'request',
+              channel: 'aux',
               auxConnectionId,
               auxModelOverride,
               elapsedMs: null,
@@ -753,6 +839,7 @@ export async function makeRisuTriggerRuntime(
             try {
               auxDebugCapture({
                 kind: 'response',
+                channel: 'aux',
                 auxConnectionId,
                 auxModelOverride,
                 elapsedMs: elapsed,
@@ -769,6 +856,7 @@ export async function makeRisuTriggerRuntime(
             try {
               auxDebugCapture({
                 kind: 'error',
+                channel: 'aux',
                 auxConnectionId,
                 auxModelOverride,
                 elapsedMs: elapsed,

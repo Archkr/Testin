@@ -13073,6 +13073,14 @@ function makeArraysDictsApi(vars) {
     dictValues: (name) => Object.values(readDict(name))
   };
 }
+
+// src/util/role-coerce.ts
+function risuRoleToLumi(r) {
+  return r === "user" ? "user" : "assistant";
+}
+function lumiRoleToRisu(r) {
+  return r === "user" ? "user" : "char";
+}
 // src/interpreter/runtime/unsupported.ts
 function unsupported(feature, reason) {
   throw new RisuCompatUnsupportedError(feature, reason);
@@ -13113,7 +13121,7 @@ function makeChatApi(api, state, notifyStateChanged) {
     return toStr(state.messagesCache[0]?.content);
   }
   async function impersonate(role, value) {
-    const r = role === "char" ? "assistant" : "user";
+    const r = risuRoleToLumi(toStr(role));
     try {
       const res = await api.chat.sendMessage(toStr(value), { role: r });
       state.messagesCache.push({
@@ -13441,24 +13449,64 @@ function makeDisplayStateApi() {
 // src/interpreter/runtime/llm.ts
 var _log2 = makeSafeLogger("runtime.runLLM");
 async function runLLM(api, routing, value, model, _streaming) {
+  if (!api.llm)
+    return "Error: api.llm not available";
+  const useSubmodel = model === "submodel";
+  const connId = useSubmodel ? routing.submodelConnectionId : null;
+  const modelOverride = useSubmodel ? routing.submodelModelOverride : null;
+  const paramsWire = useSubmodel ? routing.submodelParamsWire : null;
+  const req = {
+    messages: [{ role: "user", content: toStr(value) }],
+    ...connId ? { connectionId: connId } : {},
+    ...modelOverride ? { model: modelOverride } : {},
+    ...paramsWire ? { parameters: paramsWire } : {}
+  };
+  _log2.info(`channel=${model} useSubmodel=${useSubmodel} ` + `submodelConn=${routing.submodelConnectionId ?? "<inherit-aux>"} ` + `submodelModel=${routing.submodelModelOverride ?? "<connection>"}`);
+  const captureChannel = useSubmodel ? "submodel" : null;
+  const tStart = Date.now();
+  if (captureChannel && routing.auxDebugCapture) {
+    try {
+      routing.auxDebugCapture({
+        kind: "request",
+        channel: captureChannel,
+        auxConnectionId: connId,
+        auxModelOverride: modelOverride,
+        elapsedMs: null,
+        payload: req
+      });
+    } catch {}
+  }
   try {
-    if (!api.llm)
-      return "Error: api.llm not available";
-    const useSubmodel = model === "submodel";
-    const connId = useSubmodel ? routing.submodelConnectionId : null;
-    const modelOverride = useSubmodel ? routing.submodelModelOverride : null;
-    const paramsWire = useSubmodel ? routing.submodelParamsWire : null;
-    const req = {
-      messages: [{ role: "user", content: toStr(value) }],
-      ...connId ? { connectionId: connId } : {},
-      ...modelOverride ? { model: modelOverride } : {},
-      ...paramsWire ? { parameters: paramsWire } : {}
-    };
-    _log2.info(`channel=${model} useSubmodel=${useSubmodel} ` + `submodelConn=${routing.submodelConnectionId ?? "<inherit-aux>"} ` + `submodelModel=${routing.submodelModelOverride ?? "<connection>"}`);
     const result = await api.llm.generate(req);
-    return toStr(result && result.content);
+    const content = toStr(result && result.content);
+    if (captureChannel && routing.auxDebugCapture) {
+      try {
+        routing.auxDebugCapture({
+          kind: "response",
+          channel: captureChannel,
+          auxConnectionId: connId,
+          auxModelOverride: modelOverride,
+          elapsedMs: Date.now() - tStart,
+          payload: { content }
+        });
+      } catch {}
+    }
+    return content;
   } catch (e) {
-    return "Error: " + (e instanceof Error ? e.message : String(e));
+    const message = e instanceof Error ? e.message : String(e);
+    if (captureChannel && routing.auxDebugCapture) {
+      try {
+        routing.auxDebugCapture({
+          kind: "error",
+          channel: captureChannel,
+          auxConnectionId: connId,
+          auxModelOverride: modelOverride,
+          elapsedMs: Date.now() - tStart,
+          payload: { message }
+        });
+      } catch {}
+    }
+    return "Error: " + message;
   }
 }
 function parseLuaPromptArg(promptStr) {
@@ -14127,46 +14175,92 @@ async function makeRisuTriggerRuntime(api, data, scriptNs, opts = {}) {
     const bindingSrc = dispatchCtx.binding !== undefined ? "side-channel" : opts.binding !== undefined ? "opts" : "<none>";
     _logMake.info(`chatId=${portalChatId ?? "<none>"} ` + `rememberOurWrite=${rememberOurWrite ? "wired" : "<none>"} ` + `stateChanged=${stateChanged ? "wired" : "<none>"} ` + `auxConn=${auxConnectionId ?? "<default>"} auxModel=${auxModelOverride ?? "<connection>"} ` + `auxParams=${auxParamsWire ? Object.keys(auxParamsWire).join(",") : "<preset>"} ` + `submodelConn=${submodelConnectionId ?? "<inherit-aux>"} ` + `submodelModel=${submodelModelOverride ?? "<connection>"} ` + `submodelParams=${submodelParamsWire ? Object.keys(submodelParamsWire).join(",") : "<preset>"} ` + `binding=${binding}(src=${bindingSrc}) characterId=${characterId ?? "<none>"}`);
   }
+  const preloaded = opts.preloaded;
+  const _factoryStart = Date.now();
   let varsCache;
   let isInheritedVarsCache = false;
+  let _tVars = 0;
+  let _varsSrc = "fetched";
   if (_inheritedVarsCacheStack.length > 0) {
     varsCache = _inheritedVarsCacheStack[_inheritedVarsCacheStack.length - 1];
     isInheritedVarsCache = true;
+    _varsSrc = "inherited";
+  } else if (preloaded?.varsCache) {
+    varsCache = { ...preloaded.varsCache };
+    _varsSrc = "preloaded";
   } else {
+    const _t0 = Date.now();
     varsCache = await loadVars(api);
+    _tVars = Date.now() - _t0;
   }
   let messagesCache = [];
+  let _msgsCount = 0;
+  let _msgsSrc = "fetched";
+  const _tMsgsStart = Date.now();
   try {
-    const msgs = await api.chat.getMessages();
-    const view = buildRisuChatView({ messages: msgs.map((m) => ({ ...m })) });
-    messagesCache = view.messages;
-    if (view.adjustments.length > 0) {
-      _logMake.info(`chat-view from-len=${msgs.length} to-len=${messagesCache.length} adjustments=[${view.adjustments.join(", ")}]`);
+    if (preloaded?.messagesRaw) {
+      _msgsSrc = "preloaded";
+      _msgsCount = preloaded.messagesRaw.length;
+      const view = buildRisuChatView({ messages: preloaded.messagesRaw.map((m) => ({ ...m })) });
+      messagesCache = view.messages;
+      if (view.adjustments.length > 0) {
+        _logMake.info(`chat-view from-len=${_msgsCount} to-len=${messagesCache.length} adjustments=[${view.adjustments.join(", ")}] src=preloaded`);
+      }
+    } else {
+      const msgs = await api.chat.getMessages();
+      _msgsCount = msgs.length;
+      const view = buildRisuChatView({ messages: msgs.map((m) => ({ ...m })) });
+      messagesCache = view.messages;
+      if (view.adjustments.length > 0) {
+        _logMake.info(`chat-view from-len=${msgs.length} to-len=${messagesCache.length} adjustments=[${view.adjustments.join(", ")}]`);
+      }
     }
   } catch {
     messagesCache = [];
   }
+  const _tMsgs = _msgsSrc === "preloaded" ? 0 : Date.now() - _tMsgsStart;
   const lorebook2 = { entries: [], primaryBookId: null };
-  try {
-    const cid = characterId || data && data.characterId;
-    if (cid && api.characters && typeof api.characters.get === "function") {
-      const char = await api.characters.get(cid);
-      const bookIds = char && Array.isArray(char.worldBookIds) ? char.worldBookIds : [];
-      if (bookIds.length > 0 && api.worldInfo && api.worldInfo.entries) {
-        lorebook2.primaryBookId = bookIds[0] ?? null;
-        for (const bid of bookIds) {
-          try {
-            const res = await api.worldInfo.entries.list(bid, { limit: 1000 });
-            if (res && Array.isArray(res.data)) {
-              for (const e of res.data)
-                lorebook2.entries.push({ ...e, worldBookId: e.worldBookId || bid });
-            }
-          } catch {}
+  let _tCharGet = 0;
+  let _tLore = 0;
+  let _bookCount = 0;
+  let _entryCount = 0;
+  let _loreSrc = "fetched";
+  if (preloaded?.lorebook) {
+    _loreSrc = "preloaded";
+    lorebook2.entries = preloaded.lorebook.entries;
+    lorebook2.primaryBookId = preloaded.lorebook.primaryBookId;
+    _entryCount = lorebook2.entries.length;
+    _bookCount = lorebook2.primaryBookId ? 1 : 0;
+  } else {
+    try {
+      const cid = characterId || data && data.characterId;
+      if (cid && api.characters && typeof api.characters.get === "function") {
+        const _tCharStart = Date.now();
+        const char = await api.characters.get(cid);
+        _tCharGet = Date.now() - _tCharStart;
+        const bookIds = char && Array.isArray(char.worldBookIds) ? char.worldBookIds : [];
+        _bookCount = bookIds.length;
+        if (bookIds.length > 0 && api.worldInfo && api.worldInfo.entries) {
+          lorebook2.primaryBookId = bookIds[0] ?? null;
+          const _tLoreStart = Date.now();
+          for (const bid of bookIds) {
+            try {
+              const res = await api.worldInfo.entries.list(bid, { limit: 1000 });
+              if (res && Array.isArray(res.data)) {
+                _entryCount += res.data.length;
+                for (const e of res.data)
+                  lorebook2.entries.push({ ...e, worldBookId: e.worldBookId || bid });
+              }
+            } catch {}
+          }
+          lorebook2.entries.sort((a, b) => Number(b.orderValue || 0) - Number(a.orderValue || 0));
+          _tLore = Date.now() - _tLoreStart;
         }
-        lorebook2.entries.sort((a, b) => Number(b.orderValue || 0) - Number(a.orderValue || 0));
       }
-    }
-  } catch {}
+    } catch {}
+  }
+  const _factoryTotal = Date.now() - _factoryStart;
+  _logMake.info(`factory.timing total=${_factoryTotal}ms vars=${_tVars}ms (src=${_varsSrc}) ` + `msgs=${_tMsgs}ms (n=${_msgsCount} src=${_msgsSrc}) chars.get=${_tCharGet}ms ` + `lore=${_tLore}ms (books=${_bookCount} entries=${_entryCount} src=${_loreSrc}) ` + `inherited=${isInheritedVarsCache} chatId=${portalChatId ?? "<none>"} ` + `binding=${binding} characterId=${characterId ?? "<none>"}`);
   const dirty = { value: false };
   const localScopes = new Map;
   const _vars = makeVarsApi({ varsCache, localScopes, dirty, characterId });
@@ -14279,7 +14373,12 @@ async function makeRisuTriggerRuntime(api, data, scriptNs, opts = {}) {
     return unsupported("alertSelect", "requires api.ui.pick (host should provide one \u2014 spindle-host wires this to a frontend modal round-trip)");
   }
   async function runLLM2(value, model, _streaming) {
-    return runLLM(api, { submodelConnectionId, submodelModelOverride, submodelParamsWire }, value, model, _streaming);
+    return runLLM(api, {
+      submodelConnectionId,
+      submodelModelOverride,
+      submodelParamsWire,
+      ...auxDebugCapture ? { auxDebugCapture } : {}
+    }, value, model, _streaming);
   }
   async function checkSimilarity(value, source) {
     return unsupported("checkSimilarity", "requires HypaProcessor / vector-store equivalent; corpus usage = 0 effects");
@@ -14417,7 +14516,7 @@ async function makeRisuTriggerRuntime(api, data, scriptNs, opts = {}) {
         const n = Number(index);
         const real = n >= 0 ? n : messagesCache.length + n;
         const m = messagesCache[real];
-        return m ? JSON.stringify({ role: m.role, data: toStr(m.content) }) : JSON.stringify({ role: "", data: "" });
+        return m ? JSON.stringify({ role: lumiRoleToRisu(m.role), data: toStr(m.content) }) : JSON.stringify({ role: "", data: "" });
       },
       setChat: (_id, index, value) => {
         const n = Number(index);
@@ -14452,7 +14551,7 @@ async function makeRisuTriggerRuntime(api, data, scriptNs, opts = {}) {
       setChatRole: (_id, index, value) => {
         const n = Number(index);
         if (messagesCache[n])
-          messagesCache[n] = { ...messagesCache[n], role: toStr(value) };
+          messagesCache[n] = { ...messagesCache[n], role: risuRoleToLumi(toStr(value)) };
       },
       cutChat: (_id, start, end) => {
         cutChat(start, end);
@@ -14468,17 +14567,18 @@ async function makeRisuTriggerRuntime(api, data, scriptNs, opts = {}) {
       },
       addChat: (_id, role, value) => {
         const raw = normalizeReplaceStringForSanitizer(toStr(value));
-        messagesCache.push({ id: String(messagesCache.length + 1), role: toStr(role), content: raw });
+        const lumiRole = risuRoleToLumi(toStr(role));
+        messagesCache.push({ id: String(messagesCache.length + 1), role: lumiRole, content: raw });
         _logAddChat.info(`role=${toStr(role)} len=${raw.length} chatId=${portalChatId ?? "<none>"}`);
         try {
-          api.chat.sendMessage?.(raw, { role: toStr(role) });
+          api.chat.sendMessage?.(raw, { role: lumiRole });
         } catch {}
       },
       insertChat: (_id, index, role, value) => {
-        messagesCache.splice(Number(index), 0, { id: String(Date.now()), role: toStr(role), content: toStr(value) });
+        messagesCache.splice(Number(index), 0, { id: String(Date.now()), role: risuRoleToLumi(toStr(role)), content: toStr(value) });
       },
       getChatLength: (_id) => messagesCache.length,
-      getFullChatMain: (_id) => JSON.stringify(messagesCache.map((m) => ({ role: m.role, data: toStr(m.content) }))),
+      getFullChatMain: (_id) => JSON.stringify(messagesCache.map((m) => ({ role: lumiRoleToRisu(m.role), data: toStr(m.content) }))),
       setFullChatMain: (_id, value) => {
         try {
           const arr = JSON.parse(toStr(value));
@@ -14486,7 +14586,7 @@ async function makeRisuTriggerRuntime(api, data, scriptNs, opts = {}) {
             messagesCache.length = 0;
             for (let i = 0;i < arr.length; i++) {
               const entry = arr[i];
-              messagesCache.push({ id: String(i + 1), role: toStr(entry.role), content: toStr(entry.data) });
+              messagesCache.push({ id: String(i + 1), role: risuRoleToLumi(toStr(entry.role)), content: toStr(entry.data) });
             }
           }
         } catch {}
@@ -14572,6 +14672,7 @@ async function makeRisuTriggerRuntime(api, data, scriptNs, opts = {}) {
           try {
             auxDebugCapture({
               kind: "request",
+              channel: "aux",
               auxConnectionId,
               auxModelOverride,
               elapsedMs: null,
@@ -14588,6 +14689,7 @@ async function makeRisuTriggerRuntime(api, data, scriptNs, opts = {}) {
             try {
               auxDebugCapture({
                 kind: "response",
+                channel: "aux",
                 auxConnectionId,
                 auxModelOverride,
                 elapsedMs: elapsed,
@@ -14604,6 +14706,7 @@ async function makeRisuTriggerRuntime(api, data, scriptNs, opts = {}) {
             try {
               auxDebugCapture({
                 kind: "error",
+                channel: "aux",
                 auxConnectionId,
                 auxModelOverride,
                 elapsedMs: elapsed,
@@ -15962,7 +16065,7 @@ function makeSpindleHost(ctx) {
   }
   async function sendMessage(content, opts) {
     const roleRaw = opts?.role ?? "user";
-    const role = roleRaw === "system" ? "system" : roleRaw === "assistant" ? "assistant" : "user";
+    const role = roleRaw === "system" || roleRaw === "sys" ? "system" : roleRaw === "assistant" || roleRaw === "char" || roleRaw === "bot" ? "assistant" : "user";
     const created = await spindle.chat.appendMessage(chatId, { role, content });
     return { id: created.id };
   }
@@ -29143,8 +29246,78 @@ function workerEvalEnabled() {
   }
 }
 
+// src/interpreter/listenedit-preload.ts
+var log2 = makeSafeLogger("listenEdit.preload");
+var CACHE_TTL_MS = 150;
+var cache = new Map;
+function invalidateListenEditPreload(chatId) {
+  if (cache.delete(chatId)) {
+    log2.info(`invalidate chat=${chatId}`);
+  }
+}
+async function preloadForListenEditChain(api, chatId, characterId) {
+  if (chatId) {
+    const cached = cache.get(chatId);
+    if (cached && Date.now() - cached.ts < CACHE_TTL_MS && cached.characterId === (characterId ?? null)) {
+      log2.info(`cache.hit chat=${chatId} age=${Date.now() - cached.ts}ms ` + `entries=${cached.snapshot.lorebook?.entries.length ?? 0} msgs=${cached.snapshot.messagesRaw?.length ?? 0}`);
+      return cached.snapshot;
+    }
+  }
+  const t0 = Date.now();
+  const [varsResult, msgsResult, charResult] = await Promise.allSettled([
+    loadVars(api),
+    api.chat.getMessages(),
+    characterId && api.characters?.get ? api.characters.get(characterId) : Promise.resolve(null)
+  ]);
+  const tParallel = Date.now() - t0;
+  let varsCache;
+  if (varsResult.status === "fulfilled")
+    varsCache = varsResult.value;
+  else
+    log2.warn(`loadVars failed \u2014 ${varsResult.reason?.message ?? varsResult.reason}`);
+  let messagesRaw;
+  if (msgsResult.status === "fulfilled")
+    messagesRaw = msgsResult.value;
+  else
+    log2.warn(`getMessages failed \u2014 ${msgsResult.reason?.message ?? msgsResult.reason}`);
+  let lorebook2;
+  if (charResult.status === "fulfilled" && charResult.value) {
+    const char = charResult.value;
+    const bookIds = Array.isArray(char.worldBookIds) ? char.worldBookIds : [];
+    if (bookIds.length > 0 && api.worldInfo?.entries) {
+      const tLore = Date.now();
+      const entries = [];
+      const lists = await Promise.allSettled(bookIds.map((bid) => api.worldInfo.entries.list(bid, { limit: 1000 }).then((res) => ({ bid, res }))));
+      for (const r of lists) {
+        if (r.status !== "fulfilled" || !r.value.res || !Array.isArray(r.value.res.data))
+          continue;
+        for (const e of r.value.res.data) {
+          entries.push({ ...e, worldBookId: e.worldBookId || r.value.bid });
+        }
+      }
+      entries.sort((a, b) => Number(b.orderValue || 0) - Number(a.orderValue || 0));
+      lorebook2 = { entries, primaryBookId: bookIds[0] ?? null };
+      log2.info(`lorebook fetched chat=${chatId ?? "<none>"} books=${bookIds.length} entries=${entries.length} elapsed=${Date.now() - tLore}ms`);
+    } else {
+      lorebook2 = { entries: [], primaryBookId: bookIds[0] ?? null };
+    }
+  } else if (charResult.status === "rejected") {
+    log2.warn(`characters.get failed \u2014 ${charResult.reason?.message ?? charResult.reason}`);
+  }
+  const snapshot = {
+    ...varsCache !== undefined ? { varsCache } : {},
+    ...messagesRaw !== undefined ? { messagesRaw } : {},
+    ...lorebook2 !== undefined ? { lorebook: lorebook2 } : {}
+  };
+  if (chatId) {
+    cache.set(chatId, { snapshot, ts: Date.now(), characterId: characterId ?? null });
+  }
+  log2.info(`preload.done chat=${chatId ?? "<none>"} parallel_fetch=${tParallel}ms ` + `total=${Date.now() - t0}ms ` + `vars=${varsCache ? Object.keys(varsCache).length : "<failed>"} ` + `msgs=${messagesRaw?.length ?? "<failed>"} ` + `lore_entries=${lorebook2?.entries.length ?? "<failed>"} ` + `cached=${chatId ? "yes" : "no"}`);
+  return snapshot;
+}
+
 // src/interpreter/listen-edit.ts
-var log2 = makeSafeLogger("listenEdit.runChain");
+var log3 = makeSafeLogger("listenEdit.runChain");
 async function runListenEditChain(triggers2, mode, value, meta, api, data, scriptNS, opts = {}) {
   const eligible = triggers2.filter((t) => {
     const luaTrigger = t.source.effect?.[0]?.type === "triggerlua";
@@ -29152,57 +29325,78 @@ async function runListenEditChain(triggers2, mode, value, meta, api, data, scrip
   });
   if (eligible.length === 0)
     return value;
-  log2.info(`mode=${mode} eligible=${eligible.length}/${triggers2.length} ` + `chatId=${opts.chatId ?? "<none>"} characterId=${opts.characterId ?? "<none>"}`);
+  const chainStart = Date.now();
+  log3.info(`chain.start mode=${mode} eligible=${eligible.length}/${triggers2.length} ` + `value_len=${typeof value === "string" ? value.length : Array.isArray(value) ? value.length : -1} ` + `chatId=${opts.chatId ?? "<none>"} characterId=${opts.characterId ?? "<none>"}`);
+  const tPreload = Date.now();
+  const preloaded = await preloadForListenEditChain(api, opts.chatId, opts.characterId ?? null);
+  const preloadMs = Date.now() - tPreload;
   const accessKey = opts.characterId ?? "edit-trigger";
   let current = value;
+  let totalFactoryMs = 0;
+  let totalRunLuaMs = 0;
+  let totalSerdeMs = 0;
   for (let i = 0;i < eligible.length; i++) {
     const t = eligible[i];
     const tStart = Date.now();
     try {
+      const tFactoryStart = Date.now();
       const runtime2 = await makeRisuTriggerRuntime(api, data, scriptNS, {
         binding: "manual",
         lowLevelAccess: false,
         ...opts.chatId !== undefined ? { chatId: opts.chatId } : {},
-        ...opts.characterId !== undefined ? { characterId: opts.characterId } : {}
+        ...opts.characterId !== undefined ? { characterId: opts.characterId } : {},
+        preloaded
       });
+      const factoryMs = Date.now() - tFactoryStart;
+      totalFactoryMs += factoryMs;
+      const tSerdeStart = Date.now();
       const valueJson = JSON.stringify(current);
       const metaJson = JSON.stringify(meta ?? {});
+      const serdeMs = Date.now() - tSerdeStart;
+      totalSerdeMs += serdeMs;
+      const tRunLuaStart = Date.now();
       const result = await runtime2.runLua(t.luaCode, {
         entry: "callListenMain",
         args: [mode, accessKey, valueJson, metaJson]
       });
+      const runLuaMs = Date.now() - tRunLuaStart;
+      totalRunLuaMs += runLuaMs;
       if (typeof result === "string") {
         try {
           const parsed = JSON.parse(result);
           current = parsed;
         } catch (err) {
-          log2.warn(`trigger[${i}] returned non-JSON, keeping prior value \u2014 ${errMsg(err)}`);
+          log3.warn(`trigger[${i}] returned non-JSON, keeping prior value \u2014 ${errMsg(err)}`);
         }
       } else if (result === undefined) {} else {
-        log2.warn(`trigger[${i}] returned unexpected type=${typeof result}; keeping prior value`);
+        log3.warn(`trigger[${i}] returned unexpected type=${typeof result}; keeping prior value`);
       }
-      log2.info(`trigger[${i}] mode=${mode} elapsed=${Date.now() - tStart}ms`);
+      const triggerTotal = Date.now() - tStart;
+      const otherMs = triggerTotal - factoryMs - serdeMs - runLuaMs;
+      log3.info(`trigger[${i}] mode=${mode} elapsed=${triggerTotal}ms ` + `factory=${factoryMs}ms serde=${serdeMs}ms runLua=${runLuaMs}ms ` + `other=${otherMs}ms (lua_len=${t.luaCode.length})`);
     } catch (err) {
-      log2.warn(`trigger[${i}] mode=${mode} elapsed=${Date.now() - tStart}ms THREW \u2014 ${errMsg(err)}; keeping prior value`);
+      log3.warn(`trigger[${i}] mode=${mode} elapsed=${Date.now() - tStart}ms THREW \u2014 ${errMsg(err)}; keeping prior value`);
     }
   }
+  const chainTotal = Date.now() - chainStart;
+  log3.info(`chain.done mode=${mode} elapsed=${chainTotal}ms eligible=${eligible.length} ` + `preload=${preloadMs}ms ` + `factory_sum=${totalFactoryMs}ms runLua_sum=${totalRunLuaMs}ms ` + `serde_sum=${totalSerdeMs}ms ` + `other=${chainTotal - preloadMs - totalFactoryMs - totalRunLuaMs - totalSerdeMs}ms ` + `chatId=${opts.chatId ?? "<none>"}`);
   return current;
 }
 
 // src/interpreter/at-actions-runtime.ts
-var log3 = makeSafeLogger("atActions.runForPhase");
+var log4 = makeSafeLogger("atActions.runForPhase");
 async function runAtActionsForPhase(actions, phase, data, ctx) {
   const eligible = actions.filter((a) => a.phase === phase).slice().sort((a, b) => a.order - b.order);
   if (eligible.length === 0)
     return data;
-  log3.info(`phase=${phase} eligible=${eligible.length} data_len=${data.length} chatIndex=${ctx.chatIndex}`);
+  log4.info(`phase=${phase} eligible=${eligible.length} data_len=${data.length} chatIndex=${ctx.chatIndex}`);
   let current = data;
   for (let i = 0;i < eligible.length; i++) {
     const a = eligible[i];
     try {
       current = await applyOne2(a, current, ctx);
     } catch (err) {
-      log3.warn(`action[${i}] kind=${a.action} phase=${phase} THREW \u2014 ${errMsg(err)}; keeping prior data`);
+      log4.warn(`action[${i}] kind=${a.action} phase=${phase} THREW \u2014 ${errMsg(err)}; keeping prior data`);
     }
   }
   return current;
@@ -29634,51 +29828,51 @@ function extractToggleKeys(flat) {
 }
 
 // src/state/recent-writes.ts
-var log4 = makeSafeLogger("recent-writes");
+var log5 = makeSafeLogger("recent-writes");
 var TTL_MS2 = 60000;
 var MAX_ENTRIES = 100;
 var RAPID_CONSUME_MS = 100;
-var cache = new Map;
+var cache2 = new Map;
 function key(chatId, msgId) {
   return `${chatId}::${msgId}`;
 }
 function rememberOurWrite(chatId, msgId, content) {
   const now = Date.now();
-  if (cache.size >= MAX_ENTRIES) {
-    for (const [k, v] of cache) {
+  if (cache2.size >= MAX_ENTRIES) {
+    for (const [k, v] of cache2) {
       if (now - v.ts > TTL_MS2)
-        cache.delete(k);
+        cache2.delete(k);
     }
-    if (cache.size >= MAX_ENTRIES) {
+    if (cache2.size >= MAX_ENTRIES) {
       let oldestKey = null;
       let oldestTs = Infinity;
-      for (const [k, v] of cache) {
+      for (const [k, v] of cache2) {
         if (v.ts < oldestTs) {
           oldestTs = v.ts;
           oldestKey = k;
         }
       }
       if (oldestKey)
-        cache.delete(oldestKey);
+        cache2.delete(oldestKey);
     }
   }
-  cache.set(key(chatId, msgId), { content, ts: now });
+  cache2.set(key(chatId, msgId), { content, ts: now });
 }
 function consumeIfOurWrite(chatId, msgId, content) {
   const k = key(chatId, msgId);
-  const entry = cache.get(k);
+  const entry = cache2.get(k);
   if (!entry)
     return false;
   const elapsed = Date.now() - entry.ts;
   if (elapsed > TTL_MS2) {
-    cache.delete(k);
+    cache2.delete(k);
     return false;
   }
   if (entry.content !== content)
     return false;
-  cache.delete(k);
+  cache2.delete(k);
   if (elapsed >= RAPID_CONSUME_MS) {
-    log4.info(`consumeIfOurWrite: late match chat=${chatId} msg=${msgId} elapsed=${elapsed}ms content_len=${content.length} ` + `\u2014 normal echoes are <${RAPID_CONSUME_MS}ms; if user reports a "my edit reverted" symptom soon after, suspect false-positive`);
+    log5.info(`consumeIfOurWrite: late match chat=${chatId} msg=${msgId} elapsed=${elapsed}ms content_len=${content.length} ` + `\u2014 normal echoes are <${RAPID_CONSUME_MS}ms; if user reports a "my edit reverted" symptom soon after, suspect false-positive`);
   }
   return true;
 }
@@ -30270,7 +30464,7 @@ function extractLuaForTrigger(triggerRaw) {
 
 // src/backend.ts
 var EXTENSION_VERSION = "0.1.0";
-var log5 = {
+var log6 = {
   info(msg) {
     if (logStore.isEnabled())
       spindle.log.info(`[lumirealm] ${msg}`);
@@ -30295,7 +30489,7 @@ var log5 = {
     logStore.push("info", "backend", msg);
   }
 };
-log5.info(`backend boot: version=${EXTENSION_VERSION}`);
+log6.info(`backend boot: version=${EXTENSION_VERSION}`);
 function modulesByNamespaceFromCard(card) {
   const extra = card.risuPayload.extra;
   const raw = extra?.modules_by_namespace;
@@ -30322,19 +30516,19 @@ if (typeof registerMacroInterceptor === "function") {
     const templateHead = ctx.template.slice(0, 120);
     const hasMarker = /\u2605[A-Z_]+\u2605|###[A-Z_]+###/.test(ctx.template);
     const chatEnv = ctx.env.chat;
-    log5.info(`macroInterceptor.enter #${callId} chat=${chatId ?? "<none>"} active_present=${activeBefore} ` + `commit=${ctx.commit} phase=${ctx.phase} userId=${ctx.userId ?? "<none>"} ` + `tmpl_len=${ctx.template.length} has_marker=${hasMarker} ` + `lumi_messageCount=${chatEnv?.messageCount ?? "?"} lumi_lastMessageId=${chatEnv?.lastMessageId ?? "?"} ` + `tmpl_head=${JSON.stringify(templateHead)}`);
+    log6.info(`macroInterceptor.enter #${callId} chat=${chatId ?? "<none>"} active_present=${activeBefore} ` + `commit=${ctx.commit} phase=${ctx.phase} userId=${ctx.userId ?? "<none>"} ` + `tmpl_len=${ctx.template.length} has_marker=${hasMarker} ` + `lumi_messageCount=${chatEnv?.messageCount ?? "?"} lumi_lastMessageId=${chatEnv?.lastMessageId ?? "?"} ` + `tmpl_head=${JSON.stringify(templateHead)}`);
     if (!ctx.template.includes("{{")) {
-      log5.info(`macroInterceptor.exit #${callId} path=no_cbs elapsed=${Date.now() - t0}ms`);
+      log6.info(`macroInterceptor.exit #${callId} path=no_cbs elapsed=${Date.now() - t0}ms`);
       return;
     }
     captureUserId(ctx.userId, "macroInterceptor");
     if (!chatId) {
-      log5.info(`macroInterceptor.exit #${callId} path=no_chat_id elapsed=${Date.now() - t0}ms`);
+      log6.info(`macroInterceptor.exit #${callId} path=no_chat_id elapsed=${Date.now() - t0}ms`);
       return;
     }
     const active = activeCardByChat.get(chatId);
     if (!active) {
-      log5.warn(`macroInterceptor.exit #${callId} path=no_active_card chat=${chatId} ` + `elapsed=${Date.now() - t0}ms \u26A0 falling back to Lumi native eval. ` + `activeCardByChat keys=[${[...activeCardByChat.keys()].map((k) => k.slice(0, 8)).join(",")}]`);
+      log6.warn(`macroInterceptor.exit #${callId} path=no_active_card chat=${chatId} ` + `elapsed=${Date.now() - t0}ms \u26A0 falling back to Lumi native eval. ` + `activeCardByChat keys=[${[...activeCardByChat.keys()].map((k) => k.slice(0, 8)).join(",")}]`);
       return;
     }
     const charCard = ctx.env.character;
@@ -30392,12 +30586,13 @@ if (typeof registerMacroInterceptor === "function") {
         ...getDecoratorBuffers(chatId)?.positionPt ? { positionPt: getDecoratorBuffers(chatId).positionPt } : {}
       });
     } catch (err) {
-      log5.warn(`macroInterceptor: runPipeline threw chat=${chatId} phase=${ctx.phase} \u2014 ${errMsg(err)}. Passing through.`);
+      log6.warn(`macroInterceptor: runPipeline threw chat=${chatId} phase=${ctx.phase} \u2014 ${errMsg(err)}. Passing through.`);
       return;
     }
     const resolvedMarker = /\u2605[A-Z_]+\u2605|###[A-Z_]+###/.exec(resolved)?.[0] ?? null;
     const stillHasRaw = resolved.includes("{{risu_") || resolved.includes("{{getvar::") || resolved.includes("{{#risu_");
-    if (!ctx.commit) {
+    const mcpRenderAvailable = typeof registerMessageContentProcessor === "function";
+    if (!ctx.commit && !mcpRenderAvailable) {
       const triggers2 = active.card.risuPayload.triggers;
       const luaScripts = active.card.risuPayload.lua_scripts;
       const hasLuaTrigger = triggers2.some((t) => t.effect?.[0]?.type === "triggerlua");
@@ -30418,26 +30613,26 @@ if (typeof registerMacroInterceptor === "function") {
             characterId: active.card.character_id
           });
         } catch (err) {
-          log5.warn(`macroInterceptor: listenEdit chain threw \u2014 ${errMsg(err)}. Continuing with pre-hook resolved.`);
+          log6.warn(`macroInterceptor: listenEdit chain threw \u2014 ${errMsg(err)}. Continuing with pre-hook resolved.`);
         }
       }
     }
     if (resolved === ctx.template) {
-      log5.info(`macroInterceptor.exit #${callId} path=unchanged_passthrough elapsed=${Date.now() - t0}ms ` + `tmpl_len=${ctx.template.length} marker=${resolvedMarker ?? "none"}`);
+      log6.info(`macroInterceptor.exit #${callId} path=unchanged_passthrough elapsed=${Date.now() - t0}ms ` + `tmpl_len=${ctx.template.length} marker=${resolvedMarker ?? "none"}`);
       return;
     }
-    log5.info(`macroInterceptor.exit #${callId} path=resolved elapsed=${Date.now() - t0}ms ` + `in_len=${ctx.template.length} out_len=${resolved.length} ` + `marker=${resolvedMarker ?? "none"} still_has_raw_cbs=${stillHasRaw} ` + `out_head=${JSON.stringify(resolved.slice(0, 120))}`);
+    log6.info(`macroInterceptor.exit #${callId} path=resolved elapsed=${Date.now() - t0}ms ` + `in_len=${ctx.template.length} out_len=${resolved.length} ` + `marker=${resolvedMarker ?? "none"} still_has_raw_cbs=${stillHasRaw} ` + `out_head=${JSON.stringify(resolved.slice(0, 120))}`);
     if (resolved.length > 200) {
       const panelMatches = resolved.match(/<div[^>]*class="[^"]*(?:sys-backdrop|sys-panel|status-?panel)[^"]*"/g);
       if (panelMatches && panelMatches.length > 0) {
-        log5.info(`[panel-shape] callId=${callId} commit=${ctx.commit} count=${panelMatches.length} ` + `out_len=${resolved.length} ` + `head=${JSON.stringify(resolved.slice(0, 60))} ` + `tail=${JSON.stringify(resolved.slice(-60))}`);
+        log6.info(`[panel-shape] callId=${callId} commit=${ctx.commit} count=${panelMatches.length} ` + `out_len=${resolved.length} ` + `head=${JSON.stringify(resolved.slice(0, 60))} ` + `tail=${JSON.stringify(resolved.slice(-60))}`);
       }
     }
     return resolved;
   }, 100);
-  log5.info("macroInterceptor: registered at priority=100");
+  log6.info("macroInterceptor: registered at priority=100");
 } else {
-  log5.warn("macroInterceptor: NOT AVAILABLE on this Lumi build \u2014 extension macros will resolve via per-call RPC (slow for iteration-heavy cards, and FRAME-SHIFT UNRELIABLE without preprocessor coherence)");
+  log6.warn("macroInterceptor: NOT AVAILABLE on this Lumi build \u2014 extension macros will resolve via per-call RPC (slow for iteration-heavy cards, and FRAME-SHIFT UNRELIABLE without preprocessor coherence)");
 }
 if (typeof registerMessageContentProcessor === "function") {
   let mcpInFlight = 0;
@@ -30446,14 +30641,14 @@ if (typeof registerMessageContentProcessor === "function") {
     const tStart = Date.now();
     const seq = ++mcpEnterSeq;
     const enteredAt = ++mcpInFlight;
-    log5.info(`messageContentProcessor.enter #${seq} chat=${ctx.chatId} origin=${ctx.origin} msg=${ctx.messageId ?? "<new>"} raw_len=${ctx.content.length} inflight=${enteredAt}`);
+    log6.info(`messageContentProcessor.enter #${seq} chat=${ctx.chatId} origin=${ctx.origin} msg=${ctx.messageId ?? "<new>"} raw_len=${ctx.content.length} inflight=${enteredAt}`);
     try {
       captureUserId(ctx.userId, "messageContentProcessor");
       const tA = Date.now();
       const active = await ensureActiveCardForChat(ctx.chatId, null);
       const tB = Date.now();
       if (!active) {
-        log5.info(`messageContentProcessor.exit #${seq} path=skip-not-lumirealm chat=${ctx.chatId} ensure=${tB - tA}ms total=${Date.now() - tStart}ms`);
+        log6.info(`messageContentProcessor.exit #${seq} path=skip-not-lumirealm chat=${ctx.chatId} ensure=${tB - tA}ms total=${Date.now() - tStart}ms`);
         return;
       }
       if (ctx.origin === "render") {
@@ -30462,7 +30657,7 @@ if (typeof registerMessageContentProcessor === "function") {
         const hasLuaTrigger = triggers2.some((t) => t.effect?.[0]?.type === "triggerlua");
         const renderAtActions = coerceAtActions(active.card.risuPayload.at_actions);
         if (!hasLuaTrigger && renderAtActions.length === 0) {
-          log5.info(`messageContentProcessor.exit #${seq} path=render-no-hooks chat=${ctx.chatId} ensure=${tB - tA}ms total=${Date.now() - tStart}ms`);
+          log6.info(`messageContentProcessor.exit #${seq} path=render-no-hooks chat=${ctx.chatId} ensure=${tB - tA}ms total=${Date.now() - tStart}ms`);
           return;
         }
         const rawIdx = ctx.extra?.["messageIndex"];
@@ -30480,10 +30675,16 @@ if (typeof registerMessageContentProcessor === "function") {
           });
           const editScriptNS = makeDispatcherScriptNS();
           let transformed = ctx.content;
+          let chainMs = 0;
           if (hasLuaTrigger) {
+            const tChain = Date.now();
             transformed = await runListenEditChain(editChain, "editDisplay", transformed, { index: risuChatIdx }, editApi, { characterId: active.card.character_id, content: ctx.content }, editScriptNS, { chatId: ctx.chatId, characterId: active.card.character_id });
+            chainMs = Date.now() - tChain;
+            log6.info(`messageContentProcessor.render chain.elapsed #${seq} chain=${chainMs}ms (mcp_total_so_far=${Date.now() - tStart}ms)`);
           }
+          let atActionsMs = 0;
           if (renderAtActions.length > 0) {
+            const tAt = Date.now();
             try {
               transformed = await runAtActionsForPhase(renderAtActions, "editdisplay", transformed, {
                 api: editApi,
@@ -30491,17 +30692,20 @@ if (typeof registerMessageContentProcessor === "function") {
                 role: "assistant"
               });
             } catch (err) {
-              log5.warn(`messageContentProcessor.render at-actions threw \u2014 ${errMsg(err)}. Continuing with prior content.`);
+              log6.warn(`messageContentProcessor.render at-actions threw \u2014 ${errMsg(err)}. Continuing with prior content.`);
             }
+            atActionsMs = Date.now() - tAt;
           }
+          const totalMs = Date.now() - tStart;
+          const otherOverhead = totalMs - chainMs - atActionsMs - (tB - tA);
           if (transformed === ctx.content) {
-            log5.info(`messageContentProcessor.exit #${seq} path=render-noop chat=${ctx.chatId} msg=${ctx.messageId ?? "<?>"} idx=${messageIndex} total=${Date.now() - tStart}ms`);
+            log6.info(`messageContentProcessor.exit #${seq} path=render-noop chat=${ctx.chatId} msg=${ctx.messageId ?? "<?>"} idx=${messageIndex} total=${totalMs}ms (chain=${chainMs}ms at_actions=${atActionsMs}ms ensure=${tB - tA}ms other=${otherOverhead}ms)`);
             return;
           }
-          log5.info(`messageContentProcessor.exit #${seq} path=render-transformed chat=${ctx.chatId} msg=${ctx.messageId ?? "<?>"} idx=${messageIndex} before_len=${ctx.content.length} after_len=${transformed.length} total=${Date.now() - tStart}ms`);
+          log6.info(`messageContentProcessor.exit #${seq} path=render-transformed chat=${ctx.chatId} msg=${ctx.messageId ?? "<?>"} idx=${messageIndex} before_len=${ctx.content.length} after_len=${transformed.length} total=${totalMs}ms (chain=${chainMs}ms at_actions=${atActionsMs}ms ensure=${tB - tA}ms other=${otherOverhead}ms)`);
           return { content: transformed };
         } catch (err) {
-          log5.warn(`messageContentProcessor.exit #${seq} path=render-threw chat=${ctx.chatId} msg=${ctx.messageId ?? "<?>"} err=${errMsg(err)} total=${Date.now() - tStart}ms`);
+          log6.warn(`messageContentProcessor.exit #${seq} path=render-threw chat=${ctx.chatId} msg=${ctx.messageId ?? "<?>"} err=${errMsg(err)} total=${Date.now() - tStart}ms`);
           return;
         }
       }
@@ -30509,7 +30713,7 @@ if (typeof registerMessageContentProcessor === "function") {
       try {
         resolved = await resolveReadonly(ctx.content, ctx.chatId, active.card.character_id);
       } catch (err) {
-        log5.error(`messageContentProcessor.exit #${seq} path=resolve-failed chat=${ctx.chatId} origin=${ctx.origin} ensure=${tB - tA}ms total=${Date.now() - tStart}ms: ${errMsg(err)}`);
+        log6.error(`messageContentProcessor.exit #${seq} path=resolve-failed chat=${ctx.chatId} origin=${ctx.origin} ensure=${tB - tA}ms total=${Date.now() - tStart}ms: ${errMsg(err)}`);
         return;
       }
       const tC = Date.now();
@@ -30530,33 +30734,33 @@ if (typeof registerMessageContentProcessor === "function") {
             role: "assistant"
           });
           if (afterAt !== resolved) {
-            log5.info(`messageContentProcessor: at-actions transformed chat=${ctx.chatId} ` + `origin=${ctx.origin} greeting=${isGreeting} ` + `resolve_len=${resolved.length} after_at_len=${afterAt.length}`);
+            log6.info(`messageContentProcessor: at-actions transformed chat=${ctx.chatId} ` + `origin=${ctx.origin} greeting=${isGreeting} ` + `resolve_len=${resolved.length} after_at_len=${afterAt.length}`);
             try {
               afterAt = await resolveReadonly(afterAt, ctx.chatId, active.card.character_id);
             } catch (err) {
-              log5.warn(`messageContentProcessor: post-@@-action CBS re-resolve threw \u2014 ${errMsg(err)}. ` + `Continuing with unresolved @@-action output.`);
+              log6.warn(`messageContentProcessor: post-@@-action CBS re-resolve threw \u2014 ${errMsg(err)}. ` + `Continuing with unresolved @@-action output.`);
             }
           }
         } catch (err) {
-          log5.warn(`messageContentProcessor: at-actions editdisplay threw \u2014 ${errMsg(err)}. ` + `Continuing with pre-action content.`);
+          log6.warn(`messageContentProcessor: at-actions editdisplay threw \u2014 ${errMsg(err)}. ` + `Continuing with pre-action content.`);
         }
       }
       const finalContent = normalizeReplaceStringForSanitizer(afterAt);
       if (finalContent === ctx.content) {
-        log5.info(`messageContentProcessor.exit #${seq} path=noop chat=${ctx.chatId} origin=${ctx.origin} msg=${ctx.messageId ?? "<new>"} ensure=${tB - tA}ms resolve=${tC - tB}ms total=${Date.now() - tStart}ms`);
+        log6.info(`messageContentProcessor.exit #${seq} path=noop chat=${ctx.chatId} origin=${ctx.origin} msg=${ctx.messageId ?? "<new>"} ensure=${tB - tA}ms resolve=${tC - tB}ms total=${Date.now() - tStart}ms`);
         return;
       }
       if (ctx.messageId)
         rememberOurWrite(ctx.chatId, ctx.messageId, finalContent);
-      log5.info(`messageContentProcessor.exit #${seq} path=baked chat=${ctx.chatId} origin=${ctx.origin} msg=${ctx.messageId ?? "<new>"} raw_len=${ctx.content.length} resolved_len=${resolved.length} after_at_len=${afterAt.length} final_len=${finalContent.length} doc_normalized=${finalContent !== afterAt} ensure=${tB - tA}ms resolve=${tC - tB}ms total=${Date.now() - tStart}ms`);
+      log6.info(`messageContentProcessor.exit #${seq} path=baked chat=${ctx.chatId} origin=${ctx.origin} msg=${ctx.messageId ?? "<new>"} raw_len=${ctx.content.length} resolved_len=${resolved.length} after_at_len=${afterAt.length} final_len=${finalContent.length} doc_normalized=${finalContent !== afterAt} ensure=${tB - tA}ms resolve=${tC - tB}ms total=${Date.now() - tStart}ms`);
       return { content: finalContent };
     } finally {
       mcpInFlight--;
     }
   }, 100);
-  log5.info("messageContentProcessor: registered");
+  log6.info("messageContentProcessor: registered");
 } else {
-  log5.info("messageContentProcessor: not available on this Lumi build \u2014 falling back to reactive MESSAGE_EDITED resolve");
+  log6.info("messageContentProcessor: not available on this Lumi build \u2014 falling back to reactive MESSAGE_EDITED resolve");
 }
 var registerInterceptor = spindle.registerInterceptor;
 if (typeof registerInterceptor === "function") {
@@ -30610,7 +30814,7 @@ if (typeof registerInterceptor === "function") {
       const applyResult = applyInjectAtToMessages2(out, buffers.injectAt, slotText);
       out = applyResult.messages.slice();
       if (applyResult.mutationCount > 0 || applyResult.synthesizedCount > 0 || applyResult.fallbackAppendCount > 0) {
-        log5.info(`[decorators] injectAt applied chat=${chatId} mutations=${applyResult.mutationCount}/${buffers.injectAt.length} synthesized=${applyResult.synthesizedCount} fallback_append=${applyResult.fallbackAppendCount}`);
+        log6.info(`[decorators] injectAt applied chat=${chatId} mutations=${applyResult.mutationCount}/${buffers.injectAt.length} synthesized=${applyResult.synthesizedCount} fallback_append=${applyResult.fallbackAppendCount}`);
       }
       clearDecoratorBuffers(chatId);
     }
@@ -30642,12 +30846,12 @@ if (typeof registerInterceptor === "function") {
         try {
           const mutated = await runListenEditChain(editChain, "editInput", orig, { index: userIdx - 1 }, editApi, { characterId: active.card.character_id, content: orig }, editScriptNS, { chatId, characterId: active.card.character_id });
           if (mutated !== orig) {
-            log5.info(`interceptor.editInput: chat=${chatId} userIdx=${userIdx} before_len=${orig.length} after_len=${mutated.length}`);
+            log6.info(`interceptor.editInput: chat=${chatId} userIdx=${userIdx} before_len=${orig.length} after_len=${mutated.length}`);
             out = out.slice();
             out[userIdx] = { ...out[userIdx], content: mutated };
           }
         } catch (err) {
-          log5.warn(`interceptor.editInput threw \u2014 ${errMsg(err)}. Continuing with original.`);
+          log6.warn(`interceptor.editInput threw \u2014 ${errMsg(err)}. Continuing with original.`);
         }
       }
     }
@@ -30655,24 +30859,24 @@ if (typeof registerInterceptor === "function") {
       const mutated = await runListenEditChain(editChain, "editRequest", out, { generationType: ctx.generationType ?? "normal" }, editApi, { characterId: active.card.character_id, content: "" }, editScriptNS, { chatId, characterId: active.card.character_id });
       if (Array.isArray(mutated)) {
         if (mutated.length !== out.length) {
-          log5.info(`interceptor.editRequest: chat=${chatId} array length changed before=${out.length} after=${mutated.length}`);
+          log6.info(`interceptor.editRequest: chat=${chatId} array length changed before=${out.length} after=${mutated.length}`);
         }
         out = mutated;
       }
     } catch (err) {
-      log5.warn(`interceptor.editRequest threw \u2014 ${errMsg(err)}. Continuing with prior array.`);
+      log6.warn(`interceptor.editRequest threw \u2014 ${errMsg(err)}. Continuing with prior array.`);
     }
     return out;
   }, 100);
-  log5.info("interceptor: registered (editInput + editRequest)");
+  log6.info("interceptor: registered (editInput + editRequest)");
 } else {
-  log5.info("interceptor: not available on this Lumi build \u2014 listenEdit editInput/editRequest will not fire");
+  log6.info("interceptor: not available on this Lumi build \u2014 listenEdit editInput/editRequest will not fire");
 }
 var registerWorldInfoInterceptor = typeof spindle.registerWorldInfoInterceptor === "function" ? spindle.registerWorldInfoInterceptor.bind(spindle) : null;
 if (registerWorldInfoInterceptor) {
-  log5.always(`[decorators] registerWorldInfoInterceptor wired at boot`);
+  log6.always(`[decorators] registerWorldInfoInterceptor wired at boot`);
   registerWorldInfoInterceptor(async (ctx) => {
-    log5.always(`[decorators] worldInfoInterceptor ENTER chat=${ctx.chatId} entries=${ctx.entries.length}`);
+    log6.always(`[decorators] worldInfoInterceptor ENTER chat=${ctx.chatId} entries=${ctx.entries.length}`);
     const verbose = (() => {
       try {
         const env = globalThis.Bun?.env;
@@ -30682,7 +30886,7 @@ if (registerWorldInfoInterceptor) {
       }
     })();
     const { runWorldInfoInterceptor: runWorldInfoInterceptor2 } = await Promise.resolve().then(() => (init_lorebook_decorator_runtime(), exports_lorebook_decorator_runtime));
-    const verboseFn = verbose ? (m) => log5.info(`[decorators] ${m}`) : undefined;
+    const verboseFn = verbose ? (m) => log6.info(`[decorators] ${m}`) : undefined;
     const RISU_DEFAULT_LORE_DEPTH = 4;
     let stashedDecCount = 0;
     let inlineDecCount = 0;
@@ -30719,7 +30923,7 @@ if (registerWorldInfoInterceptor) {
     if (stashedDecCount + inlineDecCount > 0 || outcome.positionPt.length > 0 || outcome.injectAt.length > 0) {
       const ptNames = outcome.positionPt.map((p) => `${p.name}(${p.content.length})`).join(",");
       const injAtLocs = outcome.injectAt.map((p) => `${p.loc}/${p.operation}`).join(",");
-      log5.always(`[decorators] worldInfoInterceptor chat=${ctx.chatId} entries_in=${ctx.entries.length} dec_carriers=stashed:${stashedDecCount}+inline:${inlineDecCount} outcome: disabled=${outcome.disabled.length} forced=${outcome.forced.length} mutated=${outcome.mutated.length} stickyWrites=${outcome.stickyWrites.length} positionPt=[${ptNames}] injectAt=[${injAtLocs}]`);
+      log6.always(`[decorators] worldInfoInterceptor chat=${ctx.chatId} entries_in=${ctx.entries.length} dec_carriers=stashed:${stashedDecCount}+inline:${inlineDecCount} outcome: disabled=${outcome.disabled.length} forced=${outcome.forced.length} mutated=${outcome.mutated.length} stickyWrites=${outcome.stickyWrites.length} positionPt=[${ptNames}] injectAt=[${injAtLocs}]`);
     }
     if (outcome.stickyWrites.length > 0 && ctx.userId) {
       try {
@@ -30738,10 +30942,10 @@ if (registerWorldInfoInterceptor) {
           mv["local"] = local;
           expectChatChange(ctx.chatId);
           await spindle.chats.update(ctx.chatId, { metadata: { ...meta, macro_variables: mv } }, ctx.userId);
-          log5.always(`[decorators] sticky_writes chat=${ctx.chatId} count=${changed}/${outcome.stickyWrites.length} keys=[${outcome.stickyWrites.slice(0, 3).map((w) => w.varName).join(",")}${outcome.stickyWrites.length > 3 ? ",\u2026" : ""}]`);
+          log6.always(`[decorators] sticky_writes chat=${ctx.chatId} count=${changed}/${outcome.stickyWrites.length} keys=[${outcome.stickyWrites.slice(0, 3).map((w) => w.varName).join(",")}${outcome.stickyWrites.length > 3 ? ",\u2026" : ""}]`);
         }
       } catch (err) {
-        log5.warn(`[decorators] sticky_writes failed chat=${ctx.chatId}: ${errMsg(err)}`);
+        log6.warn(`[decorators] sticky_writes failed chat=${ctx.chatId}: ${errMsg(err)}`);
       }
     }
     if (outcome.injectAt.length > 0 || outcome.positionPt.length > 0) {
@@ -30752,13 +30956,13 @@ if (registerWorldInfoInterceptor) {
         injectAt: outcome.injectAt,
         positionPt
       });
-      log5.always(`[decorators] tier3_buffer chat=${ctx.chatId} injectAt=${outcome.injectAt.length} positionPt=${outcome.positionPt.length}`);
+      log6.always(`[decorators] tier3_buffer chat=${ctx.chatId} injectAt=${outcome.injectAt.length} positionPt=${outcome.positionPt.length}`);
     } else {
       clearDecoratorBuffers(ctx.chatId);
     }
     if (outcome.disabled.length > 0 || outcome.forced.length > 0 || outcome.mutated.length > 0) {
       const reasons = Object.entries(outcome.reasons).map(([n, c]) => `${n}:${c}`).join(",");
-      log5.info(`[decorators] chat=${ctx.chatId} entries=${ctx.entries.length} disabled=${outcome.disabled.length} forced=${outcome.forced.length} mutated=${outcome.mutated.length} sticky_writes=${outcome.stickyWrites.length} reasons=[${reasons}]`);
+      log6.info(`[decorators] chat=${ctx.chatId} entries=${ctx.entries.length} disabled=${outcome.disabled.length} forced=${outcome.forced.length} mutated=${outcome.mutated.length} sticky_writes=${outcome.stickyWrites.length} reasons=[${reasons}]`);
     }
     if (outcome.disabled.length === 0 && outcome.forced.length === 0 && outcome.mutated.length === 0)
       return;
@@ -30772,26 +30976,26 @@ if (registerWorldInfoInterceptor) {
     }
     return result;
   }, 100);
-  log5.info("worldInfoInterceptor: registered");
+  log6.info("worldInfoInterceptor: registered");
 } else {
-  log5.info("worldInfoInterceptor: not available on this Lumi build \u2014 Tier 2 lorebook decorators will not gate");
+  log6.info("worldInfoInterceptor: not available on this Lumi build \u2014 Tier 2 lorebook decorators will not gate");
 }
 var variableState = new VariableStateStore;
 var toggleState = new ToggleStateStore;
 function scheduleStateChangedRefresh2(chatId) {
-  log5.info(`scheduleStateChangedRefresh: scheduling for chat=${chatId}`);
+  log6.info(`scheduleStateChangedRefresh: scheduling for chat=${chatId}`);
   scheduleStateChangedRefresh(chatId, async () => {
     const active = activeCardByChat.get(chatId);
     if (!active) {
-      log5.info(`scheduleStateChangedRefresh: skipped (no active card) chat=${chatId}`);
+      log6.info(`scheduleStateChangedRefresh: skipped (no active card) chat=${chatId}`);
       return;
     }
     const t0 = Date.now();
     await refreshResolvedContent(active, chatId);
     await refreshBgHtml(active, chatId);
     await refreshVariables(active, chatId);
-    log5.info(`scheduleStateChangedRefresh: completed chat=${chatId} elapsed=${Date.now() - t0}ms`);
-  }, (err) => log5.error(`scheduleStateChangedRefresh: refresh threw chat=${chatId}: ${errMsg(err)}`));
+    log6.info(`scheduleStateChangedRefresh: completed chat=${chatId} elapsed=${Date.now() - t0}ms`);
+  }, (err) => log6.error(`scheduleStateChangedRefresh: refresh threw chat=${chatId}: ${errMsg(err)}`));
 }
 function makeStateChangedCallback(chatId) {
   return () => scheduleStateChangedRefresh2(chatId);
@@ -30802,7 +31006,7 @@ function makeTrackSidecarWrite(chatId) {
       try {
         await setSidecarRaw(userStorage(), chatId, msgId, rawContent, getUserId());
       } catch (err) {
-        log5.warn(`trackSidecarWrite: setSidecarRaw failed chat=${chatId} msg=${msgId}: ${errMsg(err)}`);
+        log6.warn(`trackSidecarWrite: setSidecarRaw failed chat=${chatId} msg=${msgId}: ${errMsg(err)}`);
       }
     })();
   };
@@ -30814,7 +31018,7 @@ async function getSettingsForUser(userId) {
     return cached;
   const loaded = await loadSettings(userStorage(), userId);
   settingsByUser.set(userId, loaded);
-  log5.info(`settings: loaded for user=${userId} ` + `auxConn=${loaded.auxConnectionId ?? "<default>"} ` + `auxModel=${loaded.auxModelOverride ?? "<connection>"}`);
+  log6.info(`settings: loaded for user=${userId} ` + `auxConn=${loaded.auxConnectionId ?? "<default>"} ` + `auxModel=${loaded.auxModelOverride ?? "<connection>"}`);
   return loaded;
 }
 function getCachedSettingsSync(userId) {
@@ -30827,7 +31031,7 @@ async function applySettingsPatch(userId, patch) {
   const merged = mergeSettings(current, patch);
   await saveSettings(userStorage(), merged, userId);
   settingsByUser.set(userId, merged);
-  log5.info(`settings: saved for user=${userId} ` + `auxConn=${merged.auxConnectionId ?? "<default>"} ` + `auxModel=${merged.auxModelOverride ?? "<connection>"} ` + `dbgReq=${merged.auxDebugCaptureRequest} dbgRes=${merged.auxDebugCaptureResponse}`);
+  log6.info(`settings: saved for user=${userId} ` + `auxConn=${merged.auxConnectionId ?? "<default>"} ` + `auxModel=${merged.auxModelOverride ?? "<connection>"} ` + `dbgReq=${merged.auxDebugCaptureRequest} dbgRes=${merged.auxDebugCaptureResponse}`);
   return merged;
 }
 var auxDebugCounter = 0;
@@ -30846,6 +31050,7 @@ function makeAuxDebugCapture(chatId, settings) {
         id: ++auxDebugCounter,
         ts: Date.now(),
         kind: event.kind,
+        channel: event.channel,
         chatId,
         auxConnectionId: event.auxConnectionId,
         auxModelOverride: event.auxModelOverride,
@@ -30853,7 +31058,7 @@ function makeAuxDebugCapture(chatId, settings) {
         payload: event.payload
       });
     } catch (err) {
-      log5.warn(`aux_debug_capture send failed: ${errMsg(err)}`);
+      log6.warn(`aux_debug_capture send failed: ${errMsg(err)}`);
     }
   };
 }
@@ -30861,7 +31066,7 @@ async function listConnectionsForUser(userId) {
   const anySpindle = spindle;
   const listFn = anySpindle.connections?.list;
   if (!listFn) {
-    log5.warn("listConnectionsForUser: spindle.connections.list not available on this Lumi build");
+    log6.warn("listConnectionsForUser: spindle.connections.list not available on this Lumi build");
     return [];
   }
   try {
@@ -30874,7 +31079,7 @@ async function listConnectionsForUser(userId) {
       is_default: c.is_default
     }));
   } catch (err) {
-    log5.warn(`listConnectionsForUser: list threw \u2014 ${errMsg(err)}`);
+    log6.warn(`listConnectionsForUser: list threw \u2014 ${errMsg(err)}`);
     return [];
   }
 }
@@ -30895,7 +31100,7 @@ async function deleteImageIds(imageIds, userId, context2) {
   let failed = 0;
   const del = spindleImagesDelete();
   if (!del) {
-    log5.warn(`${context2}: spindle.images.delete unavailable \u2014 ${imageIds.length} image(s) leaked`);
+    log6.warn(`${context2}: spindle.images.delete unavailable \u2014 ${imageIds.length} image(s) leaked`);
     return { deleted, absent, failed: imageIds.length };
   }
   let nextIndex = 0;
@@ -30916,7 +31121,7 @@ async function deleteImageIds(imageIds, userId, context2) {
           absent++;
       } catch (err) {
         failed++;
-        log5.warn(`${context2}: image delete threw id=${id}: ${errMsg(err)}`);
+        log6.warn(`${context2}: image delete threw id=${id}: ${errMsg(err)}`);
       }
     }
   };
@@ -30934,7 +31139,7 @@ async function runImageCleanupForCharacter(characterId, userId) {
   }
   const tStart = Date.now();
   const stats = await deleteImageIds(ids, userId, `image-cleanup char=${characterId}`);
-  log5.info(`image-cleanup: char=${characterId} deleted=${stats.deleted} absent=${stats.absent} ` + `failed=${stats.failed} total=${ids.length} elapsed=${Date.now() - tStart}ms`);
+  log6.info(`image-cleanup: char=${characterId} deleted=${stats.deleted} absent=${stats.absent} ` + `failed=${stats.failed} total=${ids.length} elapsed=${Date.now() - tStart}ms`);
   await clearImageJournal(journalStorage(), userId, characterId);
 }
 function collectStoredCardImageIds(avatarId, card) {
@@ -30965,9 +31170,9 @@ async function backfillImageJournalIfMissing(characterId, avatarId, card) {
     if (ids.length === 0)
       return;
     await appendImageIdsToJournal(journalStorage(), userId, characterId, ids);
-    log5.info(`image-journal: backfilled legacy char=${characterId} ids=${ids.length}`);
+    log6.info(`image-journal: backfilled legacy char=${characterId} ids=${ids.length}`);
   } catch (err) {
-    log5.warn(`image-journal: backfill failed char=${characterId}: ${errMsg(err)}`);
+    log6.warn(`image-journal: backfill failed char=${characterId}: ${errMsg(err)}`);
   }
 }
 var imageOrphanReaperRan = false;
@@ -30985,7 +31190,7 @@ async function runImageOrphanReaper(userId) {
       if (!file)
         continue;
       if (file.status === "pending_delete") {
-        log5.info(`image-journal reaper: resuming pending_delete char=${characterId} ids=${file.imageIds.length}`);
+        log6.info(`image-journal reaper: resuming pending_delete char=${characterId} ids=${file.imageIds.length}`);
         await runImageCleanupForCharacter(characterId, userId);
         resumed++;
         continue;
@@ -30994,18 +31199,18 @@ async function runImageOrphanReaper(userId) {
       try {
         character2 = await spindle.characters.get(characterId, userId);
       } catch (err) {
-        log5.warn(`image-journal reaper: characters.get(${characterId}) threw: ${errMsg(err)}`);
+        log6.warn(`image-journal reaper: characters.get(${characterId}) threw: ${errMsg(err)}`);
         continue;
       }
       if (character2 !== null)
         continue;
-      log5.info(`image-journal reaper: orphan char=${characterId} ids=${file.imageIds.length} (character row missing)`);
+      log6.info(`image-journal reaper: orphan char=${characterId} ids=${file.imageIds.length} (character row missing)`);
       await runImageCleanupForCharacter(characterId, userId);
       orphaned++;
     }
-    log5.info(`image-journal reaper: done resumed=${resumed} orphans=${orphaned} ` + `total=${journalIds.length} elapsed=${Date.now() - tStart}ms`);
+    log6.info(`image-journal reaper: done resumed=${resumed} orphans=${orphaned} ` + `total=${journalIds.length} elapsed=${Date.now() - tStart}ms`);
   } catch (err) {
-    log5.warn(`image-journal reaper: failed: ${errMsg(err)}`);
+    log6.warn(`image-journal reaper: failed: ${errMsg(err)}`);
   }
   await runModuleImageOrphanReaper(userId);
 }
@@ -31017,7 +31222,7 @@ async function runModuleImageCleanup(moduleId, userId) {
   }
   const tStart = Date.now();
   const stats = await deleteImageIds(ids, userId, `module-image-cleanup module=${moduleId}`);
-  log5.info(`module-image-cleanup: module=${moduleId} deleted=${stats.deleted} absent=${stats.absent} ` + `failed=${stats.failed} total=${ids.length} elapsed=${Date.now() - tStart}ms`);
+  log6.info(`module-image-cleanup: module=${moduleId} deleted=${stats.deleted} absent=${stats.absent} ` + `failed=${stats.failed} total=${ids.length} elapsed=${Date.now() - tStart}ms`);
   await clearModuleImageJournal(journalStorage(), userId, moduleId);
 }
 async function runModuleImageOrphanReaper(userId) {
@@ -31031,7 +31236,7 @@ async function runModuleImageOrphanReaper(userId) {
       if (!file)
         continue;
       if (file.status === "pending_delete") {
-        log5.info(`module-image-journal reaper: resuming pending_delete module=${moduleId} ids=${file.imageIds.length}`);
+        log6.info(`module-image-journal reaper: resuming pending_delete module=${moduleId} ids=${file.imageIds.length}`);
         await runModuleImageCleanup(moduleId, userId);
         resumed++;
         continue;
@@ -31039,13 +31244,13 @@ async function runModuleImageOrphanReaper(userId) {
       const env = await readEnvelope(moduleStorage(), userId, moduleId);
       if (env !== null)
         continue;
-      log5.info(`module-image-journal reaper: orphan module=${moduleId} ids=${file.imageIds.length} (envelope missing)`);
+      log6.info(`module-image-journal reaper: orphan module=${moduleId} ids=${file.imageIds.length} (envelope missing)`);
       await runModuleImageCleanup(moduleId, userId);
       orphaned++;
     }
-    log5.info(`module-image-journal reaper: done resumed=${resumed} orphans=${orphaned} ` + `total=${journalIds.length} elapsed=${Date.now() - tStart}ms`);
+    log6.info(`module-image-journal reaper: done resumed=${resumed} orphans=${orphaned} ` + `total=${journalIds.length} elapsed=${Date.now() - tStart}ms`);
   } catch (err) {
-    log5.warn(`module-image-journal reaper: failed: ${errMsg(err)}`);
+    log6.warn(`module-image-journal reaper: failed: ${errMsg(err)}`);
   }
 }
 var pendingImportCompletions = new Map;
@@ -31079,7 +31284,7 @@ async function applySvgRasterIndex(args) {
     };
   });
   if (!updated) {
-    log5.warn(`applySvgRasterIndex: updateLumirealm failed char=${characterId} \u2014 character may not be a lumirealm card`);
+    log6.warn(`applySvgRasterIndex: updateLumirealm failed char=${characterId} \u2014 character may not be a lumirealm card`);
     return;
   }
   const lumiManaged = regexScriptsAfterSubstitution;
@@ -31091,7 +31296,7 @@ async function applySvgRasterIndex(args) {
         characterName = ch.name;
       }
     } catch {}
-    log5.info(`applySvgRasterIndex: re-dispatching install_regex_scripts char=${characterId} count=${lumiManaged.length} (post-SVG-substitution)`);
+    log6.info(`applySvgRasterIndex: re-dispatching install_regex_scripts char=${characterId} count=${lumiManaged.length} (post-SVG-substitution)`);
     send({
       type: "install_regex_scripts",
       characterId,
@@ -31123,9 +31328,9 @@ async function applySvgRasterIndex(args) {
   if (newSvgImageIds.length > 0) {
     try {
       await appendImageIdsToJournal(journalStorage(), userId, characterId, newSvgImageIds);
-      log5.info(`applySvgRasterIndex: journaled char=${characterId} added=${newSvgImageIds.length}`);
+      log6.info(`applySvgRasterIndex: journaled char=${characterId} added=${newSvgImageIds.length}`);
     } catch (err) {
-      log5.warn(`applySvgRasterIndex: journal append failed char=${characterId}: ${errMsg(err)}`);
+      log6.warn(`applySvgRasterIndex: journal append failed char=${characterId}: ${errMsg(err)}`);
     }
   }
   const evictedChatIds = [];
@@ -31136,7 +31341,7 @@ async function applySvgRasterIndex(args) {
     }
   }
   if (evictedChatIds.length > 0) {
-    log5.info(`applySvgRasterIndex: invalidated ${evictedChatIds.length} active-card entries for char=${characterId}`);
+    log6.info(`applySvgRasterIndex: invalidated ${evictedChatIds.length} active-card entries for char=${characterId}`);
     for (const chatId of evictedChatIds) {
       try {
         const reloaded = await ensureActiveCardForChat(chatId, null);
@@ -31145,7 +31350,7 @@ async function applySvgRasterIndex(args) {
           await refreshBgHtml(reloaded, chatId);
         }
       } catch (err) {
-        log5.warn(`applySvgRasterIndex: refresh chat=${chatId} threw: ${errMsg(err)}`);
+        log6.warn(`applySvgRasterIndex: refresh chat=${chatId} threw: ${errMsg(err)}`);
       }
     }
   }
@@ -31155,11 +31360,11 @@ async function maybeFinalizeImport(characterId) {
   if (!pending3)
     return;
   if (pending3.hasPendingSvgRaster) {
-    log5.info(`import.finalize: char=${characterId} still pending \u2014 svg=${pending3.hasPendingSvgRaster}`);
+    log6.info(`import.finalize: char=${characterId} still pending \u2014 svg=${pending3.hasPendingSvgRaster}`);
     return;
   }
   pendingImportCompletions.delete(characterId);
-  log5.info(`import.finalize: char=${characterId} both async ops complete after ${Date.now() - pending3.startedAt}ms \u2014 emitting phase=done`);
+  log6.info(`import.finalize: char=${characterId} both async ops complete after ${Date.now() - pending3.startedAt}ms \u2014 emitting phase=done`);
   send({
     type: "import_progress",
     phase: "done",
@@ -31170,7 +31375,7 @@ async function maybeFinalizeImport(characterId) {
   try {
     pushCards(await listCards());
   } catch (err) {
-    log5.warn(`import.finalize: pushCards failed \u2014 ${errMsg(err)}`);
+    log6.warn(`import.finalize: pushCards failed \u2014 ${errMsg(err)}`);
   }
 }
 var importSessions = new Map;
@@ -31182,11 +31387,11 @@ function sweepStaleSessions() {
     if (now - s.lastActivity > IMPORT_SESSION_TIMEOUT_MS) {
       importSessions.delete(sid);
       dropped += 1;
-      log5.warn(`import session ${sid} expired (inactive ${Math.round((now - s.lastActivity) / 1000)}s); dropping ${s.receivedChunks}/${s.totalChunks} chunks`);
+      log6.warn(`import session ${sid} expired (inactive ${Math.round((now - s.lastActivity) / 1000)}s); dropping ${s.receivedChunks}/${s.totalChunks} chunks`);
     }
   }
   if (dropped > 0)
-    log5.info(`sweepStaleSessions: dropped ${dropped} expired session(s)`);
+    log6.info(`sweepStaleSessions: dropped ${dropped} expired session(s)`);
 }
 var sweepTimer = setInterval(sweepStaleSessions, 60000);
 if (typeof sweepTimer.unref === "function") {
@@ -31217,7 +31422,7 @@ function requestConsent(opts) {
       confirmLabel: opts.confirmLabel,
       cancelLabel: opts.cancelLabel
     });
-    log5.info(`requestConsent: dispatched requestId=${requestId} title="${opts.title}"`);
+    log6.info(`requestConsent: dispatched requestId=${requestId} title="${opts.title}"`);
   });
   const result = consentChain.then(run, run);
   consentChain = result.catch(() => {
@@ -31245,9 +31450,9 @@ function sendLogState() {
 async function listCards() {
   const userId = getUserId();
   const t0 = Date.now();
-  log5.info(`listCards: start userId=${userId ?? "<none>"}`);
+  log6.info(`listCards: start userId=${userId ?? "<none>"}`);
   if (userId === undefined) {
-    log5.info(`listCards: userId not yet captured \u2014 returning empty`);
+    log6.info(`listCards: userId not yet captured \u2014 returning empty`);
     return [];
   }
   const entries = await listLumirealmCharacters(charactersApi(), userId, {
@@ -31261,7 +31466,7 @@ async function listCards() {
     stored_at: e.data.imported_at
   }));
   summaries.sort((a, b) => b.stored_at - a.stored_at);
-  log5.info(`listCards: done count=${summaries.length} elapsed=${Date.now() - t0}ms`);
+  log6.info(`listCards: done count=${summaries.length} elapsed=${Date.now() - t0}ms`);
   return summaries;
 }
 function pushCards(cards) {
@@ -31270,7 +31475,7 @@ function pushCards(cards) {
 async function importCardFromBytes(bytesB64, fileName) {
   const tStart = Date.now();
   const userId = getUserId();
-  log5.info(`importCardFromBytes: start file=${fileName} b64-bytes=${bytesB64.length} (~${Math.round(bytesB64.length * 0.75)}B decoded) userId=${userId ?? "<none>"}`);
+  log6.info(`importCardFromBytes: start file=${fileName} b64-bytes=${bytesB64.length} (~${Math.round(bytesB64.length * 0.75)}B decoded) userId=${userId ?? "<none>"}`);
   const hasSetAvatar = typeof spindle.characters.setAvatar === "function";
   if (!spindle.images?.upload) {
     throw new Error("spindle.images.upload is unavailable \u2014 Lumi 0.9.6+ required.");
@@ -31279,9 +31484,9 @@ async function importCardFromBytes(bytesB64, fileName) {
   const spindleImportApi = {
     characters: {
       create: (input, uid) => {
-        log5.info(`spindle.characters.create name=${input.name ?? "?"}`);
+        log6.info(`spindle.characters.create name=${input.name ?? "?"}`);
         return spindle.characters.create(input, uid).then((c) => {
-          log5.info(`spindle.characters.create -> id=${c.id}`);
+          log6.info(`spindle.characters.create -> id=${c.id}`);
           return { id: c.id };
         });
       },
@@ -31290,7 +31495,7 @@ async function importCardFromBytes(bytesB64, fileName) {
       list: (options) => spindle.characters.list(options),
       ...hasSetAvatar ? {
         setAvatar: (characterId, avatar, uid) => {
-          log5.info(`spindle.characters.setAvatar characterId=${characterId} filename=${avatar.filename ?? "?"} bytes=${avatar.data.byteLength}`);
+          log6.info(`spindle.characters.setAvatar characterId=${characterId} filename=${avatar.filename ?? "?"} bytes=${avatar.data.byteLength}`);
           return spindle.characters.setAvatar(characterId, avatar, uid).then((c) => ({
             id: c.id,
             image_id: typeof c.image_id === "string" ? c.image_id : null
@@ -31300,9 +31505,9 @@ async function importCardFromBytes(bytesB64, fileName) {
     },
     world_books: spindle.world_books ? {
       create: (input, uid) => {
-        log5.info(`spindle.world_books.create name=${input.name ?? "?"}`);
+        log6.info(`spindle.world_books.create name=${input.name ?? "?"}`);
         return spindle.world_books.create(input, uid).then((w) => {
-          log5.info(`spindle.world_books.create -> id=${w.id}`);
+          log6.info(`spindle.world_books.create -> id=${w.id}`);
           return { id: w.id };
         });
       },
@@ -31317,7 +31522,7 @@ async function importCardFromBytes(bytesB64, fileName) {
     requestConsent
   };
   if (!spindle.world_books)
-    log5.warn(`spindle.world_books unavailable \u2014 lorebook entries will be skipped`);
+    log6.warn(`spindle.world_books unavailable \u2014 lorebook entries will be skipped`);
   try {
     const result = await importCard({
       bytesB64,
@@ -31327,7 +31532,7 @@ async function importCardFromBytes(bytesB64, fileName) {
       spindle: spindleImportApi,
       userStorage: userStorage(),
       onProgress: (phase, message, fraction) => {
-        log5.info(`import.progress phase=${phase} frac=${fraction ?? "?"} msg=${message}`);
+        log6.info(`import.progress phase=${phase} frac=${fraction ?? "?"} msg=${message}`);
         send({
           type: "import_progress",
           phase,
@@ -31336,7 +31541,7 @@ async function importCardFromBytes(bytesB64, fileName) {
         });
       }
     });
-    log5.info(`importCard: returned characterId=${result.characterId} name=${result.characterName} imageIds=${result.imageIds.length} warnings=${result.warnings.length} elapsed=${Date.now() - tStart}ms`);
+    log6.info(`importCard: returned characterId=${result.characterId} name=${result.characterName} imageIds=${result.imageIds.length} warnings=${result.warnings.length} elapsed=${Date.now() - tStart}ms`);
     if (result.createdWorldBookIds.length > 0) {
       const existing = worldBookIdsByCharacter.get(result.characterId) ?? [];
       const merged = [...existing];
@@ -31348,7 +31553,7 @@ async function importCardFromBytes(bytesB64, fileName) {
     }
     if (userId) {
       await refreshRisuAssetMap(result.characterId, userId).catch((err) => {
-        log5.warn(`importCardFromBytes: refreshRisuAssetMap threw char=${result.characterId}: ${errMsg(err)}`);
+        log6.warn(`importCardFromBytes: refreshRisuAssetMap threw char=${result.characterId}: ${errMsg(err)}`);
       });
     }
     const scriptsToInstall = result.pendingRegexScripts;
@@ -31356,7 +31561,7 @@ async function importCardFromBytes(bytesB64, fileName) {
     for (const s of scriptsToInstall)
       byTarget.set(s.target, (byTarget.get(s.target) ?? 0) + 1);
     const targetSummary = [...byTarget.entries()].map(([t, n]) => `${t}=${n}`).join(",") || "none";
-    log5.info(`install_regex_scripts: push=${scriptsToInstall.length} targets=[${targetSummary}] char=${result.characterId}`);
+    log6.info(`install_regex_scripts: push=${scriptsToInstall.length} targets=[${targetSummary}] char=${result.characterId}`);
     send({
       type: "install_regex_scripts",
       characterId: result.characterId,
@@ -31365,7 +31570,7 @@ async function importCardFromBytes(bytesB64, fileName) {
     });
     const hasPendingSvgRaster = result.pendingSvgRasters.length > 0;
     if (hasPendingSvgRaster) {
-      log5.info(`rasterize_svgs: handing off ${result.pendingSvgRasters.length} unique SVG(s) to frontend for char=${result.characterId} (simple+theme-reactive+animated; templated skipped per manifest)`);
+      log6.info(`rasterize_svgs: handing off ${result.pendingSvgRasters.length} unique SVG(s) to frontend for char=${result.characterId} (simple+theme-reactive+animated; templated skipped per manifest)`);
       send({
         type: "rasterize_svgs",
         characterId: result.characterId,
@@ -31385,9 +31590,9 @@ async function importCardFromBytes(bytesB64, fileName) {
         characterName: result.characterName,
         startedAt: Date.now()
       });
-      log5.info(`importCardFromBytes: deferring phase=done for char=${result.characterId} (pending: svg=${hasPendingSvgRaster})`);
+      log6.info(`importCardFromBytes: deferring phase=done for char=${result.characterId} (pending: svg=${hasPendingSvgRaster})`);
     } else {
-      log5.info(`import done: no pending async ops, sending phase=done`);
+      log6.info(`import done: no pending async ops, sending phase=done`);
       send({
         type: "import_progress",
         phase: "done",
@@ -31398,14 +31603,14 @@ async function importCardFromBytes(bytesB64, fileName) {
       pushCards(await listCards());
     }
     for (const warning of result.warnings) {
-      log5.warn(`import warning surfaced: ${warning}`);
+      log6.warn(`import warning surfaced: ${warning}`);
       spindle.toast.warning(warning, { title: "lumirealm" });
     }
-    log5.info(`importCardFromBytes: done file=${fileName} total-elapsed=${Date.now() - tStart}ms`);
+    log6.info(`importCardFromBytes: done file=${fileName} total-elapsed=${Date.now() - tStart}ms`);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     if (err instanceof RisuConsentDeclinedError) {
-      log5.info(`import cancelled by user (consent declined) after ${Date.now() - tStart}ms`);
+      log6.info(`import cancelled by user (consent declined) after ${Date.now() - tStart}ms`);
       send({
         type: "import_progress",
         phase: "error",
@@ -31415,7 +31620,7 @@ async function importCardFromBytes(bytesB64, fileName) {
       });
       return;
     }
-    log5.error(`import failed after ${Date.now() - tStart}ms: ${message}`);
+    log6.error(`import failed after ${Date.now() - tStart}ms: ${message}`);
     send({
       type: "import_progress",
       phase: "error",
@@ -31426,14 +31631,14 @@ async function importCardFromBytes(bytesB64, fileName) {
   }
 }
 async function deleteCardByChar(characterId, mode = "cascade") {
-  log5.info(`deleteCardByChar: start characterId=${characterId} mode=${mode}`);
+  log6.info(`deleteCardByChar: start characterId=${characterId} mode=${mode}`);
   if (mode === "soft") {
     const userId = getUserId();
     if (userId !== undefined) {
       const ok = await clearLumirealm(charactersApi(), characterId, userId);
-      log5.info(`deleteCardByChar: clearLumirealm ok=${ok}`);
+      log6.info(`deleteCardByChar: clearLumirealm ok=${ok}`);
     } else {
-      log5.warn(`deleteCardByChar: soft remove skipped \u2014 userId not yet captured for char=${characterId}`);
+      log6.warn(`deleteCardByChar: soft remove skipped \u2014 userId not yet captured for char=${characterId}`);
     }
   }
   let evictedChats = 0;
@@ -31448,7 +31653,7 @@ async function deleteCardByChar(characterId, mode = "cascade") {
     }
   }
   const compiledEvicted = compiledByCharacter.delete(characterId);
-  log5.info(`deleteCardByChar: evicted activeCard entries=${evictedChats} compiled=${compiledEvicted}`);
+  log6.info(`deleteCardByChar: evicted activeCard entries=${evictedChats} compiled=${compiledEvicted}`);
   const fresh = await listCards();
   const filtered = fresh.filter((c) => c.character_id !== characterId);
   pushCards(filtered);
@@ -31466,12 +31671,12 @@ async function ensureActiveCardForChat(chatId, characterId) {
   const tEnter = Date.now();
   const cached = activeCardByChat.get(chatId);
   if (cached) {
-    log5.verbose(`ensureActiveCardForChat: cache hit chatId=${chatId} characterId=${cached.card.character_id}`);
+    log6.verbose(`ensureActiveCardForChat: cache hit chatId=${chatId} characterId=${cached.card.character_id}`);
     return cached;
   }
   const userId = getUserId();
   if (userId === undefined) {
-    log5.info(`ensureActiveCardForChat: userId not yet captured for chatId=${chatId} \u2014 will retry on next event`);
+    log6.info(`ensureActiveCardForChat: userId not yet captured for chatId=${chatId} \u2014 will retry on next event`);
     return null;
   }
   let tChatsGet = 0;
@@ -31482,28 +31687,28 @@ async function ensureActiveCardForChat(chatId, characterId) {
       tChatsGet = Date.now() - tChatGet0;
       const resolved = chat?.character_id ?? null;
       if (resolved) {
-        log5.info(`ensureActiveCardForChat: resolved characterId=${resolved} via chats.get for chatId=${chatId} chats_get=${tChatsGet}ms`);
+        log6.info(`ensureActiveCardForChat: resolved characterId=${resolved} via chats.get for chatId=${chatId} chats_get=${tChatsGet}ms`);
         characterId = resolved;
       }
     } catch (err) {
       tChatsGet = Date.now() - tChatGet0;
-      log5.warn(`ensureActiveCardForChat: chats.get(${chatId}) failed chats_get=${tChatsGet}ms: ${errMsg(err)}`);
+      log6.warn(`ensureActiveCardForChat: chats.get(${chatId}) failed chats_get=${tChatsGet}ms: ${errMsg(err)}`);
     }
   }
   if (!characterId) {
-    log5.info(`ensureActiveCardForChat: no characterId for chatId=${chatId} (chat may be group/deleted) \u2014 skip`);
+    log6.info(`ensureActiveCardForChat: no characterId for chatId=${chatId} (chat may be group/deleted) \u2014 skip`);
     return null;
   }
-  log5.info(`ensureActiveCardForChat: cache miss chatId=${chatId} characterId=${characterId} \u2014 fetching extensions`);
+  log6.info(`ensureActiveCardForChat: cache miss chatId=${chatId} characterId=${characterId} \u2014 fetching extensions`);
   const tReadLumi0 = Date.now();
   const fetched = await readLumirealm(charactersApi(), characterId, userId);
   const tReadLumi = Date.now() - tReadLumi0;
   if (!fetched) {
-    log5.info(`ensureActiveCardForChat: character not found id=${characterId} (group chat or deleted)`);
+    log6.info(`ensureActiveCardForChat: character not found id=${characterId} (group chat or deleted)`);
     return null;
   }
   if (!fetched.data) {
-    log5.info(`ensureActiveCardForChat: character ${characterId} is not a lumirealm card (no extensions.lumirealm or soft-removed)`);
+    log6.info(`ensureActiveCardForChat: character ${characterId} is not a lumirealm card (no extensions.lumirealm or soft-removed)`);
     return null;
   }
   const tValidate0 = Date.now();
@@ -31511,12 +31716,12 @@ async function ensureActiveCardForChat(chatId, characterId) {
   const tValidate = Date.now() - tValidate0;
   if (!check.ok) {
     const err = new RisuCompatVersionError(check.missing, EXTENSION_VERSION);
-    log5.error(err.message);
+    log6.error(err.message);
     spindle.toast.error(err.message, { title: "lumirealm" });
     return null;
   }
   if (check.degraded.length > 0) {
-    log5.warn(`ensureActiveCardForChat: degraded features=[${check.degraded.join(", ")}]`);
+    log6.warn(`ensureActiveCardForChat: degraded features=[${check.degraded.join(", ")}]`);
     spindle.toast.warning(`Card uses degraded features: ${check.degraded.join(", ")}.`, { title: "lumirealm" });
   }
   const attachedIds = fetched.data.user_overrides.attached_module_ids ?? [];
@@ -31526,8 +31731,8 @@ async function ensureActiveCardForChat(chatId, characterId) {
   const tBuild0 = Date.now();
   const card = buildSyntheticStoredCard(characterId, fetched.data, fetched.risuai, attachedForRuntime);
   const tBuild = Date.now() - tBuild0;
-  log5.info(`ensureActiveCardForChat: loaded char=${characterId} translator=${card.risuPayload.translator_version} triggers=${card.risuPayload.triggers.length} lua_scripts=${card.risuPayload.lua_scripts.length} regex=${card.regex_scripts?.length ?? 0} assets=${Object.keys(card.asset_index).length} bg_html_len=${card.risuPayload.background_html?.length ?? 0} utility_bot=${card.risuPayload.utility_bot} defaults=${Object.keys(card.risuPayload.scriptstate_defaults).length} modules=${attachedForRuntime.length}` + (attachedForRuntime.length > 0 ? ` (${attachedForRuntime.map((m) => `${m.id}:t${m.triggers.length}/a${Object.keys(m.asset_index).length}`).join(",")})` : "") + ` chats_get=${tChatsGet}ms readLumi=${tReadLumi}ms validate=${tValidate}ms modules=${tModules}ms build=${tBuild}ms`);
-  const active = { card, chatId };
+  log6.info(`ensureActiveCardForChat: loaded char=${characterId} translator=${card.risuPayload.translator_version} triggers=${card.risuPayload.triggers.length} lua_scripts=${card.risuPayload.lua_scripts.length} regex=${card.regex_scripts?.length ?? 0} assets=${Object.keys(card.asset_index).length} bg_html_len=${card.risuPayload.background_html?.length ?? 0} utility_bot=${card.risuPayload.utility_bot} defaults=${Object.keys(card.risuPayload.scriptstate_defaults).length} modules=${attachedForRuntime.length}` + (attachedForRuntime.length > 0 ? ` (${attachedForRuntime.map((m) => `${m.id}:t${m.triggers.length}/a${Object.keys(m.asset_index).length}`).join(",")})` : "") + ` chats_get=${tChatsGet}ms readLumi=${tReadLumi}ms validate=${tValidate}ms modules=${tModules}ms build=${tBuild}ms`);
+  const active = { card, chatId, lumirealm: fetched.data };
   activeCardByChat.set(chatId, active);
   const allWbIds = (fetched.character.world_book_ids ?? []).filter((id) => typeof id === "string" && id.length > 0);
   const moduleWbIdSet = new Set(Object.values(fetched.data.user_overrides.attached_module_world_books ?? {}).filter((id) => typeof id === "string" && id.length > 0));
@@ -31547,7 +31752,7 @@ async function ensureActiveCardForChat(chatId, characterId) {
   setActiveCharacterImage(chatId, imageUrlFromId(fetched.character.image_id ?? null));
   refreshPersonaImage(userId);
   seedAuthorsNoteFromDepthPrompt(chatId, userId, fetched.character.extensions ?? {});
-  log5.info(`ensureActiveCardForChat: DONE chatId=${chatId} characterId=${characterId} total=${Date.now() - tEnter}ms`);
+  log6.info(`ensureActiveCardForChat: DONE chatId=${chatId} characterId=${characterId} total=${Date.now() - tEnter}ms`);
   return active;
 }
 async function seedAuthorsNoteFromDepthPrompt(chatId, userId, characterExtensions) {
@@ -31555,7 +31760,7 @@ async function seedAuthorsNoteFromDepthPrompt(chatId, userId, characterExtension
   try {
     chat = await spindle.chats.get(chatId, userId);
   } catch (err) {
-    log5.warn(`seedAuthorsNoteFromDepthPrompt: chats.get failed chat=${chatId}: ${errMsg(err)}`);
+    log6.warn(`seedAuthorsNoteFromDepthPrompt: chats.get failed chat=${chatId}: ${errMsg(err)}`);
     return;
   }
   const currentMeta = chat?.metadata && typeof chat.metadata === "object" && !Array.isArray(chat.metadata) ? chat.metadata : {};
@@ -31565,9 +31770,9 @@ async function seedAuthorsNoteFromDepthPrompt(chatId, userId, characterExtension
   try {
     expectChatChange(chatId);
     await spindle.chats.update(chatId, { metadata: decision.nextMetadata }, userId);
-    log5.info(`seedAuthorsNoteFromDepthPrompt: ${decision.outcome} chat=${chatId} preserved_existing=${decision.preservedExisting}`);
+    log6.info(`seedAuthorsNoteFromDepthPrompt: ${decision.outcome} chat=${chatId} preserved_existing=${decision.preservedExisting}`);
   } catch (err) {
-    log5.warn(`seedAuthorsNoteFromDepthPrompt: chats.update failed chat=${chatId}: ${errMsg(err)}`);
+    log6.warn(`seedAuthorsNoteFromDepthPrompt: chats.update failed chat=${chatId}: ${errMsg(err)}`);
   }
 }
 async function refreshPersonaImage(userId) {
@@ -31576,7 +31781,7 @@ async function refreshPersonaImage(userId) {
     const rawId = persona?.image_id;
     setActivePersonaImage(userId, imageUrlFromId(typeof rawId === "string" ? rawId : null));
   } catch (err) {
-    log5.verbose(`refreshPersonaImage: ${errMsg(err)}`);
+    log6.verbose(`refreshPersonaImage: ${errMsg(err)}`);
   }
 }
 async function runBinding(active, chatId, binding) {
@@ -31588,17 +31793,17 @@ async function runBinding(active, chatId, binding) {
       const tCompile = Date.now();
       compiled = prepareTriggers(active.card.risuPayload, characterId);
       compiledByCharacter.set(characterId, compiled);
-      log5.info(`runBinding: compiled ${compiled.length} triggers for character=${characterId} in ${Date.now() - tCompile}ms`);
+      log6.info(`runBinding: compiled ${compiled.length} triggers for character=${characterId} in ${Date.now() - tCompile}ms`);
     } catch (err) {
-      log5.error(`compileTriggers failed for character=${characterId}: ` + (err instanceof Error ? err.message : String(err)));
+      log6.error(`compileTriggers failed for character=${characterId}: ` + (err instanceof Error ? err.message : String(err)));
       return;
     }
   }
   if (compiled.length === 0) {
-    log5.info(`runBinding: no triggers on character=${characterId}, skip binding=${binding}`);
+    log6.info(`runBinding: no triggers on character=${characterId}, skip binding=${binding}`);
     return;
   }
-  log5.info(`runBinding: start binding=${binding} chatId=${chatId} characterId=${characterId} triggers=${compiled.length}`);
+  log6.info(`runBinding: start binding=${binding} chatId=${chatId} characterId=${characterId} triggers=${compiled.length}`);
   const api = makeSpindleHost({ chatId, characterId, userId: getUserId() });
   const scriptNS = makeDispatcherScriptNS();
   registerManualTriggers(scriptNS, compiled, api);
@@ -31629,7 +31834,7 @@ async function runBinding(active, chatId, binding) {
       opts: { characterId, binding }
     }, binding, (err, name) => {
       const msg = err instanceof Error ? err.message : String(err);
-      log5.error(`trigger "${name}" failed on ${binding}: ${msg}`);
+      log6.error(`trigger "${name}" failed on ${binding}: ${msg}`);
       spindle.toast.error(`lumirealm: ${name} \u2014 ${msg}`, { title: "lumirealm trigger error" });
     });
   } finally {
@@ -31657,7 +31862,7 @@ async function runBinding(active, chatId, binding) {
             try {
               mutated = await runListenEditChain(editChain, "editOutput", mutated, { index: risuChatIdx }, api, { characterId, content: mutated }, scriptNS, { chatId, characterId });
             } catch (err) {
-              log5.warn(`runBinding: listenEdit editOutput chain threw \u2014 ${errMsg(err)}. Continuing.`);
+              log6.warn(`runBinding: listenEdit editOutput chain threw \u2014 ${errMsg(err)}. Continuing.`);
             }
           }
           if (hasOutputAtActions) {
@@ -31670,26 +31875,26 @@ async function runBinding(active, chatId, binding) {
                 });
               }
             } catch (err) {
-              log5.warn(`runBinding: at-actions output threw \u2014 ${errMsg(err)}. Continuing.`);
+              log6.warn(`runBinding: at-actions output threw \u2014 ${errMsg(err)}. Continuing.`);
             }
           }
           if (mutated !== latestAssistant.content) {
-            log5.info(`runBinding: edit hooks mutated message content chat=${chatId} msg=${latestAssistant.id} before_len=${latestAssistant.content.length} after_len=${mutated.length}`);
+            log6.info(`runBinding: edit hooks mutated message content chat=${chatId} msg=${latestAssistant.id} before_len=${latestAssistant.content.length} after_len=${mutated.length}`);
             rememberOurWrite(chatId, latestAssistant.id, mutated);
             await api.chat.editMessage(latestAssistant.id, mutated);
           }
         }
       } catch (err) {
-        log5.warn(`runBinding: edit-hooks output threw \u2014 ${errMsg(err)}. Continuing.`);
+        log6.warn(`runBinding: edit-hooks output threw \u2014 ${errMsg(err)}. Continuing.`);
       }
     }
   }
-  log5.info(`runBinding: done binding=${binding} elapsed=${Date.now() - tBind}ms`);
+  log6.info(`runBinding: done binding=${binding} elapsed=${Date.now() - tBind}ms`);
 }
 async function dispatchManualTrigger(chatId, triggerName, triggerId) {
   const active = await ensureActiveCardForChat(chatId, null);
   if (!active) {
-    log5.warn(`dispatchManualTrigger: no active card for chatId=${chatId} \u2014 skip`);
+    log6.warn(`dispatchManualTrigger: no active card for chatId=${chatId} \u2014 skip`);
     return;
   }
   const characterId = active.card.character_id;
@@ -31697,10 +31902,10 @@ async function dispatchManualTrigger(chatId, triggerName, triggerId) {
   const luaTriggers = triggers2.filter((t) => Array.isArray(t.effect) && t.effect[0] && t.effect[0].type === "triggerlua");
   const commentMatchedTriggers = triggers2.filter((t) => Array.isArray(t.effect) && t.effect[0] && t.effect[0].type !== "triggerlua" && t.effect[0].type !== "triggercode" && t.comment === triggerName);
   if (luaTriggers.length === 0 && commentMatchedTriggers.length === 0) {
-    log5.warn(`dispatchManualTrigger: no matching triggers on character=${characterId} (no triggerlua and no comment="${triggerName}") \u2014 Risu would no-op here too`);
+    log6.warn(`dispatchManualTrigger: no matching triggers on character=${characterId} (no triggerlua and no comment="${triggerName}") \u2014 Risu would no-op here too`);
     return;
   }
-  log5.info(`dispatchManualTrigger: name="${triggerName}" lua=${luaTriggers.length} commentMatched=${commentMatchedTriggers.length} chatId=${chatId}`);
+  log6.info(`dispatchManualTrigger: name="${triggerName}" lua=${luaTriggers.length} commentMatched=${commentMatchedTriggers.length} chatId=${chatId}`);
   const api = makeSpindleHost({ chatId, characterId, userId: getUserId() });
   const scriptNS = makeDispatcherScriptNS();
   const effectiveTriggerId = triggerId ?? String(Math.random()).slice(2, 10);
@@ -31730,14 +31935,14 @@ async function dispatchManualTrigger(chatId, triggerName, triggerId) {
         submodelSamplers: settings.submodelSamplers,
         ...auxDebugCapture ? { auxDebugCapture } : {}
       });
-      log5.info(`dispatchManualTrigger: invoking Lua entry=${triggerName} args=[${effectiveTriggerId}] chatId=${chatId}`);
+      log6.info(`dispatchManualTrigger: invoking Lua entry=${triggerName} args=[${effectiveTriggerId}] chatId=${chatId}`);
       await runtime2.runLua(luaCode, {
         entry: triggerName,
         args: [effectiveTriggerId]
       });
       await runtime2.flush?.();
     } catch (err) {
-      log5.error(`dispatchManualTrigger: Lua failed triggerName=${triggerName}: ${errMsg(err)}`);
+      log6.error(`dispatchManualTrigger: Lua failed triggerName=${triggerName}: ${errMsg(err)}`);
     }
   }
   if (commentMatchedTriggers.length > 0) {
@@ -31771,18 +31976,18 @@ async function dispatchManualTrigger(chatId, triggerName, triggerId) {
           opts: { characterId, binding: "manual", lowLevelAccess: false }
         }, triggerName, (err, name) => {
           const msg = err instanceof Error ? err.message : String(err);
-          log5.error(`dispatchManualTrigger: comment-matched trigger "${name}" threw: ${msg}`);
+          log6.error(`dispatchManualTrigger: comment-matched trigger "${name}" threw: ${msg}`);
           spindle.toast.error(`lumirealm: ${name} \u2014 ${msg}`, { title: "lumirealm trigger error" });
         });
-        log5.info(`dispatchManualTrigger: comment-matched dispatch fired=${fired}/${commentMatchedTriggers.length}`);
+        log6.info(`dispatchManualTrigger: comment-matched dispatch fired=${fired}/${commentMatchedTriggers.length}`);
       } finally {
         setDispatchContext(prior);
       }
     } catch (err) {
-      log5.error(`dispatchManualTrigger: comment-matched dispatch threw: ${errMsg(err)}`);
+      log6.error(`dispatchManualTrigger: comment-matched dispatch threw: ${errMsg(err)}`);
     }
   }
-  log5.info(`dispatchManualTrigger: done triggerName=${triggerName} elapsed=${Date.now() - t0}ms`);
+  log6.info(`dispatchManualTrigger: done triggerName=${triggerName} elapsed=${Date.now() - t0}ms`);
   await refreshResolvedContent(active, chatId);
   await refreshBgHtml(active, chatId);
   await refreshVariables(active, chatId);
@@ -31790,14 +31995,14 @@ async function dispatchManualTrigger(chatId, triggerName, triggerId) {
 async function refreshVariables(active, chatId, opts) {
   const userId = getUserId();
   if (userId === undefined) {
-    log5.verbose(`variables.refresh: skip chat=${chatId} \u2014 userId not yet captured`);
+    log6.verbose(`variables.refresh: skip chat=${chatId} \u2014 userId not yet captured`);
     return;
   }
   let chat = null;
   try {
     chat = await spindle.chats.get(chatId, userId);
   } catch (err) {
-    log5.warn(`variables.refresh: chats.get failed chat=${chatId}: ${errMsg(err)}`);
+    log6.warn(`variables.refresh: chats.get failed chat=${chatId}: ${errMsg(err)}`);
     return;
   }
   const mv = chat?.metadata?.macro_variables ?? {};
@@ -31806,7 +32011,9 @@ async function refreshVariables(active, chatId, opts) {
     global: sanitizeVarMap(mv.global),
     chat: sanitizeVarMap(mv.chat)
   };
-  const defaults = active.card.risuPayload.scriptstate_defaults ?? {};
+  const cardSide = active.card.risuPayload.scriptstate_defaults ?? {};
+  const overrides = active.lumirealm.user_overrides.default_variables_overrides ?? {};
+  const defaults = { ...cardSide, ...overrides };
   const result = variableState.applySnapshot(chatId, scopes, defaults);
   if (result.changed || opts?.force) {
     send({
@@ -31815,12 +32022,14 @@ async function refreshVariables(active, chatId, opts) {
       seq: result.entry.seq,
       scopes: result.entry.scopes,
       defaults: result.entry.defaults,
+      defaultsCardSide: cardSide,
+      characterId: active.card.character_id,
       ts: result.entry.ts
     });
-    const counts = `local=${Object.keys(scopes.local).length} global=${Object.keys(scopes.global).length} chat=${Object.keys(scopes.chat).length} defaults=${Object.keys(defaults).length}`;
-    log5.info(`variables.refresh: pushed chat=${chatId} seq=${result.entry.seq} ${counts} forced=${!!opts?.force}`);
+    const counts = `local=${Object.keys(scopes.local).length} global=${Object.keys(scopes.global).length} chat=${Object.keys(scopes.chat).length} defaults=${Object.keys(defaults).length} overrides=${Object.keys(overrides).length}`;
+    log6.info(`variables.refresh: pushed chat=${chatId} seq=${result.entry.seq} ${counts} forced=${!!opts?.force}`);
   } else {
-    log5.verbose(`variables.refresh: unchanged chat=${chatId} seq=${result.entry.seq}`);
+    log6.verbose(`variables.refresh: unchanged chat=${chatId} seq=${result.entry.seq}`);
   }
 }
 async function writeLocalVariable(chatId, key2, value) {
@@ -31863,7 +32072,7 @@ async function writeLocalVariable(chatId, key2, value) {
   await refreshResolvedContent(active, chatId);
   await refreshBgHtml(active, chatId);
   await refreshVariables(active, chatId, { force: true });
-  log5.info(`variables.write: chat=${chatId} key=${trimmedKey} ` + (value === null ? "deleted" : `len=${String(value).length}`));
+  log6.info(`variables.write: chat=${chatId} key=${trimmedKey} ` + (value === null ? "deleted" : `len=${String(value).length}`));
   return { ok: true };
 }
 function toggleToWire(t) {
@@ -31933,7 +32142,7 @@ async function loadToggleDsl(characterId, userId) {
 async function refreshToggleDefinitions(active, chatId, opts) {
   const userId = getUserId();
   if (userId === undefined) {
-    log5.verbose(`toggles.refresh: skip chat=${chatId} \u2014 userId not yet captured`);
+    log6.verbose(`toggles.refresh: skip chat=${chatId} \u2014 userId not yet captured`);
     return;
   }
   const { flatToggles, attribution } = await loadToggleDsl(active.card.character_id, userId);
@@ -31948,9 +32157,9 @@ async function refreshToggleDefinitions(active, chatId, opts) {
       attribution: result.entry.attribution,
       ts: result.entry.ts
     });
-    log5.info(`toggles.refresh: pushed chat=${chatId} seq=${result.entry.seq} count=${wire.length} keys=${extractToggleKeys(flatToggles).length} forced=${!!opts?.force}`);
+    log6.info(`toggles.refresh: pushed chat=${chatId} seq=${result.entry.seq} count=${wire.length} keys=${extractToggleKeys(flatToggles).length} forced=${!!opts?.force}`);
   } else {
-    log5.verbose(`toggles.refresh: unchanged chat=${chatId} seq=${result.entry.seq}`);
+    log6.verbose(`toggles.refresh: unchanged chat=${chatId} seq=${result.entry.seq}`);
   }
 }
 async function writeToggleValue(chatId, key2, value) {
@@ -31994,7 +32203,7 @@ async function writeToggleValue(chatId, key2, value) {
   await refreshResolvedContent(active, chatId);
   await refreshBgHtml(active, chatId);
   await refreshVariables(active, chatId, { force: true });
-  log5.info(`toggles.write: chat=${chatId} key=${storeKey} ` + (value === null ? "deleted" : `len=${String(value).length}`));
+  log6.info(`toggles.write: chat=${chatId} key=${storeKey} ` + (value === null ? "deleted" : `len=${String(value).length}`));
   return { ok: true };
 }
 function sanitizeVarMap(raw) {
@@ -32045,7 +32254,7 @@ async function extractCrossRuleStyleParts(rules, atActions, chatId, characterId)
   try {
     resolved = await resolveReadonly(joined, chatId, characterId);
   } catch (err) {
-    log5.warn(`extractCrossRuleStyleParts: resolve failed (${errMsg(err)}). Falling back to top-level-only heuristic for ${candidates.length} candidate(s).`);
+    log6.warn(`extractCrossRuleStyleParts: resolve failed (${errMsg(err)}). Falling back to top-level-only heuristic for ${candidates.length} candidate(s).`);
     const out2 = [];
     for (const t of candidates)
       out2.push(...extractStyleBlocksTopLevelFallback(t));
@@ -32103,13 +32312,14 @@ function extractStyleBlocksTopLevelFallback(template) {
   }
   return out;
 }
+var lastSentBgHtmlByChat = new Map;
 async function refreshBgHtml(active, chatId) {
   const bgRaw = active.card.risuPayload.background_html;
   const moduleBg = active.card.risuPayload.module_background_embedding ?? "";
   const bgCombined = (bgRaw ?? "") + (moduleBg.length > 0 ? `
 ` + moduleBg : "");
   const characterId = active.card.character_id;
-  log5.verbose(`refreshBgHtml: START chatId=${chatId} bgRaw_len=${bgRaw?.length ?? 0} moduleBg_len=${moduleBg.length} bgCombined_len=${bgCombined.length}`);
+  log6.verbose(`refreshBgHtml: START chatId=${chatId} bgRaw_len=${bgRaw?.length ?? 0} moduleBg_len=${moduleBg.length} bgCombined_len=${bgCombined.length}`);
   const tResolve = Date.now();
   let resolvedBg = "";
   let crossRuleStyles = [];
@@ -32122,20 +32332,27 @@ async function refreshBgHtml(active, chatId) {
     crossRuleStyles = csOut;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    log5.error(`refreshBgHtml: resolve failed chatId=${chatId}: ${msg}`);
+    log6.error(`refreshBgHtml: resolve failed chatId=${chatId}: ${msg}`);
     return;
   }
   const elapsed = Date.now() - tResolve;
   if (resolvedBg.length === 0 && crossRuleStyles.length === 0) {
-    log5.verbose(`refreshBgHtml: no bg_html and no cross-rule styles \u2014 sending clear_bg_html`);
+    log6.verbose(`refreshBgHtml: no bg_html and no cross-rule styles \u2014 sending clear_bg_html`);
     try {
       spindle.sendToFrontend({ type: "clear_bg_html", chatId });
     } catch (err) {
-      log5.warn(`refreshBgHtml: clear send failed: ${err.message}`);
+      log6.warn(`refreshBgHtml: clear send failed: ${err.message}`);
     }
     return;
   }
-  log5.info(`refreshBgHtml: resolved chatId=${chatId} bg_in=${bgCombined.length} bg_out=${resolvedBg.length} crossRuleParts=${crossRuleStyles.length} crossRule_total=${crossRuleStyles.reduce((a, p) => a + p.length, 0)} elapsed=${elapsed}ms`);
+  log6.info(`refreshBgHtml: resolved chatId=${chatId} bg_in=${bgCombined.length} bg_out=${resolvedBg.length} crossRuleParts=${crossRuleStyles.length} crossRule_total=${crossRuleStyles.reduce((a, p) => a + p.length, 0)} elapsed=${elapsed}ms`);
+  const sig = resolvedBg + "\x1F" + crossRuleStyles.join("\x1E");
+  const prior = lastSentBgHtmlByChat.get(chatId);
+  if (prior === sig) {
+    log6.info(`refreshBgHtml: skip redundant send chatId=${chatId} (signature matches prior) bg_out=${resolvedBg.length} crossRule_total=${crossRuleStyles.reduce((a, p) => a + p.length, 0)}`);
+    return;
+  }
+  lastSentBgHtmlByChat.set(chatId, sig);
   try {
     spindle.sendToFrontend({
       type: "render_bg_html",
@@ -32143,26 +32360,26 @@ async function refreshBgHtml(active, chatId) {
       bgHtml: resolvedBg,
       ...crossRuleStyles.length > 0 ? { crossRuleStyles } : {}
     });
-    log5.verbose(`refreshBgHtml: sendToFrontend render_bg_html OK chatId=${chatId}`);
+    log6.verbose(`refreshBgHtml: sendToFrontend render_bg_html OK chatId=${chatId}`);
   } catch (err) {
-    log5.warn(`refreshBgHtml: send failed: ${err.message}`);
+    log6.warn(`refreshBgHtml: send failed: ${err.message}`);
   }
 }
 var EDITED_BY_MARKER = "lumirealm";
 async function resolveReadonly(template, chatId, characterId) {
   const userId = getUserId();
   const t0 = Date.now();
-  log5.verbose(`resolveReadonly: START chat=${chatId} char=${characterId} userId=${userId ?? "<none>"} template_len=${template.length} template[0..200]=${JSON.stringify(template.slice(0, 200))}`);
+  log6.verbose(`resolveReadonly: START chat=${chatId} char=${characterId} userId=${userId ?? "<none>"} template_len=${template.length} template[0..200]=${JSON.stringify(template.slice(0, 200))}`);
   if (workerEvalEnabled()) {
     if (userId === undefined) {
-      log5.info(`resolveReadonly: worker-eval skipped chat=${chatId} \u2014 userId not yet captured; using legacy path`);
+      log6.info(`resolveReadonly: worker-eval skipped chat=${chatId} \u2014 userId not yet captured; using legacy path`);
     } else {
       try {
         const out = await resolveReadonlyInWorker(template, chatId, characterId, userId);
-        log5.info(`resolveReadonly: DONE (worker-eval) chat=${chatId} elapsed=${Date.now() - t0}ms out_len=${out.length} out[0..200]=${JSON.stringify(out.slice(0, 200))}`);
+        log6.info(`resolveReadonly: DONE (worker-eval) chat=${chatId} elapsed=${Date.now() - t0}ms out_len=${out.length} out[0..200]=${JSON.stringify(out.slice(0, 200))}`);
         return out;
       } catch (err) {
-        log5.error(`resolveReadonly: worker-eval threw chat=${chatId} \u2014 ${err.message}. Falling back to legacy path.`);
+        log6.error(`resolveReadonly: worker-eval threw chat=${chatId} \u2014 ${err.message}. Falling back to legacy path.`);
       }
     }
   }
@@ -32173,10 +32390,10 @@ async function resolveReadonly(template, chatId, characterId) {
       commit: false,
       ...userId === undefined ? {} : { userId }
     });
-    log5.info(`resolveReadonly: DONE chat=${chatId} elapsed=${Date.now() - t0}ms out_len=${result.text.length} diagnostics=${(result.diagnostics ?? []).length} out[0..200]=${JSON.stringify(result.text.slice(0, 200))}`);
+    log6.info(`resolveReadonly: DONE chat=${chatId} elapsed=${Date.now() - t0}ms out_len=${result.text.length} diagnostics=${(result.diagnostics ?? []).length} out[0..200]=${JSON.stringify(result.text.slice(0, 200))}`);
     return result.text;
   } catch (err) {
-    log5.error(`resolveReadonly: THREW chat=${chatId} elapsed=${Date.now() - t0}ms \u2014 ${err.message}`);
+    log6.error(`resolveReadonly: THREW chat=${chatId} elapsed=${Date.now() - t0}ms \u2014 ${err.message}`);
     throw err;
   }
 }
@@ -32247,7 +32464,7 @@ async function fetchChatMessages(chatId) {
     const msgs = await spindle.chat.getMessages(chatId);
     return msgs.map((m) => ({ id: m.id, role: m.role, content: m.content }));
   } catch (err) {
-    log5.error(`fetchChatMessages chat=${chatId} failed: ${errMsg(err)}`);
+    log6.error(`fetchChatMessages chat=${chatId} failed: ${errMsg(err)}`);
     return [];
   }
 }
@@ -32256,7 +32473,7 @@ async function resolveAndPersist(chatId, msgId, characterId, rawContent, current
   try {
     resolved = await resolveReadonly(rawContent, chatId, characterId);
   } catch (err) {
-    log5.error(`resolveAndPersist: resolve failed chat=${chatId} msg=${msgId}: ${errMsg(err)}`);
+    log6.error(`resolveAndPersist: resolve failed chat=${chatId} msg=${msgId}: ${errMsg(err)}`);
     return false;
   }
   if (atActions.length > 0) {
@@ -32273,19 +32490,19 @@ async function resolveAndPersist(chatId, msgId, characterId, rawContent, current
         role: "assistant"
       });
       const atChanged = resolved !== beforeAt;
-      log5.info(`resolveAndPersist.atActions: chat=${chatId} msg=${msgId} count=${atActions.length} phase=editdisplay chatIndex=${chatIndex} before_len=${beforeAt.length} after_len=${resolved.length} changed=${atChanged}`);
+      log6.info(`resolveAndPersist.atActions: chat=${chatId} msg=${msgId} count=${atActions.length} phase=editdisplay chatIndex=${chatIndex} before_len=${beforeAt.length} after_len=${resolved.length} changed=${atChanged}`);
       if (atChanged) {
         try {
           resolved = await resolveReadonly(resolved, chatId, characterId);
         } catch (err) {
-          log5.warn(`resolveAndPersist: post-@@-action CBS re-resolve threw chat=${chatId} msg=${msgId}: ${errMsg(err)} \u2014 keeping unresolved @@-action output`);
+          log6.warn(`resolveAndPersist: post-@@-action CBS re-resolve threw chat=${chatId} msg=${msgId}: ${errMsg(err)} \u2014 keeping unresolved @@-action output`);
         }
       }
     } catch (err) {
-      log5.warn(`resolveAndPersist: at-actions editdisplay threw chat=${chatId} msg=${msgId}: ${errMsg(err)} \u2014 keeping pre-action content`);
+      log6.warn(`resolveAndPersist: at-actions editdisplay threw chat=${chatId} msg=${msgId}: ${errMsg(err)} \u2014 keeping pre-action content`);
     }
   } else {
-    log5.verbose(`resolveAndPersist.atActions: chat=${chatId} msg=${msgId} count=0 \u2014 atActions array empty (re-import card to populate?)`);
+    log6.verbose(`resolveAndPersist.atActions: chat=${chatId} msg=${msgId} count=0 \u2014 atActions array empty (re-import card to populate?)`);
   }
   resolved = normalizeReplaceStringForSanitizer(resolved);
   if (resolved === currentContent) {
@@ -32297,12 +32514,12 @@ async function resolveAndPersist(chatId, msgId, characterId, rawContent, current
       content: resolved,
       metadata: { edited_by: EDITED_BY_MARKER }
     });
-    log5.info(`resolveAndPersist: chat=${chatId} msg=${msgId} raw=${rawContent.length} resolved=${resolved.length} (prev=${currentContent.length})`);
-    log5.info(`resolveAndPersist: raw[0..400]=${JSON.stringify(rawContent.slice(0, 400))}`);
-    log5.info(`resolveAndPersist: resolved=${JSON.stringify(resolved.slice(0, 400))}`);
+    log6.info(`resolveAndPersist: chat=${chatId} msg=${msgId} raw=${rawContent.length} resolved=${resolved.length} (prev=${currentContent.length})`);
+    log6.info(`resolveAndPersist: raw[0..400]=${JSON.stringify(rawContent.slice(0, 400))}`);
+    log6.info(`resolveAndPersist: resolved=${JSON.stringify(resolved.slice(0, 400))}`);
     return true;
   } catch (err) {
-    log5.error(`resolveAndPersist: updateMessage failed chat=${chatId} msg=${msgId}: ${errMsg(err)}`);
+    log6.error(`resolveAndPersist: updateMessage failed chat=${chatId} msg=${msgId}: ${errMsg(err)}`);
     return false;
   }
 }
@@ -32318,7 +32535,7 @@ async function refreshResolvedContent(active, chatId) {
   try {
     sidecar = await readSidecar(storage, chatId, uid);
   } catch (err) {
-    log5.error(`refreshResolvedContent: readSidecar failed chat=${chatId}: ${errMsg(err)}`);
+    log6.error(`refreshResolvedContent: readSidecar failed chat=${chatId}: ${errMsg(err)}`);
     return;
   }
   const toStash = [];
@@ -32333,7 +32550,7 @@ async function refreshResolvedContent(active, chatId) {
     try {
       sidecar = await trackMessagesBatch(storage, chatId, toStash, uid);
     } catch (err) {
-      log5.error(`refreshResolvedContent: trackMessagesBatch failed chat=${chatId}: ${errMsg(err)}`);
+      log6.error(`refreshResolvedContent: trackMessagesBatch failed chat=${chatId}: ${errMsg(err)}`);
       return;
     }
   }
@@ -32366,7 +32583,7 @@ async function refreshResolvedContent(active, chatId) {
       persisted += 1;
   }
   const total = Object.keys(sidecar.msgs).length;
-  log5.info(`refreshResolvedContent: chat=${chatId} tracked=${total} stashed_new=${toStash.length} resolved=${persisted} skipped_userEdited=${skipped} elapsed=${Date.now() - t0}ms`);
+  log6.info(`refreshResolvedContent: chat=${chatId} tracked=${total} stashed_new=${toStash.length} resolved=${persisted} skipped_userEdited=${skipped} elapsed=${Date.now() - t0}ms`);
 }
 function dumpPayload(raw) {
   try {
@@ -32378,12 +32595,12 @@ function dumpPayload(raw) {
 function captureUserId(userId, where) {
   if (userId && activeUserId !== userId) {
     activeUserId = userId;
-    log5.info(`captureUserId: set from ${where} userId=${userId}`);
+    log6.info(`captureUserId: set from ${where} userId=${userId}`);
     getSettingsForUser(userId).catch((err) => {
-      log5.warn(`captureUserId: settings preload failed for user=${userId}: ${errMsg(err)}`);
+      log6.warn(`captureUserId: settings preload failed for user=${userId}: ${errMsg(err)}`);
     });
     runImageOrphanReaper(userId).catch((err) => {
-      log5.warn(`captureUserId: image orphan reaper failed for user=${userId}: ${errMsg(err)}`);
+      log6.warn(`captureUserId: image orphan reaper failed for user=${userId}: ${errMsg(err)}`);
     });
   }
 }
@@ -32393,20 +32610,20 @@ spindle.on("SETTINGS_UPDATED", async (raw, userId) => {
   if (p.key !== "activeChatId")
     return;
   const chatId = typeof p.value === "string" && p.value.length > 0 ? p.value : null;
-  log5.info(`event SETTINGS_UPDATED activeChatId=${chatId ?? "<cleared>"} payload=${dumpPayload(raw)}`);
+  log6.info(`event SETTINGS_UPDATED activeChatId=${chatId ?? "<cleared>"} payload=${dumpPayload(raw)}`);
   if (!chatId) {
     const lastChat = userId ? lastActiveChatByUser.get(userId) : undefined;
     if (lastChat) {
-      log5.info(`SETTINGS_UPDATED activeChatId: cleared \u2014 dismounting bg-host for last chat=${lastChat}`);
+      log6.info(`SETTINGS_UPDATED activeChatId: cleared \u2014 dismounting bg-host for last chat=${lastChat}`);
       try {
         spindle.sendToFrontend({ type: "clear_bg_html", chatId: lastChat });
       } catch (err) {
-        log5.warn(`SETTINGS_UPDATED clear_bg_html: ${err.message}`);
+        log6.warn(`SETTINGS_UPDATED clear_bg_html: ${err.message}`);
       }
       if (userId)
         lastActiveChatByUser.delete(userId);
     } else {
-      log5.info(`SETTINGS_UPDATED activeChatId: cleared \u2014 no last chat to dismount`);
+      log6.info(`SETTINGS_UPDATED activeChatId: cleared \u2014 no last chat to dismount`);
     }
     return;
   }
@@ -32418,10 +32635,10 @@ spindle.on("SETTINGS_UPDATED", async (raw, userId) => {
     if (chat?.character_id)
       characterId = chat.character_id;
   } catch (err) {
-    log5.warn(`SETTINGS_UPDATED activeChatId: chats.get failed \u2014 ${err.message}`);
+    log6.warn(`SETTINGS_UPDATED activeChatId: chats.get failed \u2014 ${err.message}`);
   }
   const active = await ensureActiveCardForChat(chatId, characterId ?? null);
-  log5.info(`SETTINGS_UPDATED activeChatId: active=${active ? `characterId=${active.card.character_id} hasBgHtml=${!!active.card.risuPayload.background_html} triggers=${active.card.risuPayload.triggers?.length ?? 0}` : "<none>"}`);
+  log6.info(`SETTINGS_UPDATED activeChatId: active=${active ? `characterId=${active.card.character_id} hasBgHtml=${!!active.card.risuPayload.background_html} triggers=${active.card.risuPayload.triggers?.length ?? 0}` : "<none>"}`);
   if (!active) {
     try {
       spindle.sendToFrontend({ type: "clear_bg_html", chatId });
@@ -32432,7 +32649,7 @@ spindle.on("SETTINGS_UPDATED", async (raw, userId) => {
   await refreshBgHtml(active, chatId);
   await refreshVariables(active, chatId, { force: true });
   await refreshToggleDefinitions(active, chatId, { force: true });
-  log5.info(`SETTINGS_UPDATED activeChatId: ALL DONE chatId=${chatId}`);
+  log6.info(`SETTINGS_UPDATED activeChatId: ALL DONE chatId=${chatId}`);
 });
 var chatChangedDebounceTimers = new Map;
 var chatChangedCoalescedCount = new Map;
@@ -32447,12 +32664,12 @@ function scheduleChatChangedRefresh(chatId, characterId) {
     chatChangedCoalescedCount.delete(chatId);
     try {
       const active = await ensureActiveCardForChat(chatId, characterId);
-      log5.info(`CHAT_CHANGED (external, debounced): coalesced=${coalesced} active=${active ? `char=${active.card.character_id}` : "<none>"}`);
+      log6.info(`CHAT_CHANGED (external, debounced): coalesced=${coalesced} active=${active ? `char=${active.card.character_id}` : "<none>"}`);
       if (!active) {
         try {
           spindle.sendToFrontend({ type: "clear_bg_html", chatId });
         } catch (err) {
-          log5.warn(`CHAT_CHANGED clear_bg_html: ${err.message}`);
+          log6.warn(`CHAT_CHANGED clear_bg_html: ${err.message}`);
         }
         return;
       }
@@ -32460,7 +32677,7 @@ function scheduleChatChangedRefresh(chatId, characterId) {
       await refreshBgHtml(active, chatId);
       await refreshVariables(active, chatId, { force: true });
     } catch (err) {
-      log5.error(`scheduleChatChangedRefresh: chat=${chatId} threw: ${errMsg(err)}`);
+      log6.error(`scheduleChatChangedRefresh: chat=${chatId} threw: ${errMsg(err)}`);
     }
   }, CHAT_CHANGED_DEBOUNCE_MS);
   if (typeof timer.unref === "function") {
@@ -32472,11 +32689,12 @@ spindle.on("CHAT_CHANGED", async (raw, userId) => {
   captureUserId(userId, "CHAT_CHANGED");
   const { chatId, characterId } = extractIds(raw);
   if (!chatId) {
-    log5.warn("CHAT_CHANGED: missing chatId \u2014 aborting");
+    log6.warn("CHAT_CHANGED: missing chatId \u2014 aborting");
     return;
   }
+  invalidateListenEditPreload(chatId);
   const wasOwn = consumeOwnChatChange(chatId);
-  log5.info(`event CHAT_CHANGED chatId=${chatId} characterId=${characterId ?? "?"} ownWrite=${wasOwn}`);
+  log6.info(`event CHAT_CHANGED chatId=${chatId} characterId=${characterId ?? "?"} ownWrite=${wasOwn}`);
   if (wasOwn) {
     await ensureActiveCardForChat(chatId, characterId);
     return;
@@ -32486,15 +32704,16 @@ spindle.on("CHAT_CHANGED", async (raw, userId) => {
 spindle.on("MESSAGE_SENT", async (raw, userId) => {
   captureUserId(userId, "MESSAGE_SENT");
   const { chatId, characterId } = extractIds(raw);
-  log5.info(`event MESSAGE_SENT chatId=${chatId ?? "?"} characterId=${characterId ?? "?"} payload=${dumpPayload(raw)}`);
+  log6.info(`event MESSAGE_SENT chatId=${chatId ?? "?"} characterId=${characterId ?? "?"} payload=${dumpPayload(raw)}`);
   if (!chatId)
     return;
+  invalidateListenEditPreload(chatId);
   const active = await ensureActiveCardForChat(chatId, characterId);
   if (!active) {
-    log5.info(`MESSAGE_SENT: no active card \u2014 skip`);
+    log6.info(`MESSAGE_SENT: no active card \u2014 skip`);
     return;
   }
-  log5.info(`MESSAGE_SENT: \u2192 refreshResolvedContent (no binding \u2014 Risu parity)`);
+  log6.info(`MESSAGE_SENT: \u2192 refreshResolvedContent (no binding \u2014 Risu parity)`);
   await refreshResolvedContent(active, chatId);
   await refreshVariables(active, chatId);
 });
@@ -32519,7 +32738,7 @@ function markGenerationEnd(chatId) {
 spindle.on("GENERATION_STARTED", async (raw, userId) => {
   captureUserId(userId, "GENERATION_STARTED");
   const { chatId, characterId } = extractIds(raw);
-  log5.info(`event GENERATION_STARTED chatId=${chatId ?? "?"} characterId=${characterId ?? "?"} payload=${dumpPayload(raw)}`);
+  log6.info(`event GENERATION_STARTED chatId=${chatId ?? "?"} characterId=${characterId ?? "?"} payload=${dumpPayload(raw)}`);
   if (!chatId)
     return;
   if (markGenerationStart(chatId)) {
@@ -32528,9 +32747,9 @@ spindle.on("GENERATION_STARTED", async (raw, userId) => {
   const active = await ensureActiveCardForChat(chatId, characterId);
   if (!active)
     return;
-  log5.info(`GENERATION_STARTED: \u2192 runBinding(start)`);
+  log6.info(`GENERATION_STARTED: \u2192 runBinding(start)`);
   await runBinding(active, chatId, "start");
-  log5.info(`GENERATION_STARTED: \u2192 runBinding(request)`);
+  log6.info(`GENERATION_STARTED: \u2192 runBinding(request)`);
   await runBinding(active, chatId, "request");
   await refreshResolvedContent(active, chatId);
   await refreshBgHtml(active, chatId);
@@ -32539,7 +32758,7 @@ spindle.on("GENERATION_STARTED", async (raw, userId) => {
 spindle.on("GENERATION_ENDED", async (raw, userId) => {
   captureUserId(userId, "GENERATION_ENDED");
   const { chatId, characterId } = extractIds(raw);
-  log5.info(`event GENERATION_ENDED chatId=${chatId ?? "?"} characterId=${characterId ?? "?"} payload=${dumpPayload(raw)}`);
+  log6.info(`event GENERATION_ENDED chatId=${chatId ?? "?"} characterId=${characterId ?? "?"} payload=${dumpPayload(raw)}`);
   if (!chatId)
     return;
   const wentIdle = markGenerationEnd(chatId);
@@ -32559,7 +32778,7 @@ spindle.on("GENERATION_ENDED", async (raw, userId) => {
 spindle.on("GENERATION_STOPPED", async (raw, userId) => {
   captureUserId(userId, "GENERATION_STOPPED");
   const { chatId, characterId } = extractIds(raw);
-  log5.info(`event GENERATION_STOPPED chatId=${chatId ?? "?"} characterId=${characterId ?? "?"} payload=${dumpPayload(raw)}`);
+  log6.info(`event GENERATION_STOPPED chatId=${chatId ?? "?"} characterId=${characterId ?? "?"} payload=${dumpPayload(raw)}`);
   if (!chatId)
     return;
   const wentIdle = markGenerationEnd(chatId);
@@ -32578,9 +32797,10 @@ spindle.on("MESSAGE_SWIPED", async (raw, userId) => {
   const p = raw;
   const chatId = p.chatId ?? p.message?.chat_id ?? null;
   const msgId = p.message?.id ?? null;
-  log5.info(`event MESSAGE_SWIPED chatId=${chatId ?? "?"} msgId=${msgId ?? "?"} action=${p.action ?? "?"}`);
+  log6.info(`event MESSAGE_SWIPED chatId=${chatId ?? "?"} msgId=${msgId ?? "?"} action=${p.action ?? "?"}`);
   if (!chatId || !msgId)
     return;
+  invalidateListenEditPreload(chatId);
   const active = await ensureActiveCardForChat(chatId, null);
   if (!active)
     return;
@@ -32591,10 +32811,10 @@ spindle.on("MESSAGE_SWIPED", async (raw, userId) => {
       const storage = userStorage();
       const uid = getUserId();
       await storage.setJson(`lumirealm/chats/${chatId}.json`, sidecar, uid === undefined ? {} : { userId: uid });
-      log5.info(`MESSAGE_SWIPED: cleared stale sidecar entry chat=${chatId} msg=${msgId}`);
+      log6.info(`MESSAGE_SWIPED: cleared stale sidecar entry chat=${chatId} msg=${msgId}`);
     }
   } catch (err) {
-    log5.warn(`MESSAGE_SWIPED: sidecar clear failed chat=${chatId}: ${errMsg(err)}`);
+    log6.warn(`MESSAGE_SWIPED: sidecar clear failed chat=${chatId}: ${errMsg(err)}`);
   }
   await refreshResolvedContent(active, chatId);
   await refreshBgHtml(active, chatId);
@@ -32614,8 +32834,10 @@ spindle.on("MESSAGE_EDITED", async (raw, userId) => {
   const p = raw;
   const chatId = p.chatId ?? p.message?.chat_id ?? null;
   const msgId = p.message?.id ?? null;
+  if (chatId)
+    invalidateListenEditPreload(chatId);
   if (!chatId || !msgId) {
-    log5.warn(`event MESSAGE_EDITED: missing chatId/msgId payload=${JSON.stringify(raw).slice(0, 200)}`);
+    log6.warn(`event MESSAGE_EDITED: missing chatId/msgId payload=${JSON.stringify(raw).slice(0, 200)}`);
     return;
   }
   const newContent = String(p.message?.content ?? "");
@@ -32628,9 +32850,9 @@ spindle.on("MESSAGE_EDITED", async (raw, userId) => {
   const looksLikeContentReset = containsCbs(newContent) || inFlight && isAssistant;
   if (looksLikeContentReset) {
     if (inFlight && isAssistant && !containsCbs(newContent)) {
-      log5.info(`event MESSAGE_EDITED (streaming-finalize, re-resolving) chatId=${chatId} msgId=${msgId} content_len=${newContent.length} inFlight=true`);
+      log6.info(`event MESSAGE_EDITED (streaming-finalize, re-resolving) chatId=${chatId} msgId=${msgId} content_len=${newContent.length} inFlight=true`);
     }
-    log5.info(`event MESSAGE_EDITED (content-reset, re-resolving) chatId=${chatId} msgId=${msgId} content_len=${newContent.length}`);
+    log6.info(`event MESSAGE_EDITED (content-reset, re-resolving) chatId=${chatId} msgId=${msgId} content_len=${newContent.length}`);
     try {
       const sidecar = await readSidecar(userStorage(), chatId, getUserId());
       if (sidecar.msgs[msgId]) {
@@ -32645,17 +32867,17 @@ spindle.on("MESSAGE_EDITED", async (raw, userId) => {
         await refreshVariables(active, chatId);
       }
     } catch (err) {
-      log5.warn(`MESSAGE_EDITED content-reset: reconcile failed chat=${chatId}: ${errMsg(err)}`);
+      log6.warn(`MESSAGE_EDITED content-reset: reconcile failed chat=${chatId}: ${errMsg(err)}`);
     }
     return;
   }
-  log5.info(`event MESSAGE_EDITED (user) chatId=${chatId} msgId=${msgId} editedBy=${editedBy ?? "<none>"}`);
+  log6.info(`event MESSAGE_EDITED (user) chatId=${chatId} msgId=${msgId} editedBy=${editedBy ?? "<none>"}`);
   try {
     const flipped = await markUserEdited(userStorage(), chatId, msgId, getUserId());
     if (flipped)
-      log5.info(`MESSAGE_EDITED: userEdited flag set chat=${chatId} msg=${msgId}`);
+      log6.info(`MESSAGE_EDITED: userEdited flag set chat=${chatId} msg=${msgId}`);
   } catch (err) {
-    log5.error(`MESSAGE_EDITED: markUserEdited failed chat=${chatId} msg=${msgId}: ${errMsg(err)}`);
+    log6.error(`MESSAGE_EDITED: markUserEdited failed chat=${chatId} msg=${msgId}: ${errMsg(err)}`);
   }
 });
 spindle.on("MESSAGE_DELETED", async (raw, userId) => {
@@ -32663,9 +32885,10 @@ spindle.on("MESSAGE_DELETED", async (raw, userId) => {
   const p = raw;
   const chatId = p.chatId ?? p.message?.chat_id ?? null;
   const msgId = p.messageId ?? p.message?.id ?? null;
-  log5.info(`event MESSAGE_DELETED chatId=${chatId ?? "?"} msgId=${msgId ?? "?"}`);
+  log6.info(`event MESSAGE_DELETED chatId=${chatId ?? "?"} msgId=${msgId ?? "?"}`);
   if (!chatId)
     return;
+  invalidateListenEditPreload(chatId);
   if (msgId) {
     try {
       const sidecar = await readSidecar(userStorage(), chatId, getUserId());
@@ -32673,10 +32896,10 @@ spindle.on("MESSAGE_DELETED", async (raw, userId) => {
         delete sidecar.msgs[msgId];
         const uid = getUserId();
         await userStorage().setJson(`lumirealm/chats/${chatId}.json`, sidecar, uid === undefined ? {} : { userId: uid });
-        log5.info(`MESSAGE_DELETED: cleared sidecar entry chat=${chatId} msg=${msgId}`);
+        log6.info(`MESSAGE_DELETED: cleared sidecar entry chat=${chatId} msg=${msgId}`);
       }
     } catch (err) {
-      log5.warn(`MESSAGE_DELETED: sidecar cleanup failed chat=${chatId}: ${errMsg(err)}`);
+      log6.warn(`MESSAGE_DELETED: sidecar cleanup failed chat=${chatId}: ${errMsg(err)}`);
     }
   }
   const active = await ensureActiveCardForChat(chatId, null);
@@ -32690,9 +32913,11 @@ spindle.on("CHAT_DELETED", async (raw, userId) => {
   captureUserId(userId, "CHAT_DELETED");
   const p = raw;
   const chatId = p.chatId ?? p.id ?? null;
-  log5.info(`event CHAT_DELETED chatId=${chatId ?? "?"}`);
+  log6.info(`event CHAT_DELETED chatId=${chatId ?? "?"}`);
   if (!chatId)
     return;
+  invalidateListenEditPreload(chatId);
+  lastSentBgHtmlByChat.delete(chatId);
   activeCardByChat.delete(chatId);
   clearActiveAssetIndexes(chatId);
   clearActiveCharacterImage(chatId);
@@ -32703,13 +32928,13 @@ spindle.on("CHAT_DELETED", async (raw, userId) => {
   try {
     await clearSidecar(userStorage(), chatId, getUserId());
   } catch (err) {
-    log5.warn(`CHAT_DELETED: clearSidecar failed chat=${chatId}: ${errMsg(err)}`);
+    log6.warn(`CHAT_DELETED: clearSidecar failed chat=${chatId}: ${errMsg(err)}`);
   }
 });
 spindle.on("CHARACTER_DELETED", async (raw, uid) => {
   captureUserId(uid, "CHARACTER_DELETED");
   const characterId = raw.id ?? extractIds(raw).characterId ?? null;
-  log5.info(`event CHARACTER_DELETED characterId=${characterId ?? "?"}`);
+  log6.info(`event CHARACTER_DELETED characterId=${characterId ?? "?"}`);
   if (!characterId)
     return;
   compiledByCharacter.delete(characterId);
@@ -32718,7 +32943,7 @@ spindle.on("CHARACTER_DELETED", async (raw, uid) => {
   await deleteCardByChar(characterId, "cascade");
   if (uid) {
     await runImageCleanupForCharacter(characterId, uid).catch((err) => {
-      log5.warn(`CHARACTER_DELETED: image cleanup threw char=${characterId}: ${errMsg(err)}`);
+      log6.warn(`CHARACTER_DELETED: image cleanup threw char=${characterId}: ${errMsg(err)}`);
     });
   }
   send({
@@ -32730,22 +32955,22 @@ spindle.on("CHARACTER_DELETED", async (raw, uid) => {
 spindle.on("CHARACTER_CREATED", async (raw, userId) => {
   captureUserId(userId, "CHARACTER_CREATED");
   const characterId = raw.id ?? extractIds(raw).characterId ?? null;
-  log5.info(`event CHARACTER_CREATED characterId=${characterId ?? "?"}`);
+  log6.info(`event CHARACTER_CREATED characterId=${characterId ?? "?"}`);
   try {
     pushCards(await listCards());
   } catch (err) {
-    log5.warn(`CHARACTER_CREATED: pushCards failed \u2014 ${errMsg(err)}`);
+    log6.warn(`CHARACTER_CREATED: pushCards failed \u2014 ${errMsg(err)}`);
   }
 });
 spindle.on("CHARACTER_EDITED", async (raw, userId) => {
   captureUserId(userId, "CHARACTER_EDITED");
   const characterId = raw.id ?? extractIds(raw).characterId ?? null;
   if (!characterId) {
-    log5.warn(`event CHARACTER_EDITED: missing id payload=${dumpPayload(raw)}`);
+    log6.warn(`event CHARACTER_EDITED: missing id payload=${dumpPayload(raw)}`);
     return;
   }
   const wasOwn = consumeOwnCharacterEdit(characterId);
-  log5.info(`event CHARACTER_EDITED characterId=${characterId} ownWrite=${wasOwn}`);
+  log6.info(`event CHARACTER_EDITED characterId=${characterId} ownWrite=${wasOwn}`);
   if (wasOwn) {
     return;
   }
@@ -32753,17 +32978,17 @@ spindle.on("CHARACTER_EDITED", async (raw, userId) => {
   try {
     pushCards(await listCards());
   } catch (err) {
-    log5.warn(`CHARACTER_EDITED: pushCards failed \u2014 ${errMsg(err)}`);
+    log6.warn(`CHARACTER_EDITED: pushCards failed \u2014 ${errMsg(err)}`);
   }
 });
 spindle.on("CHARACTER_DUPLICATED", async (raw, userId) => {
   captureUserId(userId, "CHARACTER_DUPLICATED");
   const characterId = raw.id ?? extractIds(raw).characterId ?? null;
-  log5.info(`event CHARACTER_DUPLICATED characterId=${characterId ?? "?"} (Lumi 0.4.31+ emits CHARACTER_CREATED instead; this handler is defensive)`);
+  log6.info(`event CHARACTER_DUPLICATED characterId=${characterId ?? "?"} (Lumi 0.4.31+ emits CHARACTER_CREATED instead; this handler is defensive)`);
   try {
     pushCards(await listCards());
   } catch (err) {
-    log5.warn(`CHARACTER_DUPLICATED: pushCards failed \u2014 ${errMsg(err)}`);
+    log6.warn(`CHARACTER_DUPLICATED: pushCards failed \u2014 ${errMsg(err)}`);
   }
 });
 var moduleUploadSessions = new Map;
@@ -32772,7 +32997,7 @@ function moduleStorage() {
 }
 async function processModuleUpload(bytes, fileName, userId) {
   const t0 = Date.now();
-  log5.info(`processModuleUpload: file=${fileName} bytes=${bytes.byteLength} userId=${userId}`);
+  log6.info(`processModuleUpload: file=${fileName} bytes=${bytes.byteLength} userId=${userId}`);
   const decoded = decodeRisum(bytes);
   const parsed = risuModuleSchema.safeParse(decoded.module);
   if (!parsed.success) {
@@ -32784,7 +33009,7 @@ async function processModuleUpload(bytes, fileName, userId) {
   }
   const previousEnvelope = await readEnvelope(moduleStorage(), userId, moduleBody.id);
   if (moduleBody.lowLevelAccess === true) {
-    log5.info(`processModuleUpload: lowLevelAccess=true for module=${moduleBody.id} name="${moduleBody.name ?? "<unnamed>"}" \u2014 prompting consent`);
+    log6.info(`processModuleUpload: lowLevelAccess=true for module=${moduleBody.id} name="${moduleBody.name ?? "<unnamed>"}" \u2014 prompting consent`);
     let confirmed = false;
     try {
       const res = await requestConsent({
@@ -32799,14 +33024,14 @@ Only accept if you trust the source of this module.
       });
       confirmed = !!res?.confirmed;
     } catch (err) {
-      log5.warn(`processModuleUpload: consent prompt threw: ${err.message} \u2014 treating as decline`);
+      log6.warn(`processModuleUpload: consent prompt threw: ${err.message} \u2014 treating as decline`);
       confirmed = false;
     }
     if (!confirmed) {
-      log5.info(`processModuleUpload: consent declined for module=${moduleBody.id} \u2014 aborting upload`);
+      log6.info(`processModuleUpload: consent declined for module=${moduleBody.id} \u2014 aborting upload`);
       throw new Error(`Module "${moduleBody.name ?? moduleBody.id}" requires low-level access; consent declined.`);
     }
-    log5.info(`processModuleUpload: low-level access consent granted for module=${moduleBody.id}`);
+    log6.info(`processModuleUpload: low-level access consent granted for module=${moduleBody.id}`);
   }
   if (!spindle.images?.upload) {
     throw new Error("spindle.images.upload is unavailable \u2014 Lumi 0.9.6+ required.");
@@ -32818,9 +33043,9 @@ Only accept if you trust the source of this module.
     const moduleAssets = moduleBody.assets ?? [];
     const pending3 = pairModuleAssetsForUpload(moduleAssets, decoded.assets, () => "", guessMimeType);
     if (pending3.length < decoded.assets.length) {
-      log5.warn(`processModuleUpload: ${decoded.assets.length - pending3.length} asset(s) ` + `couldn't be paired with a module.assets[] name \u2014 dropped. ` + `(decoded.assets index out of bounds vs module.assets list.)`);
+      log6.warn(`processModuleUpload: ${decoded.assets.length - pending3.length} asset(s) ` + `couldn't be paired with a module.assets[] name \u2014 dropped. ` + `(decoded.assets index out of bounds vs module.assets list.)`);
     }
-    log5.info(`processModuleUpload: uploading ${pending3.length} asset(s) via spindle.images.upload (module=${moduleBody.id})`);
+    log6.info(`processModuleUpload: uploading ${pending3.length} asset(s) via spindle.images.upload (module=${moduleBody.id})`);
     const tUpload = Date.now();
     const uploadConcurrency = 6;
     const totalCount = pending3.length;
@@ -32841,7 +33066,7 @@ Only accept if you trust the source of this module.
           await appendModuleImageIdsToJournal(journalStorage(), userId, moduleBody.id, ids);
         } catch (err) {
           journalBuffer.unshift(...ids);
-          log5.warn(`processModuleUpload: journal flush failed module=${moduleBody.id}: ${errMsg(err)}`);
+          log6.warn(`processModuleUpload: journal flush failed module=${moduleBody.id}: ${errMsg(err)}`);
         }
       });
     };
@@ -32867,7 +33092,7 @@ Only accept if you trust the source of this module.
         } catch (err) {
           assetUploadFailures += 1;
           const errMessage2 = err instanceof Error ? err.message : String(err);
-          log5.warn(`processModuleUpload: upload failed name=${fileName2}: ${errMessage2}`);
+          log6.warn(`processModuleUpload: upload failed name=${fileName2}: ${errMessage2}`);
         }
         processed += 1;
         if (processed % progressEvery === 0 || processed === totalCount) {
@@ -32891,7 +33116,7 @@ Only accept if you trust the source of this module.
     }
     flushModuleJournal();
     await journalChain;
-    log5.info(`processModuleUpload: uploaded ${Object.keys(moduleAssetIndex).length}/${pending3.length} failed=${assetUploadFailures} elapsed=${Date.now() - tUpload}ms`);
+    log6.info(`processModuleUpload: uploaded ${Object.keys(moduleAssetIndex).length}/${pending3.length} failed=${assetUploadFailures} elapsed=${Date.now() - tUpload}ms`);
   }
   const baseEnvelope = {
     schema_version: MODULE_SCHEMA_VERSION,
@@ -32903,7 +33128,7 @@ Only accept if you trust the source of this module.
     ...previousEnvelope?.installed_world_book_id ? { installed_world_book_id: previousEnvelope.installed_world_book_id } : {}
   };
   const wbId = await syncModuleWorldBook(baseEnvelope, userId).catch((err) => {
-    log5.warn(`processModuleUpload: syncModuleWorldBook failed module=${moduleBody.id}: ${errMsg(err)}`);
+    log6.warn(`processModuleUpload: syncModuleWorldBook failed module=${moduleBody.id}: ${errMsg(err)}`);
     return previousEnvelope?.installed_world_book_id ?? null;
   });
   const envelope = {
@@ -32916,7 +33141,7 @@ Only accept if you trust the source of this module.
     ...wbId ? { installed_world_book_id: wbId } : {}
   };
   await writeEnvelope(moduleStorage(), userId, envelope);
-  log5.info(`processModuleUpload: ok id=${envelope.id} name=${moduleBody.name} lore=${(moduleBody.lorebook ?? []).length} regex=${(moduleBody.regex ?? []).length} triggers=${(moduleBody.trigger ?? []).length} assets=${decoded.assets.length} assetUploadFailures=${assetUploadFailures} wb=${envelope.installed_world_book_id ?? "-"} elapsed=${Date.now() - t0}ms`);
+  log6.info(`processModuleUpload: ok id=${envelope.id} name=${moduleBody.name} lore=${(moduleBody.lorebook ?? []).length} regex=${(moduleBody.regex ?? []).length} triggers=${(moduleBody.trigger ?? []).length} assets=${decoded.assets.length} assetUploadFailures=${assetUploadFailures} wb=${envelope.installed_world_book_id ?? "-"} elapsed=${Date.now() - t0}ms`);
   return { envelope };
 }
 async function buildAttachedByCharacter(userId, libraryById) {
@@ -33005,7 +33230,7 @@ async function attachModuleToCharacter(characterId, moduleId, userId) {
     return { ok: false, reason: "character is not a lumirealm card" };
   if (env.installed_world_book_id) {
     await addWorldBookToCharacter(characterId, env.installed_world_book_id, userId).catch((err) => {
-      log5.warn(`attachModuleToCharacter: addWorldBookToCharacter failed char=${characterId} module=${moduleId}: ${errMsg(err)}`);
+      log6.warn(`attachModuleToCharacter: addWorldBookToCharacter failed char=${characterId} module=${moduleId}: ${errMsg(err)}`);
     });
   }
   invalidateActiveForCharacter(characterId);
@@ -33043,15 +33268,15 @@ async function detachModuleFromCharacter(characterId, moduleId, userId) {
   invalidateActiveForCharacter(characterId);
   if (wbId) {
     await removeWorldBookFromCharacter(characterId, wbId, userId).catch((err) => {
-      log5.warn(`detachModuleFromCharacter: removeWorldBookFromCharacter failed char=${characterId}: ${errMsg(err)}`);
+      log6.warn(`detachModuleFromCharacter: removeWorldBookFromCharacter failed char=${characterId}: ${errMsg(err)}`);
     });
     const env = await readEnvelope(moduleStorage(), userId, moduleId);
     if (env && env.installed_world_book_id !== wbId) {
       try {
         await spindle.world_books.delete(wbId, userId);
-        log5.info(`detachModuleFromCharacter: deleted legacy per-char world_book wb=${wbId}`);
+        log6.info(`detachModuleFromCharacter: deleted legacy per-char world_book wb=${wbId}`);
       } catch (err) {
-        log5.warn(`detachModuleFromCharacter: legacy world_book delete failed wb=${wbId}: ${errMsg(err)}`);
+        log6.warn(`detachModuleFromCharacter: legacy world_book delete failed wb=${wbId}: ${errMsg(err)}`);
       }
     }
   }
@@ -33104,25 +33329,14 @@ async function refreshRisuAssetMap(characterId, userId) {
   expectCharacterEdit(characterId);
   try {
     await spindle.characters.update(characterId, { extensions: { risu_asset_map: map } }, userId);
-    log5.info(`refreshRisuAssetMap: char=${characterId} entries=${Object.keys(map).length}`);
+    log6.info(`refreshRisuAssetMap: char=${characterId} entries=${Object.keys(map).length}`);
   } catch (err) {
-    log5.warn(`refreshRisuAssetMap: char=${characterId} update failed: ${errMsg(err)}`);
+    log6.warn(`refreshRisuAssetMap: char=${characterId} update failed: ${errMsg(err)}`);
   }
 }
 async function handleImportLorebook(msg, userId) {
   const t0 = Date.now();
-  const fetched = await readLumirealm(charactersApi(), msg.characterId, userId);
-  if (!fetched || !fetched.data) {
-    send({
-      type: "lorebook_import_result",
-      characterId: msg.characterId,
-      ok: false,
-      written: 0,
-      dropped: 0,
-      reason: "not a lumirealm character"
-    });
-    return;
-  }
+  const standalone = msg.characterId === null;
   const parsed = parseDirectLorebook(msg.json);
   if (parsed.format === "unknown") {
     send({
@@ -33146,29 +33360,65 @@ async function handleImportLorebook(msg, userId) {
     });
     return;
   }
-  const existing = fetched.character.world_book_ids ?? [];
   let targetBookId = null;
-  if (existing.length > 0) {
-    targetBookId = existing[0] ?? null;
-  }
-  if (!targetBookId) {
+  let targetBookName;
+  if (standalone) {
+    const stem = (msg.filename ?? "lorebook").replace(/\.[^.]+$/, "").trim() || "lorebook";
+    targetBookName = stem;
     try {
-      const wbName = `${fetched.character.name ?? "character"}  - lore (imported)`;
-      const wb = await spindle.world_books.create({ name: wbName }, userId);
+      const wb = await spindle.world_books.create({ name: targetBookName }, userId);
       targetBookId = wb.id;
-      expectCharacterEdit(msg.characterId);
-      await spindle.characters.update(msg.characterId, { world_book_ids: [...existing, wb.id] }, userId);
-      log5.info(`import_lorebook: created world_book ${wb.id} for char=${msg.characterId}`);
+      log6.info(`import_lorebook: standalone created world_book ${wb.id} name="${targetBookName}"`);
     } catch (err) {
       send({
         type: "lorebook_import_result",
-        characterId: msg.characterId,
+        characterId: null,
         ok: false,
         written: 0,
         dropped: parsed.dropped,
         reason: `world_book create failed: ${errMsg(err)}`
       });
       return;
+    }
+  } else {
+    const characterId = msg.characterId;
+    const fetched = await readLumirealm(charactersApi(), characterId, userId);
+    if (!fetched || !fetched.data) {
+      send({
+        type: "lorebook_import_result",
+        characterId,
+        ok: false,
+        written: 0,
+        dropped: 0,
+        reason: "not a lumirealm character"
+      });
+      return;
+    }
+    const existing = fetched.character.world_book_ids ?? [];
+    if (existing.length > 0) {
+      targetBookId = existing[0] ?? null;
+    }
+    targetBookName = `${fetched.character.name ?? "character"}  - lore`;
+    if (!targetBookId) {
+      try {
+        const wbName = `${fetched.character.name ?? "character"}  - lore (imported)`;
+        const wb = await spindle.world_books.create({ name: wbName }, userId);
+        targetBookId = wb.id;
+        targetBookName = wbName;
+        expectCharacterEdit(characterId);
+        await spindle.characters.update(characterId, { world_book_ids: [...existing, wb.id] }, userId);
+        log6.info(`import_lorebook: created world_book ${wb.id} for char=${characterId}`);
+      } catch (err) {
+        send({
+          type: "lorebook_import_result",
+          characterId,
+          ok: false,
+          written: 0,
+          dropped: parsed.dropped,
+          reason: `world_book create failed: ${errMsg(err)}`
+        });
+        return;
+      }
     }
   }
   const lumiEntries = mapLoreBook(parsed.entries, { worldBookId: targetBookId });
@@ -33212,16 +33462,17 @@ async function handleImportLorebook(msg, userId) {
       written += 1;
     } catch (err) {
       entryWriteFailures += 1;
-      log5.warn(`import_lorebook: entry "${entry.comment}" failed: ${errMsg(err)}`);
+      log6.warn(`import_lorebook: entry "${entry.comment}" failed: ${errMsg(err)}`);
     }
   }
-  log5.info(`import_lorebook: char=${msg.characterId} format=${parsed.format} written=${written}/${parsed.entries.length} drops=${parsed.dropped} entry_write_failures=${entryWriteFailures} elapsed=${Date.now() - t0}ms file=${msg.filename ?? "<unnamed>"}`);
+  log6.info(`import_lorebook: ${standalone ? "standalone" : `char=${msg.characterId}`} format=${parsed.format} written=${written}/${parsed.entries.length} drops=${parsed.dropped} entry_write_failures=${entryWriteFailures} elapsed=${Date.now() - t0}ms file=${msg.filename ?? "<unnamed>"} book=${targetBookId}`);
   send({
     type: "lorebook_import_result",
     characterId: msg.characterId,
     ok: written > 0,
     written,
     dropped: parsed.dropped + entryWriteFailures,
+    ...targetBookId ? { worldBookId: targetBookId, worldBookName: targetBookName } : {},
     ...written === 0 && entryWriteFailures > 0 ? { reason: "all entry writes failed; see log for details" } : {}
   });
 }
@@ -33310,10 +33561,10 @@ async function syncModuleWorldBook(env, userId) {
         if (input)
           await spindle.world_books.entries.create(existingId, input, userId);
       }
-      log5.info(`syncModuleWorldBook: refreshed module=${env.id} wb=${existingId} entries=${lorebook2.length}`);
+      log6.info(`syncModuleWorldBook: refreshed module=${env.id} wb=${existingId} entries=${lorebook2.length}`);
       return existingId;
     } catch (err) {
-      log5.warn(`syncModuleWorldBook: refresh failed module=${env.id} wb=${existingId}: ${errMsg(err)} \u2014 recreating`);
+      log6.warn(`syncModuleWorldBook: refresh failed module=${env.id} wb=${existingId}: ${errMsg(err)} \u2014 recreating`);
       await deleteModuleWorldBookEverywhere(env.id, existingId, userId);
     }
   }
@@ -33323,7 +33574,7 @@ async function syncModuleWorldBook(env, userId) {
     if (input)
       await spindle.world_books.entries.create(wb.id, input, userId);
   }
-  log5.info(`syncModuleWorldBook: created module=${env.id} wb=${wb.id} entries=${lorebook2.length}`);
+  log6.info(`syncModuleWorldBook: created module=${env.id} wb=${wb.id} entries=${lorebook2.length}`);
   return wb.id;
 }
 async function deleteModuleWorldBookEverywhere(moduleId, worldBookId, userId) {
@@ -33334,7 +33585,7 @@ async function deleteModuleWorldBookEverywhere(moduleId, worldBookId, userId) {
   try {
     await spindle.world_books.delete(worldBookId, userId);
   } catch (err) {
-    log5.warn(`deleteModuleWorldBookEverywhere: delete wb=${worldBookId} failed: ${errMsg(err)}`);
+    log6.warn(`deleteModuleWorldBookEverywhere: delete wb=${worldBookId} failed: ${errMsg(err)}`);
   }
 }
 async function addWorldBookToCharacter(characterId, worldBookId, userId) {
@@ -33362,11 +33613,11 @@ async function dispatchModuleArtifactInstall(characterId, env) {
   const moduleName = typeof m.name === "string" && m.name.length > 0 ? m.name : env.id;
   const regexScripts = projectModuleRegexEntries(env.id, moduleName, characterId, m.regex, () => cryptoUuidLocal());
   if (regexScripts.length === 0) {
-    log5.info(`dispatchModuleArtifactInstall: module=${env.id} char=${characterId} no regex to install`);
+    log6.info(`dispatchModuleArtifactInstall: module=${env.id} char=${characterId} no regex to install`);
     return;
   }
   const lorebookEntries = [];
-  log5.info(`dispatchModuleArtifactInstall: module=${env.id} char=${characterId} lorebookEntries=${lorebookEntries.length} regexScripts=${regexScripts.length}`);
+  log6.info(`dispatchModuleArtifactInstall: module=${env.id} char=${characterId} lorebookEntries=${lorebookEntries.length} regexScripts=${regexScripts.length}`);
   send({
     type: "install_module_artifacts",
     characterId,
@@ -33392,12 +33643,13 @@ function invalidateActiveForCharacter(characterId) {
       clearActiveCharacterImage(chatId);
       variableState.clearChat(chatId);
       toggleState.clearChat(chatId);
+      lastSentBgHtmlByChat.delete(chatId);
       evictedChats.push(chatId);
       evicted += 1;
     }
   }
   compiledByCharacter.delete(characterId);
-  log5.info(`invalidateActiveForCharacter: char=${characterId} evictedChats=${evicted}`);
+  log6.info(`invalidateActiveForCharacter: char=${characterId} evictedChats=${evicted}`);
   for (const chatId of evictedChats) {
     (async () => {
       const reactivated = await ensureActiveCardForChat(chatId, null);
@@ -33482,7 +33734,7 @@ async function detachModuleFromAllCharacters(moduleId, userId) {
     invalidateActiveForCharacter(e.character.id);
     if (wbId) {
       await removeWorldBookFromCharacter(e.character.id, wbId, userId).catch((err) => {
-        log5.warn(`detachModuleFromAllCharacters: removeWorldBookFromCharacter failed char=${e.character.id}: ${errMsg(err)}`);
+        log6.warn(`detachModuleFromAllCharacters: removeWorldBookFromCharacter failed char=${e.character.id}: ${errMsg(err)}`);
       });
     }
     if (regexIds.length > 0) {
@@ -33510,7 +33762,7 @@ async function mutateAssetIndex(msg, userId) {
           if (r.ok)
             working = r.index;
           else
-            log5.warn(`add_assets (character ${characterId}): "${e.assetName}" skipped \u2014 ${r.reason}`);
+            log6.warn(`add_assets (character ${characterId}): "${e.assetName}" skipped \u2014 ${r.reason}`);
         }
         return { ...cur, asset_index: working };
       }
@@ -33527,7 +33779,7 @@ async function mutateAssetIndex(msg, userId) {
           break;
       }
       if (!result2.ok) {
-        log5.warn(`mutateAssetIndex (character ${characterId}): ${msg.type} failed \u2014 ${result2.reason}`);
+        log6.warn(`mutateAssetIndex (character ${characterId}): ${msg.type} failed \u2014 ${result2.reason}`);
         return cur;
       }
       return { ...cur, asset_index: result2.index };
@@ -33547,7 +33799,7 @@ async function mutateAssetIndex(msg, userId) {
       if (r.ok)
         working = r.index;
       else
-        log5.warn(`add_assets (module ${moduleId}): "${e.assetName}" skipped \u2014 ${r.reason}`);
+        log6.warn(`add_assets (module ${moduleId}): "${e.assetName}" skipped \u2014 ${r.reason}`);
     }
     const nextEnv2 = { ...env, asset_index: working };
     await writeEnvelope(moduleStorage(), userId, nextEnv2);
@@ -33664,7 +33916,7 @@ async function readAttachedModuleEnvelopes(userId, attachedIds) {
   try {
     library = await listModules(moduleStorage(), userId);
   } catch (err) {
-    log5.warn(`readAttachedModuleEnvelopes: namespace fallback list failed: ${err.message}`);
+    log6.warn(`readAttachedModuleEnvelopes: namespace fallback list failed: ${err.message}`);
     return directHits;
   }
   const missingSet = new Set(missingHandles);
@@ -33679,7 +33931,7 @@ async function readAttachedModuleEnvelopes(userId, attachedIds) {
     if (typeof ns === "string" && ns.length > 0 && missingSet.has(ns)) {
       fallback.push(env);
       seenIds.add(env.id);
-      log5.info(`readAttachedModuleEnvelopes: namespace match \u2014 handle="${ns}" \u2192 module id=${env.id} (transparent replacement / aliasing)`);
+      log6.info(`readAttachedModuleEnvelopes: namespace match \u2014 handle="${ns}" \u2192 module id=${env.id} (transparent replacement / aliasing)`);
     }
   }
   for (const h of missingHandles) {
@@ -33688,7 +33940,7 @@ async function readAttachedModuleEnvelopes(userId, attachedIds) {
       return typeof ns === "string" && ns === h;
     });
     if (!matched) {
-      log5.warn(`readAttachedModuleEnvelopes: handle "${h}" did not resolve via id or namespace \u2014 skipping`);
+      log6.warn(`readAttachedModuleEnvelopes: handle "${h}" did not resolve via id or namespace \u2014 skipping`);
     }
   }
   return [...directHits, ...fallback];
@@ -33733,16 +33985,16 @@ async function loadAttachedModulesForRuntime(userId, attachedIds) {
 var realmHandle = setupRealmBackend({
   send: (msg) => send(msg),
   log: {
-    info: (m) => log5.info(m),
-    warn: (m) => log5.warn(m),
-    error: (m) => log5.error(m)
+    info: (m) => log6.info(m),
+    warn: (m) => log6.warn(m),
+    error: (m) => log6.error(m)
   },
   importCardFromBytes: (bytesB64, fileName) => importCardFromBytes(bytesB64, fileName)
 });
 spindle.onFrontendMessage(async (raw, userId) => {
   activeUserId = userId;
   const msg = raw;
-  log5.info(`frontend msg type=${msg.type} userId=${userId ?? "<none>"}`);
+  log6.info(`frontend msg type=${msg.type} userId=${userId ?? "<none>"}`);
   try {
     if (isRealmFrontendMessage(msg)) {
       await realmHandle.handle(msg);
@@ -33750,10 +34002,15 @@ spindle.onFrontendMessage(async (raw, userId) => {
     }
     switch (msg.type) {
       case "get_cards": {
+        const memoCount = lastSentBgHtmlByChat.size;
+        lastSentBgHtmlByChat.clear();
+        if (memoCount > 0) {
+          log6.info(`get_cards: cleared ${memoCount} bg-html send memo(s) for FE remount`);
+        }
         pushCards(await listCards());
         const lastChat = userId ? lastActiveChatByUser.get(userId) : undefined;
         if (lastChat) {
-          log5.info(`get_cards: re-painting bg+scope-css for lastChat=${lastChat} userId=${userId}`);
+          log6.info(`get_cards: re-painting bg+scope-css for lastChat=${lastChat} userId=${userId}`);
           try {
             const active = await ensureActiveCardForChat(lastChat, null);
             if (active) {
@@ -33762,15 +34019,15 @@ spindle.onFrontendMessage(async (raw, userId) => {
               await refreshVariables(active, lastChat, { force: true });
             }
           } catch (err) {
-            log5.warn(`get_cards: rehydrate failed chat=${lastChat}: ${errMsg(err)}`);
+            log6.warn(`get_cards: rehydrate failed chat=${lastChat}: ${errMsg(err)}`);
           }
         }
         break;
       }
       case "import_card_init": {
-        log5.info(`import_card_init: sessionId=${msg.sessionId} file=${msg.fileName} totalBytes=${msg.totalBytes} totalChunks=${msg.totalChunks}`);
+        log6.info(`import_card_init: sessionId=${msg.sessionId} file=${msg.fileName} totalBytes=${msg.totalBytes} totalChunks=${msg.totalChunks}`);
         if (importSessions.has(msg.sessionId)) {
-          log5.warn(`import_card_init: replacing existing session ${msg.sessionId}`);
+          log6.warn(`import_card_init: replacing existing session ${msg.sessionId}`);
         }
         importSessions.set(msg.sessionId, {
           fileName: msg.fileName,
@@ -33788,16 +34045,16 @@ spindle.onFrontendMessage(async (raw, userId) => {
       case "import_card_chunk": {
         const session = importSessions.get(msg.sessionId);
         if (!session) {
-          log5.warn(`import_card_chunk: unknown sessionId=${msg.sessionId} seq=${msg.seq} \u2014 dropping`);
+          log6.warn(`import_card_chunk: unknown sessionId=${msg.sessionId} seq=${msg.seq} \u2014 dropping`);
           send({ type: "error", message: `Unknown upload session ${msg.sessionId}. Re-import the card.` });
           break;
         }
         if (msg.seq < 0 || msg.seq >= session.totalChunks) {
-          log5.warn(`import_card_chunk: seq=${msg.seq} out of range (total=${session.totalChunks})`);
+          log6.warn(`import_card_chunk: seq=${msg.seq} out of range (total=${session.totalChunks})`);
           break;
         }
         if (session.buffer[msg.seq] !== null) {
-          log5.warn(`import_card_chunk: duplicate seq=${msg.seq} on session ${msg.sessionId} \u2014 overwriting`);
+          log6.warn(`import_card_chunk: duplicate seq=${msg.seq} on session ${msg.sessionId} \u2014 overwriting`);
         }
         const chunkBytes = new Uint8Array(Buffer.from(msg.bytesB64Chunk, "base64"));
         session.buffer[msg.seq] = chunkBytes;
@@ -33815,11 +34072,11 @@ spindle.onFrontendMessage(async (raw, userId) => {
       case "import_card_commit": {
         const session = importSessions.get(msg.sessionId);
         if (!session) {
-          log5.warn(`import_card_commit: unknown sessionId=${msg.sessionId}`);
+          log6.warn(`import_card_commit: unknown sessionId=${msg.sessionId}`);
           send({ type: "error", message: `Unknown upload session ${msg.sessionId}. Re-import the card.` });
           break;
         }
-        log5.info(`import_card_commit: sessionId=${msg.sessionId} received=${session.receivedChunks}/${session.totalChunks} bytes=${session.receivedBytes}/${session.totalBytes} elapsed=${Date.now() - session.startedAt}ms`);
+        log6.info(`import_card_commit: sessionId=${msg.sessionId} received=${session.receivedChunks}/${session.totalChunks} bytes=${session.receivedBytes}/${session.totalBytes} elapsed=${Date.now() - session.startedAt}ms`);
         if (session.receivedChunks !== session.totalChunks) {
           const missing = [];
           for (let i = 0;i < session.totalChunks; i++) {
@@ -33828,7 +34085,7 @@ spindle.onFrontendMessage(async (raw, userId) => {
           }
           importSessions.delete(msg.sessionId);
           const missingList = missing.length > 12 ? `${missing.slice(0, 12).join(",")}\u2026(+${missing.length - 12})` : missing.join(",");
-          log5.error(`import_card_commit: missing chunks=[${missingList}] \u2014 aborting`);
+          log6.error(`import_card_commit: missing chunks=[${missingList}] \u2014 aborting`);
           send({
             type: "import_progress",
             phase: "error",
@@ -33839,7 +34096,7 @@ spindle.onFrontendMessage(async (raw, userId) => {
           break;
         }
         if (session.receivedBytes !== session.totalBytes) {
-          log5.warn(`import_card_commit: byte count mismatch received=${session.receivedBytes} expected=${session.totalBytes} \u2014 proceeding anyway`);
+          log6.warn(`import_card_commit: byte count mismatch received=${session.receivedBytes} expected=${session.totalBytes} \u2014 proceeding anyway`);
         }
         const assembled = new Uint8Array(session.receivedBytes);
         let offset = 0;
@@ -33852,14 +34109,14 @@ spindle.onFrontendMessage(async (raw, userId) => {
         const fileName = session.fileName;
         importSessions.delete(msg.sessionId);
         send({ type: "import_upload_ack", sessionId: msg.sessionId, seq: -2, receivedBytes: session.receivedBytes });
-        log5.info(`import_card_commit: assembled ${assembled.byteLength} bytes, running importCard`);
+        log6.info(`import_card_commit: assembled ${assembled.byteLength} bytes, running importCard`);
         const bytesB64 = Buffer.from(assembled).toString("base64");
         await realmHandle.importAnyFormat(bytesB64, fileName);
         break;
       }
       case "import_card_abort": {
         const existed = importSessions.delete(msg.sessionId);
-        log5.info(`import_card_abort: sessionId=${msg.sessionId} existed=${existed} reason=${msg.reason ?? "<none>"}`);
+        log6.info(`import_card_abort: sessionId=${msg.sessionId} existed=${existed} reason=${msg.reason ?? "<none>"}`);
         break;
       }
       case "register_svg_raster_index": {
@@ -33870,7 +34127,7 @@ spindle.onFrontendMessage(async (raw, userId) => {
         const total = Object.keys(msg.imageIdByMarker).length;
         const successful = Object.values(msg.imageIdByMarker).filter((v) => typeof v === "string" && v.length > 0).length;
         const failed = total - successful;
-        log5.info(`register_svg_raster_index: char=${msg.characterId} total=${total} successful=${successful} failed=${failed}`);
+        log6.info(`register_svg_raster_index: char=${msg.characterId} total=${total} successful=${successful} failed=${failed}`);
         await applySvgRasterIndex({
           characterId: msg.characterId,
           imageIdByMarker: msg.imageIdByMarker,
@@ -33879,10 +34136,10 @@ spindle.onFrontendMessage(async (raw, userId) => {
         const pendingForSvg = pendingImportCompletions.get(msg.characterId);
         if (pendingForSvg) {
           pendingForSvg.hasPendingSvgRaster = false;
-          log5.info(`register_svg_raster_index: cleared svg-pending flag char=${msg.characterId}`);
+          log6.info(`register_svg_raster_index: cleared svg-pending flag char=${msg.characterId}`);
           await maybeFinalizeImport(msg.characterId);
         } else {
-          log5.info(`register_svg_raster_index: no tracker entry for char=${msg.characterId} \u2014 direct push`);
+          log6.info(`register_svg_raster_index: no tracker entry for char=${msg.characterId} \u2014 direct push`);
           pushCards(await listCards());
         }
         break;
@@ -33895,15 +34152,15 @@ spindle.onFrontendMessage(async (raw, userId) => {
         const resolver = pendingConsents.get(msg.requestId);
         if (resolver) {
           pendingConsents.delete(msg.requestId);
-          log5.info(`consent_response: requestId=${msg.requestId} confirmed=${msg.confirmed}`);
+          log6.info(`consent_response: requestId=${msg.requestId} confirmed=${msg.confirmed}`);
           resolver(msg.confirmed);
         } else {
-          log5.warn(`consent_response: no pending request for requestId=${msg.requestId}`);
+          log6.warn(`consent_response: no pending request for requestId=${msg.requestId}`);
         }
         break;
       }
       case "manual_trigger": {
-        log5.info(`manual_trigger: triggerName=${msg.triggerName} triggerId=${msg.triggerId ?? "<none>"} chatId=${msg.chatId}`);
+        log6.info(`manual_trigger: triggerName=${msg.triggerName} triggerId=${msg.triggerId ?? "<none>"} chatId=${msg.chatId}`);
         await dispatchManualTrigger(msg.chatId, msg.triggerName, msg.triggerId);
         break;
       }
@@ -33982,7 +34239,7 @@ spindle.onFrontendMessage(async (raw, userId) => {
           break;
         }
         const connections = await listConnectionsForUser(userId);
-        log5.info(`request_connections_list: returning ${connections.length} connection(s) for user=${userId}`);
+        log6.info(`request_connections_list: returning ${connections.length} connection(s) for user=${userId}`);
         send({
           type: "connections_list_pushed",
           connections
@@ -34024,7 +34281,7 @@ spindle.onFrontendMessage(async (raw, userId) => {
       case "set_toggle": {
         const result = await writeToggleValue(msg.chatId, msg.key, msg.value);
         if (!result.ok) {
-          log5.warn(`set_toggle failed: ${result.reason ?? "unknown"}`);
+          log6.warn(`set_toggle failed: ${result.reason ?? "unknown"}`);
           send({ type: "error", message: `set toggle failed: ${result.reason ?? "unknown"}` });
         }
         break;
@@ -34034,7 +34291,7 @@ spindle.onFrontendMessage(async (raw, userId) => {
           send({ type: "error", message: "upload_module_init: no userId" });
           break;
         }
-        log5.info(`upload_module_init: sessionId=${msg.sessionId} file=${msg.fileName} totalBytes=${msg.totalBytes} totalChunks=${msg.totalChunks}`);
+        log6.info(`upload_module_init: sessionId=${msg.sessionId} file=${msg.fileName} totalBytes=${msg.totalBytes} totalChunks=${msg.totalChunks}`);
         moduleUploadSessions.set(msg.sessionId, {
           fileName: msg.fileName,
           totalBytes: msg.totalBytes,
@@ -34137,7 +34394,7 @@ spindle.onFrontendMessage(async (raw, userId) => {
           const attachedBefore = await charactersAttachedTo(env.id, userId);
           await pushModules(userId);
           if (attachedBefore.length > 0) {
-            log5.info(`upload_module_commit: auto-refreshing ${attachedBefore.length} character(s) attached to module ${env.id}`);
+            log6.info(`upload_module_commit: auto-refreshing ${attachedBefore.length} character(s) attached to module ${env.id}`);
             for (const charId of attachedBefore) {
               await refreshAttachedModule(charId, env, userId);
             }
@@ -34165,7 +34422,7 @@ spindle.onFrontendMessage(async (raw, userId) => {
       }
       case "upload_module_abort": {
         const existed = moduleUploadSessions.delete(msg.sessionId);
-        log5.info(`upload_module_abort: sessionId=${msg.sessionId} existed=${existed} reason=${msg.reason ?? "<none>"}`);
+        log6.info(`upload_module_abort: sessionId=${msg.sessionId} existed=${existed} reason=${msg.reason ?? "<none>"}`);
         break;
       }
       case "request_modules": {
@@ -34187,16 +34444,16 @@ spindle.onFrontendMessage(async (raw, userId) => {
         if (sharedWbId) {
           try {
             await spindle.world_books.delete(sharedWbId, userId);
-            log5.info(`delete_module: deleted shared world_book wb=${sharedWbId} module=${msg.moduleId}`);
+            log6.info(`delete_module: deleted shared world_book wb=${sharedWbId} module=${msg.moduleId}`);
           } catch (err) {
-            log5.warn(`delete_module: shared world_book delete failed wb=${sharedWbId}: ${errMsg(err)}`);
+            log6.warn(`delete_module: shared world_book delete failed wb=${sharedWbId}: ${errMsg(err)}`);
           }
         }
         await runModuleImageCleanup(msg.moduleId, userId).catch((err) => {
-          log5.warn(`delete_module: image cleanup threw module=${msg.moduleId}: ${errMsg(err)}`);
+          log6.warn(`delete_module: image cleanup threw module=${msg.moduleId}: ${errMsg(err)}`);
         });
         await deleteModule(moduleStorage(), userId, msg.moduleId);
-        log5.info(`delete_module: id=${msg.moduleId} detachedFromChars=${touched.length}`);
+        log6.info(`delete_module: id=${msg.moduleId} detachedFromChars=${touched.length}`);
         await pushModules(userId);
         for (const charId of touched) {
           await pushAttachedForCharacter(charId, userId);
@@ -34263,11 +34520,11 @@ spindle.onFrontendMessage(async (raw, userId) => {
           }
         }
         invalidateActiveForCharacter(msg.characterId);
-        log5.info(`module_artifacts_installed: char=${msg.characterId} module=${msg.moduleId} worldBookId=${msg.worldBookId ?? "null"} regex=${msg.regexScriptIds.length}`);
+        log6.info(`module_artifacts_installed: char=${msg.characterId} module=${msg.moduleId} worldBookId=${msg.worldBookId ?? "null"} regex=${msg.regexScriptIds.length}`);
         break;
       }
       case "module_artifacts_uninstalled": {
-        log5.info(`module_artifacts_uninstalled: char=${msg.characterId} module=${msg.moduleId} ok=${msg.ok}`);
+        log6.info(`module_artifacts_uninstalled: char=${msg.characterId} module=${msg.moduleId} ok=${msg.ok}`);
         break;
       }
       case "add_asset":
@@ -34288,23 +34545,23 @@ spindle.onFrontendMessage(async (raw, userId) => {
           if (data)
             send({ type: "viewer_data_pushed", data });
         } catch (err) {
-          log5.warn(`${msg.type}: viewer re-push failed: ${errMsg(err)}`);
+          log6.warn(`${msg.type}: viewer re-push failed: ${errMsg(err)}`);
         }
         if (msg.source.kind === "module") {
           const attached = await charactersAttachedTo(msg.source.moduleId, userId);
           for (const charId of attached) {
             invalidateActiveForCharacter(charId);
             await refreshRisuAssetMap(charId, userId).catch((err) => {
-              log5.warn(`${msg.type}: refreshRisuAssetMap failed char=${charId}: ${errMsg(err)}`);
+              log6.warn(`${msg.type}: refreshRisuAssetMap failed char=${charId}: ${errMsg(err)}`);
             });
           }
           if (attached.length > 0) {
-            log5.info(`${msg.type}: invalidated ${attached.length} attached character(s) for module ${msg.source.moduleId}`);
+            log6.info(`${msg.type}: invalidated ${attached.length} attached character(s) for module ${msg.source.moduleId}`);
           }
         } else {
           invalidateActiveForCharacter(msg.source.characterId);
           await refreshRisuAssetMap(msg.source.characterId, userId).catch((err) => {
-            log5.warn(`${msg.type}: refreshRisuAssetMap failed char=${msg.source.kind === "character" ? msg.source.characterId : "?"}: ${errMsg(err)}`);
+            log6.warn(`${msg.type}: refreshRisuAssetMap failed char=${msg.source.kind === "character" ? msg.source.characterId : "?"}: ${errMsg(err)}`);
           });
         }
         break;
@@ -34344,10 +34601,10 @@ spindle.onFrontendMessage(async (raw, userId) => {
           if (data)
             send({ type: "viewer_data_pushed", data });
         } catch (err) {
-          log5.warn(`${msg.type}: viewer re-push failed: ${errMsg(err)}`);
+          log6.warn(`${msg.type}: viewer re-push failed: ${errMsg(err)}`);
         }
         invalidateActiveForCharacter(msg.characterId);
-        log5.info(`${msg.type}: char=${msg.characterId} name=${msg.name}` + (msg.type === "set_default_variable" ? ` len=${String(msg.value).length}` : " (override removed)"));
+        log6.info(`${msg.type}: char=${msg.characterId} name=${msg.name}` + (msg.type === "set_default_variable" ? ` len=${String(msg.value).length}` : " (override removed)"));
         break;
       }
       case "import_lorebook": {
@@ -34373,7 +34630,7 @@ spindle.onFrontendMessage(async (raw, userId) => {
           if (data)
             send({ type: "viewer_data_pushed", data });
         } catch (err) {
-          log5.warn(`set_trigger_lua: viewer re-push failed: ${errMsg(err)}`);
+          log6.warn(`set_trigger_lua: viewer re-push failed: ${errMsg(err)}`);
         }
         if (msg.source.kind === "module") {
           const attached = await charactersAttachedTo(msg.source.moduleId, userId);
@@ -34405,7 +34662,7 @@ spindle.onFrontendMessage(async (raw, userId) => {
           if (data)
             send({ type: "viewer_data_pushed", data });
         } catch (err) {
-          log5.warn(`set_background_html: viewer re-push failed: ${errMsg(err)}`);
+          log6.warn(`set_background_html: viewer re-push failed: ${errMsg(err)}`);
         }
         break;
       }
@@ -34431,9 +34688,9 @@ spindle.onFrontendMessage(async (raw, userId) => {
       case "screen_dims": {
         if (userId) {
           setScreenDims(userId, { width: Number(msg.width) || 0, height: Number(msg.height) || 0 });
-          log5.info(`screen_dims: user=${userId} w=${msg.width} h=${msg.height}`);
+          log6.info(`screen_dims: user=${userId} w=${msg.width} h=${msg.height}`);
         } else {
-          log5.warn(`screen_dims: received but userId is empty \u2014 cache not updated`);
+          log6.warn(`screen_dims: received but userId is empty \u2014 cache not updated`);
         }
         break;
       }
@@ -34481,7 +34738,7 @@ spindle.onFrontendMessage(async (raw, userId) => {
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    log5.error(`Frontend message handler error (type=${msg.type ?? "?"}): ${message}`);
+    log6.error(`Frontend message handler error (type=${msg.type ?? "?"}): ${message}`);
     send({ type: "error", message });
   }
 });

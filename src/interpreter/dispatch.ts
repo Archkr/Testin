@@ -1,4 +1,4 @@
-import type { StoredRisuCard } from '../payload/types.js';
+import type { LumirealmCharacterData, StoredRisuCard } from '../payload/types.js';
 import type { RisuBinding } from './runtime.js';
 
 
@@ -32,4 +32,7 @@ export const GENERATION_ENDED_BINDINGS: readonly RisuBinding[] = [
 export interface ActiveCard {
   readonly card: StoredRisuCard;
   readonly chatId: string;
+  /** Raw lumirealm character data (carries user_overrides — esp.
+   *  `default_variables_overrides` consumed by State → Variables → Default). */
+  readonly lumirealm: LumirealmCharacterData;
 }

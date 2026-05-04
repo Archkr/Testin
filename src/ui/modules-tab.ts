@@ -68,30 +68,61 @@ export function mountModulesPanel(opts: MountModulesPanelOptions): ModulesPanelH
   const expandedModules = new Set<string>();
   let lastError: string | null = null;
 
-  const intro = document.createElement('p');
-  intro.className = 'lrm-intro';
-  intro.textContent =
-    'Upload .risum modules to your library, then attach them to characters. Attached modules layer their lorebook, regex, Lua, and assets onto the character at runtime.';
-  root.appendChild(intro);
+  // Subtab nav (Characters / Modules / Lorebooks). Each subtab is a flat
+  // body — no outer `<details>` chrome since the tab itself isolates content.
+  type ImportSubTabId = 'characters' | 'modules' | 'lorebooks';
+  const SUB_TABS: ReadonlyArray<{ id: ImportSubTabId; label: string; title: string }> = [
+    { id: 'characters', label: 'Characters', title: 'Imported Risu cards. Click any row to manage attached modules.' },
+    { id: 'modules',    label: 'Modules',    title: 'Module library. Click any row for details / delete.' },
+    { id: 'lorebooks',  label: 'Lorebooks',  title: 'Standalone lorebook import. Creates an unattached world_book; attach via Lumiverse.' },
+  ];
+  const subnav = document.createElement('div');
+  subnav.className = 'lr-subtabs';
+  subnav.setAttribute('role', 'tablist');
+  root.appendChild(subnav);
+  const subnavBtns = new Map<ImportSubTabId, HTMLButtonElement>();
+  for (const def of SUB_TABS) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'lr-subtab';
+    btn.textContent = def.label;
+    btn.title = def.title;
+    btn.setAttribute('role', 'tab');
+    btn.setAttribute('aria-selected', 'false');
+    btn.addEventListener('click', () => activateSubTab(def.id));
+    subnav.appendChild(btn);
+    subnavBtns.set(def.id, btn);
+  }
+  let activeSubTab: ImportSubTabId = 'characters';
 
-  const libSection = document.createElement('details');
-  libSection.className = 'lrm-section';
-  libSection.open = true;
-  const libSummary = document.createElement('summary');
-  libSummary.className = 'lrm-section-header';
-  const libTitle = document.createElement('h3');
-  libTitle.className = 'lrm-section-title';
-  libTitle.textContent = 'Module library';
-  libSummary.appendChild(libTitle);
-  libSection.appendChild(libSummary);
+  // ---- Characters subtab ---------------------------------------------------
+  const charBody = document.createElement('section');
+  charBody.className = 'lrm-section-body lrm-tab-body';
 
-  const libBody = document.createElement('div');
-  libBody.className = 'lrm-section-body';
-  libSection.appendChild(libBody);
+  const charHeaderSlot = document.createElement('div');
+  charHeaderSlot.className = 'lrm-character-header-slot';
+  charBody.appendChild(charHeaderSlot);
+  const charHeaderHandle = opts.mountCharactersHeader
+    ? opts.mountCharactersHeader(charHeaderSlot)
+    : null;
+
+  const charDesc = document.createElement('div');
+  charDesc.className = 'lrm-section-desc';
+  charDesc.textContent =
+    'Click any row to manage attached modules. Delete characters through Lumiverse.';
+  charBody.appendChild(charDesc);
+
+  const charList = document.createElement('div');
+  charList.className = 'lrm-characters-list';
+  charBody.appendChild(charList);
+
+  // ---- Modules subtab ------------------------------------------------------
+  const libBody = document.createElement('section');
+  libBody.className = 'lrm-section-body lrm-tab-body';
 
   const libDesc = document.createElement('div');
   libDesc.className = 'lrm-section-desc';
-  libDesc.textContent = 'Upload .risum modules and attach them to characters.';
+  libDesc.textContent = 'Upload .risum modules. Click a row for details + delete.';
   libBody.appendChild(libDesc);
 
   const libToolbar = document.createElement('div');
@@ -114,39 +145,50 @@ export function mountModulesPanel(opts: MountModulesPanelOptions): ModulesPanelH
   libList.className = 'lrm-modules-list';
   libBody.appendChild(libList);
 
-  const charSection = document.createElement('details');
-  charSection.className = 'lrm-section';
-  charSection.open = true;
-  const charSummary = document.createElement('summary');
-  charSummary.className = 'lrm-section-header';
-  const charTitle = document.createElement('h3');
-  charTitle.className = 'lrm-section-title';
-  charTitle.textContent = 'Characters';
-  charSummary.appendChild(charTitle);
-  charSection.appendChild(charSummary);
+  // ---- Lorebooks subtab ----------------------------------------------------
+  const lorebooksBody = document.createElement('section');
+  lorebooksBody.className = 'lrm-section-body lrm-tab-body';
 
-  const charBody = document.createElement('div');
-  charBody.className = 'lrm-section-body';
-  charSection.appendChild(charBody);
+  const lbDesc = document.createElement('div');
+  lbDesc.className = 'lrm-section-desc';
+  lbDesc.textContent =
+    "Upload a standalone lorebook (Risu native or CCSv3 JSON). Lumiverse stores it as an unattached world_book — attach to characters via Lumiverse's UI. Risu decorators (@@position, @@depth, @@is_greeting, etc.) still apply at runtime when a Risu-imported character uses the book.";
+  lorebooksBody.appendChild(lbDesc);
 
-  const charHeaderSlot = document.createElement('div');
-  charHeaderSlot.className = 'lrm-character-header-slot';
-  charBody.appendChild(charHeaderSlot);
-  const charHeaderHandle = opts.mountCharactersHeader
-    ? opts.mountCharactersHeader(charHeaderSlot)
-    : null;
+  const lbToolbar = document.createElement('div');
+  lbToolbar.className = 'lrm-toolbar';
+  const lbUploadBtn = document.createElement('button');
+  lbUploadBtn.type = 'button';
+  lbUploadBtn.className = 'lrm-btn lrm-btn-primary';
+  lbUploadBtn.textContent = 'Upload lorebook…';
+  lbUploadBtn.title = 'Pick a Risu native or CCSv3 lorebook JSON file.';
+  lbToolbar.appendChild(lbUploadBtn);
+  lorebooksBody.appendChild(lbToolbar);
 
-  const charDesc = document.createElement('div');
-  charDesc.className = 'lrm-section-desc';
-  charDesc.textContent = 'Note: delete characters through Lumiverse.';
-  charBody.appendChild(charDesc);
+  const lbStatus = document.createElement('div');
+  lbStatus.className = 'lrm-lorebook-status';
+  lorebooksBody.appendChild(lbStatus);
 
-  const charList = document.createElement('div');
-  charList.className = 'lrm-characters-list';
-  charBody.appendChild(charList);
+  // ---- Subtab activation ---------------------------------------------------
+  const panelsHost = document.createElement('div');
+  panelsHost.className = 'lr-subtab-panels';
+  panelsHost.appendChild(charBody);
+  panelsHost.appendChild(libBody);
+  panelsHost.appendChild(lorebooksBody);
+  root.appendChild(panelsHost);
 
-  root.appendChild(charSection);
-  root.appendChild(libSection);
+  function activateSubTab(id: ImportSubTabId): void {
+    activeSubTab = id;
+    for (const [k, btn] of subnavBtns) {
+      const sel = k === id;
+      btn.classList.toggle('lr-subtab-active', sel);
+      btn.setAttribute('aria-selected', sel ? 'true' : 'false');
+    }
+    charBody.hidden = id !== 'characters';
+    libBody.hidden = id !== 'modules';
+    lorebooksBody.hidden = id !== 'lorebooks';
+  }
+  activateSubTab(activeSubTab);
 
   function setStatus(_msg: string | null, _isError = false): void { /* no-op */ }
 
@@ -275,7 +317,11 @@ export function mountModulesPanel(opts: MountModulesPanelOptions): ModulesPanelH
     const attachedList = attachedByCharacter.get(card.character_id) ?? [];
     const summaryCount = document.createElement('span');
     summaryCount.className = 'lrm-character-count';
-    summaryCount.textContent = `${attachedList.length} attached`;
+    summaryCount.textContent =
+      attachedList.length === 0
+        ? 'manage modules'
+        : `manage modules · ${attachedList.length} attached`;
+    summaryCount.title = 'Open to attach or detach modules for this character.';
     summary.appendChild(summaryCount);
     det.appendChild(summary);
 
@@ -407,6 +453,46 @@ export function mountModulesPanel(opts: MountModulesPanelOptions): ModulesPanelH
     log.info('modules-panel: refresh clicked');
     sendToBackend({ type: 'request_modules' });
   });
+
+  // Standalone lorebook import. Reads the JSON file inline (single-message
+  // upload — Lumi's 64KB inbound guard limits big books; for now we accept
+  // that limit, matches the existing per-character `import_lorebook` path).
+  let lorebookImportInFlight = false;
+  lbUploadBtn.addEventListener('click', () => { void onLorebookUploadClicked(); });
+
+  async function onLorebookUploadClicked(): Promise<void> {
+    if (lorebookImportInFlight) return;
+    let file: File | null;
+    try {
+      file = await pickLorebookFile();
+    } catch (err) {
+      setLorebookStatus(`File pick failed: ${errMsg(err)}`, true);
+      return;
+    }
+    if (!file) return;
+    let text: string;
+    try {
+      text = await file.text();
+    } catch (err) {
+      setLorebookStatus(`Read failed: ${errMsg(err)}`, true);
+      return;
+    }
+    lorebookImportInFlight = true;
+    lbUploadBtn.disabled = true;
+    setLorebookStatus(`Importing "${file.name}" (${(text.length / 1024).toFixed(1)} KB)…`, false);
+    log.info(`modules-panel: import_lorebook standalone file=${file.name} bytes=${text.length}`);
+    sendToBackend({
+      type: 'import_lorebook',
+      characterId: null,
+      json: text,
+      filename: file.name,
+    });
+  }
+
+  function setLorebookStatus(msg: string, isError: boolean): void {
+    lbStatus.textContent = msg;
+    lbStatus.classList.toggle('lrm-lorebook-status-error', isError);
+  }
 
   async function onUploadClicked(): Promise<void> {
     if (uploadBtn.disabled) return;
@@ -589,6 +675,24 @@ export function mountModulesPanel(opts: MountModulesPanelOptions): ModulesPanelH
       case 'module_upload_ack':
         onUploadAck(msg.sessionId, msg.seq, msg.receivedBytes);
         break;
+      case 'lorebook_import_result':
+        // Only consume standalone results — per-character imports are still
+        // handled by the viewer's redirect-section button (Phase F removes that).
+        if (msg.characterId === null) {
+          lorebookImportInFlight = false;
+          lbUploadBtn.disabled = false;
+          if (msg.ok) {
+            const nameSuffix = msg.worldBookName ? ` as "${msg.worldBookName}"` : '';
+            const dropSuffix = msg.dropped > 0 ? ` (${msg.dropped} dropped)` : '';
+            setLorebookStatus(
+              `Imported ${msg.written} entr${msg.written === 1 ? 'y' : 'ies'}${nameSuffix}${dropSuffix}. Attach via Lumiverse to use.`,
+              false,
+            );
+          } else {
+            setLorebookStatus(msg.reason ?? 'Import failed.', true);
+          }
+        }
+        break;
       case 'error':
         if (lastError === null) {
           lastError = msg.message;
@@ -638,6 +742,30 @@ function pickViaInput(): Promise<{ name: string; bytes: Uint8Array } | null> {
         (ab) => done({ name: file.name, bytes: new Uint8Array(ab) }),
         (err) => done(null, err as Error),
       );
+    });
+    input.addEventListener('cancel', () => done(null));
+    input.click();
+  });
+}
+
+function pickLorebookFile(): Promise<File | null> {
+  return new Promise((resolve, reject) => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json,.lorebook,application/json';
+    input.style.display = 'none';
+    document.body.appendChild(input);
+    let settled = false;
+    const done = (f: File | null, err?: Error): void => {
+      if (settled) return;
+      settled = true;
+      try { document.body.removeChild(input); } catch { /* */ }
+      if (err) reject(err);
+      else resolve(f);
+    };
+    input.addEventListener('change', () => {
+      const list = input.files;
+      done(list && list.length > 0 ? list.item(0) : null);
     });
     input.addEventListener('cancel', () => done(null));
     input.click();

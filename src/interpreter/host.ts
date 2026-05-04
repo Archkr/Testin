@@ -132,12 +132,33 @@ export interface HostApi {
   };
 }
 
+/**
+ * Pre-fetched snapshot of chat-state data the runtime would otherwise pull
+ * via Spindle IPC. Used by `runListenEditChain` to share one snapshot across
+ * all triggers in the same chain (Risu invariant: "fresh Lua state per
+ * trigger" still holds; only the *data* it sees is shared).
+ *
+ * Each field is independently optional — pass only what you've fetched.
+ * Unfilled fields fall through to the per-runtime IPC path as before.
+ */
+export interface TriggerRuntimePreloaded {
+  /** Output of `loadVars(api)` — `$`-prefixed internal key shape. */
+  readonly varsCache?: Record<string, string>;
+  /** Output of `api.chat.getMessages()` — pre-Risu-frame-shift. Same shape
+   *  the runtime would receive from Spindle directly. */
+  readonly messagesRaw?: readonly HostMessage[];
+  /** Pre-built lorebook cache — { entries, primaryBookId }. */
+  readonly lorebook?: import('./runtime/lorebook.js').LorebookCache;
+}
+
 export interface TriggerRuntimeOpts {
   readonly displayMode?: boolean;
   readonly lowLevelAccess?: boolean;
   readonly characterId?: string | null;
   readonly binding?: string;
   readonly chatId?: string;
+  /** Pre-fetched chat-state snapshot — see `TriggerRuntimePreloaded`. */
+  readonly preloaded?: TriggerRuntimePreloaded;
   // Backend uses this to filter MESSAGE_EDITED self-echoes from Lua setChat.
   readonly rememberOurWrite?: (chatId: string, msgId: string, content: string) => void;
   readonly stateChanged?: () => void;

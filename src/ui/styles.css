@@ -466,6 +466,185 @@
   justify-content: flex-end;
 }
 
+/* Inline variable row — shared between Default/Local subtabs (and viewer Default
+   editor in Phase F). Layout: name+flags | value-input | actions, all on one
+   line. Mirrors the Default-vars look the user prefers. */
+.lr-vars-body {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.lr-var-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.lr-var-section + .lr-var-section {
+  margin-top: 18px;
+}
+.lr-var-note {
+  margin: 0 0 4px 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.55));
+}
+.lr-var-subsection {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.lr-var-subsection + .lr-var-subsection {
+  margin-top: 14px;
+}
+.lr-var-subsection-title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.7));
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--lumiverse-border, rgba(255, 255, 255, 0.08));
+  padding-bottom: 4px;
+}
+.lr-var-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.lr-var-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+.lr-var-row:hover {
+  background: var(--lumiverse-fill, rgba(255, 255, 255, 0.03));
+}
+.lr-var-row-overridden {
+  background: var(--lumiverse-fill, rgba(120, 160, 255, 0.05));
+}
+.lr-var-row-readonly {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+}
+.lr-var-row-add {
+  background: var(--lumiverse-fill, rgba(255, 255, 255, 0.04));
+  outline: 1px solid var(--lumiverse-primary, rgba(120, 160, 255, 0.4));
+  padding: 6px 8px;
+}
+.lr-var-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.lr-var-name {
+  font-family: var(--lumiverse-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--lumiverse-text, inherit);
+}
+.lr-var-flag {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--lumiverse-fill, rgba(120, 160, 255, 0.15));
+  color: var(--lumiverse-text-muted, rgba(160, 200, 255, 0.85));
+  flex-shrink: 0;
+}
+.lr-var-flag-lua {
+  background: var(--lumiverse-fill, rgba(140, 100, 220, 0.18));
+  color: rgba(200, 180, 240, 0.9);
+}
+.lr-var-input,
+.lr-var-name-input {
+  appearance: none;
+  background: var(--lumiverse-bg-input, rgba(0, 0, 0, 0.25));
+  border: 1px solid var(--lumiverse-border, rgba(255, 255, 255, 0.08));
+  color: var(--lumiverse-text, inherit);
+  font: inherit;
+  font-size: 12px;
+  font-family: var(--lumiverse-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  padding: 4px 6px;
+  border-radius: 4px;
+  min-width: 0;
+}
+.lr-var-input:focus,
+.lr-var-name-input:focus {
+  outline: none;
+  border-color: var(--lumiverse-primary, #6c9cff);
+  background: var(--lumiverse-bg-input-focus, rgba(0, 0, 0, 0.35));
+}
+.lr-var-value-readonly {
+  font-family: var(--lumiverse-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+  color: var(--lumiverse-text, inherit);
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  padding: 4px 6px;
+  background: var(--lumiverse-bg-input, rgba(0, 0, 0, 0.18));
+  border-radius: 4px;
+}
+.lr-var-value-long {
+  cursor: pointer;
+}
+.lr-var-value-long::after {
+  content: ' (click to expand)';
+  color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.45));
+  font-size: 10px;
+}
+.lr-var-value-long.lr-var-value-expanded::after {
+  content: ' (click to collapse)';
+}
+.lr-var-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.lr-var-action {
+  appearance: none;
+  background: transparent;
+  border: 1px solid var(--lumiverse-border, rgba(255, 255, 255, 0.1));
+  color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.65));
+  font: inherit;
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 3px;
+  cursor: pointer;
+  transition: background 80ms, color 80ms, border-color 80ms;
+}
+.lr-var-action:hover {
+  color: var(--lumiverse-text, inherit);
+  background: var(--lumiverse-fill, rgba(255, 255, 255, 0.06));
+  border-color: var(--lumiverse-border, rgba(255, 255, 255, 0.2));
+}
+.lr-var-action-primary {
+  border-color: var(--lumiverse-primary, rgba(120, 160, 255, 0.5));
+  color: var(--lumiverse-primary, #b6cdff);
+}
+.lr-var-action-primary:hover {
+  background: var(--lumiverse-fill, rgba(120, 160, 255, 0.12));
+}
+.lr-var-action-danger:hover {
+  border-color: rgba(220, 100, 100, 0.4);
+  color: rgba(255, 160, 160, 0.95);
+}
+.lr-var-add-btn {
+  align-self: flex-start;
+  margin-top: 4px;
+  font-size: 12px;
+}
+
 /* ─── Settings tab ────────────────────────────────────────────────────── */
 
 .risu-settings-drawer {
@@ -483,52 +662,84 @@
   margin-top: 12px;
 }
 
-.lr-settings-aux,
-.lr-settings-logs {
-  display: block;
+/* Settings subtab body — no outer chrome, just stacked rows + samplers.
+   The legacy `.rs-section` outer-box style still exists in case anything
+   else references it, but the live settings panel uses these instead. */
+.lr-settings-tab-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  min-width: 0;
 }
-.lr-settings-aux {
-  margin-bottom: 40px;
+.lr-settings-tab-body[hidden] { display: none; }
+.lr-settings-intro {
+  margin: 0 0 4px 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.55));
+}
+/* Inline-logs host inside the Debug subtab. Tightens spacing vs the original
+   standalone panel which had its own intro + frame chrome. */
+.lr-settings-logs-host > .lr-logs::before {
+  content: none;
+}
+.lr-settings-logs-host > .lr-logs {
+  background: transparent;
+  border: none;
+  padding: 0;
 }
 
+/* Canonical subtab bar — shared across State/Variables/Settings/Import/Viewer.
+   Pill-style: rounded top corners, transparent background, light bottom rule
+   spans the bar. Active tab gets an elevated fill + bordered outline. The
+   `.lrv-subtab-*` rules below mirror these for backwards compat with
+   viewer-tab.ts; both class trees produce identical visuals. */
+.lr-subtabs,
 .lr-subnav {
   display: flex;
-  flex-wrap: wrap;
   gap: 2px;
-  padding: 8px 8px 0 8px;
+  padding: 6px 10px 0;
   border-bottom: 1px solid var(--lumiverse-border, rgba(255, 255, 255, 0.08));
-  background: var(--lumiverse-fill-subtle, rgba(255, 255, 255, 0.02));
-  margin-bottom: 20px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
 }
+.lr-subtab,
 .lr-subnav-btn {
   appearance: none;
   background: transparent;
-  border: none;
-  border-bottom: 2px solid transparent;
-  color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.6));
-  cursor: pointer;
-  padding: 8px 12px;
+  border: 1px solid transparent;
+  border-bottom: none;
+  color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.55));
   font: inherit;
   font-size: 12px;
-  font-weight: 500;
-  border-radius: 4px 4px 0 0;
-  transition: color 100ms, background 100ms, border-color 100ms;
+  padding: 5px 10px 6px;
+  border-radius: 5px 5px 0 0;
+  cursor: pointer;
+  transition: background 80ms, color 80ms, border-color 80ms;
 }
+.lr-subtab:hover,
 .lr-subnav-btn:hover {
   color: var(--lumiverse-text, inherit);
-  background: var(--lumiverse-fill, rgba(255, 255, 255, 0.04));
+  background: var(--lumiverse-bg-elevated, rgba(255, 255, 255, 0.04));
 }
+.lr-subtab-active,
 .lr-subnav-btn-active {
   color: var(--lumiverse-text, inherit);
-  border-bottom-color: var(--lumiverse-primary, #6c9cff);
-  background: var(--lumiverse-fill, rgba(120, 160, 255, 0.08));
+  background: var(--lumiverse-bg-elevated, rgba(255, 255, 255, 0.06));
+  border-color: var(--lumiverse-border, rgba(255, 255, 255, 0.12));
 }
-.lr-subnav-panels { min-width: 0; }
-.lr-subnav-panel {
+.lr-subnav-panels,
+.lr-subtab-panels { min-width: 0; }
+.lr-subnav-panel,
+.lr-subtab-panel {
   display: block;
   min-width: 0;
 }
-.lr-subnav-panel[hidden] {
+.lr-subnav-panel[hidden],
+.lr-subtab-panel[hidden] {
   display: none;
 }
 .risu-settings-drawer .rs-intro {
@@ -963,6 +1174,24 @@
   background: rgba(255, 110, 110, 0.2);
   color: #ffb0b0;
 }
+.risu-aux-debug-channel {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-right: 4px;
+}
+.risu-aux-debug-channel-aux {
+  background: rgba(180, 140, 220, 0.2);
+  color: #d4b8e8;
+}
+.risu-aux-debug-channel-submodel {
+  background: rgba(220, 180, 120, 0.2);
+  color: #e8d0a0;
+}
 .risu-aux-debug-meta {
   color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.55));
   font-size: 11px;
@@ -1364,6 +1593,29 @@
   flex-direction: column;
   gap: 8px;
   min-width: 0;
+}
+/* Subtab body — same as section-body but no inherited dropdown chrome. */
+.lr-modules-drawer .lrm-tab-body {
+  padding: 6px 0 0 0;
+}
+.lr-modules-drawer .lrm-tab-body[hidden] { display: none; }
+.lr-modules-drawer .lrm-lorebook-status {
+  margin-top: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+  border-radius: 4px;
+  background: var(--lumiverse-fill-subtle, rgba(255, 255, 255, 0.025));
+  color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.65));
+  min-height: 1em;
+}
+.lr-modules-drawer .lrm-lorebook-status:empty {
+  background: transparent;
+  padding: 0;
+  min-height: 0;
+}
+.lr-modules-drawer .lrm-lorebook-status-error {
+  background: rgba(255, 110, 110, 0.12);
+  color: rgba(255, 180, 180, 0.95);
 }
 .lr-modules-drawer .lrm-section-title {
   margin: 0;
@@ -1911,6 +2163,48 @@
   grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
   gap: 8px;
   padding: 8px;
+}
+/* Windowed asset list — only the visible row range is mounted at any time.
+   Scrollable host + absolute-positioned tiles inside an explicit-height
+   spacer. Mirrors tanstack-virtual's principle in vanilla DOM. */
+.lr-viewer-drawer .lrv-asset-virt-host {
+  position: relative;
+  overflow-y: auto;
+  max-height: 60vh;
+  min-height: 240px;
+  background: rgba(0, 0, 0, 0.12);
+  border-radius: 4px;
+  border: 1px solid var(--lumiverse-border, rgba(255, 255, 255, 0.06));
+  margin: 8px 10px;
+}
+.lr-viewer-drawer .lrv-asset-virt-inner {
+  position: relative;
+  width: 100%;
+}
+/* Tiles rendered inside the virt-inner host get absolute positioning by JS;
+   neutralise any flex-related defaults from the legacy `.lrv-asset-tile`
+   rules so the JS-set top/left/width/height take effect cleanly. */
+.lr-viewer-drawer .lrv-asset-virt-inner > .lrv-asset-tile {
+  position: absolute;
+  margin: 0;
+  box-sizing: border-box;
+}
+.lr-viewer-drawer .lrv-asset-search {
+  appearance: none;
+  background: var(--lumiverse-bg-input, rgba(0, 0, 0, 0.25));
+  border: 1px solid var(--lumiverse-border, rgba(255, 255, 255, 0.08));
+  color: var(--lumiverse-text, inherit);
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  flex: 1 1 auto;
+  min-width: 100px;
+}
+.lr-viewer-drawer .lrv-asset-search:focus {
+  outline: none;
+  border-color: var(--lumiverse-primary, #6c9cff);
+  background: var(--lumiverse-bg-input-focus, rgba(0, 0, 0, 0.35));
 }
 .lr-viewer-drawer .lrv-asset-tile {
   display: flex;

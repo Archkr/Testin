@@ -173,10 +173,28 @@ export function setupBgHtmlRenderer(
         // styled via a different rule wouldn't resolve to `fixed` and the lifter
         // wouldn't see them. Shadow-DOM case is covered by island-styles.
         const crossRuleParts = msg.crossRuleStyles ?? [];
+        // Cross-rule wrap takes verbatim CSS (no rewriter pass) and folds it
+        // under a parent selector via CSS Nesting. So an aggressive author
+        // reset like `* { margin: 0; padding: 0 }` resolves to
+        // `<wrapper-selector> *` post-nesting. Pre-fix the wrapper was just
+        // `[data-message-id]` — that includes Lumi's bubble chrome
+        // (`_card_*`/`_content_*`), so the reset zeroed Lumi's padding.
+        // (THE AMOROUS REALM II bug, 2026-05-04 log sheet[5] offset 14561.)
+        // Fix: scope INSIDE Lumi's chrome via two stable hooks:
+        //   1. `[data-message-id] [data-component="MessageContent"]` — the
+        //      live message bubble's content area (bubble chrome sits between
+        //      the two attributes, so the reset can't reach it).
+        //   2. `.lumi-message-portal-wrapper` — the runtime DOM lifter's
+        //      overlay wrapper. Light-DOM clones live inside it; their CSS
+        //      reaches them via this branch (see architecture §2.10 / quirks
+        //      §3.74). Without this branch the lifter would render unstyled
+        //      clones for cards that ship CSS in per-rule <style> blocks.
+        // Selector list with comma is fine inside CSS Nesting — `& X` resolves
+        // against each parent in turn.
         const wrappedCrossRule = crossRuleParts
           .map((p) => stripCssImports(p))
           .filter((p) => p.trim().length > 0)
-          .map((p) => `[data-message-id] {\n${p}\n}\n`)
+          .map((p) => `[data-message-id] [data-component="MessageContent"], .lumi-message-portal-wrapper {\n${p}\n}\n`)
           .join("\n");
         // @import must precede other rules. Hoist them back to top after
         // preamble prepend, or Google Fonts silently stops loading.

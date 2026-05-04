@@ -80,6 +80,7 @@ import {
 import { runPipeline, workerEvalEnabled } from './interpreter/evaluator/pipeline.js';
 import { clearVarOverlay } from './interpreter/evaluator/context.js';
 import { runListenEditChain } from './interpreter/listen-edit.js';
+import { invalidateListenEditPreload } from './interpreter/listenedit-preload.js';
 import {
   runAtActionsForPhase,
   coerceAtActions,
@@ -371,7 +372,21 @@ if (typeof registerMacroInterceptor === 'function') {
 
     // listenEdit('editDisplay') hooks fire on the display-phase pass (commit=false).
     // Risu: `runLuaEditTrigger(char, 'editDisplay', data)` at scripts.ts.
-    if (!ctx.commit) {
+    //
+    // ⚠ Gate: this fallback fires editDisplay for ANY commit:false template
+    // resolve, including bg-html resolution and cross-rule CSS bundles
+    // (refreshBgHtml runs `resolveReadonly` on bg + 88KB CSS). Risu's
+    // editDisplay only runs on message bodies (processScriptFull, scripts.ts
+    // mode='editDisplay'); firing it on CSS is a parity violation AND the
+    // dominant source of chat-open lag on listenEdit-heavy cards (Mortal
+    // Realm: ~12s per refreshBgHtml because the 88KB CSS feeds 16 Lua VMs).
+    //
+    // Lumi 0.9.6+ ships the messageContentProcessor 'render' origin that
+    // fires editDisplay on the actual message body with proper messageIndex
+    // context — that's the load-bearing path. We only need this fallback
+    // when 'render' isn't available (very old Lumi builds).
+    const mcpRenderAvailable = typeof registerMessageContentProcessor === 'function';
+    if (!ctx.commit && !mcpRenderAvailable) {
       const triggers = active.card.risuPayload.triggers as ReadonlyArray<{
         effect?: ReadonlyArray<{ type?: string }>;
       }>;
@@ -512,7 +527,9 @@ if (typeof registerMessageContentProcessor === 'function') {
           });
           const editScriptNS = makeDispatcherScriptNS();
           let transformed = ctx.content;
+          let chainMs = 0;
           if (hasLuaTrigger) {
+            const tChain = Date.now();
             transformed = await runListenEditChain<string>(
               editChain,
               'editDisplay',
@@ -523,8 +540,14 @@ if (typeof registerMessageContentProcessor === 'function') {
               editScriptNS,
               { chatId: ctx.chatId, characterId: active.card.character_id },
             );
+            chainMs = Date.now() - tChain;
+            log.info(
+              `messageContentProcessor.render chain.elapsed #${seq} chain=${chainMs}ms (mcp_total_so_far=${Date.now() - tStart}ms)`,
+            );
           }
+          let atActionsMs = 0;
           if (renderAtActions.length > 0) {
+            const tAt = Date.now();
             try {
               transformed = await runAtActionsForPhase(renderAtActions, 'editdisplay', transformed, {
                 api: editApi,
@@ -536,15 +559,22 @@ if (typeof registerMessageContentProcessor === 'function') {
                 `messageContentProcessor.render at-actions threw — ${errMsg(err)}. Continuing with prior content.`,
               );
             }
+            atActionsMs = Date.now() - tAt;
           }
+          const totalMs = Date.now() - tStart;
+          // Total budget is Lumi's 10s MCP timeout. Surface the breakdown so
+          // we can see whether wall clock is in our chain, our @@-actions, or
+          // the time the JS event loop spent on Lumi-side display-regex
+          // queueing while we were awaiting (= "other_overhead").
+          const otherOverhead = totalMs - chainMs - atActionsMs - (tB - tA);
           if (transformed === ctx.content) {
             log.info(
-              `messageContentProcessor.exit #${seq} path=render-noop chat=${ctx.chatId} msg=${ctx.messageId ?? '<?>'} idx=${messageIndex} total=${Date.now() - tStart}ms`,
+              `messageContentProcessor.exit #${seq} path=render-noop chat=${ctx.chatId} msg=${ctx.messageId ?? '<?>'} idx=${messageIndex} total=${totalMs}ms (chain=${chainMs}ms at_actions=${atActionsMs}ms ensure=${tB - tA}ms other=${otherOverhead}ms)`,
             );
             return;
           }
           log.info(
-            `messageContentProcessor.exit #${seq} path=render-transformed chat=${ctx.chatId} msg=${ctx.messageId ?? '<?>'} idx=${messageIndex} before_len=${ctx.content.length} after_len=${transformed.length} total=${Date.now() - tStart}ms`,
+            `messageContentProcessor.exit #${seq} path=render-transformed chat=${ctx.chatId} msg=${ctx.messageId ?? '<?>'} idx=${messageIndex} before_len=${ctx.content.length} after_len=${transformed.length} total=${totalMs}ms (chain=${chainMs}ms at_actions=${atActionsMs}ms ensure=${tB - tA}ms other=${otherOverhead}ms)`,
           );
           return { content: transformed };
         } catch (err) {
@@ -1095,6 +1125,7 @@ function makeAuxDebugCapture(
         id: ++auxDebugCounter,
         ts: Date.now(),
         kind: event.kind,
+        channel: event.channel,
         chatId,
         auxConnectionId: event.auxConnectionId,
         auxModelOverride: event.auxModelOverride,
@@ -1969,7 +2000,7 @@ async function ensureActiveCardForChat(
       : '') +
     ` chats_get=${tChatsGet}ms readLumi=${tReadLumi}ms validate=${tValidate}ms modules=${tModules}ms build=${tBuild}ms`,
   );
-  const active: ActiveCard = { card, chatId };
+  const active: ActiveCard = { card, chatId, lumirealm: fetched.data };
   activeCardByChat.set(chatId, active);
   const allWbIds = (fetched.character.world_book_ids ?? []).filter(
     (id): id is string => typeof id === 'string' && id.length > 0,
@@ -2365,7 +2396,11 @@ async function refreshVariables(
     global: sanitizeVarMap(mv.global),
     chat: sanitizeVarMap(mv.chat),
   };
-  const defaults = active.card.risuPayload.scriptstate_defaults ?? {};
+  // `defaults` is the effective merged map (cardSide + overrides). FE Default
+  // subtab needs both to flag overridden entries and offer "Reset to card default".
+  const cardSide = active.card.risuPayload.scriptstate_defaults ?? {};
+  const overrides = active.lumirealm.user_overrides.default_variables_overrides ?? {};
+  const defaults: Record<string, string> = { ...cardSide, ...overrides };
   const result = variableState.applySnapshot(chatId, scopes, defaults);
   if (result.changed || opts?.force) {
     send({
@@ -2374,13 +2409,16 @@ async function refreshVariables(
       seq: result.entry.seq,
       scopes: result.entry.scopes,
       defaults: result.entry.defaults,
+      defaultsCardSide: cardSide,
+      characterId: active.card.character_id,
       ts: result.entry.ts,
     });
     const counts =
       `local=${Object.keys(scopes.local).length} ` +
       `global=${Object.keys(scopes.global).length} ` +
       `chat=${Object.keys(scopes.chat).length} ` +
-      `defaults=${Object.keys(defaults).length}`;
+      `defaults=${Object.keys(defaults).length} ` +
+      `overrides=${Object.keys(overrides).length}`;
     log.info(
       `variables.refresh: pushed chat=${chatId} seq=${result.entry.seq} ` +
         `${counts} forced=${!!opts?.force}`,
@@ -2744,6 +2782,14 @@ function extractStyleBlocksTopLevelFallback(template: string): string[] {
   return out;
 }
 
+// Per-chat memo of the last bg-html signature we sent to the FE. Mortal
+// Realm fires bg-html refresh ~3× on chat-open (SETTINGS_UPDATED +
+// CHAT_CHANGED + GENERATION_*) for byte-identical content. Each redundant
+// send forces the FE to re-parse 88KB of CSS and re-adopt into ~35 live
+// shadow roots — that was the dominant chat-open lag after the listenEdit
+// fix. Skip when the resolved output matches the prior send.
+const lastSentBgHtmlByChat = new Map<string, string>();
+
 async function refreshBgHtml(active: ActiveCard, chatId: string): Promise<void> {
   const bgRaw = active.card.risuPayload.background_html;
   const moduleBg = active.card.risuPayload.module_background_embedding ?? '';
@@ -2794,6 +2840,19 @@ async function refreshBgHtml(active: ActiveCard, chatId: string): Promise<void> 
       `bg_out=${resolvedBg.length} crossRuleParts=${crossRuleStyles.length} ` +
       `crossRule_total=${crossRuleStyles.reduce((a, p) => a + p.length, 0)} elapsed=${elapsed}ms`,
   );
+  // Signature includes both bg + cross-rule parts. Use a sentinel separator
+  // unlikely to appear in CSS so we don't false-match. Skip the send when
+  // signature matches what we last sent for this chat.
+  const sig = resolvedBg + '\x1f' + crossRuleStyles.join('\x1e');
+  const prior = lastSentBgHtmlByChat.get(chatId);
+  if (prior === sig) {
+    log.info(
+      `refreshBgHtml: skip redundant send chatId=${chatId} (signature matches prior) ` +
+        `bg_out=${resolvedBg.length} crossRule_total=${crossRuleStyles.reduce((a, p) => a + p.length, 0)}`,
+    );
+    return;
+  }
+  lastSentBgHtmlByChat.set(chatId, sig);
   try {
     spindle.sendToFrontend({
       type: 'render_bg_html',
@@ -3232,6 +3291,10 @@ spindle.on('CHAT_CHANGED', async (raw, userId) => {
   captureUserId(userId, 'CHAT_CHANGED');
   const { chatId, characterId } = extractIds(raw);
   if (!chatId) { log.warn('CHAT_CHANGED: missing chatId — aborting'); return; }
+  // Invalidate listenEdit preload cache regardless of own/external — chat
+  // metadata (vars) just changed; a subsequent editDisplay chain shouldn't
+  // serve a stale snapshot from the cache.
+  invalidateListenEditPreload(chatId);
   const wasOwn = consumeOwnChatChange(chatId);
   log.info(`event CHAT_CHANGED chatId=${chatId} characterId=${characterId ?? '?'} ownWrite=${wasOwn}`);
   if (wasOwn) {
@@ -3247,6 +3310,7 @@ spindle.on('MESSAGE_SENT', async (raw, userId) => {
   const { chatId, characterId } = extractIds(raw);
   log.info(`event MESSAGE_SENT chatId=${chatId ?? '?'} characterId=${characterId ?? '?'} payload=${dumpPayload(raw)}`);
   if (!chatId) return;
+  invalidateListenEditPreload(chatId);
   const active = await ensureActiveCardForChat(chatId, characterId);
   if (!active) { log.info(`MESSAGE_SENT: no active card — skip`); return; }
 
@@ -3375,6 +3439,7 @@ spindle.on('MESSAGE_SWIPED', async (raw, userId) => {
   const msgId = p.message?.id ?? null;
   log.info(`event MESSAGE_SWIPED chatId=${chatId ?? '?'} msgId=${msgId ?? '?'} action=${p.action ?? '?'}`);
   if (!chatId || !msgId) return;
+  invalidateListenEditPreload(chatId);
   const active = await ensureActiveCardForChat(chatId, null);
   if (!active) return;
   // Drop the stale sidecar entry so refreshResolvedContent re-stashes the
@@ -3432,6 +3497,7 @@ spindle.on('MESSAGE_EDITED', async (raw, userId) => {
   const p = raw as MessageEditedPayload;
   const chatId = p.chatId ?? p.message?.chat_id ?? null;
   const msgId = p.message?.id ?? null;
+  if (chatId) invalidateListenEditPreload(chatId);
   if (!chatId || !msgId) {
     log.warn(`event MESSAGE_EDITED: missing chatId/msgId payload=${JSON.stringify(raw).slice(0, 200)}`);
     return;
@@ -3495,6 +3561,7 @@ spindle.on('MESSAGE_DELETED', async (raw, userId) => {
   const msgId = p.messageId ?? p.message?.id ?? null;
   log.info(`event MESSAGE_DELETED chatId=${chatId ?? '?'} msgId=${msgId ?? '?'}`);
   if (!chatId) return;
+  invalidateListenEditPreload(chatId);
   if (msgId) {
     try {
       const sidecar = await readSidecar(userStorage(), chatId, getUserId());
@@ -3528,6 +3595,8 @@ spindle.on('CHAT_DELETED', async (raw, userId) => {
   const chatId = p.chatId ?? p.id ?? null;
   log.info(`event CHAT_DELETED chatId=${chatId ?? '?'}`);
   if (!chatId) return;
+  invalidateListenEditPreload(chatId);
+  lastSentBgHtmlByChat.delete(chatId);
   activeCardByChat.delete(chatId);
   clearActiveAssetIndexes(chatId);
   clearActiveCharacterImage(chatId);
@@ -4125,24 +4194,17 @@ async function handleImportLorebook(
   msg: Extract<FrontendToBackend, { type: 'import_lorebook' }>,
   userId: string,
 ): Promise<void> {
-  // Risu parity for `importLoreBook(mode='global')` (Risu
-  // lorebook.svelte.ts:663-697). Append entries from a JSON file to the
-  // character's existing world_book (create one when missing) and persist
-  // each entry via the same forward-the-full-shape path the .charx
-  // importer uses.
+  // Two modes:
+  //   characterId !== null  — Risu parity for `importLoreBook(mode='global')`
+  //                           (Risu lorebook.svelte.ts:663-697). Append entries
+  //                           to the character's existing world_book (create
+  //                           one if missing).
+  //   characterId === null  — Standalone import (Import → Lorebooks tab). Create
+  //                           a fresh, unattached world_book. User attaches via
+  //                           Lumiverse if they want.
+  // Both paths reuse the same mapper + entry-write loop below.
   const t0 = Date.now();
-  const fetched = await readLumirealm(charactersApi(), msg.characterId, userId);
-  if (!fetched || !fetched.data) {
-    send({
-      type: 'lorebook_import_result',
-      characterId: msg.characterId,
-      ok: false,
-      written: 0,
-      dropped: 0,
-      reason: 'not a lumirealm character',
-    });
-    return;
-  }
+  const standalone = msg.characterId === null;
 
   const parsed = parseDirectLorebook(msg.json);
   if (parsed.format === 'unknown') {
@@ -4168,35 +4230,70 @@ async function handleImportLorebook(
     return;
   }
 
-  // Find existing character-owned world_book (set during import). If none,
-  // create a new one.
-  const existing = fetched.character.world_book_ids ?? [];
+  // Resolve target world_book id (per-character or fresh standalone).
   let targetBookId: string | null = null;
-  if (existing.length > 0) {
-    targetBookId = existing[0] ?? null;
-  }
-  if (!targetBookId) {
+  let targetBookName: string;
+  if (standalone) {
+    const stem = (msg.filename ?? 'lorebook').replace(/\.[^.]+$/, '').trim() || 'lorebook';
+    targetBookName = stem;
     try {
-      const wbName = `${fetched.character.name ?? 'character'}  - lore (imported)`;
-      const wb = await spindle.world_books.create({ name: wbName }, userId);
+      const wb = await spindle.world_books.create({ name: targetBookName }, userId);
       targetBookId = wb.id;
-      expectCharacterEdit(msg.characterId);
-      await spindle.characters.update(
-        msg.characterId,
-        { world_book_ids: [...existing, wb.id] } as never,
-        userId,
-      );
-      log.info(`import_lorebook: created world_book ${wb.id} for char=${msg.characterId}`);
+      log.info(`import_lorebook: standalone created world_book ${wb.id} name="${targetBookName}"`);
     } catch (err) {
       send({
         type: 'lorebook_import_result',
-        characterId: msg.characterId,
+        characterId: null,
         ok: false,
         written: 0,
         dropped: parsed.dropped,
         reason: `world_book create failed: ${errMsg(err)}`,
       });
       return;
+    }
+  } else {
+    const characterId = msg.characterId!;
+    const fetched = await readLumirealm(charactersApi(), characterId, userId);
+    if (!fetched || !fetched.data) {
+      send({
+        type: 'lorebook_import_result',
+        characterId,
+        ok: false,
+        written: 0,
+        dropped: 0,
+        reason: 'not a lumirealm character',
+      });
+      return;
+    }
+    const existing = fetched.character.world_book_ids ?? [];
+    if (existing.length > 0) {
+      targetBookId = existing[0] ?? null;
+    }
+    targetBookName = `${fetched.character.name ?? 'character'}  - lore`;
+    if (!targetBookId) {
+      try {
+        const wbName = `${fetched.character.name ?? 'character'}  - lore (imported)`;
+        const wb = await spindle.world_books.create({ name: wbName }, userId);
+        targetBookId = wb.id;
+        targetBookName = wbName;
+        expectCharacterEdit(characterId);
+        await spindle.characters.update(
+          characterId,
+          { world_book_ids: [...existing, wb.id] } as never,
+          userId,
+        );
+        log.info(`import_lorebook: created world_book ${wb.id} for char=${characterId}`);
+      } catch (err) {
+        send({
+          type: 'lorebook_import_result',
+          characterId,
+          ok: false,
+          written: 0,
+          dropped: parsed.dropped,
+          reason: `world_book create failed: ${errMsg(err)}`,
+        });
+        return;
+      }
     }
   }
 
@@ -4250,10 +4347,10 @@ async function handleImportLorebook(
   }
 
   log.info(
-    `import_lorebook: char=${msg.characterId} format=${parsed.format} ` +
+    `import_lorebook: ${standalone ? 'standalone' : `char=${msg.characterId}`} format=${parsed.format} ` +
       `written=${written}/${parsed.entries.length} drops=${parsed.dropped} ` +
       `entry_write_failures=${entryWriteFailures} elapsed=${Date.now() - t0}ms ` +
-      `file=${msg.filename ?? '<unnamed>'}`,
+      `file=${msg.filename ?? '<unnamed>'} book=${targetBookId}`,
   );
 
   send({
@@ -4262,6 +4359,7 @@ async function handleImportLorebook(
     ok: written > 0,
     written,
     dropped: parsed.dropped + entryWriteFailures,
+    ...(targetBookId ? { worldBookId: targetBookId, worldBookName: targetBookName } : {}),
     ...(written === 0 && entryWriteFailures > 0
       ? { reason: 'all entry writes failed; see log for details' }
       : {}),
@@ -4478,6 +4576,10 @@ function invalidateActiveForCharacter(characterId: string): void {
       clearActiveCharacterImage(chatId);
       variableState.clearChat(chatId);
       toggleState.clearChat(chatId);
+      // Card content may have changed (re-import, module attach/detach,
+      // bg-html edit). Drop the bg-html send-memo so the next refreshBgHtml
+      // is allowed to ship even if the resolved bytes happen to match.
+      lastSentBgHtmlByChat.delete(chatId);
       evictedChats.push(chatId);
       evicted += 1;
     }
@@ -4922,6 +5024,18 @@ spindle.onFrontendMessage(async (raw, userId) => {
     }
     switch (msg.type) {
       case 'get_cards': {
+        // get_cards is the FE's first message after mount/reload. Browser
+        // refresh nukes FE state but the worker process keeps running, so
+        // any per-chat memos that gated work on "FE already has this" are
+        // stale at this point — drop them so the rehydrate path resends.
+        // (The bg-html dedup is the load-bearing one: without this clear,
+        // refreshBgHtml on browser-refresh skips the send and the FE never
+        // gets the chat-scope CSS at all.)
+        const memoCount = lastSentBgHtmlByChat.size;
+        lastSentBgHtmlByChat.clear();
+        if (memoCount > 0) {
+          log.info(`get_cards: cleared ${memoCount} bg-html send memo(s) for FE remount`);
+        }
         pushCards(await listCards());
         const lastChat = userId ? lastActiveChatByUser.get(userId) : undefined;
         if (lastChat) {

@@ -230,16 +230,20 @@ export type FrontendToBackend =
       characterId: string;
       name: string;
     }
-  // Direct lorebook import — appends entries from a standalone JSON file
-  // (Risu native `{type:'risu',ver:1,data:loreBook[]}` or CCSv3
-  // `{entries:{...}}`) to the character's existing world_book (created
-  // if none exists). Mirrors Risu's `importLoreBook(mode='global')`.
+  // Direct lorebook import. Two modes, controlled by `characterId`:
+  //   - `string`: append entries to that character's existing world_book
+  //     (create one if absent). Risu's `importLoreBook(mode='global')`
+  //     parity. Used by the Viewer tab's per-character import button.
+  //   - `null`: standalone import — create a fresh, unattached world_book.
+  //     Used by Import → Lorebooks. The user can attach it via Lumiverse
+  //     later; Risu decorators (Tier 1/2/3) still apply at runtime if a
+  //     Risu-imported character ends up using it.
   | {
       type: 'import_lorebook';
-      characterId: string;
+      characterId: string | null;
       /** File contents as UTF-8 string (FE has already read the file). */
       json: string;
-      /** Original filename for the optional new-world-book name. */
+      /** Original filename — used as the new world_book name in standalone mode. */
       filename?: string;
     }
   // `triggerIndex` is position in `ViewerData.triggers[]`. Backend replaces all
@@ -370,8 +374,19 @@ export type BackendToFrontend =
       chatId: string;
       seq: number;
       scopes: VariableScopes;
-      /** Character-level `defaultVariables` (Risu fallback on getChatVar miss). */
+      /** Character-level `defaultVariables` — EFFECTIVE values (card defaults
+       *  with `user_overrides.default_variables_overrides` applied on top).
+       *  Risu's getChatVar consults these on miss before returning "null". */
       defaults: Readonly<Record<string, string>>;
+      /** Card-side raw defaults BEFORE overrides applied. Lets the FE detect
+       *  which entries are overridden (`overridden = defaults[k] !== defaultsCardSide[k]`)
+       *  AND surface "Reset to card default" affordance with the original
+       *  value. Per-character; same value across all chats with this character. */
+      defaultsCardSide?: Readonly<Record<string, string>>;
+      /** Character that owns this chat — needed by the FE to address
+       *  `set_default_variable`/`delete_default_variable` for the right card.
+       *  `null` for non-Risu chats. */
+      characterId?: string | null;
       /** ms-since-epoch when assembled, for "Last update" UX. */
       ts: number;
     }
@@ -390,8 +405,10 @@ export type BackendToFrontend =
         readonly legacyMediaFindings: boolean;
       };
     }
-  // Emitted when the user enables request/response capture toggles in Settings.
-  // Gated server-side by the two boolean flags in `RisuCompatSettings`.
+  // Emitted when the user enables request/response capture toggles in Settings → Debug.
+  // Gated server-side by the two boolean flags in `RisuCompatSettings`. Captures
+  // BOTH aux (`axLLMMain`/`LLMMain`) and submodel (V2 `runLLM(model='submodel')`)
+  // calls; `channel` distinguishes them.
   | {
       type: 'aux_debug_capture';
       /** Server-monotonic; unique per worker boot, used as React key / dedup id. */
@@ -399,9 +416,14 @@ export type BackendToFrontend =
       /** ms-since-epoch when generated. */
       ts: number;
       kind: 'request' | 'response' | 'error';
+      /** Which LLM channel fired this. `aux` = `axLLMMain`/`axLLM`/`LLMMain`;
+       *  `submodel` = V2 `runLLM(model='submodel')`. Optional for back-compat
+       *  with older bundles — absent values default to `'aux'` in the panel. */
+      channel?: 'aux' | 'submodel';
       /** `null` for manual-trigger paths invoked outside chat context. */
       chatId: string | null;
-      /** Resolved aux-connection UUID at dispatch time, or `null` for "use user's default". */
+      /** Resolved connection UUID at dispatch time (aux or submodel per `channel`),
+       *  or `null` for "use user's default". */
       auxConnectionId: string | null;
       /** `null` for "use connection's own model". */
       auxModelOverride: string | null;
@@ -446,12 +468,17 @@ export type BackendToFrontend =
     }
   | {
       type: 'lorebook_import_result';
-      characterId: string;
+      /** `null` for standalone imports (Import → Lorebooks). */
+      characterId: string | null;
       ok: boolean;
       /** Number of entries actually written (0 on failure). */
       written: number;
       /** Number of entries the parser saw but dropped (bad shape, etc.). */
       dropped: number;
+      /** New world_book uuid (standalone) or character's existing book id. */
+      worldBookId?: string;
+      /** Display name of the world_book (for status messages). */
+      worldBookName?: string;
       reason?: string;
     }
   // Streaming state — emitted by BE on 0↔1 transitions of

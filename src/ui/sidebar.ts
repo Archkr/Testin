@@ -7,7 +7,8 @@ import { mountSettingsPanel } from './settings-tab.js';
 import { mountModulesPanel } from './modules-tab.js';
 import { mountViewerPanel } from './viewer-tab.js';
 import { mountTogglesPanel } from './toggles-tab.js';
-import { mountLogsPanel } from './logs-tab.js';
+// Logs panel now mounts INSIDE settings-tab's Debug subtab (Phase C);
+// the standalone logs mount on the Settings tab was removed.
 
 // Single drawer tab with lazy-mounted sub-panels.
 // Panels stay alive after first mount so backend pushes keep their state hot.
@@ -263,22 +264,15 @@ export function createSidebar(opts: CreateSidebarOptions): SidebarHandle {
         break;
       }
       case 'settings': {
-        const settingsHost = document.createElement('div');
-        settingsHost.className = 'lr-settings-aux';
-        host.appendChild(settingsHost);
-        const logsHost = document.createElement('div');
-        logsHost.className = 'lr-settings-logs';
-        host.appendChild(logsHost);
-        const settingsHandle = mountSettingsPanel({ root: settingsHost, sendToBackend, log });
-        const logsHandle = mountLogsPanel({ root: logsHost, sendToBackend, log });
+        // Settings tab is self-contained: Auxiliary / Sub / Debug subtabs
+        // (logs panel embedded under Debug). See ui/settings-tab.ts.
+        const settingsHandle = mountSettingsPanel({ root: host, sendToBackend, log });
         handle = {
           handleBackendMessage(msg) {
             settingsHandle.handleBackendMessage(msg);
-            logsHandle.handleBackendMessage(msg);
           },
           destroy() {
             try { settingsHandle.destroy(); } catch { void 0; }
-            try { logsHandle.destroy(); } catch { void 0; }
             try { host.replaceChildren(); } catch { void 0; }
           },
         };

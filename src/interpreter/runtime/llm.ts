@@ -3,6 +3,7 @@
 import { toStr } from '../../util/coerce.js';
 import { makeSafeLogger } from '../../util/safe-log.js';
 import type { HostApi } from '../host.js';
+import type { AuxDebugCaptureEvent } from './dispatch-context.js';
 
 const _log = makeSafeLogger('runtime.runLLM');
 
@@ -10,6 +11,11 @@ export interface SubmodelRouting {
   readonly submodelConnectionId: string | null;
   readonly submodelModelOverride: string | null;
   readonly submodelParamsWire: Record<string, number> | null;
+  /** Optional debug-capture sink. When set + Settings → Debug → Capture
+   *  toggles enabled, the V2 submodel path emits request/response/error
+   *  events tagged `channel: 'submodel'`. (Aux channel is wired separately
+   *  in runtime.ts axLLMMain.) */
+  readonly auxDebugCapture?: ((event: AuxDebugCaptureEvent) => void) | undefined;
 }
 
 // model is a CHANNEL keyword ('model' | 'submodel'), not a model name.
@@ -21,32 +27,75 @@ export async function runLLM(
   _streaming?: boolean,
 ): Promise<string> {
   void _streaming;
+  if (!api.llm) return 'Error: api.llm not available';
+  const useSubmodel = model === 'submodel';
+  const connId = useSubmodel ? routing.submodelConnectionId : null;
+  const modelOverride = useSubmodel ? routing.submodelModelOverride : null;
+  const paramsWire = useSubmodel ? routing.submodelParamsWire : null;
+  const req: {
+    messages: readonly { role: string; content: string }[];
+    connectionId?: string;
+    model?: string;
+    parameters?: Record<string, number>;
+  } = {
+    messages: [{ role: 'user', content: toStr(value) }],
+    ...(connId ? { connectionId: connId } : {}),
+    ...(modelOverride ? { model: modelOverride } : {}),
+    ...(paramsWire ? { parameters: paramsWire } : {}),
+  };
+  _log.info(
+    `channel=${model} useSubmodel=${useSubmodel} ` +
+      `submodelConn=${routing.submodelConnectionId ?? '<inherit-aux>'} ` +
+      `submodelModel=${routing.submodelModelOverride ?? '<connection>'}`,
+  );
+  // Only the submodel path participates in `channel: 'submodel'` capture; the
+  // 'model' / default branch routes through aux config and is captured by
+  // the axLLMMain wiring instead.
+  const captureChannel: 'submodel' | null = useSubmodel ? 'submodel' : null;
+  const tStart = Date.now();
+  if (captureChannel && routing.auxDebugCapture) {
+    try {
+      routing.auxDebugCapture({
+        kind: 'request',
+        channel: captureChannel,
+        auxConnectionId: connId,
+        auxModelOverride: modelOverride,
+        elapsedMs: null,
+        payload: req,
+      });
+    } catch { /* never crash trigger work for diagnostic plumbing */ }
+  }
   try {
-    if (!api.llm) return 'Error: api.llm not available';
-    const useSubmodel = model === 'submodel';
-    const connId = useSubmodel ? routing.submodelConnectionId : null;
-    const modelOverride = useSubmodel ? routing.submodelModelOverride : null;
-    const paramsWire = useSubmodel ? routing.submodelParamsWire : null;
-    const req: {
-      messages: readonly { role: string; content: string }[];
-      connectionId?: string;
-      model?: string;
-      parameters?: Record<string, number>;
-    } = {
-      messages: [{ role: 'user', content: toStr(value) }],
-      ...(connId ? { connectionId: connId } : {}),
-      ...(modelOverride ? { model: modelOverride } : {}),
-      ...(paramsWire ? { parameters: paramsWire } : {}),
-    };
-    _log.info(
-      `channel=${model} useSubmodel=${useSubmodel} ` +
-        `submodelConn=${routing.submodelConnectionId ?? '<inherit-aux>'} ` +
-        `submodelModel=${routing.submodelModelOverride ?? '<connection>'}`,
-    );
     const result = await api.llm.generate(req);
-    return toStr(result && result.content);
+    const content = toStr(result && result.content);
+    if (captureChannel && routing.auxDebugCapture) {
+      try {
+        routing.auxDebugCapture({
+          kind: 'response',
+          channel: captureChannel,
+          auxConnectionId: connId,
+          auxModelOverride: modelOverride,
+          elapsedMs: Date.now() - tStart,
+          payload: { content },
+        });
+      } catch { /* */ }
+    }
+    return content;
   } catch (e) {
-    return 'Error: ' + (e instanceof Error ? e.message : String(e));
+    const message = e instanceof Error ? e.message : String(e);
+    if (captureChannel && routing.auxDebugCapture) {
+      try {
+        routing.auxDebugCapture({
+          kind: 'error',
+          channel: captureChannel,
+          auxConnectionId: connId,
+          auxModelOverride: modelOverride,
+          elapsedMs: Date.now() - tStart,
+          payload: { message },
+        });
+      } catch { /* */ }
+    }
+    return 'Error: ' + message;
   }
 }
 
