@@ -549,6 +549,41 @@ export async function makeRisuTriggerRuntime(
         // content is lifted at render time by message-portal, no write-time wrap.
         const raw = normalizeReplaceStringForSanitizer(toStr(value));
         const msgId = messagesCache[real]!.id;
+        const prevContent = messagesCache[real]!.content;
+
+        // No-op write: Lua read the message via `getChat(N)`, did some logic
+        // that didn't actually mutate the body, then wrote the same string
+        // back. Cards do this routinely as part of "set var X then nudge"
+        // patterns (Alternate Hunters V2 ToggleSysSettings — flips
+        // `ui_sys_stat` and re-writes the same already-resolved greeting,
+        // expecting the next render to re-evaluate `{{getvar::ui_sys_stat}}`
+        // in the display-regex panel rule).
+        //
+        // The harm: Risu's setChat writes to chat.message[i].data, but the
+        // GREETING (chat.message excludes greeting in Risu) lives separately
+        // in character.firstMessage and remains untouched. Lumi puts the
+        // greeting at index 0 of chat_messages, so a Lua `setChat(0, ...)`
+        // overwrites it. The sidecar's stored CBS template gets clobbered
+        // with the resolved post-CBS body, and subsequent setvar-driven
+        // re-resolves have no CBS to re-evaluate. Symptom: language toggles
+        // never switch the greeting, and panel-UI signatures thrash during
+        // streaming (each render produces a slightly different resolved
+        // class string from drifted vars).
+        //
+        // Skip the write when the value is identical to what's already
+        // stored. Lua's intent ("nudge a re-render") is satisfied by the
+        // `notifyStateChanged` calls earlier in the same trigger body
+        // (reloadDisplay / v2UpdateGUI). The sidecar / chat row stays
+        // unchanged.
+        if (raw === prevContent) {
+          _logSetChat.info(
+            `index=${index} (real=${real}) msgId=${msgId} len=${raw.length} ` +
+              `chatId=${portalChatId ?? '<none>'} no-op (raw === prev) — ` +
+              `skipped sidecarWrite + editMessage`,
+          );
+          return;
+        }
+
         messagesCache[real] = { ...messagesCache[real]!, content: raw };
 
         // Without rememberOurWrite, Lua-emitted content (no {{ markers) would flip userEdited=true.
