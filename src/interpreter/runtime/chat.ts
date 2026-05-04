@@ -2,6 +2,7 @@
 // Reads from messagesCache; writes through host API.
 
 import { toStr } from '../../util/coerce.js';
+import { risuRoleToLumi } from '../../util/role-coerce.js';
 import { unsupported } from './unsupported.js';
 import type { HostApi, HostMessage } from '../host.js';
 
@@ -66,7 +67,9 @@ export function makeChatApi(
   }
 
   async function impersonate(role: unknown, value: unknown): Promise<void> {
-    const r = role === 'char' ? 'assistant' : 'user';
+    // Risu V1 op + Lua impersonate API takes 'user' | 'char'. Accept Risu's
+    // 'bot' alias too (mirrors spindle-host LLM bridge's accepted aliases).
+    const r = risuRoleToLumi(toStr(role));
     try {
       const res = await api.chat.sendMessage(toStr(value), { role: r });
       state.messagesCache.push({

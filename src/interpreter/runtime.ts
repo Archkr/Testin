@@ -29,6 +29,7 @@ import { toStr } from '../util/coerce.js';
 import { makeSafeLogger } from '../util/safe-log.js';
 import { samplersToWire } from '../util/samplers-wire.js';
 import { normalizeReplaceStringForSanitizer } from '../util/sanitizer-doc-shape.js';
+import { risuRoleToLumi, lumiRoleToRisu } from '../util/role-coerce.js';
 
 const _logStateChanged    = makeSafeLogger('runtime.stateChanged');
 const _logMake            = makeSafeLogger('runtime.makeRisuTriggerRuntime');
@@ -531,7 +532,9 @@ export async function makeRisuTriggerRuntime(
         const n = Number(index);
         const real = n >= 0 ? n : messagesCache.length + n;
         const m = messagesCache[real];
-        return m ? JSON.stringify({ role: m.role, data: toStr(m.content) }) : JSON.stringify({ role: '', data: '' });
+        // Risu chat.message[i].role is 'user' | 'char' (scriptings.ts:154-165,182).
+        // Cards branch on `msg.role == "char"`; surface Lumi roles in Risu shape.
+        return m ? JSON.stringify({ role: lumiRoleToRisu(m.role), data: toStr(m.content) }) : JSON.stringify({ role: '', data: '' });
       },
       setChat: (_id: unknown, index: unknown, value: unknown) => {
         const n = Number(index);
@@ -609,7 +612,7 @@ export async function makeRisuTriggerRuntime(
       },
       setChatRole: (_id: unknown, index: unknown, value: unknown) => {
         const n = Number(index);
-        if (messagesCache[n]) messagesCache[n] = { ...messagesCache[n]!, role: toStr(value) };
+        if (messagesCache[n]) messagesCache[n] = { ...messagesCache[n]!, role: risuRoleToLumi(toStr(value)) };
       },
       cutChat: (_id: unknown, start: unknown, end: unknown) => { cutChat(start, end); },
       removeChat: (_id: unknown, index: unknown) => {
@@ -619,17 +622,18 @@ export async function makeRisuTriggerRuntime(
       },
       addChat: (_id: unknown, role: unknown, value: unknown) => {
         const raw = normalizeReplaceStringForSanitizer(toStr(value));
-        messagesCache.push({ id: String(messagesCache.length + 1), role: toStr(role), content: raw });
+        const lumiRole = risuRoleToLumi(toStr(role));
+        messagesCache.push({ id: String(messagesCache.length + 1), role: lumiRole, content: raw });
         _logAddChat.info(
           `role=${toStr(role)} len=${raw.length} chatId=${portalChatId ?? '<none>'}`,
         );
-        try { api.chat.sendMessage?.(raw, { role: toStr(role) }); } catch { /* */ }
+        try { api.chat.sendMessage?.(raw, { role: lumiRole }); } catch { /* */ }
       },
       insertChat: (_id: unknown, index: unknown, role: unknown, value: unknown) => {
-        messagesCache.splice(Number(index), 0, { id: String(Date.now()), role: toStr(role), content: toStr(value) });
+        messagesCache.splice(Number(index), 0, { id: String(Date.now()), role: risuRoleToLumi(toStr(role)), content: toStr(value) });
       },
       getChatLength: (_id: unknown) => messagesCache.length,
-      getFullChatMain: (_id: unknown) => JSON.stringify(messagesCache.map((m) => ({ role: m.role, data: toStr(m.content) }))),
+      getFullChatMain: (_id: unknown) => JSON.stringify(messagesCache.map((m) => ({ role: lumiRoleToRisu(m.role), data: toStr(m.content) }))),
       setFullChatMain: (_id: unknown, value: unknown) => {
         try {
           const arr = JSON.parse(toStr(value));
@@ -637,7 +641,7 @@ export async function makeRisuTriggerRuntime(
             messagesCache.length = 0;
             for (let i = 0; i < arr.length; i++) {
               const entry = arr[i] as { role?: unknown; data?: unknown };
-              messagesCache.push({ id: String(i + 1), role: toStr(entry.role), content: toStr(entry.data) });
+              messagesCache.push({ id: String(i + 1), role: risuRoleToLumi(toStr(entry.role)), content: toStr(entry.data) });
             }
           }
         } catch { /* */ }

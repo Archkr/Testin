@@ -38,9 +38,13 @@ export function makeSpindleHost(ctx: SpindleHostCtx): HostApi {
   }
 
   async function sendMessage(content: string, opts?: { role?: string }): Promise<{ id: string }> {
+    // Defensive: accept Risu aliases ('char'/'bot' → assistant, 'sys' → system)
+    // alongside Lumi shape so internal callers can't silently land on the wrong role.
     const roleRaw = opts?.role ?? 'user';
-    const role: 'system' | 'user' | 'assistant' = roleRaw === 'system' ? 'system'
-      : roleRaw === 'assistant' ? 'assistant' : 'user';
+    const role: 'system' | 'user' | 'assistant' =
+      roleRaw === 'system' || roleRaw === 'sys' ? 'system'
+      : roleRaw === 'assistant' || roleRaw === 'char' || roleRaw === 'bot' ? 'assistant'
+      : 'user';
     const created = await spindle.chat.appendMessage(chatId, { role, content });
     return { id: created.id };
   }
