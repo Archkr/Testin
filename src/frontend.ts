@@ -352,6 +352,10 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     sweepPortals(): void {
       messagePortal.sweep('manual');
     },
+    setDiagAllSweeps(on: boolean): void {
+      messagePortal.setDiagAllSweeps(on === true);
+      flog.info(`__riCompat.setDiagAllSweeps: ${on === true ? 'ON' : 'OFF'}`);
+    },
     requestVariablesSnapshot(): boolean {
       if (!activeRisuChatId) {
         flog.warn('__riCompat.requestVariablesSnapshot: no active Risu chat');

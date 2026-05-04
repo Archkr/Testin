@@ -93,6 +93,7 @@ export interface MessagePortal {
     liftedCount: number;
     lastSweep: SweepStats | null;
   };
+  setDiagAllSweeps: (on: boolean) => void;
   destroy: () => void;
 }
 
@@ -133,6 +134,8 @@ export function setupMessagePortal(ctx: SpindleFrontendContext, flog: Flog): Mes
       sweep(r);
     }, SWEEP_THROTTLE_MS);
   }
+
+  let diagAllSweeps = false;
 
   function sweep(reason: string): void {
     const t0 = performance.now();
@@ -268,7 +271,7 @@ export function setupMessagePortal(ctx: SpindleFrontendContext, flog: Flog): Mes
       groupsLifted, elementsLifted, hidden, stale,
     };
     lastSweep = stats;
-    if (groupsLifted > 0 || hidden > 0 || stale > 0 || dt > 10) {
+    if (groupsLifted > 0 || hidden > 0 || stale > 0 || dt > 10 || diagAllSweeps) {
       flog.info(
         `message-portal: sweep reason=${reason} walked=${walked} bubbles=${visibleMsgIds.size} ` +
           `groups=${groupsLifted} elements=${elementsLifted} hidden=${hidden} stale=${stale} ` +
@@ -322,6 +325,7 @@ export function setupMessagePortal(ctx: SpindleFrontendContext, flog: Flog): Mes
       liftedCount: lifted.size,
       lastSweep,
     }),
+    setDiagAllSweeps: (on: boolean) => { diagAllSweeps = on; },
     destroy: () => {
       try { mo.disconnect(); } catch { /* */ }
       window.removeEventListener("resize", onResize);
