@@ -38,6 +38,7 @@ const knownIds = new Set<string>();
 
 function ensureSurfaces(): void {
   if (typeof document === "undefined") return;
+  let createdSheet = false;
   // Drop stale handles when the host document changed (test re-init or
   // chat-host re-mount in unusual cases).
   if (documentStyleEl && documentStyleEl.ownerDocument !== document) {
@@ -51,15 +52,31 @@ function ensureSurfaces(): void {
       documentStyleEl = document.createElement("style");
       documentStyleEl.id = HIDE_STYLE_ID;
       document.head.appendChild(documentStyleEl);
+      createdSheet = true;
     }
   }
   if (!constructedSheet) {
     try {
       constructedSheet = new CSSStyleSheet();
+      createdSheet = true;
     } catch {
       constructedSheet = null;
     }
   }
+  // First-time setup → emit the inline-style baseline rule immediately so
+  // shadows that adopt this sheet at boot get the rule before any class
+  // is learned. Re-entrant safe: rebuild() is idempotent.
+  if (createdSheet) rebuildBaseline();
+}
+
+// Internal-only re-entry point used by ensureSurfaces. Forwards to
+// rebuild() but guards against the case where rebuild() itself called
+// ensureSurfaces() (it does — for first-time sheet creation).
+let inRebuild = false;
+function rebuildBaseline(): void {
+  if (inRebuild) return;
+  inRebuild = true;
+  try { rebuild(); } finally { inRebuild = false; }
 }
 
 function escapeIdent(c: string): string {
@@ -71,15 +88,28 @@ function escapeIdent(c: string): string {
   return c.replace(/[^a-zA-Z0-9_-]/g, (ch) => `\\${ch}`);
 }
 
+// Inline-style baseline: catches `<div style="position:fixed">` cases where
+// the author bypasses class/id selectors entirely. Always emitted (no
+// per-lift registration needed) since the substring match is shape-
+// agnostic. Two selector variants cover both common author formattings
+// (`position: fixed` with space and `position:fixed` without).
+//
+// `:not([popover]):not(dialog)` excludes browser-managed top-layer
+// surfaces — popovers and dialogs are intentionally skipped by the
+// lifter (since they're already overlaid by the browser), so we mustn't
+// hide them either. CSS-only `:has()`-based CB-trap detection isn't
+// practical, so a CB-trapped inline-styled fixed element WILL be
+// caught by this rule and hidden — known-but-rare gap (Lumi's row
+// transform creates a CB ancestor at runtime; cards that intend
+// viewport-fixed and are accidentally trapped lose their inline-styled
+// content here. Re-author with class/id to opt out.)
+const INLINE_STYLE_SELECTORS = [
+  '[style*="position: fixed"]:not([popover]):not(dialog)',
+  '[style*="position:fixed"]:not([popover]):not(dialog)',
+];
+
 function rebuild(): void {
   ensureSurfaces();
-  if (knownClasses.size === 0 && knownIds.size === 0) {
-    if (documentStyleEl) documentStyleEl.textContent = "";
-    if (constructedSheet) {
-      try { constructedSheet.replaceSync(""); } catch { /* */ }
-    }
-    return;
-  }
   const docRules: string[] = [];
   const shadowRules: string[] = [];
   const emit = (sel: string): void => {
@@ -102,6 +132,9 @@ function rebuild(): void {
   };
   for (const c of knownClasses) emit(`.${escapeIdent(c)}`);
   for (const id of knownIds) emit(`#${escapeIdent(id)}`);
+  // Static inline-style baseline — always emitted, even when no
+  // class/id has been learned yet. Cheap (two selectors).
+  for (const sel of INLINE_STYLE_SELECTORS) emit(sel);
   if (documentStyleEl) {
     documentStyleEl.textContent = docRules.join("\n");
   }

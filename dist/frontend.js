@@ -7902,6 +7902,7 @@ var knownIds = new Set;
 function ensureSurfaces() {
   if (typeof document === "undefined")
     return;
+  let createdSheet = false;
   if (documentStyleEl && documentStyleEl.ownerDocument !== document) {
     documentStyleEl = null;
   }
@@ -7913,14 +7914,29 @@ function ensureSurfaces() {
       documentStyleEl = document.createElement("style");
       documentStyleEl.id = HIDE_STYLE_ID;
       document.head.appendChild(documentStyleEl);
+      createdSheet = true;
     }
   }
   if (!constructedSheet) {
     try {
       constructedSheet = new CSSStyleSheet;
+      createdSheet = true;
     } catch {
       constructedSheet = null;
     }
+  }
+  if (createdSheet)
+    rebuildBaseline();
+}
+var inRebuild = false;
+function rebuildBaseline() {
+  if (inRebuild)
+    return;
+  inRebuild = true;
+  try {
+    rebuild();
+  } finally {
+    inRebuild = false;
   }
 }
 function escapeIdent(c) {
@@ -7929,18 +7945,12 @@ function escapeIdent(c) {
   }
   return c.replace(/[^a-zA-Z0-9_-]/g, (ch) => `\\${ch}`);
 }
+var INLINE_STYLE_SELECTORS = [
+  '[style*="position: fixed"]:not([popover]):not(dialog)',
+  '[style*="position:fixed"]:not([popover]):not(dialog)'
+];
 function rebuild() {
   ensureSurfaces();
-  if (knownClasses.size === 0 && knownIds.size === 0) {
-    if (documentStyleEl)
-      documentStyleEl.textContent = "";
-    if (constructedSheet) {
-      try {
-        constructedSheet.replaceSync("");
-      } catch {}
-    }
-    return;
-  }
   const docRules = [];
   const shadowRules = [];
   const emit = (sel) => {
@@ -7951,6 +7961,8 @@ function rebuild() {
     emit(`.${escapeIdent(c)}`);
   for (const id of knownIds)
     emit(`#${escapeIdent(id)}`);
+  for (const sel of INLINE_STYLE_SELECTORS)
+    emit(sel);
   if (documentStyleEl) {
     documentStyleEl.textContent = docRules.join(`
 `);
