@@ -10901,7 +10901,6 @@ function mapRegex(scripts, opts) {
         });
       }
     }
-    findPattern = simplifyStateConditionalAnchor(findPattern);
     const findHasCbs = findPattern.indexOf("{{") >= 0;
     const baseFlags = findHasCbs ? normalised.flag.replace(/u/g, "") : normalised.flag;
     let baseReplace = action === "inject" ? "" : strippedOut;
@@ -11136,26 +11135,6 @@ function detectAtAction(out) {
     }
   }
   return null;
-}
-function simplifyStateConditionalAnchor(findPattern) {
-  const re = /^\s*\{\{#risu_if::((?:[^{}]|\{\{(?:[^{}]|\{\{[^{}]*\}\})*\}\})*)\}\}([^{}]*)\{\{\/risu_if\}\}\s*\{\{#risu_if::((?:[^{}]|\{\{(?:[^{}]|\{\{[^{}]*\}\})*\}\})*)\}\}([^{}]*)\{\{\/risu_if\}\}\s*$/;
-  const m = re.exec(findPattern);
-  if (!m)
-    return findPattern;
-  const body1 = m[2] ?? "";
-  const body2 = m[4] ?? "";
-  const isAnchorOnly = (s) => {
-    const t = s.trim();
-    return t.length > 0 && /^[$^]+$/.test(t);
-  };
-  const hasOrdinaryChar = (s) => {
-    return /[^\s$^.*+?()|\[\]\\]/.test(s);
-  };
-  if (isAnchorOnly(body1) && hasOrdinaryChar(body2))
-    return body2.trim();
-  if (isAnchorOnly(body2) && hasOrdinaryChar(body1))
-    return body1.trim();
-  return findPattern;
 }
 // src/core/mappers/at-actions.ts
 var PHASE_EVENT_MAP = {
@@ -14428,6 +14407,11 @@ async function makeRisuTriggerRuntime(api, data, scriptNs, opts = {}) {
         }
         const raw = normalizeReplaceStringForSanitizer(toStr(value));
         const msgId = messagesCache[real].id;
+        const prevContent = messagesCache[real].content;
+        if (raw === prevContent) {
+          _logSetChat.info(`index=${index} (real=${real}) msgId=${msgId} len=${raw.length} ` + `chatId=${portalChatId ?? "<none>"} no-op (raw === prev) \u2014 ` + `skipped sidecarWrite + editMessage`);
+          return;
+        }
         messagesCache[real] = { ...messagesCache[real], content: raw };
         if (rememberOurWrite && portalChatId) {
           try {

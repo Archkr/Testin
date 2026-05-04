@@ -8230,6 +8230,7 @@ function setupMessagePortal(ctx, flog) {
       sweep(r);
     }, SWEEP_THROTTLE_MS);
   }
+  let diagAllSweeps = false;
   function sweep(reason) {
     const t0 = performance.now();
     let walked = 0;
@@ -8362,7 +8363,7 @@ function setupMessagePortal(ctx, flog) {
       stale
     };
     lastSweep = stats;
-    if (groupsLifted > 0 || hidden > 0 || stale > 0 || dt > 10) {
+    if (groupsLifted > 0 || hidden > 0 || stale > 0 || dt > 10 || diagAllSweeps) {
       flog.info(`message-portal: sweep reason=${reason} walked=${walked} bubbles=${visibleMsgIds.size} ` + `groups=${groupsLifted} elements=${elementsLifted} hidden=${hidden} stale=${stale} ` + `${dt.toFixed(1)}ms total_overlay=${lifted.size}`);
     }
   }
@@ -8407,6 +8408,9 @@ function setupMessagePortal(ctx, flog) {
       liftedCount: lifted.size,
       lastSweep
     }),
+    setDiagAllSweeps: (on) => {
+      diagAllSweeps = on;
+    },
     destroy: () => {
       try {
         mo.disconnect();
@@ -11306,6 +11310,10 @@ function setup(ctx) {
     },
     sweepPortals() {
       messagePortal.sweep("manual");
+    },
+    setDiagAllSweeps(on) {
+      messagePortal.setDiagAllSweeps(on === true);
+      flog.info(`__riCompat.setDiagAllSweeps: ${on === true ? "ON" : "OFF"}`);
     },
     requestVariablesSnapshot() {
       if (!activeRisuChatId) {
