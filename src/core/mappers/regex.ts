@@ -7,7 +7,7 @@ import type {
 } from "../lumiverse/types.js";
 import type { CatalogIndex } from "../cbs/catalog/loader.js";
 import { rewriteText } from "../cbs/rewrite/text.js";
-import { wrapIslandMergeIfNeeded } from "./island-merge.js";
+import { wrapIslandMergeIfNeeded, wrapForIslandTriggerIfNeeded } from "./island-merge.js";
 import { newUuid, nowMs } from "./util.js";
 import { normalizeReplaceStringForSanitizer } from "../../util/sanitizer-doc-shape.js";
 import { applyIframePolicy } from "./iframe-policy.js";
@@ -172,6 +172,17 @@ export function mapRegex(
     // ship without Lumi-side changes.
     if (effectivePhase.target === "display") {
       baseReplace = applyIframePolicy(baseReplace).html;
+    }
+    // Force Lumi's `extractHtmlIslands` to fire on class-only panel HTML:
+    // its heuristic short-circuits when neither `<style>` nor `style="..."`
+    // are present, so a panel that styles itself purely via classes
+    // (CSS lives in the card's bg-html) falls through to the markdown
+    // processor — which then renders indented panel HTML as a code block.
+    // Wrapping with `<div ... style="display:contents">` adds the
+    // `style=` Lumi looks for without affecting layout. See island-merge.ts
+    // wrapForIslandTriggerIfNeeded for the full chain.
+    if (effectivePhase.target === "display" && !action) {
+      baseReplace = wrapForIslandTriggerIfNeeded(baseReplace);
     }
     baseReplace = normalizeReplaceStringForSanitizer(baseReplace);
 

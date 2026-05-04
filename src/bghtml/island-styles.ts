@@ -2,6 +2,16 @@
 // Adopt a constructed CSSStyleSheet into each chat-message shadow via MutationObserver.
 // replaceSync propagates live to all adopters with one sheet shared by reference.
 
+import { getHidePanelSheet } from '../portal/hide-panel-css.js';
+
+// Late-binding accessor — `getHidePanelSheet()` lazily ensures the sheet
+// exists; calling it AT injection time rather than at boot keeps the
+// import pure (no side effects on module load) and lets the test harness
+// reset module state without coupling to setupIslandStyles' boot path.
+function getHidePanelSheetForIsland(): CSSStyleSheet | null {
+  return getHidePanelSheet();
+}
+
 interface Flog {
   info(msg: string, ...rest: unknown[]): void;
   warn(msg: string, ...rest: unknown[]): void;
@@ -83,6 +93,15 @@ export function setupIslandStyles(flog: Flog, opts: SetupIslandStylesOptions = {
       if (envSheet) append.push(envSheet);
       if (sheet) append.push(sheet);
       for (const s of crossRuleSheets) append.push(s);
+      // Hide-panel sheet: shipped empty initially, populated reactively as
+      // the lifter discovers panel classes. The constructed sheet's
+      // replaceSync propagates to all already-adopted shadows so re-adoption
+      // isn't needed when classes are added later.
+      const hideSheet = getHidePanelSheetForIsland();
+      if (hideSheet) {
+        append.push(hideSheet);
+        allOwnedSheets.add(hideSheet);
+      }
       const next = [...shadow.adoptedStyleSheets, ...append];
       shadow.adoptedStyleSheets = next;
       adopted.add(shadow);
@@ -121,6 +140,17 @@ export function setupIslandStyles(flog: Flog, opts: SetupIslandStylesOptions = {
     // Only inject into open shadows inside [data-message-id] chat bubbles.
     const root = el.shadowRoot;
     if (!root || root.mode !== 'open') return;
+    // Skip overlay portal wrappers — their shadows host the visible
+    // CLONE; adopting the hide-panel sheet into them would make the
+    // clone disappear right after the lift. The wrapper has
+    // `data-message-id` (so closest() below would match) and an open
+    // shadow (so this visit() fires), so we MUST exclude it explicitly.
+    // The wrapper is body-level, so it ALSO matches closest('[data-message-id]')
+    // via itself when the host has the attribute set.
+    if (el.classList.contains('lumi-message-portal-wrapper')
+        || el.closest('.lumi-message-portal-wrapper')) {
+      return;
+    }
     if (el.closest('[data-message-id]')) {
       chatShadowCount++;
       injectInto(root);
@@ -212,6 +242,16 @@ export function setupIslandStyles(flog: Flog, opts: SetupIslandStylesOptions = {
         if (envSheet) append.push(envSheet);
         if (sheet) append.push(sheet);
         for (const s of crossRuleSheets) append.push(s);
+        // The hide-panel sheet is owned by the portal-lifter module but
+        // adopted into chat-message shadows here. It MUST be re-included
+        // in reAdoptAll's rebuild — `existing.filter(!allOwnedSheets)`
+        // strips it (we add it to allOwnedSheets in injectInto so the
+        // filter knows about it), but without re-adding it here every
+        // setCrossRuleSheets call would silently strip it from the
+        // shadow, and the source-hiding stops working until the next
+        // injectInto for this shadow (which only fires on first mount).
+        const hidePanel = getHidePanelSheetForIsland();
+        if (hidePanel) append.push(hidePanel);
         const existing = Array.from(shadow.adoptedStyleSheets);
         const filtered = existing.filter((s) => !allOwnedSheets.has(s));
         shadow.adoptedStyleSheets = [...filtered, ...append];

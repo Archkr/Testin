@@ -10671,12 +10671,30 @@ function wrapIslandMergeIfNeeded(html) {
     return html;
   return `<div data-risu-island-merge style="display:contents">` + html + `</div>`;
 }
+var HTML_TAG_RE = /<[a-zA-Z][a-zA-Z0-9]*\b/;
+var ISLAND_TRIGGER_ATTR_RE = /\bdata-risu-island-trigger\b/i;
+var ISLAND_TRIGGER_PREFIX = `<style data-risu-island-trigger></style>`;
+function wrapForIslandTriggerIfNeeded(html) {
+  if (!html || html.length === 0)
+    return html;
+  if (!HTML_TAG_RE.test(html))
+    return html;
+  if (STYLE_TAG_RE.test(html))
+    return html;
+  if (countInlineStyles(html) >= 3)
+    return html;
+  if (ISLAND_TRIGGER_ATTR_RE.test(html.slice(0, 200)))
+    return html;
+  if (NO_MERGE_ATTR_RE.test(html.split(">")[0] ?? ""))
+    return html;
+  return ISLAND_TRIGGER_PREFIX + html;
+}
 
 // src/util/sanitizer-doc-shape.ts
 var DOC_BOUNDARY_RE = /<!doctype|<\/?(?:html|head|body|meta|title|base|link)\b/i;
 var HAS_STYLE_RE = /<style[\s>]/i;
 var DOCTYPE_RE = /<!DOCTYPE[^>]*>/gi;
-var HTML_TAG_RE = /<\/?html\b[^>]*>/gi;
+var HTML_TAG_RE2 = /<\/?html\b[^>]*>/gi;
 var BODY_TAG_RE = /<\/?body\b[^>]*>/gi;
 var HEAD_BLOCK_RE = /<head\b[^>]*>([\s\S]*?)<\/head\s*>/gi;
 var HEAD_ORPHAN_RE = /<\/?head\b[^>]*>/gi;
@@ -10713,7 +10731,7 @@ function normalizeReplaceStringForSanitizer(html) {
   }
   let out = html;
   out = out.replace(DOCTYPE_RE, "");
-  out = out.replace(HTML_TAG_RE, "");
+  out = out.replace(HTML_TAG_RE2, "");
   out = out.replace(BODY_TAG_RE, "");
   out = out.replace(HEAD_BLOCK_RE, (_match, headContent) => {
     const titleScrubbed = headContent.replace(TITLE_BLOCK_RE, "");
@@ -10922,6 +10940,9 @@ function mapRegex(scripts, opts) {
     }
     if (effectivePhase.target === "display") {
       baseReplace = applyIframePolicy(baseReplace).html;
+    }
+    if (effectivePhase.target === "display" && !action) {
+      baseReplace = wrapForIslandTriggerIfNeeded(baseReplace);
     }
     baseReplace = normalizeReplaceStringForSanitizer(baseReplace);
     const baseHasMacros = baseReplace.indexOf("{{") >= 0 || findHasCbs;
@@ -30406,6 +30427,12 @@ if (typeof registerMacroInterceptor === "function") {
       return;
     }
     log5.info(`macroInterceptor.exit #${callId} path=resolved elapsed=${Date.now() - t0}ms ` + `in_len=${ctx.template.length} out_len=${resolved.length} ` + `marker=${resolvedMarker ?? "none"} still_has_raw_cbs=${stillHasRaw} ` + `out_head=${JSON.stringify(resolved.slice(0, 120))}`);
+    if (resolved.length > 200) {
+      const panelMatches = resolved.match(/<div[^>]*class="[^"]*(?:sys-backdrop|sys-panel|status-?panel)[^"]*"/g);
+      if (panelMatches && panelMatches.length > 0) {
+        log5.info(`[panel-shape] callId=${callId} commit=${ctx.commit} count=${panelMatches.length} ` + `out_len=${resolved.length} ` + `head=${JSON.stringify(resolved.slice(0, 60))} ` + `tail=${JSON.stringify(resolved.slice(-60))}`);
+      }
+    }
     return resolved;
   }, 100);
   log5.info("macroInterceptor: registered at priority=100");
@@ -32475,13 +32502,29 @@ var generationsInFlight = new Map;
 function isGenerationInFlight(chatId) {
   return (generationsInFlight.get(chatId) ?? 0) > 0;
 }
+function markGenerationStart(chatId) {
+  const prev = generationsInFlight.get(chatId) ?? 0;
+  generationsInFlight.set(chatId, prev + 1);
+  return prev === 0;
+}
+function markGenerationEnd(chatId) {
+  const prev = generationsInFlight.get(chatId) ?? 0;
+  if (prev <= 1) {
+    generationsInFlight.delete(chatId);
+    return prev === 1;
+  }
+  generationsInFlight.set(chatId, prev - 1);
+  return false;
+}
 spindle.on("GENERATION_STARTED", async (raw, userId) => {
   captureUserId(userId, "GENERATION_STARTED");
   const { chatId, characterId } = extractIds(raw);
   log5.info(`event GENERATION_STARTED chatId=${chatId ?? "?"} characterId=${characterId ?? "?"} payload=${dumpPayload(raw)}`);
   if (!chatId)
     return;
-  generationsInFlight.set(chatId, (generationsInFlight.get(chatId) ?? 0) + 1);
+  if (markGenerationStart(chatId)) {
+    send({ type: "generation_state", chatId, active: true });
+  }
   const active = await ensureActiveCardForChat(chatId, characterId);
   if (!active)
     return;
@@ -32499,17 +32542,33 @@ spindle.on("GENERATION_ENDED", async (raw, userId) => {
   log5.info(`event GENERATION_ENDED chatId=${chatId ?? "?"} characterId=${characterId ?? "?"} payload=${dumpPayload(raw)}`);
   if (!chatId)
     return;
-  const n = generationsInFlight.get(chatId) ?? 0;
-  if (n <= 1)
-    generationsInFlight.delete(chatId);
-  else
-    generationsInFlight.set(chatId, n - 1);
+  const wentIdle = markGenerationEnd(chatId);
+  if (wentIdle) {
+    send({ type: "generation_state", chatId, active: false });
+  }
   const active = await ensureActiveCardForChat(chatId, characterId);
   if (!active)
     return;
   for (const binding of GENERATION_ENDED_BINDINGS) {
     await runBinding(active, chatId, binding);
   }
+  await refreshResolvedContent(active, chatId);
+  await refreshBgHtml(active, chatId);
+  await refreshVariables(active, chatId);
+});
+spindle.on("GENERATION_STOPPED", async (raw, userId) => {
+  captureUserId(userId, "GENERATION_STOPPED");
+  const { chatId, characterId } = extractIds(raw);
+  log5.info(`event GENERATION_STOPPED chatId=${chatId ?? "?"} characterId=${characterId ?? "?"} payload=${dumpPayload(raw)}`);
+  if (!chatId)
+    return;
+  const wentIdle = markGenerationEnd(chatId);
+  if (wentIdle) {
+    send({ type: "generation_state", chatId, active: false });
+  }
+  const active = await ensureActiveCardForChat(chatId, characterId);
+  if (!active)
+    return;
   await refreshResolvedContent(active, chatId);
   await refreshBgHtml(active, chatId);
   await refreshVariables(active, chatId);

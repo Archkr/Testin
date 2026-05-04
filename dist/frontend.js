@@ -7893,7 +7893,121 @@ ${p}
   };
 }
 
+// src/portal/hide-panel-css.ts
+var HIDE_STYLE_ID = "lumirealm-portal-hide-panels";
+var documentStyleEl = null;
+var constructedSheet = null;
+var knownClasses = new Set;
+function ensureSurfaces() {
+  if (typeof document === "undefined")
+    return;
+  if (documentStyleEl && documentStyleEl.ownerDocument !== document) {
+    documentStyleEl = null;
+  }
+  if (!documentStyleEl) {
+    const existing = document.getElementById(HIDE_STYLE_ID);
+    if (existing && existing.tagName === "STYLE") {
+      documentStyleEl = existing;
+    } else {
+      documentStyleEl = document.createElement("style");
+      documentStyleEl.id = HIDE_STYLE_ID;
+      document.head.appendChild(documentStyleEl);
+    }
+  }
+  if (!constructedSheet) {
+    try {
+      constructedSheet = new CSSStyleSheet;
+    } catch {
+      constructedSheet = null;
+    }
+  }
+}
+function escapeClass(c) {
+  if (typeof CSS !== "undefined" && typeof CSS.escape === "function") {
+    return CSS.escape(c);
+  }
+  return c.replace(/[^a-zA-Z0-9_-]/g, (ch) => `\\${ch}`);
+}
+function rebuild() {
+  ensureSurfaces();
+  if (knownClasses.size === 0) {
+    if (documentStyleEl)
+      documentStyleEl.textContent = "";
+    if (constructedSheet) {
+      try {
+        constructedSheet.replaceSync("");
+      } catch {}
+    }
+    return;
+  }
+  const docRules = [];
+  const shadowRules = [];
+  for (const c of knownClasses) {
+    const sel = `.${escapeClass(c)}`;
+    docRules.push(`[data-component="MessageContent"] ${sel} { display: none !important; }`);
+    shadowRules.push(`${sel} { display: none !important; }`);
+  }
+  if (documentStyleEl) {
+    documentStyleEl.textContent = docRules.join(`
+`);
+  }
+  if (constructedSheet) {
+    try {
+      constructedSheet.replaceSync(shadowRules.join(`
+`));
+    } catch {}
+  }
+}
+var POISON_CLASSES = new Set(["null", "undefined", ""]);
+function addHidePanelClasses(classes) {
+  let added = false;
+  const newClasses = [];
+  for (const c of classes) {
+    if (!c)
+      continue;
+    if (POISON_CLASSES.has(c))
+      continue;
+    if (!knownClasses.has(c)) {
+      knownClasses.add(c);
+      newClasses.push(c);
+      added = true;
+    }
+  }
+  if (added) {
+    rebuild();
+    try {
+      const docCss = documentStyleEl?.textContent ?? "";
+      const sheetRules = constructedSheet ? constructedSheet.cssRules.length : 0;
+      const sheetAdopted = constructedSheet ? Array.from(document.adoptedStyleSheets ?? []).includes(constructedSheet) : false;
+      console.info(`[lumirealm] hide-panel-css: added ${JSON.stringify(newClasses)}; ` + `total=${knownClasses.size} doc_chars=${docCss.length} ` + `sheet_rules=${sheetRules} sheet_doc_adopted=${sheetAdopted}`);
+    } catch {}
+  }
+  return added;
+}
+function clearHidePanelClasses() {
+  if (knownClasses.size === 0)
+    return;
+  knownClasses.clear();
+  rebuild();
+}
+function getHidePanelSheet() {
+  ensureSurfaces();
+  return constructedSheet;
+}
+function dumpHidePanelState() {
+  ensureSurfaces();
+  return {
+    classes: Array.from(knownClasses),
+    documentStyleConnected: documentStyleEl !== null && documentStyleEl.isConnected,
+    documentStyleText: documentStyleEl?.textContent ?? "",
+    sheetRuleCount: constructedSheet ? constructedSheet.cssRules.length : 0
+  };
+}
+
 // src/bghtml/island-styles.ts
+function getHidePanelSheetForIsland() {
+  return getHidePanelSheet();
+}
 function setupIslandStyles(flog, opts = {}) {
   let sheet = null;
   let envSheet = null;
@@ -7942,6 +8056,11 @@ function setupIslandStyles(flog, opts = {}) {
         append.push(sheet);
       for (const s of crossRuleSheets)
         append.push(s);
+      const hideSheet = getHidePanelSheetForIsland();
+      if (hideSheet) {
+        append.push(hideSheet);
+        allOwnedSheets.add(hideSheet);
+      }
       const next = [...shadow.adoptedStyleSheets, ...append];
       shadow.adoptedStyleSheets = next;
       adopted.add(shadow);
@@ -7972,6 +8091,9 @@ function setupIslandStyles(flog, opts = {}) {
     const root = el.shadowRoot;
     if (!root || root.mode !== "open")
       return;
+    if (el.classList.contains("lumi-message-portal-wrapper") || el.closest(".lumi-message-portal-wrapper")) {
+      return;
+    }
     if (el.closest("[data-message-id]")) {
       chatShadowCount++;
       injectInto(root);
@@ -8054,6 +8176,9 @@ function setupIslandStyles(flog, opts = {}) {
           append.push(sheet);
         for (const s of crossRuleSheets)
           append.push(s);
+        const hidePanel = getHidePanelSheetForIsland();
+        if (hidePanel)
+          append.push(hidePanel);
         const existing = Array.from(shadow.adoptedStyleSheets);
         const filtered = existing.filter((s) => !allOwnedSheets.has(s));
         shadow.adoptedStyleSheets = [...filtered, ...append];
@@ -8161,32 +8286,9 @@ var risu_environment_default = "@layer properties{@supports (((-webkit-hyphens:n
 
 // src/portal/message-portal.ts
 var PORTAL_WRAPPER_CLASS = "lumi-message-portal-wrapper";
-var STASHED_ATTR = "data-lumi-portal-stashed";
-var ORIG_DISPLAY_ATTR = "data-lumi-portal-orig-display";
 var KEY_DELIMITER = "\x1F";
 var SWEEP_THROTTLE_MS = 50;
-function stashSource(el) {
-  if (el.hasAttribute(STASHED_ATTR))
-    return;
-  const origDisplay = el.style.display;
-  el.setAttribute(ORIG_DISPLAY_ATTR, origDisplay);
-  el.setAttribute(STASHED_ATTR, "1");
-  el.style.display = "none";
-}
-function unstashSource(el) {
-  if (!el.hasAttribute(STASHED_ATTR))
-    return;
-  const orig = el.getAttribute(ORIG_DISPLAY_ATTR) ?? "";
-  if (orig === "") {
-    el.style.removeProperty("display");
-  } else {
-    el.style.display = orig;
-  }
-  el.removeAttribute(ORIG_DISPLAY_ATTR);
-  el.removeAttribute(STASHED_ATTR);
-  if (el.getAttribute("style") === "")
-    el.removeAttribute("style");
-}
+var CLEANUP_GRACE_MS = 200;
 function setupMessagePortal(ctx, flog) {
   let overlayHandle;
   try {
@@ -8217,6 +8319,9 @@ function setupMessagePortal(ctx, flog) {
   let pendingReason = null;
   let lastSweep = null;
   function scheduleSweep(reason) {
+    if (streamingChats.size > 0) {
+      return;
+    }
     if (throttleTimer !== null) {
       if (!pendingReason)
         pendingReason = reason;
@@ -8231,6 +8336,84 @@ function setupMessagePortal(ctx, flog) {
     }, SWEEP_THROTTLE_MS);
   }
   let diagAllSweeps = false;
+  let diagPortalTrace = false;
+  let traceSweepNum = 0;
+  const streamingChats = new Set;
+  const TALL_THRESHOLD_PX = 50;
+  const BALLOON_THROTTLE_MS = 250;
+  const MAX_TALL_PER_BUBBLE = 8;
+  const HEAD_LEN = 120;
+  let diagBalloonTrace = false;
+  let lastBalloonEmit = 0;
+  let balloonSeq = 0;
+  const MIN_HEIGHT_DECL_RE = /(^|;)\s*min-height\s*:[^;]+;?/gi;
+  let diagMinHeightClear = false;
+  let minHeightClearCount = 0;
+  function maybeClearLatchedMinHeight(target) {
+    if (!(target instanceof HTMLElement))
+      return;
+    if (target.getAttribute("data-component") !== "MessageContent")
+      return;
+    const bubble = target.closest("[data-message-id]");
+    if (!bubble)
+      return;
+    const style = target.getAttribute("style") ?? "";
+    if (style.indexOf("min-height") < 0)
+      return;
+    let hasIslandShadow = false;
+    const islands = bubble.querySelectorAll('[class*="_htmlIsland_"]');
+    for (const el of Array.from(islands)) {
+      if (!(el instanceof HTMLElement))
+        continue;
+      const sr = el.shadowRoot;
+      if (sr && sr.mode === "open" && sr.childNodes.length > 0) {
+        hasIslandShadow = true;
+        break;
+      }
+    }
+    if (!hasIslandShadow)
+      return;
+    const next = style.replace(MIN_HEIGHT_DECL_RE, (_match, sep) => {
+      return sep;
+    }).replace(/^\s*;\s*/, "").replace(/\s*;\s*$/, "").trim();
+    if (next === style)
+      return;
+    if (next === "") {
+      target.removeAttribute("style");
+    } else {
+      target.setAttribute("style", next);
+    }
+    minHeightClearCount += 1;
+    if (diagMinHeightClear) {
+      const msgId = (bubble.getAttribute("data-message-id") ?? "").slice(0, 8);
+      flog.info(`[min-height-clear #${minHeightClearCount}] msg=${msgId} ` + `prev=${JSON.stringify(style.slice(0, 200))} next=${JSON.stringify(next.slice(0, 200))}`);
+    }
+  }
+  const minHeightMo = new MutationObserver((records) => {
+    for (const r of records) {
+      if (r.type !== "attributes" || r.attributeName !== "style")
+        continue;
+      try {
+        maybeClearLatchedMinHeight(r.target);
+      } catch (err) {
+        flog.warn("message-portal: maybeClearLatchedMinHeight threw", err);
+      }
+    }
+  });
+  try {
+    minHeightMo.observe(document.body, {
+      attributes: true,
+      attributeFilter: ["style"],
+      subtree: true
+    });
+  } catch (err) {
+    flog.warn("message-portal: min-height MO observe failed", err);
+  }
+  const prevSweepSigs = new Map;
+  function sigHead(sig) {
+    const compact = sig.replace(/\s+/g, " ").slice(0, 600);
+    return compact;
+  }
   function sweep(reason) {
     const t0 = performance.now();
     let walked = 0;
@@ -8240,6 +8423,8 @@ function setupMessagePortal(ctx, flog) {
     let stale = 0;
     const presentKeys = new Set;
     const visibleMsgIds = new Set;
+    const currentKeys = diagPortalTrace ? new Map : null;
+    const traceBubbles = diagPortalTrace ? [] : [];
     const containers = document.querySelectorAll("[data-message-id]");
     for (const containerEl of containers) {
       let visit = function(node) {
@@ -8278,8 +8463,11 @@ function setupMessagePortal(ctx, flog) {
       visit(container);
       if (container.shadowRoot && container.shadowRoot.mode === "open")
         visit(container.shadowRoot);
-      if (fixed.length === 0)
+      if (fixed.length === 0) {
+        if (traceBubbles)
+          traceBubbles.push({ msgId, fixedCount: 0, groupCount: 0 });
         continue;
+      }
       const groupsByParent = new Map;
       for (const el of fixed) {
         const p = el.parentNode;
@@ -8291,18 +8479,21 @@ function setupMessagePortal(ctx, flog) {
         arr.push(el);
         groupsByParent.set(p, arr);
       }
+      if (traceBubbles) {
+        traceBubbles.push({ msgId, fixedCount: fixed.length, groupCount: groupsByParent.size });
+      }
       for (const [parent, fixedChildren] of groupsByParent) {
         const liftSet = expandLiftSet(parent, fixedChildren);
         if (liftSet.length === 0)
           continue;
-        for (const el of liftSet)
-          unstashSource(el);
-        const sig = liftSet.map((el) => el.outerHTML).join("");
+        const sig = computeSig(liftSet);
         const key = msgId + KEY_DELIMITER + sig;
         presentKeys.add(key);
-        if (lifted.has(key)) {
-          for (const el of liftSet)
-            stashSource(el);
+        if (currentKeys)
+          currentKeys.set(key, sig);
+        const existing = lifted.get(key);
+        if (existing) {
+          existing.lastSeenAt = performance.now();
           hidden += liftSet.length;
         } else {
           const inShadow = parent.getRootNode() instanceof ShadowRoot;
@@ -8313,10 +8504,11 @@ function setupMessagePortal(ctx, flog) {
             wrapper.setAttribute("data-message-id", msgId);
           if (sourceShadow) {
             const wrapperShadow = wrapper.attachShadow({ mode: "open" });
+            const hidePanel = getHidePanelSheet();
             try {
               wrapperShadow.adoptedStyleSheets = [
                 ...sourceShadow.adoptedStyleSheets
-              ];
+              ].filter((s) => s !== hidePanel);
             } catch (err) {
               flog.warn("message-portal: adoptedStyleSheets copy failed", err);
             }
@@ -8328,23 +8520,32 @@ function setupMessagePortal(ctx, flog) {
               wrapper.appendChild(el.cloneNode(true));
             }
           }
-          for (const el of liftSet)
-            stashSource(el);
           overlayRoot.appendChild(wrapper);
           lifted.set(key, {
             msgId,
             signature: sig,
             wrapper,
             sources: liftSet,
-            inShadow
+            inShadow,
+            lastSeenAt: performance.now()
           });
+          const classes = [];
+          for (const el of liftSet) {
+            for (const c of Array.from(el.classList))
+              classes.push(c);
+          }
+          if (classes.length > 0)
+            addHidePanelClasses(classes);
           groupsLifted++;
           elementsLifted += liftSet.length;
         }
       }
     }
+    const now = performance.now();
     for (const [key, rec] of lifted) {
       if (presentKeys.has(key))
+        continue;
+      if (now - rec.lastSeenAt < CLEANUP_GRACE_MS)
         continue;
       try {
         rec.wrapper.remove();
@@ -8366,6 +8567,142 @@ function setupMessagePortal(ctx, flog) {
     if (groupsLifted > 0 || hidden > 0 || stale > 0 || dt > 10 || diagAllSweeps) {
       flog.info(`message-portal: sweep reason=${reason} walked=${walked} bubbles=${visibleMsgIds.size} ` + `groups=${groupsLifted} elements=${elementsLifted} hidden=${hidden} stale=${stale} ` + `${dt.toFixed(1)}ms total_overlay=${lifted.size}`);
     }
+    if (diagPortalTrace && currentKeys) {
+      traceSweepNum += 1;
+      const bubbleSummary = (traceBubbles ?? []).filter((b) => b.fixedCount > 0).map((b) => `${b.msgId.slice(0, 8)}:fix=${b.fixedCount}/grp=${b.groupCount}`).join(",") || "<no fixed>";
+      flog.info(`[portal-trace #${traceSweepNum}] reason=${reason} bubbles_with_fixed=${bubbleSummary} ` + `prev_keys=${prevSweepSigs.size} curr_keys=${currentKeys.size}`);
+      const added = [];
+      const dropped = [];
+      let kept = 0;
+      for (const [key, fullSig] of currentKeys) {
+        if (prevSweepSigs.has(key))
+          kept += 1;
+        else
+          added.push([key, fullSig]);
+      }
+      for (const [key, fullSig] of prevSweepSigs) {
+        if (!currentKeys.has(key))
+          dropped.push([key, fullSig]);
+      }
+      flog.info(`[portal-trace #${traceSweepNum}] kept=${kept} added=${added.length} dropped=${dropped.length}`);
+      for (const [key, fullSig] of added.slice(0, 3)) {
+        const msgIdShort = key.split(KEY_DELIMITER)[0]?.slice(0, 8) ?? "?";
+        flog.info(`[portal-trace #${traceSweepNum}]   +ADD msg=${msgIdShort} len=${fullSig.length} ` + `sigHead=${JSON.stringify(sigHead(fullSig))}`);
+      }
+      for (const [key, fullSig] of dropped.slice(0, 3)) {
+        const msgIdShort = key.split(KEY_DELIMITER)[0]?.slice(0, 8) ?? "?";
+        flog.info(`[portal-trace #${traceSweepNum}]   -DROP msg=${msgIdShort} len=${fullSig.length} ` + `sigHead=${JSON.stringify(sigHead(fullSig))}`);
+      }
+      for (const [aKey, aFull] of added) {
+        const aMsg = aKey.split(KEY_DELIMITER)[0];
+        const sibling = dropped.find((d) => d[0].split(KEY_DELIMITER)[0] === aMsg);
+        if (!sibling)
+          continue;
+        const [, dFull] = sibling;
+        let diffAt = -1;
+        const len = Math.min(aFull.length, dFull.length);
+        for (let i = 0;i < len; i++) {
+          if (aFull.charCodeAt(i) !== dFull.charCodeAt(i)) {
+            diffAt = i;
+            break;
+          }
+        }
+        if (diffAt === -1 && aFull.length !== dFull.length)
+          diffAt = len;
+        if (diffAt >= 0) {
+          const window2 = (s) => JSON.stringify(s.slice(Math.max(0, diffAt - 30), diffAt + 60).replace(/\s+/g, " "));
+          flog.info(`[portal-trace #${traceSweepNum}]   ↻DRIFT msg=${(aMsg ?? "?").slice(0, 8)} firstDiffAt=${diffAt} ` + `prev_len=${dFull.length} curr_len=${aFull.length} ` + `prev=${window2(dFull)} curr=${window2(aFull)}`);
+        }
+      }
+      prevSweepSigs.clear();
+      for (const [key, fullSig] of currentKeys)
+        prevSweepSigs.set(key, fullSig);
+    }
+  }
+  function collectBalloonState() {
+    const out = [];
+    const containers = document.querySelectorAll("[data-message-id]");
+    for (const c of Array.from(containers)) {
+      if (!(c instanceof HTMLElement))
+        continue;
+      if (c.closest(`.${PORTAL_WRAPPER_CLASS}`))
+        continue;
+      const msgId = c.getAttribute("data-message-id") ?? "";
+      const rect = c.getBoundingClientRect();
+      const bubbleHeight = Math.round(rect.height);
+      const tall = [];
+      let shadowVisited = false;
+      let cssHidden = 0;
+      const recordTall = (el, origin) => {
+        if (tall.length >= MAX_TALL_PER_BUBBLE)
+          return;
+        const h = el.getBoundingClientRect().height;
+        if (h < TALL_THRESHOLD_PX)
+          return;
+        const cs = getComputedStyle(el);
+        const head = el.outerHTML.slice(0, HEAD_LEN).replace(/\s+/g, " ");
+        const className = el.className && typeof el.className === "string" ? el.className.slice(0, 80) : "";
+        tall.push({
+          tag: el.tagName,
+          className,
+          height: Math.round(h),
+          origin,
+          position: cs.position,
+          head
+        });
+      };
+      const visit = (start, origin) => {
+        const all = start.querySelectorAll ? start.querySelectorAll("*") : null;
+        if (!all)
+          return;
+        for (const el of Array.from(all)) {
+          if (!(el instanceof HTMLElement))
+            continue;
+          if (el.closest(`.${PORTAL_WRAPPER_CLASS}`))
+            continue;
+          if (getComputedStyle(el).display === "none") {
+            cssHidden += 1;
+            continue;
+          }
+          recordTall(el, origin);
+          if (el.shadowRoot && el.shadowRoot.mode === "open") {
+            shadowVisited = true;
+            visit(el.shadowRoot, "shadow");
+          }
+        }
+      };
+      visit(c, "light");
+      tall.sort((a, b) => b.height - a.height);
+      out.push({
+        msgId,
+        bubbleHeight,
+        tall: tall.slice(0, MAX_TALL_PER_BUBBLE),
+        shadowVisited,
+        cssHidden
+      });
+    }
+    return out;
+  }
+  function maybeEmitBalloonTrace(reason) {
+    if (!diagBalloonTrace)
+      return;
+    const now = typeof performance !== "undefined" ? performance.now() : Date.now();
+    if (now - lastBalloonEmit < BALLOON_THROTTLE_MS)
+      return;
+    lastBalloonEmit = now;
+    const samples = collectBalloonState();
+    const interesting = samples.filter((s) => s.tall.length > 0 || s.bubbleHeight > 250);
+    if (interesting.length === 0)
+      return;
+    const seq = ++balloonSeq;
+    const streaming = streamingChats.size > 0;
+    flog.info(`[balloon #${seq}] reason=${reason} streaming=${streaming} ` + `bubbles=${interesting.length}/${samples.length}`);
+    for (const s of interesting) {
+      flog.info(`[balloon #${seq}]   bubble msg=${s.msgId.slice(0, 8)} h=${s.bubbleHeight}px ` + `cssHidden=${s.cssHidden} shadow=${s.shadowVisited} tall=${s.tall.length}`);
+      for (const t of s.tall.slice(0, 5)) {
+        flog.info(`[balloon #${seq}]     ${t.origin}/${t.tag} h=${t.height}px pos=${t.position} ` + `cls=${JSON.stringify(t.className.slice(0, 50))} ` + `head=${JSON.stringify(t.head)}`);
+      }
+    }
   }
   function clearAll(reason) {
     if (lifted.size === 0)
@@ -8377,9 +8714,15 @@ function setupMessagePortal(ctx, flog) {
     }
     const n = lifted.size;
     lifted.clear();
+    clearHidePanelClasses();
     flog.info(`message-portal: clearAll reason=${reason} cleared=${n}`);
   }
-  const mo = new MutationObserver(() => scheduleSweep("mutation"));
+  const mo = new MutationObserver(() => {
+    try {
+      maybeEmitBalloonTrace("mutation");
+    } catch {}
+    scheduleSweep("mutation");
+  });
   try {
     mo.observe(document.body, { childList: true, subtree: true });
   } catch (err) {
@@ -8411,9 +8754,52 @@ function setupMessagePortal(ctx, flog) {
     setDiagAllSweeps: (on) => {
       diagAllSweeps = on;
     },
+    setDiagPortalTrace: (on) => {
+      diagPortalTrace = on;
+      if (!on)
+        prevSweepSigs.clear();
+    },
+    setStreamingActive: (chatId, active) => {
+      const wasStreaming = streamingChats.size > 0;
+      if (active) {
+        streamingChats.add(chatId);
+      } else {
+        streamingChats.delete(chatId);
+      }
+      const isStreaming = streamingChats.size > 0;
+      flog.info(`message-portal: setStreamingActive chat=${chatId.slice(0, 8)} active=${active} ` + `streaming_count=${streamingChats.size}`);
+      if (wasStreaming && !isStreaming) {
+        scheduleSweep("stream-end");
+      }
+      if (diagBalloonTrace) {
+        lastBalloonEmit = 0;
+        try {
+          maybeEmitBalloonTrace(active ? "stream-start" : "stream-end");
+        } catch {}
+      }
+    },
+    setDiagBalloonTrace: (on) => {
+      diagBalloonTrace = on;
+      lastBalloonEmit = 0;
+      flog.info(`message-portal: setDiagBalloonTrace = ${on}`);
+      if (on) {
+        try {
+          maybeEmitBalloonTrace("toggle-on");
+        } catch {}
+      }
+    },
+    dumpBalloonState: () => collectBalloonState(),
+    setDiagMinHeightClear: (on) => {
+      diagMinHeightClear = on;
+      flog.info(`message-portal: setDiagMinHeightClear = ${on} (cumulative_clears=${minHeightClearCount})`);
+    },
+    minHeightClears: () => minHeightClearCount,
     destroy: () => {
       try {
         mo.disconnect();
+      } catch {}
+      try {
+        minHeightMo.disconnect();
       } catch {}
       window.removeEventListener("resize", onResize);
       if (throttleTimer !== null) {
@@ -8434,6 +8820,22 @@ function setupMessagePortal(ctx, flog) {
       flog.info("message-portal: destroyed");
     }
   };
+}
+var CHUNK_FADE_RE = /<span class="_chunkFade_[^"]*">[\s\S]*?<\/span>/g;
+var INTER_TAG_WS_RE = />\s+</g;
+function normalizeSig(html) {
+  let out = html;
+  if (out.indexOf("_chunkFade_") >= 0) {
+    out = out.replace(CHUNK_FADE_RE, "");
+  }
+  out = out.replace(INTER_TAG_WS_RE, "><");
+  return out;
+}
+function computeSig(liftSet) {
+  let acc = "";
+  for (const el of liftSet)
+    acc += normalizeSig(el.outerHTML);
+  return acc;
 }
 function expandLiftSet(parent, fixedDirectChildren) {
   const allChildren = Array.from(parent.children);
@@ -11167,9 +11569,17 @@ function setup(ctx) {
     console.log("[lumirealm] [STYLE-SCOPE]", JSON.stringify(result, null, 2));
     return result;
   };
+  function dumpBalloon() {
+    return messagePortal.dumpBalloonState();
+  }
+  function dumpHidePanel() {
+    return dumpHidePanelState();
+  }
   window.__riCompatDump = {
     bubble: dumpBubble,
-    styleScope: dumpStyleScope
+    styleScope: dumpStyleScope,
+    balloon: dumpBalloon,
+    hidePanel: dumpHidePanel
   };
   cleanups.push(() => {
     try {
@@ -11315,6 +11725,24 @@ function setup(ctx) {
       messagePortal.setDiagAllSweeps(on === true);
       flog.info(`__riCompat.setDiagAllSweeps: ${on === true ? "ON" : "OFF"}`);
     },
+    setDiagPortalTrace(on) {
+      messagePortal.setDiagPortalTrace(on === true);
+      flog.info(`__riCompat.setDiagPortalTrace: ${on === true ? "ON" : "OFF"}`);
+    },
+    setDiagBalloonTrace(on) {
+      messagePortal.setDiagBalloonTrace(on === true);
+      flog.info(`__riCompat.setDiagBalloonTrace: ${on === true ? "ON" : "OFF"}`);
+    },
+    dumpBalloonState() {
+      return messagePortal.dumpBalloonState();
+    },
+    setDiagMinHeightClear(on) {
+      messagePortal.setDiagMinHeightClear(on === true);
+      flog.info(`__riCompat.setDiagMinHeightClear: ${on === true ? "ON" : "OFF"}`);
+    },
+    minHeightClears() {
+      return messagePortal.minHeightClears();
+    },
     requestVariablesSnapshot() {
       if (!activeRisuChatId) {
         flog.warn("__riCompat.requestVariablesSnapshot: no active Risu chat");
@@ -11428,6 +11856,14 @@ function setup(ctx) {
     }
     if (msg.type === "rasterize_svgs") {
       svgRasterizer.handleRasterizeSvgsMessage(msg);
+      return;
+    }
+    if (msg.type === "generation_state") {
+      try {
+        messagePortal.setStreamingActive(msg.chatId, msg.active === true);
+      } catch (err) {
+        flog.warn("generation_state dispatch failed:", err);
+      }
       return;
     }
     if (msg.type === "aux_debug_capture") {

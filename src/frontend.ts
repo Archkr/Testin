@@ -8,6 +8,7 @@ import { setupIslandStyles } from './bghtml/island-styles.js';
 // Risu compiled CSS (Tailwind v4 + theme vars). GPL-3.0 output; reason LumiRealm is GPL-3.0.
 import risuEnvironmentCss from './bghtml/risu-environment.css' with { type: 'text' };
 import { setupMessagePortal } from './portal/message-portal.js';
+import { dumpHidePanelState } from './portal/hide-panel-css.js';
 import { setupImportOverlay } from './ui/import-overlay.js';
 import { setupBgmPlayer } from './audio/bgm.js';
 import { setupSvgRasterizer } from './svg-raster.js';
@@ -179,9 +180,38 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     return result;
   };
 
-  (window as unknown as { __riCompatDump?: { bubble: () => unknown; styleScope: () => unknown } }).__riCompatDump = {
+  // Per-bubble height + tall-descendant snapshot, focused on the
+  // streaming-balloon investigation (handoff-2026-05-04-streaming-flicker.md
+  // §3). Run `__riCompatDump.balloon()` at the moment the bubble grows;
+  // the result enumerates per-bubble `bubbleHeight` + tallest descendants
+  // (light DOM AND open shadow roots) with classes + position +
+  // outerHTML head — enough to identify the culprit element without
+  // walking the DOM by hand.
+  function dumpBalloon(): unknown {
+    return messagePortal.dumpBalloonState();
+  }
+
+  // Hide-panel CSS dump — verifies the source-hiding stylesheet is built
+  // and the document-level <style> is connected. Surfaces:
+  //   - classes: list of classes we've added to the hide-set
+  //   - documentStyleConnected: true when our <style> is in document.head
+  //   - documentStyleText: the literal CSS body — paste into a sheet and
+  //     try `document.querySelectorAll('.<class>')` to verify selector match
+  //   - sheetRuleCount: rules in the constructed sheet adopted into shadows
+  function dumpHidePanel(): unknown {
+    return dumpHidePanelState();
+  }
+
+  (window as unknown as { __riCompatDump?: {
+    bubble: () => unknown;
+    styleScope: () => unknown;
+    balloon: () => unknown;
+    hidePanel: () => unknown;
+  } }).__riCompatDump = {
     bubble: dumpBubble,
     styleScope: dumpStyleScope,
+    balloon: dumpBalloon,
+    hidePanel: dumpHidePanel,
   };
   cleanups.push(() => {
     try { delete (window as unknown as Record<string, unknown>).__riCompatDump; } catch { /* */ }
@@ -356,6 +386,33 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       messagePortal.setDiagAllSweeps(on === true);
       flog.info(`__riCompat.setDiagAllSweeps: ${on === true ? 'ON' : 'OFF'}`);
     },
+    setDiagPortalTrace(on: boolean): void {
+      messagePortal.setDiagPortalTrace(on === true);
+      flog.info(`__riCompat.setDiagPortalTrace: ${on === true ? 'ON' : 'OFF'}`);
+    },
+    setDiagBalloonTrace(on: boolean): void {
+      messagePortal.setDiagBalloonTrace(on === true);
+      flog.info(`__riCompat.setDiagBalloonTrace: ${on === true ? 'ON' : 'OFF'}`);
+    },
+    /** Synchronous one-shot: returns per-bubble height + tallest
+     *  descendants (light + open shadow). Use this from DevTools at the
+     *  exact moment the bubble balloons to identify the culprit element. */
+    dumpBalloonState(): unknown {
+      return messagePortal.dumpBalloonState();
+    },
+    /** Toggles a per-clear log line for the runtime min-height clearer
+     *  (the runtime fix for the streaming-balloon mismeasurement). Off
+     *  by default. Counter is always tracked — call `minHeightClears()`
+     *  to read it without enabling the log. */
+    setDiagMinHeightClear(on: boolean): void {
+      messagePortal.setDiagMinHeightClear(on === true);
+      flog.info(`__riCompat.setDiagMinHeightClear: ${on === true ? 'ON' : 'OFF'}`);
+    },
+    /** Cumulative count of min-height clears since extension mount.
+     *  Non-zero confirms the runtime fix engaged at least once. */
+    minHeightClears(): number {
+      return messagePortal.minHeightClears();
+    },
     requestVariablesSnapshot(): boolean {
       if (!activeRisuChatId) {
         flog.warn('__riCompat.requestVariablesSnapshot: no active Risu chat');
@@ -475,6 +532,19 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     }
     if (msg.type === 'rasterize_svgs') {
       svgRasterizer.handleRasterizeSvgsMessage(msg);
+      return;
+    }
+    if (msg.type === 'generation_state') {
+      // Streaming gate — backend tracks `generationsInFlight[chatId]`
+      // and fires this on 0↔N transitions. The portal lifter uses it
+      // to suppress sweeps for the duration of streaming, eliminating
+      // the per-chunk drop+re-clone cycle that produced visible
+      // 20Hz flicker.
+      try {
+        messagePortal.setStreamingActive(msg.chatId, msg.active === true);
+      } catch (err) {
+        flog.warn('generation_state dispatch failed:', err);
+      }
       return;
     }
     if (msg.type === 'aux_debug_capture') {

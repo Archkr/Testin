@@ -431,6 +431,24 @@ if (typeof registerMacroInterceptor === 'function') {
         `marker=${resolvedMarker ?? 'none'} still_has_raw_cbs=${stillHasRaw} ` +
         `out_head=${JSON.stringify(resolved.slice(0, 120))}`,
     );
+    // Panel-shape diagnostics — verifies handoff hypothesis H1 / H10
+    // (panel HTML accumulating across streaming chunks) and H2 (per-chunk
+    // CBS drift inside the panel body). When the resolved output contains
+    // anything that LOOKS like the panel — `<div class="…sys-…` style
+    // wrappers we've seen in the Alternate Hunters V2 card — emit a count
+    // + first-50/last-50 fingerprint so we can correlate against the
+    // portal-trace log.
+    if (resolved.length > 200) {
+      const panelMatches = resolved.match(/<div[^>]*class="[^"]*(?:sys-backdrop|sys-panel|status-?panel)[^"]*"/g);
+      if (panelMatches && panelMatches.length > 0) {
+        log.info(
+          `[panel-shape] callId=${callId} commit=${ctx.commit} count=${panelMatches.length} ` +
+            `out_len=${resolved.length} ` +
+            `head=${JSON.stringify(resolved.slice(0, 60))} ` +
+            `tail=${JSON.stringify(resolved.slice(-60))}`,
+        );
+      }
+    }
     return resolved;
   }, 100);
   log.info('macroInterceptor: registered at priority=100');
@@ -3242,12 +3260,43 @@ function isGenerationInFlight(chatId: string): boolean {
   return (generationsInFlight.get(chatId) ?? 0) > 0;
 }
 
+/** Record an in-flight generation start. Returns true on the 0→1
+ *  transition so the caller can emit the streaming-active signal to
+ *  the frontend exactly once. */
+function markGenerationStart(chatId: string): boolean {
+  const prev = generationsInFlight.get(chatId) ?? 0;
+  generationsInFlight.set(chatId, prev + 1);
+  return prev === 0;
+}
+
+/** Record an in-flight generation end. Returns true on the N→0
+ *  transition so the caller can emit the streaming-inactive signal
+ *  exactly once even when multiple GENERATION_ENDED events stack
+ *  (re-runs, swipes, etc.). */
+function markGenerationEnd(chatId: string): boolean {
+  const prev = generationsInFlight.get(chatId) ?? 0;
+  if (prev <= 1) {
+    generationsInFlight.delete(chatId);
+    return prev === 1;
+  }
+  generationsInFlight.set(chatId, prev - 1);
+  return false;
+}
+
 spindle.on('GENERATION_STARTED', async (raw, userId) => {
   captureUserId(userId, 'GENERATION_STARTED');
   const { chatId, characterId } = extractIds(raw);
   log.info(`event GENERATION_STARTED chatId=${chatId ?? '?'} characterId=${characterId ?? '?'} payload=${dumpPayload(raw)}`);
   if (!chatId) return;
-  generationsInFlight.set(chatId, (generationsInFlight.get(chatId) ?? 0) + 1);
+  if (markGenerationStart(chatId)) {
+    // 0→1 transition. Tell the frontend portal lifter to pause sweeps
+    // for this chat. The flicker fix at quirks §3.7x: per-chunk Lumi
+    // re-renders briefly toggle the panel between light-DOM-text and
+    // shadow-DOM-text states; our sig flips → drop+re-clone cycle →
+    // user sees 20Hz flicker. Pausing sweeps eliminates the cycle;
+    // post-stream we resume with one clean lift.
+    send({ type: 'generation_state', chatId, active: true });
+  }
   const active = await ensureActiveCardForChat(chatId, characterId);
   if (!active) return;
   log.info(`GENERATION_STARTED: → runBinding(start)`);
@@ -3264,14 +3313,46 @@ spindle.on('GENERATION_ENDED', async (raw, userId) => {
   const { chatId, characterId } = extractIds(raw);
   log.info(`event GENERATION_ENDED chatId=${chatId ?? '?'} characterId=${characterId ?? '?'} payload=${dumpPayload(raw)}`);
   if (!chatId) return;
-  const n = generationsInFlight.get(chatId) ?? 0;
-  if (n <= 1) generationsInFlight.delete(chatId);
-  else generationsInFlight.set(chatId, n - 1);
+  const wentIdle = markGenerationEnd(chatId);
+  if (wentIdle) {
+    // N→0 transition. Resume frontend sweeps; one final sweep will
+    // lift the post-stream panel state cleanly.
+    send({ type: 'generation_state', chatId, active: false });
+  }
   const active = await ensureActiveCardForChat(chatId, characterId);
   if (!active) return;
   for (const binding of GENERATION_ENDED_BINDINGS) {
     await runBinding(active, chatId, binding);
   }
+  await refreshResolvedContent(active, chatId);
+  await refreshBgHtml(active, chatId);
+  await refreshVariables(active, chatId);
+});
+
+// User-clicked the abort button (or generation otherwise stopped via
+// AbortController). Lumi emits GENERATION_STOPPED in this path INSTEAD OF
+// GENERATION_ENDED — see g:/mousepad_git/Lumiverse/src/services/generate.service.ts:2197,
+// 2698, 2793, 3153. Without this handler, `generationsInFlight` for the
+// chat stays >0 forever, the FE streaming gate never releases, and the
+// post-stream sweep that would stash the stale source panel never runs.
+// The handoff at handoff-2026-05-04-streaming-flicker.md §11.5 ("Observation A")
+// pins this as the load-bearing missing piece.
+spindle.on('GENERATION_STOPPED', async (raw, userId) => {
+  captureUserId(userId, 'GENERATION_STOPPED');
+  const { chatId, characterId } = extractIds(raw);
+  log.info(`event GENERATION_STOPPED chatId=${chatId ?? '?'} characterId=${characterId ?? '?'} payload=${dumpPayload(raw)}`);
+  if (!chatId) return;
+  const wentIdle = markGenerationEnd(chatId);
+  if (wentIdle) {
+    send({ type: 'generation_state', chatId, active: false });
+  }
+  // No trigger bindings fire on stop (Risu's `output`/`display` bindings
+  // are inside its sendChat, which we already mirror via GENERATION_ENDED
+  // for the success path; abort = no LLM output, no triggers to fire).
+  // Still refresh resolved content + variables so any user-edits made
+  // during the abort window get rendered.
+  const active = await ensureActiveCardForChat(chatId, characterId);
+  if (!active) return;
   await refreshResolvedContent(active, chatId);
   await refreshBgHtml(active, chatId);
   await refreshVariables(active, chatId);
