@@ -7898,6 +7898,7 @@ var HIDE_STYLE_ID = "lumirealm-portal-hide-panels";
 var documentStyleEl = null;
 var constructedSheet = null;
 var knownClasses = new Set;
+var knownIds = new Set;
 function ensureSurfaces() {
   if (typeof document === "undefined")
     return;
@@ -7922,7 +7923,7 @@ function ensureSurfaces() {
     }
   }
 }
-function escapeClass(c) {
+function escapeIdent(c) {
   if (typeof CSS !== "undefined" && typeof CSS.escape === "function") {
     return CSS.escape(c);
   }
@@ -7930,7 +7931,7 @@ function escapeClass(c) {
 }
 function rebuild() {
   ensureSurfaces();
-  if (knownClasses.size === 0) {
+  if (knownClasses.size === 0 && knownIds.size === 0) {
     if (documentStyleEl)
       documentStyleEl.textContent = "";
     if (constructedSheet) {
@@ -7942,11 +7943,14 @@ function rebuild() {
   }
   const docRules = [];
   const shadowRules = [];
-  for (const c of knownClasses) {
-    const sel = `.${escapeClass(c)}`;
+  const emit = (sel) => {
     docRules.push(`[data-component="MessageContent"] ${sel} { display: none !important; }`);
     shadowRules.push(`${sel} { display: none !important; }`);
-  }
+  };
+  for (const c of knownClasses)
+    emit(`.${escapeIdent(c)}`);
+  for (const id of knownIds)
+    emit(`#${escapeIdent(id)}`);
   if (documentStyleEl) {
     documentStyleEl.textContent = docRules.join(`
 `);
@@ -7984,10 +7988,35 @@ function addHidePanelClasses(classes) {
   }
   return added;
 }
+function addHidePanelIds(ids) {
+  let added = false;
+  const newIds = [];
+  for (const id of ids) {
+    if (!id)
+      continue;
+    if (POISON_CLASSES.has(id))
+      continue;
+    if (!knownIds.has(id)) {
+      knownIds.add(id);
+      newIds.push(id);
+      added = true;
+    }
+  }
+  if (added) {
+    rebuild();
+    try {
+      const docCss = documentStyleEl?.textContent ?? "";
+      const sheetRules = constructedSheet ? constructedSheet.cssRules.length : 0;
+      console.info(`[lumirealm] hide-panel-css: added ids=${JSON.stringify(newIds)}; ` + `total_classes=${knownClasses.size} total_ids=${knownIds.size} ` + `doc_chars=${docCss.length} sheet_rules=${sheetRules}`);
+    } catch {}
+  }
+  return added;
+}
 function clearHidePanelClasses() {
-  if (knownClasses.size === 0)
+  if (knownClasses.size === 0 && knownIds.size === 0)
     return;
   knownClasses.clear();
+  knownIds.clear();
   rebuild();
 }
 function getHidePanelSheet() {
@@ -7998,6 +8027,7 @@ function dumpHidePanelState() {
   ensureSurfaces();
   return {
     classes: Array.from(knownClasses),
+    ids: Array.from(knownIds),
     documentStyleConnected: documentStyleEl !== null && documentStyleEl.isConnected,
     documentStyleText: documentStyleEl?.textContent ?? "",
     sheetRuleCount: constructedSheet ? constructedSheet.cssRules.length : 0
@@ -8530,12 +8560,18 @@ function setupMessagePortal(ctx, flog) {
             lastSeenAt: performance.now()
           });
           const classes = [];
+          const ids = [];
           for (const el of liftSet) {
             for (const c of Array.from(el.classList))
               classes.push(c);
+            const id = el.id;
+            if (id)
+              ids.push(id);
           }
           if (classes.length > 0)
             addHidePanelClasses(classes);
+          if (ids.length > 0)
+            addHidePanelIds(ids);
           groupsLifted++;
           elementsLifted += liftSet.length;
         }

@@ -31,6 +31,10 @@ const HIDE_STYLE_ID = "lumirealm-portal-hide-panels";
 let documentStyleEl: HTMLStyleElement | null = null;
 let constructedSheet: CSSStyleSheet | null = null;
 const knownClasses = new Set<string>();
+// IDs are an independent selector space — cards like Subject Iteration
+// style fixed widgets via `#dg-float-btn` etc. with no class hook. Same
+// reactive rebuild path as classes; rules emit `#<id>` instead of `.<cls>`.
+const knownIds = new Set<string>();
 
 function ensureSurfaces(): void {
   if (typeof document === "undefined") return;
@@ -58,7 +62,7 @@ function ensureSurfaces(): void {
   }
 }
 
-function escapeClass(c: string): string {
+function escapeIdent(c: string): string {
   // Prefer CSS.escape when available; fall back to a defensive serialize
   // that handles the chars cards realistically use.
   if (typeof CSS !== "undefined" && typeof CSS.escape === "function") {
@@ -69,7 +73,7 @@ function escapeClass(c: string): string {
 
 function rebuild(): void {
   ensureSurfaces();
-  if (knownClasses.size === 0) {
+  if (knownClasses.size === 0 && knownIds.size === 0) {
     if (documentStyleEl) documentStyleEl.textContent = "";
     if (constructedSheet) {
       try { constructedSheet.replaceSync(""); } catch { /* */ }
@@ -78,8 +82,7 @@ function rebuild(): void {
   }
   const docRules: string[] = [];
   const shadowRules: string[] = [];
-  for (const c of knownClasses) {
-    const sel = `.${escapeClass(c)}`;
+  const emit = (sel: string): void => {
     // Document rule: scope to chat MessageContent so overlay clones at
     // body level (siblings of MessageContent) stay visible. Only hits
     // light-DOM sources; shadow-DOM sources are handled by the adopted
@@ -87,16 +90,18 @@ function rebuild(): void {
     docRules.push(
       `[data-component="MessageContent"] ${sel} { display: none !important; }`,
     );
-    // Adopted-sheet rule: bare class selector. CSS's `:host` doesn't
-    // chain with a descendant combinator the way it looks like it should
-    // — `:host(...) .x` is NOT a way to scope shadow descendants. Use a
+    // Adopted-sheet rule: bare selector. CSS's `:host` doesn't chain
+    // with a descendant combinator the way it looks like it should —
+    // `:host(...) .x` is NOT a way to scope shadow descendants. Use a
     // bare selector and rely on adoption discipline (the message-portal
     // module filters this sheet out when copying adopted sheets to the
     // overlay wrapper's shadow, so the clone stays visible).
     shadowRules.push(
       `${sel} { display: none !important; }`,
     );
-  }
+  };
+  for (const c of knownClasses) emit(`.${escapeIdent(c)}`);
+  for (const id of knownIds) emit(`#${escapeIdent(id)}`);
   if (documentStyleEl) {
     documentStyleEl.textContent = docRules.join("\n");
   }
@@ -155,12 +160,42 @@ export function addHidePanelClasses(classes: Iterable<string>): boolean {
   return added;
 }
 
-/** Drop all known classes. Called on chat switch so a class learned for
- *  card A doesn't bleed over into card B (where the same class name might
- *  refer to a non-fixed panel that should NOT be hidden). */
+/** Add panel IDs to the hide-set. Subject Iteration and similar cards
+ *  style fixed widgets via `#dg-float-btn` etc. — no class hook. */
+export function addHidePanelIds(ids: Iterable<string>): boolean {
+  let added = false;
+  const newIds: string[] = [];
+  for (const id of ids) {
+    if (!id) continue;
+    if (POISON_CLASSES.has(id)) continue;
+    if (!knownIds.has(id)) {
+      knownIds.add(id);
+      newIds.push(id);
+      added = true;
+    }
+  }
+  if (added) {
+    rebuild();
+    try {
+      const docCss = documentStyleEl?.textContent ?? "";
+      const sheetRules = constructedSheet ? constructedSheet.cssRules.length : 0;
+      console.info(
+        `[lumirealm] hide-panel-css: added ids=${JSON.stringify(newIds)}; ` +
+          `total_classes=${knownClasses.size} total_ids=${knownIds.size} ` +
+          `doc_chars=${docCss.length} sheet_rules=${sheetRules}`,
+      );
+    } catch { /* */ }
+  }
+  return added;
+}
+
+/** Drop all known classes + ids. Called on chat switch so what's learned
+ *  for card A doesn't bleed over into card B (where the same class/id
+ *  name might refer to a non-fixed element that should NOT be hidden). */
 export function clearHidePanelClasses(): void {
-  if (knownClasses.size === 0) return;
+  if (knownClasses.size === 0 && knownIds.size === 0) return;
   knownClasses.clear();
+  knownIds.clear();
   rebuild();
 }
 
@@ -188,6 +223,7 @@ export function getHidePanelClassCount(): number {
  *      the chat-message shadows' count). */
 export function dumpHidePanelState(): {
   classes: string[];
+  ids: string[];
   documentStyleConnected: boolean;
   documentStyleText: string;
   sheetRuleCount: number;
@@ -195,6 +231,7 @@ export function dumpHidePanelState(): {
   ensureSurfaces();
   return {
     classes: Array.from(knownClasses),
+    ids: Array.from(knownIds),
     documentStyleConnected: documentStyleEl !== null && documentStyleEl.isConnected,
     documentStyleText: documentStyleEl?.textContent ?? "",
     sheetRuleCount: constructedSheet ? constructedSheet.cssRules.length : 0,

@@ -28,6 +28,7 @@
 import type { SpindleFrontendContext } from "lumiverse-spindle-types";
 import {
   addHidePanelClasses,
+  addHidePanelIds,
   clearHidePanelClasses,
   getHidePanelSheet,
 } from "./hide-panel-css.js";
@@ -500,18 +501,21 @@ export function setupMessagePortal(ctx: SpindleFrontendContext, flog: Flog): Mes
             lastSeenAt: performance.now(),
           });
 
-          // Reactive CSS source-hiding. Capture every class on every
-          // element in the lift set; hide-panel-css updates the document
-          // <style> + the constructed sheet adopted into chat-message
-          // shadows. The next time Lumi mounts a node carrying any of
-          // these classes inside `[data-component="MessageContent"]` (or a
-          // shadow whose host matches), it's hidden BEFORE paint — no
-          // sync-stash race, no streaming-time duplicate.
+          // Reactive CSS source-hiding. Capture every class AND every id
+          // on every element in the lift set; hide-panel-css updates the
+          // document <style> + the constructed sheet adopted into chat
+          // shadows. ID-only fixed widgets (Subject Iteration's
+          // `#dg-float-btn` etc.) need the id branch — without it, cards
+          // that style fixed elements via id selectors slip through.
           const classes: string[] = [];
+          const ids: string[] = [];
           for (const el of liftSet) {
             for (const c of Array.from(el.classList)) classes.push(c);
+            const id = el.id;
+            if (id) ids.push(id);
           }
           if (classes.length > 0) addHidePanelClasses(classes);
+          if (ids.length > 0) addHidePanelIds(ids);
 
           groupsLifted++;
           elementsLifted += liftSet.length;
