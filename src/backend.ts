@@ -817,6 +817,20 @@ if (registerWorldInfoInterceptor) {
     // would have to express it via on-entry scan_depth which is currently
     // not surfaced through this hook.
     const RISU_DEFAULT_LORE_DEPTH = 4;
+    // Pre-pass diagnostics: count entries that look like decorator carriers so
+    // we can emit a single line ALWAYS (not gated on RISU_COMPAT_VERBOSE) when
+    // any are present. Useful for spotting "decorators silently invisible to
+    // the runtime" without flooding the log on quiet generations.
+    let stashedDecCount = 0;
+    let inlineDecCount = 0;
+    for (const e of ctx.entries) {
+      const stash = e.extensions?.['_risu_decorators'];
+      if (Array.isArray(stash) && stash.length > 0) {
+        stashedDecCount += 1;
+      } else if (typeof e.content === 'string' && e.content.startsWith('@@')) {
+        inlineDecCount += 1;
+      }
+    }
     const outcome = runWorldInfoInterceptor(
       {
         entries: ctx.entries.map((e) => ({
@@ -842,6 +856,18 @@ if (registerWorldInfoInterceptor) {
       },
       verboseFn,
     );
+    if (stashedDecCount + inlineDecCount > 0 || outcome.positionPt.length > 0 || outcome.injectAt.length > 0) {
+      const ptNames = outcome.positionPt.map((p) => `${p.name}(${p.content.length})`).join(',');
+      const injAtLocs = outcome.injectAt.map((p) => `${p.loc}/${p.operation}`).join(',');
+      log.info(
+        `[decorators] worldInfoInterceptor chat=${ctx.chatId} ` +
+          `entries_in=${ctx.entries.length} ` +
+          `dec_carriers=stashed:${stashedDecCount}+inline:${inlineDecCount} ` +
+          `outcome: disabled=${outcome.disabled.length} forced=${outcome.forced.length} ` +
+          `mutated=${outcome.mutated.length} stickyWrites=${outcome.stickyWrites.length} ` +
+          `positionPt=[${ptNames}] injectAt=[${injAtLocs}]`,
+      );
+    }
 
     // Persist sticky var writes (keep_activate_after_match / dont_activate_after_match).
     // The runtime returned WHICH writes to perform; we apply them via a single

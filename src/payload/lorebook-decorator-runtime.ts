@@ -130,22 +130,83 @@ const INJECT_DECORATOR_NAMES = new Set<string>([
 
 function readDecorators(entry: WorldInfoEntryView): readonly DecoratorRecord[] {
   const raw = entry.extensions['_risu_decorators'];
-  if (!Array.isArray(raw)) return [];
-  const out: DecoratorRecord[] = [];
-  for (const d of raw) {
-    if (!d || typeof d !== 'object') continue;
-    const obj = d as { name?: unknown; args?: unknown; fallback?: unknown };
-    if (typeof obj.name !== 'string') continue;
-    const args = Array.isArray(obj.args)
-      ? obj.args.filter((a): a is string => typeof a === 'string')
-      : [];
-    out.push({
-      name: obj.name,
+  if (Array.isArray(raw) && raw.length > 0) {
+    const out: DecoratorRecord[] = [];
+    for (const d of raw) {
+      if (!d || typeof d !== 'object') continue;
+      const obj = d as { name?: unknown; args?: unknown; fallback?: unknown };
+      if (typeof obj.name !== 'string') continue;
+      const args = Array.isArray(obj.args)
+        ? obj.args.filter((a): a is string => typeof a === 'string')
+        : [];
+      out.push({
+        name: obj.name,
+        args,
+        ...(obj.fallback === true ? { fallback: true } : {}),
+      });
+    }
+    return out;
+  }
+  // Fallback: parse decorators inline from content. Translate-time stash isn't
+  // populated for entries authored manually in Lumi's UI or for entries imported
+  // before the decorator-aware pipeline shipped. Risu re-parses on every
+  // activation (lorebook.svelte.ts:299) so this matches its semantic.
+  return parseInlineDecorators(entry.content).decorators;
+}
+
+/** Parse a `@@…` decorator block off the top of a content string. Returns the
+ *  decorators plus the post-strip body so callers can use the stripped form
+ *  (positionPt aggregation, mutated emit) and Lumi's prompt assembly never
+ *  sees the raw decorator text. */
+function parseInlineDecorators(content: string): {
+  readonly decorators: readonly DecoratorRecord[];
+  readonly remainingContent: string;
+} {
+  if (typeof content !== 'string' || content.length === 0 || !content.startsWith('@@')) {
+    return { decorators: [], remainingContent: content };
+  }
+  const lines = content.split('\n');
+  const decorators: DecoratorRecord[] = [];
+  let cutoffIdx = 0;
+  for (let i = 0; i < lines.length; i++) {
+    let line = (lines[i] ?? '').trim();
+    if (line === '@@@end') line = '@@end';
+    if (!line.startsWith('@@')) {
+      cutoffIdx = i;
+      break;
+    }
+    cutoffIdx = i + 1;
+    const isFallback = line.startsWith('@@@');
+    const prefixLen = isFallback ? 3 : 2;
+    let spaceIdx = line.indexOf(' ');
+    if (spaceIdx === -1) spaceIdx = line.length;
+    const name = line.slice(prefixLen, spaceIdx);
+    if (name === '') continue;
+    const argString = line.slice(spaceIdx);
+    const args = argString
+      .split(',')
+      .map((s) => s.trim())
+      .filter((s) => s !== '');
+    decorators.push({
+      name,
       args,
-      ...(obj.fallback === true ? { fallback: true } : {}),
+      ...(isFallback ? { fallback: true } : {}),
     });
   }
-  return out;
+  const remainingContent = lines.slice(cutoffIdx).join('\n').trim();
+  return { decorators, remainingContent };
+}
+
+/** Returns the entry's content with any inline decorator block stripped. Used
+ *  for positionPt aggregation + mutated emits so Lumi never sees the raw `@@`
+ *  text in the prompt. Idempotent on entries whose translate-time strip
+ *  already ran. */
+function getStrippedContent(entry: WorldInfoEntryView): string {
+  // If the translate-time pipeline already stripped (the stash is populated
+  // and content lacks a leading `@@`), return as-is.
+  const stash = entry.extensions['_risu_decorators'];
+  if (Array.isArray(stash) && stash.length > 0) return entry.content;
+  return parseInlineDecorators(entry.content).remainingContent;
 }
 
 function getStickyState(
@@ -521,10 +582,12 @@ export function computeInjectAndPositionPlans(
   });
 
   // Targets pool: non-injector entries. Working content map so injectors stack.
+  // getStrippedContent returns the post-decorator body for entries with empty
+  // stash; pass-through for properly-stashed entries.
   const targetContent: Map<string, string> = new Map();
   for (const c of classified) {
     if (c.plan === null) {
-      targetContent.set(c.entry.id, c.entry.content);
+      targetContent.set(c.entry.id, getStrippedContent(c.entry));
     }
   }
 
@@ -533,7 +596,6 @@ export function computeInjectAndPositionPlans(
   for (const c of classified) {
     if (c.plan === null) continue;
     if (!c.plan.lore) continue;
-    addDisabled.push(c.entry.id);
 
     // Find target by comment match.
     const target = classified.find(
@@ -541,42 +603,32 @@ export function computeInjectAndPositionPlans(
     );
     if (!target) continue;
 
-    const current = targetContent.get(target.entry.id) ?? target.entry.content;
+    const current = targetContent.get(target.entry.id) ?? getStrippedContent(target.entry);
     const merged = applyInjectMerge(
       current,
-      c.entry.content,
+      getStrippedContent(c.entry),
       c.plan.operation,
       c.plan.param,
     );
     targetContent.set(target.entry.id, merged);
   }
 
-  // Emit mutated entries whose content actually changed.
-  for (const c of classified) {
-    if (c.plan !== null) continue;
-    const final = targetContent.get(c.entry.id);
-    if (final !== undefined && final !== c.entry.content) {
-      mutated.push({ entryId: c.entry.id, content: final });
-    }
-  }
-
   // pt_*: each pt_<NAME> contributes under NAME. Reads from targetContent
-  // so post-merge content surfaces. Injectors carry original content.
+  // so post-merge content surfaces. Injectors carry stripped content.
   for (const c of classified) {
     if (c.posPt === null) continue;
     const content = c.plan === null
-      ? (targetContent.get(c.entry.id) ?? c.entry.content)
-      : c.entry.content;
+      ? (targetContent.get(c.entry.id) ?? getStrippedContent(c.entry))
+      : getStrippedContent(c.entry);
     const list = positionPtByName.get(c.posPt) ?? [];
     list.push(content);
     positionPtByName.set(c.posPt, list);
   }
 
-  // Process inject_at injectors. Disabled, emit plan for post-assembly handler.
+  // inject_at plans, consumed post-assembly by registerInterceptor.
   for (const c of classified) {
     if (c.plan === null) continue;
     if (c.plan.lore) continue;
-    addDisabled.push(c.entry.id);
     injectAt.push({
       entryId: c.entry.id,
       loc: c.plan.location,
@@ -584,6 +636,27 @@ export function computeInjectAndPositionPlans(
       content: c.entry.content,
       param: c.plan.param,
     });
+  }
+
+  // Single-pass disabled-voting: each entry contributes at most one disable
+  // vote regardless of how many decorator roles it carries.
+  for (const c of classified) {
+    const isInjector = c.plan !== null;
+    const isSlotFiller = c.posPt !== null;
+    if (isInjector || isSlotFiller) {
+      addDisabled.push(c.entry.id);
+    }
+  }
+
+  // Emit mutated entries: non-injector, non-slot-filler whose content changed
+  // (typically inject_lore targets).
+  for (const c of classified) {
+    if (c.plan !== null) continue;
+    if (c.posPt !== null) continue;
+    const final = targetContent.get(c.entry.id);
+    if (final !== undefined && final !== c.entry.content) {
+      mutated.push({ entryId: c.entry.id, content: final });
+    }
   }
 
   // Emit positionPt entries, joined with newline.
