@@ -154,6 +154,14 @@ const log = {
     if (logStore.isEnabled()) spindle.log.info(`[lumirealm] ${msg}`);
     logStore.push('debug', 'backend', msg);
   },
+  /** Bypasses the user's logStore toggle. Use SPARINGLY — for one-off
+   *  triage lines that need to surface even when the user has runtime
+   *  logging off. The frontend log store still receives a copy so the
+   *  Logs tab "Export" still includes it. */
+  always(msg: string): void {
+    spindle.log.info(`[lumirealm] ${msg}`);
+    logStore.push('info', 'backend', msg);
+  },
 };
 
 log.info(`backend boot: version=${EXTENSION_VERSION}`);
@@ -802,7 +810,15 @@ const registerWorldInfoInterceptor =
     : null;
 
 if (registerWorldInfoInterceptor) {
+  // log.always — bypasses the user's runtime-log toggle. The decorator
+  // pipeline runs invisibly to the user otherwise.
+  log.always(`[decorators] registerWorldInfoInterceptor wired at boot`);
   registerWorldInfoInterceptor(async (ctx) => {
+    // Unconditional entry-trace — confirms the handler fires per
+    // generation. Bypasses the user's runtime-log toggle on purpose.
+    log.always(
+      `[decorators] worldInfoInterceptor ENTER chat=${ctx.chatId} entries=${ctx.entries.length}`,
+    );
     const verbose = (() => {
       try {
         const env = (globalThis as { Bun?: { env?: Record<string, string | undefined> } }).Bun?.env;
@@ -859,7 +875,10 @@ if (registerWorldInfoInterceptor) {
     if (stashedDecCount + inlineDecCount > 0 || outcome.positionPt.length > 0 || outcome.injectAt.length > 0) {
       const ptNames = outcome.positionPt.map((p) => `${p.name}(${p.content.length})`).join(',');
       const injAtLocs = outcome.injectAt.map((p) => `${p.loc}/${p.operation}`).join(',');
-      log.info(
+      // log.always: bypass the user's runtime-log toggle. This is the
+      // load-bearing pipeline-state line for triaging "decorator silently
+      // not firing" without forcing the user to flip their toggle.
+      log.always(
         `[decorators] worldInfoInterceptor chat=${ctx.chatId} ` +
           `entries_in=${ctx.entries.length} ` +
           `dec_carriers=stashed:${stashedDecCount}+inline:${inlineDecCount} ` +
@@ -896,7 +915,7 @@ if (registerWorldInfoInterceptor) {
             { metadata: { ...meta, macro_variables: mv } as never },
             ctx.userId,
           );
-          log.info(
+          log.always(
             `[decorators] sticky_writes chat=${ctx.chatId} count=${changed}/${outcome.stickyWrites.length} ` +
               `keys=[${outcome.stickyWrites.slice(0, 3).map((w) => w.varName).join(',')}${outcome.stickyWrites.length > 3 ? ',…' : ''}]`,
           );
@@ -916,7 +935,7 @@ if (registerWorldInfoInterceptor) {
         injectAt: outcome.injectAt,
         positionPt,
       });
-      log.info(
+      log.always(
         `[decorators] tier3_buffer chat=${ctx.chatId} ` +
           `injectAt=${outcome.injectAt.length} ` +
           `positionPt=${outcome.positionPt.length}`,
