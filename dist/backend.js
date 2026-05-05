@@ -32785,18 +32785,47 @@ spindle.on("SETTINGS_UPDATED", async (raw, userId) => {
 });
 var chatChangedDebounceTimers = new Map;
 var chatChangedCoalescedCount = new Map;
+var chatChangedCoalescedFields = new Map;
 var CHAT_CHANGED_DEBOUNCE_MS = 50;
-function scheduleChatChangedRefresh(chatId, characterId) {
+var REFRESH_FIELD_PREFIXES = [
+  "metadata.macro_variables",
+  "metadata.chat_variables"
+];
+function changedFieldsRequireRefresh(fields) {
+  if (fields === "unknown")
+    return true;
+  for (const f of fields) {
+    for (const prefix of REFRESH_FIELD_PREFIXES) {
+      if (f === prefix || f.startsWith(`${prefix}.`))
+        return true;
+    }
+  }
+  return false;
+}
+function scheduleChatChangedRefresh(chatId, characterId, changedFields) {
   chatChangedCoalescedCount.set(chatId, (chatChangedCoalescedCount.get(chatId) ?? 0) + 1);
+  const prev = chatChangedCoalescedFields.get(chatId);
+  if (changedFields === undefined) {
+    chatChangedCoalescedFields.set(chatId, "unknown");
+  } else if (prev !== "unknown") {
+    const merged = prev instanceof Set ? prev : new Set;
+    for (const f of changedFields)
+      merged.add(f);
+    chatChangedCoalescedFields.set(chatId, merged);
+  }
   if (chatChangedDebounceTimers.has(chatId))
     return;
   const timer = setTimeout(async () => {
     chatChangedDebounceTimers.delete(chatId);
     const coalesced = chatChangedCoalescedCount.get(chatId) ?? 1;
     chatChangedCoalescedCount.delete(chatId);
+    const accumulatedFields = chatChangedCoalescedFields.get(chatId) ?? "unknown";
+    chatChangedCoalescedFields.delete(chatId);
+    const requiresRefresh = changedFieldsRequireRefresh(accumulatedFields);
     try {
       const active = await ensureActiveCardForChat(chatId, characterId);
-      log7.info(`CHAT_CHANGED (external, debounced): coalesced=${coalesced} active=${active ? `char=${active.card.character_id}` : "<none>"}`);
+      const fieldsSummary = accumulatedFields === "unknown" ? "unknown" : accumulatedFields.size === 0 ? "empty" : `[${[...accumulatedFields].slice(0, 6).join(",")}${accumulatedFields.size > 6 ? `,+${accumulatedFields.size - 6}` : ""}]`;
+      log7.info(`CHAT_CHANGED (external, debounced): coalesced=${coalesced} fields=${fieldsSummary} requiresRefresh=${requiresRefresh} active=${active ? `char=${active.card.character_id}` : "<none>"}`);
       if (!active) {
         try {
           spindle.sendToFrontend({ type: "clear_bg_html", chatId });
@@ -32805,6 +32834,8 @@ function scheduleChatChangedRefresh(chatId, characterId) {
         }
         return;
       }
+      if (!requiresRefresh)
+        return;
       await refreshResolvedContent(active, chatId);
       await refreshBgHtml(active, chatId);
       await refreshVariables(active, chatId, { force: true });
@@ -32824,15 +32855,20 @@ spindle.on("CHAT_CHANGED", async (raw, userId) => {
     log7.warn("CHAT_CHANGED: missing chatId \u2014 aborting");
     return;
   }
-  invalidateListenEditPreload(chatId);
-  invalidateRenderMcpForChat(chatId);
+  const changedFields = raw.changedFields;
+  const requiresRefresh = changedFieldsRequireRefresh(changedFields === undefined ? "unknown" : new Set(changedFields));
+  if (requiresRefresh) {
+    invalidateListenEditPreload(chatId);
+    invalidateRenderMcpForChat(chatId);
+  }
   const wasOwn = consumeOwnChatChange(chatId);
-  log7.info(`event CHAT_CHANGED chatId=${chatId} characterId=${characterId ?? "?"} ownWrite=${wasOwn}`);
+  const fieldsPreview = changedFields === undefined ? "undefined" : changedFields.length === 0 ? "empty" : `[${changedFields.slice(0, 4).join(",")}${changedFields.length > 4 ? `,+${changedFields.length - 4}` : ""}]`;
+  log7.info(`event CHAT_CHANGED chatId=${chatId} characterId=${characterId ?? "?"} ownWrite=${wasOwn} fields=${fieldsPreview} requiresRefresh=${requiresRefresh}`);
   if (wasOwn) {
     await ensureActiveCardForChat(chatId, characterId);
     return;
   }
-  scheduleChatChangedRefresh(chatId, characterId);
+  scheduleChatChangedRefresh(chatId, characterId, changedFields);
 });
 spindle.on("MESSAGE_SENT", async (raw, userId) => {
   captureUserId(userId, "MESSAGE_SENT");

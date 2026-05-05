@@ -3320,23 +3320,91 @@ spindle.on('SETTINGS_UPDATED', async (raw, userId) => {
 
 const chatChangedDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const chatChangedCoalescedCount = new Map<string, number>();
+// Accumulates the union of `changedFields` across all events coalesced into
+// a single debounced refresh. Sentinel `'unknown'` means at least one event
+// in the burst had no `changedFields` (e.g. persona reattribution emit at
+// chats.service.ts:977 sends a non-typed payload) — treat as safe-on-unknown
+// and run the full fan-out.
+const chatChangedCoalescedFields = new Map<string, Set<string> | 'unknown'>();
 const CHAT_CHANGED_DEBOUNCE_MS = 50;
 
-function scheduleChatChangedRefresh(chatId: string, characterId: string | null): void {
+// Allow-list of `changedFields` dot-path prefixes that warrant a refresh.
+// Only paths in here cause `refreshResolvedContent` / `refreshBgHtml` /
+// `refreshVariables` to fire on external CHAT_CHANGED. Everything else is
+// admin-only metadata (chat name, avatar, council results, group config,
+// deferred WI state, impersonation preset cleanup, etc.) and is skipped.
+//
+// Audit basis: every `risu-compat/handlers/*.ts` reads from `ctx.vars.get`
+// (which maps to `metadata.macro_variables.{local,global,chat}`) or from
+// `metadata.chat_variables` (Lumi-native chat-scope bag). No handler reads
+// any other `chat.metadata.X` path directly. Character-side fields
+// (`ctx.character.*`, `ctx.identity.*`, `ctx.lorebook`, `ctx.messages.*`)
+// flow through CHARACTER_EDITED / MESSAGE_* events, not CHAT_CHANGED.
+//
+// Future-proofing: if a new handler starts reading from a new chat metadata
+// path, add the prefix here. Allow-list (vs deny-list) is intentional —
+// errs toward minimum work for the common case; the tradeoff is "we must
+// remember to update this list when adding a handler that reads new chat
+// metadata." That tradeoff is acceptable because adding such a handler is
+// a deliberate code change, easy to spot in review.
+const REFRESH_FIELD_PREFIXES = [
+  'metadata.macro_variables',
+  'metadata.chat_variables',
+] as const;
+
+function changedFieldsRequireRefresh(fields: Set<string> | 'unknown'): boolean {
+  if (fields === 'unknown') return true;
+  for (const f of fields) {
+    for (const prefix of REFRESH_FIELD_PREFIXES) {
+      if (f === prefix || f.startsWith(`${prefix}.`)) return true;
+    }
+  }
+  return false;
+}
+
+function scheduleChatChangedRefresh(
+  chatId: string,
+  characterId: string | null,
+  changedFields: readonly string[] | undefined,
+): void {
   chatChangedCoalescedCount.set(chatId, (chatChangedCoalescedCount.get(chatId) ?? 0) + 1);
+
+  // Accumulate the union of changedFields across this burst. A single
+  // 'unknown' contaminates the rest — once anything in the burst lacked
+  // a typed payload, we MUST run everything (safe-on-unknown).
+  const prev = chatChangedCoalescedFields.get(chatId);
+  if (changedFields === undefined) {
+    chatChangedCoalescedFields.set(chatId, 'unknown');
+  } else if (prev !== 'unknown') {
+    const merged = (prev instanceof Set) ? prev : new Set<string>();
+    for (const f of changedFields) merged.add(f);
+    chatChangedCoalescedFields.set(chatId, merged);
+  }
+
   if (chatChangedDebounceTimers.has(chatId)) return;
   const timer = setTimeout(async () => {
     chatChangedDebounceTimers.delete(chatId);
     const coalesced = chatChangedCoalescedCount.get(chatId) ?? 1;
     chatChangedCoalescedCount.delete(chatId);
+    const accumulatedFields = chatChangedCoalescedFields.get(chatId) ?? 'unknown';
+    chatChangedCoalescedFields.delete(chatId);
+    const requiresRefresh = changedFieldsRequireRefresh(accumulatedFields);
     try {
       const active = await ensureActiveCardForChat(chatId, characterId);
-      log.info(`CHAT_CHANGED (external, debounced): coalesced=${coalesced} active=${active ? `char=${active.card.character_id}` : '<none>'}`);
+      const fieldsSummary = accumulatedFields === 'unknown'
+        ? 'unknown'
+        : (accumulatedFields.size === 0 ? 'empty' : `[${[...accumulatedFields].slice(0, 6).join(',')}${accumulatedFields.size > 6 ? `,+${accumulatedFields.size - 6}` : ''}]`);
+      log.info(
+        `CHAT_CHANGED (external, debounced): coalesced=${coalesced} ` +
+          `fields=${fieldsSummary} requiresRefresh=${requiresRefresh} ` +
+          `active=${active ? `char=${active.card.character_id}` : '<none>'}`,
+      );
       if (!active) {
         try { spindle.sendToFrontend({ type: 'clear_bg_html', chatId }); }
         catch (err) { log.warn(`CHAT_CHANGED clear_bg_html: ${(err as Error).message}`); }
         return;
       }
+      if (!requiresRefresh) return;
       await refreshResolvedContent(active, chatId);
       await refreshBgHtml(active, chatId);
       await refreshVariables(active, chatId, { force: true });
@@ -3354,20 +3422,39 @@ spindle.on('CHAT_CHANGED', async (raw, userId) => {
   captureUserId(userId, 'CHAT_CHANGED');
   const { chatId, characterId } = extractIds(raw);
   if (!chatId) { log.warn('CHAT_CHANGED: missing chatId — aborting'); return; }
-  // Invalidate listenEdit preload cache regardless of own/external — chat
-  // metadata (vars) just changed; a subsequent editDisplay chain shouldn't
-  // serve a stale snapshot from the cache. Same logic for the render-MCP
-  // no-op cache: a var change invisible to the message content hash (Lua
-  // reads `getChatVar` inside the hook) must invalidate the cached result.
-  invalidateListenEditPreload(chatId);
-  invalidateRenderMcpForChat(chatId);
+
+  // Typed payload (spindle-types 0.4.61+): `chat: {id, ...}, changedFields?: string[]`.
+  // Absent on emits from sources that don't compute the diff — currently
+  // chats.service.ts:977 (bulk persona name reattribution), which sends
+  // `{chatId, reattributedUserMessages}` instead. Treat undefined as
+  // safe-on-unknown — the gating defaults to running everything in that case.
+  const changedFields = (raw as { changedFields?: readonly string[] }).changedFields;
+  const requiresRefresh = changedFieldsRequireRefresh(
+    changedFields === undefined ? 'unknown' : new Set(changedFields),
+  );
+
+  // Cache invalidations are gated on the same predicate. The listenEdit
+  // preload + render-MCP no-op caches both index by content state that's
+  // only affected by var-relevant chat metadata changes; non-var writes
+  // (chat name/avatar edits, council cache, etc.) don't dirty either.
+  if (requiresRefresh) {
+    invalidateListenEditPreload(chatId);
+    invalidateRenderMcpForChat(chatId);
+  }
+
   const wasOwn = consumeOwnChatChange(chatId);
-  log.info(`event CHAT_CHANGED chatId=${chatId} characterId=${characterId ?? '?'} ownWrite=${wasOwn}`);
+  const fieldsPreview = changedFields === undefined
+    ? 'undefined'
+    : (changedFields.length === 0 ? 'empty' : `[${changedFields.slice(0, 4).join(',')}${changedFields.length > 4 ? `,+${changedFields.length - 4}` : ''}]`);
+  log.info(
+    `event CHAT_CHANGED chatId=${chatId} characterId=${characterId ?? '?'} ` +
+      `ownWrite=${wasOwn} fields=${fieldsPreview} requiresRefresh=${requiresRefresh}`,
+  );
   if (wasOwn) {
     await ensureActiveCardForChat(chatId, characterId);
     return;
   }
-  scheduleChatChangedRefresh(chatId, characterId);
+  scheduleChatChangedRefresh(chatId, characterId, changedFields);
 });
 
 // MESSAGE_SENT: editInput is wired via registerInterceptor; sidecar only here.
