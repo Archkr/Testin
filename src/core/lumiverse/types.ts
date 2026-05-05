@@ -86,7 +86,7 @@ export type LumiRegexPlacement = "user_input" | "ai_output" | "world_info" | "re
 export type LumiRegexScope = "global" | "character" | "chat";
 
 /** Macro-substitution mode — matches [Lumiverse src/types/regex-script.ts]. */
-export type LumiRegexMacroMode = "none" | "raw" | "escaped";
+export type LumiRegexMacroMode = "none" | "raw" | "escaped" | "after";
 
 // Lumiverse src/types/regex-script.ts
 export interface LumiRegexScript {

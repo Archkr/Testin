@@ -187,7 +187,10 @@ export function mapRegex(
     baseReplace = normalizeReplaceStringForSanitizer(baseReplace);
 
     const baseHasMacros = baseReplace.indexOf("{{") >= 0 || findHasCbs;
-    const baseSubstitute: LumiRegexMacroMode = baseHasMacros ? "raw" : "none";
+    const hasCaptureRefs = /\$(?:\d+|&|`|'|<[^>]+>)/.test(baseReplace);
+    const baseSubstitute: LumiRegexMacroMode = baseHasMacros
+      ? (hasCaptureRefs ? "after" : "escaped")
+      : "none";
     const baseName = nonEmpty(s.comment, `risu_${effectivePhase.target}_${i}`);
     const baseDescription = s.comment ?? "";
     const baseMetadata: Record<string, unknown> = {

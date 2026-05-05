@@ -107,7 +107,9 @@ export function projectModuleRegexEntries(
       max_depth: target === 'prompt' && ruleType === 'editinput' ? 0 : null,
       trim_strings: [],
       run_on_edit: false,
-      substitute_macros: replaceString.indexOf('{{') >= 0 ? 'raw' : 'none',
+      substitute_macros: replaceString.indexOf('{{') >= 0
+        ? (/\$(?:\d+|&|`|'|<[^>]+>)/.test(replaceString) ? 'after' : 'escaped')
+        : 'none',
       disabled,
       sort_order: 1000 + sortBase,
       description: `From .risum module: ${moduleName}`,
