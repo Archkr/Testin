@@ -3423,7 +3423,7 @@ spindle.on('CHAT_CHANGED', async (raw, userId) => {
   const { chatId, characterId } = extractIds(raw);
   if (!chatId) { log.warn('CHAT_CHANGED: missing chatId — aborting'); return; }
 
-  // Typed payload (spindle-types 0.4.61+): `chat: {id, ...}, changedFields?: string[]`.
+  // Typed payload (spindle-types 0.4.62+): `chat: {id, ...}, changedFields?: string[]`.
   // Absent on emits from sources that don't compute the diff — currently
   // chats.service.ts:977 (bulk persona name reattribution), which sends
   // `{chatId, reattributedUserMessages}` instead. Treat undefined as
