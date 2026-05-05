@@ -80,9 +80,47 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     init?: RequestInit,
   ): Promise<Response> => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-    const isResolveBatch = typeof url === 'string' && url.includes('/api/v1/macros/resolve-batch');
-    if (!isResolveBatch) return originalFetch(input, init);
+    const urlStr = typeof url === 'string' ? url : '';
+    const isResolveBatch = urlStr.includes('/api/v1/macros/resolve-batch');
+    const isRegexApply = urlStr.includes('/api/v1/regex-scripts/apply');
+    const isDisplayPreprocess = urlStr.includes('/display-preprocess');
+    if (!isResolveBatch && !isRegexApply && !isDisplayPreprocess) return originalFetch(input, init);
     const t0 = performance.now();
+    if (isRegexApply) {
+      let preview = '';
+      try {
+        const body = init?.body;
+        if (typeof body === 'string') {
+          const parsed = JSON.parse(body) as { content?: string; scripts?: unknown[]; resolved_find_patterns?: Record<string, string>; resolved_replacements?: Record<string, string>; dynamic_macros?: Record<string, string> };
+          const findKeys = Object.keys(parsed.resolved_find_patterns ?? {});
+          const replaceKeys = Object.keys(parsed.resolved_replacements ?? {});
+          const dynKeys = Object.keys(parsed.dynamic_macros ?? {});
+          preview = `scripts=${parsed.scripts?.length ?? 0} content_len=${parsed.content?.length ?? 0} preFind=${findKeys.length} preReplace=${replaceKeys.length} dyn=[${dynKeys.join(',')}]`;
+        }
+      } catch { /* */ }
+      flog.info(`[macro-tap] → POST regex-scripts/apply ${preview}`);
+      const resp = await originalFetch(input, init);
+      try {
+        const clone = resp.clone();
+        const text = await clone.text();
+        const parsed = (() => { try { return JSON.parse(text) as { result?: string; touched_vars?: string[]; cacheable?: boolean }; } catch { return null; } })();
+        if (parsed && typeof parsed.result === 'string') {
+          const stillRaw = /\{\{(?!\s*(?:user|char|bot|notChar|not_char|charName)\s*\}\})/i.test(parsed.result);
+          flog.info(`[macro-tap] ← regex-scripts/apply 200 in ${Math.round(performance.now() - t0)}ms result_len=${parsed.result.length} touched=${parsed.touched_vars?.length ?? 0} cacheable=${parsed.cacheable} still_has_raw_cbs=${stillRaw} result[0..200]=${JSON.stringify(parsed.result.slice(0, 200))}`);
+        } else {
+          flog.warn(`[macro-tap] ← regex-scripts/apply HTTP ${resp.status} in ${Math.round(performance.now() - t0)}ms (body not JSON)`);
+        }
+      } catch (err) {
+        flog.warn('[macro-tap] regex-scripts/apply clone/parse failed:', err);
+      }
+      return resp;
+    }
+    if (isDisplayPreprocess) {
+      flog.info(`[macro-tap] → POST display-preprocess`);
+      const resp = await originalFetch(input, init);
+      flog.info(`[macro-tap] ← display-preprocess HTTP ${resp.status} in ${Math.round(performance.now() - t0)}ms`);
+      return resp;
+    }
     let reqPreview: string = '';
     try {
       const body = init?.body;
