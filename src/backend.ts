@@ -123,6 +123,13 @@ import {
   rememberOurWrite,
   consumeIfOurWrite,
 } from './state/recent-writes.js';
+import {
+  lookupRenderMcp,
+  cacheRenderMcp,
+  invalidateRenderMcpForChat,
+  invalidateRenderMcpForMessage,
+  renderMcpCacheStats,
+} from './state/render-mcp-cache.js';
 import { scheduleStateChangedRefresh as scheduleDebouncedRefresh } from './state/state-changed-debouncer.js';
 import { computeDepthPromptSeed } from './state/depth-prompt-seed.js';
 import { normalizeReplaceStringForSanitizer } from './util/sanitizer-doc-shape.js';
@@ -474,6 +481,22 @@ if (typeof registerMacroInterceptor === 'function') {
 if (typeof registerMessageContentProcessor === 'function') {
   let mcpInFlight = 0;
   let mcpEnterSeq = 0;
+  // Periodic render-MCP cache stats. Surfaces hit-rate so we can confirm
+  // the cv-bump-cascade mitigation is engaging (high-hit on Cheongwon-grade
+  // streams) without spamming. Cadence matches macros' [invoke-summary].
+  let lastCacheStatsAt = 0;
+  function maybeEmitCacheStats(): void {
+    const stats = renderMcpCacheStats();
+    const lookups = stats.hits + stats.misses;
+    if (lookups < 200) return;
+    const now = Date.now();
+    if (now - lastCacheStatsAt < 5_000) return;
+    lastCacheStatsAt = now;
+    const ratio = lookups > 0 ? Math.round((stats.hits / lookups) * 100) : 0;
+    log.info(
+      `[render-mcp-cache] size=${stats.size} hits=${stats.hits} misses=${stats.misses} ratio=${ratio}%`,
+    );
+  }
   registerMessageContentProcessor(async (ctx) => {
     // Gate only on "is this a Risu-imported chat?". Earlier containsCbs gate
     // excluded display-regex rules that lack `{{…}}` markers, causing
@@ -515,6 +538,33 @@ if (typeof registerMessageContentProcessor === 'function') {
         const rawIdx = ctx.extra?.['messageIndex'];
         const messageIndex = typeof rawIdx === 'number' ? rawIdx : 0;
         const risuChatIdx = Math.max(-1, messageIndex - 1);
+
+        // No-op cache lookup. Lumi's display-regex cv-bump cycle re-issues
+        // /display-preprocess for every visible bubble on every CHAT_CHANGED
+        // / MESSAGE_* event with no abort + no per-message gating. For
+        // Cheongwon-grade cards (65 KB editDisplay Lua, 30+ visible bubbles,
+        // 88 cv bumps in 45s) ≈98 % of those re-issues produce identical
+        // output (`path=render-noop`). Cache by content hash, replay
+        // instantly. Invalidated explicitly on chat/message events so
+        // var-driven branches inside the hook still see fresh state.
+        if (ctx.messageId) {
+          const cached = lookupRenderMcp(ctx.chatId, ctx.messageId, ctx.content);
+          maybeEmitCacheStats();
+          if (cached) {
+            const totalMs = Date.now() - tStart;
+            if (cached.kind === 'noop') {
+              log.info(
+                `messageContentProcessor.exit #${seq} path=render-cache-noop chat=${ctx.chatId} msg=${ctx.messageId} idx=${messageIndex} total=${totalMs}ms`,
+              );
+              return;
+            }
+            log.info(
+              `messageContentProcessor.exit #${seq} path=render-cache-hit chat=${ctx.chatId} msg=${ctx.messageId} idx=${messageIndex} before_len=${ctx.content.length} after_len=${cached.content.length} total=${totalMs}ms`,
+            );
+            return { content: cached.content };
+          }
+        }
+
         const editChain = triggers.map((t, i) => ({
           source: t,
           luaCode: luaScripts[i] ?? '',
@@ -568,10 +618,16 @@ if (typeof registerMessageContentProcessor === 'function') {
           // queueing while we were awaiting (= "other_overhead").
           const otherOverhead = totalMs - chainMs - atActionsMs - (tB - tA);
           if (transformed === ctx.content) {
+            if (ctx.messageId) {
+              cacheRenderMcp(ctx.chatId, ctx.messageId, ctx.content, { kind: 'noop' });
+            }
             log.info(
               `messageContentProcessor.exit #${seq} path=render-noop chat=${ctx.chatId} msg=${ctx.messageId ?? '<?>'} idx=${messageIndex} total=${totalMs}ms (chain=${chainMs}ms at_actions=${atActionsMs}ms ensure=${tB - tA}ms other=${otherOverhead}ms)`,
             );
             return;
+          }
+          if (ctx.messageId) {
+            cacheRenderMcp(ctx.chatId, ctx.messageId, ctx.content, { kind: 'transformed', content: transformed });
           }
           log.info(
             `messageContentProcessor.exit #${seq} path=render-transformed chat=${ctx.chatId} msg=${ctx.messageId ?? '<?>'} idx=${messageIndex} before_len=${ctx.content.length} after_len=${transformed.length} total=${totalMs}ms (chain=${chainMs}ms at_actions=${atActionsMs}ms ensure=${tB - tA}ms other=${otherOverhead}ms)`,
@@ -3104,6 +3160,7 @@ async function resolveAndPersist(
     await spindle.chat.updateMessage(chatId, msgId, {
       content: resolved,
       metadata: { edited_by: EDITED_BY_MARKER },
+      skipChunkRebuild: true,
     });
     log.info(
       `resolveAndPersist: chat=${chatId} msg=${msgId} raw=${rawContent.length} resolved=${resolved.length} (prev=${currentContent.length})`,
@@ -3217,6 +3274,12 @@ spindle.on('SETTINGS_UPDATED', async (raw, userId) => {
   if (p.key !== 'activeChatId') return;
   const chatId = typeof p.value === 'string' && p.value.length > 0 ? p.value : null;
   log.info(`event SETTINGS_UPDATED activeChatId=${chatId ?? '<cleared>'} payload=${dumpPayload(raw)}`);
+  const prevChat = userId ? lastActiveChatByUser.get(userId) : undefined;
+  // FE dismounts on any render/clear for a different chat, so both prev and new memos are stale at the moment of transition.
+  if (prevChat !== chatId) {
+    if (prevChat) lastSentBgHtmlByChat.delete(prevChat);
+    if (chatId) lastSentBgHtmlByChat.delete(chatId);
+  }
   // When chatId clears (ChatView unmount), fire clear_bg_html for the last
   // mounted chat so fixed-positioned bg widgets don't bleed onto other pages.
   if (!chatId) {
@@ -3293,8 +3356,11 @@ spindle.on('CHAT_CHANGED', async (raw, userId) => {
   if (!chatId) { log.warn('CHAT_CHANGED: missing chatId — aborting'); return; }
   // Invalidate listenEdit preload cache regardless of own/external — chat
   // metadata (vars) just changed; a subsequent editDisplay chain shouldn't
-  // serve a stale snapshot from the cache.
+  // serve a stale snapshot from the cache. Same logic for the render-MCP
+  // no-op cache: a var change invisible to the message content hash (Lua
+  // reads `getChatVar` inside the hook) must invalidate the cached result.
   invalidateListenEditPreload(chatId);
+  invalidateRenderMcpForChat(chatId);
   const wasOwn = consumeOwnChatChange(chatId);
   log.info(`event CHAT_CHANGED chatId=${chatId} characterId=${characterId ?? '?'} ownWrite=${wasOwn}`);
   if (wasOwn) {
@@ -3440,6 +3506,7 @@ spindle.on('MESSAGE_SWIPED', async (raw, userId) => {
   log.info(`event MESSAGE_SWIPED chatId=${chatId ?? '?'} msgId=${msgId ?? '?'} action=${p.action ?? '?'}`);
   if (!chatId || !msgId) return;
   invalidateListenEditPreload(chatId);
+  invalidateRenderMcpForMessage(chatId, msgId);
   const active = await ensureActiveCardForChat(chatId, null);
   if (!active) return;
   // Drop the stale sidecar entry so refreshResolvedContent re-stashes the
@@ -3502,6 +3569,7 @@ spindle.on('MESSAGE_EDITED', async (raw, userId) => {
     log.warn(`event MESSAGE_EDITED: missing chatId/msgId payload=${JSON.stringify(raw).slice(0, 200)}`);
     return;
   }
+  invalidateRenderMcpForMessage(chatId, msgId);
   // Self-echo detection. Content cache is one-shot, consumed on match. The
   // stored edited_by marker is unreliable: Lumi carries it across subsequent
   // updates, so user writes can inherit it.
@@ -3562,6 +3630,7 @@ spindle.on('MESSAGE_DELETED', async (raw, userId) => {
   log.info(`event MESSAGE_DELETED chatId=${chatId ?? '?'} msgId=${msgId ?? '?'}`);
   if (!chatId) return;
   invalidateListenEditPreload(chatId);
+  if (msgId) invalidateRenderMcpForMessage(chatId, msgId);
   if (msgId) {
     try {
       const sidecar = await readSidecar(userStorage(), chatId, getUserId());
@@ -3596,6 +3665,7 @@ spindle.on('CHAT_DELETED', async (raw, userId) => {
   log.info(`event CHAT_DELETED chatId=${chatId ?? '?'}`);
   if (!chatId) return;
   invalidateListenEditPreload(chatId);
+  invalidateRenderMcpForChat(chatId);
   lastSentBgHtmlByChat.delete(chatId);
   activeCardByChat.delete(chatId);
   clearActiveAssetIndexes(chatId);

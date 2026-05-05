@@ -14,7 +14,7 @@
         "fengari": "^0.1.5",
         "happy-dom": "^15.0.0",
         "juice": "^11.0.0",
-        "lumiverse-spindle-types": "^0.4.54",
+        "lumiverse-spindle-types": "0.4.61",
         "playwright": "^1.59.1",
         "tsx": "^4.21.0",
         "typescript": "^5.5.0",
@@ -133,7 +133,7 @@
 
     "juice": ["juice@11.1.1", "", { "dependencies": { "cheerio": "1.0.0", "commander": "^12.1.0", "entities": "^7.0.0", "mensch": "^0.3.4", "slick": "^1.12.2", "web-resource-inliner": "^8.0.0" }, "bin": { "juice": "bin/juice" } }, "sha512-4SBfZqKcc6DrIS+5b/WiGoWaZsdUPBH+e6SbRlNjJpaIRtfoBhYReAtobIEW6mcLeFFDXLBJMuZwkJLkBJjs2w=="],
 
-    "lumiverse-spindle-types": ["lumiverse-spindle-types@0.4.54", "", {}, "sha512-J59VI0ELgdikbuzOLZ6owx7hamesPx59FKGnfKXDUod+XleAoQw3vKSthGOeHCY5O3ygUfhkUafioPcAEG5dGw=="],
+    "lumiverse-spindle-types": ["lumiverse-spindle-types@0.4.61", "", {}, "sha512-Zy6LY5MJ1UTQoSYNmq0ub/ihfS0by/2/PXBgHH6sQsHjCmP9by/+ScD8jfCTEnsLRd7DLwnhPD3fw3D1dqVHIg=="],
 
     "mensch": ["mensch@0.3.4", "", {}, "sha512-IAeFvcOnV9V0Yk+bFhYR07O3yNina9ANIN5MoXBKYJ/RLYPurd2d0yw14MDhpr9/momp0WofT1bPUh3hkzdi/g=="],
 
