@@ -337,6 +337,8 @@ export function setupIslandStyles(flog: Flog, opts: SetupIslandStylesOptions = {
       if (!sheet) return;
       try {
         sheet.replaceSync('');
+        lastSheetCss = null;
+        lastCrossRuleKey = null;
         nudgeAdopters('clear');
       } catch { /* */ }
     },
