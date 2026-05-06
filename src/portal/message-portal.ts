@@ -44,8 +44,9 @@ const KEY_DELIMITER = "\x1f";
 const SWEEP_THROTTLE_MS = 50;
 // Cleanup grace: don't drop a lift on the first sweep that misses its source.
 // Transient causes: stylesheet not reattached, React unmount/remount, mid-stream
-// chunk. 200ms covers the common cases without delaying genuine deletes much.
-const CLEANUP_GRACE_MS = 200;
+// chunk. 100ms is 2x SWEEP_THROTTLE_MS , absorbs typical 1-sweep blips without
+// adding perceptible duplicate-window lag after a state-changing click.
+const CLEANUP_GRACE_MS = 100;
 
 interface LiftedRecord {
   readonly msgId: string;
@@ -179,6 +180,12 @@ export function setupMessagePortal(ctx: SpindleFrontendContext, flog: Flog): Mes
   let throttleTimer: number | null = null;
   let pendingReason: string | null = null;
   let lastSweep: SweepStats | null = null;
+  // Timer-driven cleanup. Without this, cleanup runs only when something
+  // triggers a sweep (body MutationObserver, shadow MO, resize, etc.). On
+  // user-idle , no clicks, no scrolls, no React re-renders , no MO fires,
+  // so a record whose source vanished sits in the lifted Map with the
+  // wrapper still in DOM until something else perturbs the body.
+  let cleanupTimer: number | null = null;
 
   function scheduleSweep(reason: string): void {
     // Streaming gate. While ANY chat is generating, suppress sweeps
@@ -555,12 +562,33 @@ export function setupMessagePortal(ctx: SpindleFrontendContext, flog: Flog): Mes
     // flicker the overlay; sustained absence still drops cleanly.
     void visibleMsgIds;
     const now = performance.now();
+    let earliestStaleExpiry = Infinity;
     for (const [key, rec] of lifted) {
       if (presentKeys.has(key)) continue;
-      if (now - rec.lastSeenAt < CLEANUP_GRACE_MS) continue;
+      if (now - rec.lastSeenAt < CLEANUP_GRACE_MS) {
+        const exp = rec.lastSeenAt + CLEANUP_GRACE_MS;
+        if (exp < earliestStaleExpiry) earliestStaleExpiry = exp;
+        continue;
+      }
       try { rec.wrapper.remove(); } catch { /* */ }
       lifted.delete(key);
       stale++;
+    }
+
+    // Timer-driven follow-up: cleanup is otherwise sweep-driven, so on
+    // user-idle a within-grace stale record never expires. setTimeout
+    // fires regardless of DOM activity. Replace any pending timer , the
+    // new earliest-expiry may be sooner than the prior schedule.
+    if (cleanupTimer !== null) {
+      clearTimeout(cleanupTimer);
+      cleanupTimer = null;
+    }
+    if (earliestStaleExpiry !== Infinity) {
+      const delay = Math.max(0, earliestStaleExpiry - performance.now() + 5);
+      cleanupTimer = window.setTimeout(() => {
+        cleanupTimer = null;
+        scheduleSweep("cleanup-grace-elapsed");
+      }, delay);
     }
 
     const dt = performance.now() - t0;
@@ -770,6 +798,10 @@ export function setupMessagePortal(ctx: SpindleFrontendContext, flog: Flog): Mes
   }
 
   function clearAll(reason: string): void {
+    if (cleanupTimer !== null) {
+      clearTimeout(cleanupTimer);
+      cleanupTimer = null;
+    }
     if (lifted.size === 0) return;
     for (const [, rec] of lifted) {
       try { rec.wrapper.remove(); } catch { /* */ }
@@ -894,6 +926,10 @@ export function setupMessagePortal(ctx: SpindleFrontendContext, flog: Flog): Mes
       if (resizeTimer !== null) {
         clearTimeout(resizeTimer);
         resizeTimer = null;
+      }
+      if (cleanupTimer !== null) {
+        clearTimeout(cleanupTimer);
+        cleanupTimer = null;
       }
       for (const [, rec] of lifted) {
         try { rec.wrapper.remove(); } catch { /* */ }
