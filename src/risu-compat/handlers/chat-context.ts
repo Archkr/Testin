@@ -77,10 +77,12 @@ register("previouschatlog", (ctx, a) => {
   return msgs[idx]?.content ?? "Out of range";
 }, "Returns message[N].content, or 'Out of range' if index invalid.");
 
-// cbs.ts. First-greeting fallback when no assistant messages exist.
+// Risu cbs() with chatID=-1 walks back from chat-end. Outside cbs: from currentMessageIndex-1.
 register("previouscharchat", (ctx) => {
   const msgs = ctx.messages.all();
-  const start = ctx.currentMessageIndex !== null ? ctx.currentMessageIndex - 1 : msgs.length - 1;
+  const start = ctx.cbsContext
+    ? msgs.length - 1
+    : (ctx.currentMessageIndex !== null ? ctx.currentMessageIndex - 1 : msgs.length - 1);
   for (let i = start; i >= 0; i--) {
     const m = msgs[i];
     if (m && m.role === "assistant") return m.content;
@@ -89,10 +91,11 @@ register("previouscharchat", (ctx) => {
   return c.selectedAlternateGreetingIndex === -1
     ? c.firstMessage
     : (c.alternateGreetings[c.selectedAlternateGreetingIndex] ?? c.firstMessage);
-}, "Last character (assistant) message, walking back from the current index; first-greeting fallback.");
+}, "Last character (assistant) message; cbs walks from chat-end, others from currentMessageIndex-1.");
 
-// cbs.ts.
+// Risu cbs() with chatID=-1 returns '' (early exit). Outside cbs: walk from currentMessageIndex-1.
 register("previoususerchat", (ctx) => {
+  if (ctx.cbsContext) return "";
   if (ctx.currentMessageIndex === null) return "";
   const msgs = ctx.messages.all();
   for (let i = ctx.currentMessageIndex - 1; i >= 0; i--) {
@@ -103,7 +106,7 @@ register("previoususerchat", (ctx) => {
   return c.selectedAlternateGreetingIndex === -1
     ? c.firstMessage
     : (c.alternateGreetings[c.selectedAlternateGreetingIndex] ?? c.firstMessage);
-}, "Last user message, walking back from the current index; first-greeting fallback at index -1 → ''.");
+}, "Last user message; '' in cbs (chatID=-1 short-circuit), else walks back from currentMessageIndex-1.");
 
 // cbs.ts. Lumi collision; rewriter renames to `risu_lastmessage`.
 register("risu_lastmessage", (ctx) => {

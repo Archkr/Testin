@@ -289,6 +289,11 @@ function axLLM(id, prompt, useMultimodal, options)
   return json.decode(axLLMMain(id, json.encode(prompt), useMultimodal, json.encode(options)):await())
 end
 
+-- Risu parity: cards write cbs("...") and get a string. JS-side cbsMain is async because resolveTemplate routes through resolveReadonly IPC.
+function cbs(value)
+  return cbsMain(value):await()
+end
+
 local editRequestFuncs = {}
 local editDisplayFuncs = {}
 local editInputFuncs = {}

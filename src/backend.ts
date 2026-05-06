@@ -2377,6 +2377,7 @@ async function dispatchManualTrigger(
         submodelModelOverride: settings.submodelModelOverride,
         submodelSamplers: settings.submodelSamplers,
         ...(auxDebugCapture ? { auxDebugCapture } : {}),
+        resolveTemplate: (text: string) => resolveReadonly(text, chatId, characterId, { cbsContext: true }),
       });
       // Risu: triggers.ts sets mode=buttonName; scriptings.ts
       // calls the Lua global by that name. Falls back to onButtonClick.
@@ -2969,6 +2970,24 @@ async function resolveReadonly(
     `resolveReadonly: START chat=${chatId} char=${characterId} userId=${userId ?? '<none>'} cbs=${cbsContext} template_len=${template.length} ` +
       `template[0..200]=${JSON.stringify(template.slice(0, 200))}`,
   );
+  // cbs always forces worker-eval, the Lumi-native fallback can't propagate cbsContext through spindle.macros.resolve and would produce wrong semantics.
+  if (cbsContext) {
+    if (userId === undefined) {
+      log.warn(`resolveReadonly: cbs called before userId captured chat=${chatId} — returning template verbatim`);
+      return template;
+    }
+    try {
+      const out = await resolveReadonlyInWorker(template, chatId, characterId, userId, true);
+      log.debug(
+        `resolveReadonly: DONE (cbs worker-eval) chat=${chatId} elapsed=${Date.now() - t0}ms out_len=${out.length} ` +
+          `out[0..200]=${JSON.stringify(out.slice(0, 200))}`,
+      );
+      return out;
+    } catch (err) {
+      log.error(`resolveReadonly: cbs worker-eval threw chat=${chatId} — ${(err as Error).message}. Returning template verbatim.`);
+      return template;
+    }
+  }
   if (workerEvalEnabled()) {
     // Operator-scoped Spindle APIs (chats.get / characters.get / personas.getActive)
     // require a userId. If we don't have one yet (captureUserId hasn't fired),

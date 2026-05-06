@@ -599,13 +599,19 @@ export async function makeRisuTriggerRuntime(
       setChatVar: (_id: unknown, key: unknown, value: unknown) => setVar(toStr(key), toStr(value)),
       getGlobalVar: (_id: unknown, key: unknown) => getVar(toStr(key)),
       stopChat: (_id: unknown) => { stopSending = true; },
-      // Blocking modal in Risu; fall back to toast on older hosts.
+      // Risu parity: fire-and-forget. Returning the Promise would force Lua to await or leak an unhandledRejection on modal-infra throw.
       alertError: (_id: unknown, value: unknown) => {
-        if (api.ui?.alert) return api.ui.alert(toStr(value), 'error');
+        if (api.ui?.alert) {
+          api.ui.alert(toStr(value), 'error').catch(() => { /* swallow */ });
+          return;
+        }
         try { api.ui?.toast?.(toStr(value), 'error'); } catch { /* */ }
       },
       alertNormal: (_id: unknown, value: unknown) => {
-        if (api.ui?.alert) return api.ui.alert(toStr(value), 'info');
+        if (api.ui?.alert) {
+          api.ui.alert(toStr(value), 'info').catch(() => { /* swallow */ });
+          return;
+        }
         try { api.ui?.toast?.(toStr(value), 'info'); } catch { /* */ }
       },
       alertInput: (_id: unknown, value: unknown) => {
@@ -727,10 +733,8 @@ export async function makeRisuTriggerRuntime(
         } catch { /* */ }
       },
       sleep: (_id: unknown, ms: unknown) => new Promise<void>((r) => setTimeout(r, Math.max(0, Number(ms) || 0))),
-      // Resolver order: opts, then dispatch-context side-channel (compiled
-      // triggers ship JSON-frozen rtOpts, no Function can ride that surface),
-      // then identity passthrough. Never rejects.
-      cbs: async (value: unknown): Promise<string> => {
+      // Risu parity: user-facing `cbs` is sync. The lua-bridge prelude wraps `cbsMain():await()` so cards calling `cbs("...")` get a string.
+      cbsMain: async (value: unknown): Promise<string> => {
         const text = toStr(value);
         const resolver = opts.resolveTemplate ?? getDispatchContext()?.resolveTemplate;
         if (resolver) {

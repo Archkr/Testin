@@ -71,13 +71,12 @@ register("datetimeformat", (ctx, a) => {
 register("hiddenkey", () => "",
   "A key that activates lorebook entries without being sent to the model.");
 
-// Empty at prompt time. Display renders as <div class="risu-comment">.
+// Risu: cbs (displaying=false) and prompt-assembly (commit=true) both return ''. Only the display path renders the div.
 register("risu_comment", (ctx, a) => {
-  if (ctx.commit) return "";
-  // Pre-prefixed to match Risu's `.x-risu-risu-comment` rule (parser
-  // double-prefixes since the source class already starts with `risu-`).
+  if (ctx.commit || ctx.cbsContext) return "";
+  // Class pre-prefixed to match Risu's `.x-risu-risu-comment` rule.
   return `<div class="x-risu-risu-comment">${a[0] ?? ""}</div>`;
-}, "Comment macro. Empty at prompt time; displays as <div class=\"risu-comment\">…</div> at render time.");
+}, "Comment macro. Empty at prompt time and in cbs; displays as <div class=\"risu-comment\">…</div> at render time.");
 
 // `//` inline comment.
 registry.register({

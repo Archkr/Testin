@@ -17,6 +17,13 @@ function parseUTCOffset(s: string): number | null {
 export function registerBuiltins(register: RegisterFn): void {
   register("bot", (ctx) => ctx.identity.charName, false);
 
+  // PUA-protected on render-MCP, but cbs's forced worker-eval can't fall back to Lumi-native to resolve them.
+  register("user", (ctx) => ctx.identity.userName, false);
+  register("char", (ctx) => ctx.identity.charName, false);
+  register("charname", (ctx) => ctx.identity.charName, false);
+  register("notchar", (ctx) => ctx.identity.userName, false);
+  register("not_char", (ctx) => ctx.identity.userName, false);
+
   register("newline", () => "\n", false);
   register("nl", () => "\n", false);
   register("n", () => "\n", false);

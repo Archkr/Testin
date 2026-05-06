@@ -73,6 +73,9 @@ register("risu_setchatvar", (ctx, a) => {
   return "";
 }, "Sets a chat-scoped variable.");
 
-// cbs.ts. Risu sets __force_return__ to stop processing; no equivalent stop here.
-register("return", (_c, a) => a[0] ?? "",
-  "Risu's {{return::value}} sets __force_return__ flag. We return the value but DO NOT stop further macro resolution — known deviation.");
+// Risu cbs.ts: writes __force_return__/__return__ to tempvar so parser short-circuits on next macro. Scanner check at leaf-dispatch site mirrors parser.svelte.ts.
+register("return", (ctx, a) => {
+  ctx.vars.set("temp", "__force_return__", "1");
+  ctx.vars.set("temp", "__return__", a[0] ?? "");
+  return "";
+}, "Halts further macro resolution, returns the given value as the entire parser output (Risu parity).");

@@ -16273,13 +16273,19 @@ var init_context_reads = __esm(() => {
   register("risu_model", (ctx) => ctx.aiModel, "Returns the id of the currently selected AI model.");
   register("axmodel", (ctx) => ctx.axModel, "Returns the id of the auxiliary/secondary model.");
   register("role", (ctx) => {
+    if (ctx.cbsContext)
+      return "null";
     if (ctx.isFirstMessage)
       return "char";
     if (ctx.role !== null)
       return ctx.role;
     return "null";
   }, "Returns the role of the current message ('user', 'char'/'assistant', 'system').");
-  register("isfirstmsg", (ctx) => ctx.isFirstMessage ? "1" : "0", "Returns '1' if the current context is the first (greeting) message, '0' otherwise.");
+  register("isfirstmsg", (ctx) => {
+    if (ctx.cbsContext)
+      return "0";
+    return ctx.isFirstMessage ? "1" : "0";
+  }, "Returns '1' if the current context is the first (greeting) message, '0' otherwise.");
   register("unixtime", (ctx) => Math.floor(ctx.clock.now() / 1000).toString(), "Returns the current unix timestamp in seconds.");
   register("risu_time", (ctx) => {
     const d = new Date(ctx.clock.now());
@@ -16918,7 +16924,11 @@ var init_variables = __esm(() => {
     ctx.vars.set("local", a[0] ?? "", a[1] ?? "");
     return "";
   }, "Sets a chat-scoped variable.");
-  register7("return", (_c, a) => a[0] ?? "", "Risu's {{return::value}} sets __force_return__ flag. We return the value but DO NOT stop further macro resolution \u2014 known deviation.");
+  register7("return", (ctx, a) => {
+    ctx.vars.set("temp", "__force_return__", "1");
+    ctx.vars.set("temp", "__return__", a[0] ?? "");
+    return "";
+  }, "Halts further macro resolution, returns the given value as the entire parser output (Risu parity).");
 });
 
 // src/risu-compat/handlers/misc.ts
@@ -16984,10 +16994,10 @@ var init_misc = __esm(() => {
   }, "Alias of {{date::fmt}}.");
   register8("hiddenkey", () => "", "A key that activates lorebook entries without being sent to the model.");
   register8("risu_comment", (ctx, a) => {
-    if (ctx.commit)
+    if (ctx.commit || ctx.cbsContext)
       return "";
     return `<div class="x-risu-risu-comment">${a[0] ?? ""}</div>`;
-  }, 'Comment macro. Empty at prompt time; displays as <div class="risu-comment">\u2026</div> at render time.');
+  }, 'Comment macro. Empty at prompt time and in cbs; displays as <div class="risu-comment">\u2026</div> at render time.');
   registry.register({
     name: "//",
     handler: () => "",
@@ -17124,7 +17134,7 @@ var init_chat_context = __esm(() => {
   }, "Returns message[N].content, or 'Out of range' if index invalid.");
   register9("previouscharchat", (ctx) => {
     const msgs = ctx.messages.all();
-    const start = ctx.currentMessageIndex !== null ? ctx.currentMessageIndex - 1 : msgs.length - 1;
+    const start = ctx.cbsContext ? msgs.length - 1 : ctx.currentMessageIndex !== null ? ctx.currentMessageIndex - 1 : msgs.length - 1;
     for (let i = start;i >= 0; i--) {
       const m = msgs[i];
       if (m && m.role === "assistant")
@@ -17132,8 +17142,10 @@ var init_chat_context = __esm(() => {
     }
     const c = ctx.character;
     return c.selectedAlternateGreetingIndex === -1 ? c.firstMessage : c.alternateGreetings[c.selectedAlternateGreetingIndex] ?? c.firstMessage;
-  }, "Last character (assistant) message, walking back from the current index; first-greeting fallback.");
+  }, "Last character (assistant) message; cbs walks from chat-end, others from currentMessageIndex-1.");
   register9("previoususerchat", (ctx) => {
+    if (ctx.cbsContext)
+      return "";
     if (ctx.currentMessageIndex === null)
       return "";
     const msgs = ctx.messages.all();
@@ -17144,7 +17156,7 @@ var init_chat_context = __esm(() => {
     }
     const c = ctx.character;
     return c.selectedAlternateGreetingIndex === -1 ? c.firstMessage : c.alternateGreetings[c.selectedAlternateGreetingIndex] ?? c.firstMessage;
-  }, "Last user message, walking back from the current index; first-greeting fallback at index -1 \u2192 ''.");
+  }, "Last user message; '' in cbs (chatID=-1 short-circuit), else walks back from currentMessageIndex-1.");
   register9("risu_lastmessage", (ctx) => {
     const last = ctx.messages.last();
     return last?.content ?? "";
@@ -17864,6 +17876,11 @@ function parseUTCOffset(s) {
 }
 function registerBuiltins(register13) {
   register13("bot", (ctx) => ctx.identity.charName, false);
+  register13("user", (ctx) => ctx.identity.userName, false);
+  register13("char", (ctx) => ctx.identity.charName, false);
+  register13("charname", (ctx) => ctx.identity.charName, false);
+  register13("notchar", (ctx) => ctx.identity.userName, false);
+  register13("not_char", (ctx) => ctx.identity.userName, false);
   register13("newline", () => `
 `, false);
   register13("nl", () => `
@@ -18178,6 +18195,12 @@ function evaluate(template, ctx, opts = {}) {
           nested[0] += `{{${dat}}}`;
         } else {
           nested[0] += mc;
+        }
+        if (innerCtx.vars.get("temp", "__force_return__") === "1") {
+          const ret = innerCtx.vars.get("temp", "__return__") || "null";
+          innerCtx.vars.delete("temp", "__force_return__");
+          innerCtx.vars.delete("temp", "__return__");
+          return ret;
         }
         break;
       }
@@ -24826,15 +24849,19 @@ async function makeRisuTriggerRuntime(api, data, scriptNs, opts = {}) {
         stopSending = true;
       },
       alertError: (_id, value) => {
-        if (api.ui?.alert)
-          return api.ui.alert(toStr(value), "error");
+        if (api.ui?.alert) {
+          api.ui.alert(toStr(value), "error").catch(() => {});
+          return;
+        }
         try {
           api.ui?.toast?.(toStr(value), "error");
         } catch {}
       },
       alertNormal: (_id, value) => {
-        if (api.ui?.alert)
-          return api.ui.alert(toStr(value), "info");
+        if (api.ui?.alert) {
+          api.ui.alert(toStr(value), "info").catch(() => {});
+          return;
+        }
         try {
           api.ui?.toast?.(toStr(value), "info");
         } catch {}
@@ -24936,7 +24963,7 @@ async function makeRisuTriggerRuntime(api, data, scriptNs, opts = {}) {
         } catch {}
       },
       sleep: (_id, ms) => new Promise((r) => setTimeout(r, Math.max(0, Number(ms) || 0))),
-      cbs: async (value) => {
+      cbsMain: async (value) => {
         const text = toStr(value);
         const resolver = opts.resolveTemplate ?? getDispatchContext()?.resolveTemplate;
         if (resolver) {
@@ -26024,6 +26051,11 @@ function axLLM(id, prompt, useMultimodal, options)
   useMultimodal = useMultimodal or false
   options = options or {}
   return json.decode(axLLMMain(id, json.encode(prompt), useMultimodal, json.encode(options)):await())
+end
+
+-- Risu parity: cards write cbs("...") and get a string. JS-side cbsMain is async because resolveTemplate routes through resolveReadonly IPC.
+function cbs(value)
+  return cbsMain(value):await()
 end
 
 local editRequestFuncs = {}
@@ -32586,7 +32618,8 @@ async function dispatchManualTrigger(chatId, triggerName, triggerId) {
         submodelConnectionId: settings.submodelConnectionId,
         submodelModelOverride: settings.submodelModelOverride,
         submodelSamplers: settings.submodelSamplers,
-        ...auxDebugCapture ? { auxDebugCapture } : {}
+        ...auxDebugCapture ? { auxDebugCapture } : {},
+        resolveTemplate: (text) => resolveReadonly(text, chatId, characterId, { cbsContext: true })
       });
       log7.info(`dispatchManualTrigger: invoking Lua entry=${triggerName} args=[${effectiveTriggerId}] chatId=${chatId}`);
       await runtime2.runLua(luaCode, {
@@ -33022,6 +33055,20 @@ async function resolveReadonly(template, chatId, characterId, opts) {
   const cbsContext = opts?.cbsContext === true;
   const t0 = Date.now();
   log7.debug(`resolveReadonly: START chat=${chatId} char=${characterId} userId=${userId ?? "<none>"} cbs=${cbsContext} template_len=${template.length} template[0..200]=${JSON.stringify(template.slice(0, 200))}`);
+  if (cbsContext) {
+    if (userId === undefined) {
+      log7.warn(`resolveReadonly: cbs called before userId captured chat=${chatId} \u2014 returning template verbatim`);
+      return template;
+    }
+    try {
+      const out = await resolveReadonlyInWorker(template, chatId, characterId, userId, true);
+      log7.debug(`resolveReadonly: DONE (cbs worker-eval) chat=${chatId} elapsed=${Date.now() - t0}ms out_len=${out.length} out[0..200]=${JSON.stringify(out.slice(0, 200))}`);
+      return out;
+    } catch (err) {
+      log7.error(`resolveReadonly: cbs worker-eval threw chat=${chatId} \u2014 ${err.message}. Returning template verbatim.`);
+      return template;
+    }
+  }
   if (workerEvalEnabled()) {
     if (userId === undefined) {
       log7.info(`resolveReadonly: worker-eval skipped chat=${chatId} \u2014 userId not yet captured; using legacy path`);

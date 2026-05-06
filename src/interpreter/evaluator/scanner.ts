@@ -258,6 +258,13 @@ export function evaluate(
         } else {
           nested[0] += mc;
         }
+        // Risu parser.svelte.ts: parser short-circuits when {{return::v}} sets __force_return__. Reset the flags so outer evaluate calls (description recursion etc.) don't inherit the halt.
+        if (innerCtx.vars.get("temp", "__force_return__") === "1") {
+          const ret = innerCtx.vars.get("temp", "__return__") || "null";
+          innerCtx.vars.delete("temp", "__force_return__");
+          innerCtx.vars.delete("temp", "__return__");
+          return ret;
+        }
         break;
       }
       default:

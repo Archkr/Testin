@@ -57,16 +57,20 @@ register("risu_model", (ctx) => ctx.aiModel,
 register("axmodel", (ctx) => ctx.axModel,
   "Returns the id of the auxiliary/secondary model.");
 
-// cbs.ts. Returns literal "null" when unknown.
+// Risu cbs() default (no cbsConditions, chatID=-1) returns 'null'.
+// Outside cbs: chatRole > firstmsg-then-'char' > chatID-then-msg.role > role > 'null'.
 register("role", (ctx) => {
+  if (ctx.cbsContext) return "null";
   if (ctx.isFirstMessage) return "char";
   if (ctx.role !== null) return ctx.role;
   return "null";
 }, "Returns the role of the current message ('user', 'char'/'assistant', 'system').");
 
-// cbs.ts.
-register("isfirstmsg", (ctx) => ctx.isFirstMessage ? "1" : "0",
-  "Returns '1' if the current context is the first (greeting) message, '0' otherwise.");
+// Risu cbs() default returns '0' (no cbsConditions.firstmsg).
+register("isfirstmsg", (ctx) => {
+  if (ctx.cbsContext) return "0";
+  return ctx.isFirstMessage ? "1" : "0";
+}, "Returns '1' if the current context is the first (greeting) message, '0' otherwise.");
 
 
 // cbs.ts.
