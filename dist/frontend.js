@@ -12365,7 +12365,7 @@ function setup(ctx) {
     const triggerId = el.getAttribute("risu-id") ?? undefined;
     const chatId = activeRisuChatId;
     if (!chatId) {
-      flog2.warn(`manual-trigger click: no active Risu chat, ignoring triggerName=${triggerName}`);
+      flog2.warn(`manual-trigger click: active chat isn't a lumirealm chat, ignoring triggerName=${triggerName}`);
       return;
     }
     e.preventDefault();
@@ -12387,7 +12387,7 @@ function setup(ctx) {
     fire(triggerName, triggerId) {
       const chatId = activeRisuChatId;
       if (!chatId) {
-        flog2.warn(`__riCompat.fire: no active Risu chat; open one first. triggerName=${triggerName}`);
+        flog2.warn(`__riCompat.fire: active chat isn't a lumirealm chat; open one first. triggerName=${triggerName}`);
         return false;
       }
       if (typeof triggerName !== "string" || triggerName.length === 0) {
@@ -12526,22 +12526,21 @@ function setup(ctx) {
       }
       ready = true;
     }
+    if (msg.type === "set_active_chat") {
+      const prevChatId = activeRisuChatId;
+      activeRisuChatId = msg.chatId;
+      if (activeRisuChatId !== prevChatId) {
+        messagePortal.clearAll(activeRisuChatId === null ? "set_active_chat:null" : "chat-switch");
+        if (sidebar)
+          sidebar.setActiveChatId(activeRisuChatId);
+      }
+      return;
+    }
     if (msg.type === "render_bg_html" || msg.type === "clear_bg_html") {
       try {
         bgRenderer.handleMessage(msg);
       } catch (err) {
         flog2.error("bg-html dispatch failed:", err);
-      }
-      const prevChatId = activeRisuChatId;
-      if (msg.type === "render_bg_html")
-        activeRisuChatId = msg.chatId;
-      else if (msg.type === "clear_bg_html")
-        activeRisuChatId = null;
-      if (activeRisuChatId !== prevChatId) {
-        messagePortal.clearAll(msg.type === "clear_bg_html" ? "clear_bg_html" : "chat-switch");
-      }
-      if (sidebar && activeRisuChatId !== prevChatId) {
-        sidebar.setActiveChatId(activeRisuChatId);
       }
       return;
     }

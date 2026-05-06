@@ -33140,6 +33140,13 @@ function captureUserId(userId, where) {
     });
   }
 }
+function sendSetActiveChat(activeChatId) {
+  try {
+    spindle.sendToFrontend({ type: "set_active_chat", chatId: activeChatId });
+  } catch (err) {
+    log7.warn(`sendSetActiveChat: ${err.message}`);
+  }
+}
 spindle.on("SETTINGS_UPDATED", async (raw, userId) => {
   captureUserId(userId, "SETTINGS_UPDATED");
   const p = raw;
@@ -33155,6 +33162,7 @@ spindle.on("SETTINGS_UPDATED", async (raw, userId) => {
       lastSentBgHtmlByChat.delete(chatId);
   }
   if (!chatId) {
+    sendSetActiveChat(null);
     const lastChat = userId ? lastActiveChatByUser.get(userId) : undefined;
     if (lastChat) {
       log7.info(`SETTINGS_UPDATED activeChatId cleared, dismounting bg-host for last chat=${lastChat}`);
@@ -33182,6 +33190,7 @@ spindle.on("SETTINGS_UPDATED", async (raw, userId) => {
   }
   const active = await ensureActiveCardForChat(chatId, characterId ?? null);
   log7.info(`SETTINGS_UPDATED activeChatId: active=${active ? `characterId=${active.card.character_id} hasBgHtml=${!!active.card.risuPayload.background_html} triggers=${active.card.risuPayload.triggers?.length ?? 0}` : "<none>"}`);
+  sendSetActiveChat(active ? chatId : null);
   if (!active) {
     try {
       spindle.sendToFrontend({ type: "clear_bg_html", chatId });
@@ -33454,6 +33463,14 @@ spindle.on("CHARACTER_DELETED", async (raw, uid) => {
   const cachedWorldBookIds = worldBookIdsByCharacter.get(characterId) ?? [];
   worldBookIdsByCharacter.delete(characterId);
   await deleteCardByChar(characterId, "cascade");
+  if (uid) {
+    const lastChat = lastActiveChatByUser.get(uid);
+    if (lastChat) {
+      const stillActive = await ensureActiveCardForChat(lastChat, null).catch(() => null);
+      if (!stillActive)
+        sendSetActiveChat(null);
+    }
+  }
   if (uid) {
     await runImageCleanupForCharacter(characterId, uid).catch((err) => {
       log7.warn(`CHARACTER_DELETED: image cleanup threw char=${characterId}: ${errMsg(err)}`);
@@ -34526,6 +34543,7 @@ spindle.onFrontendMessage(async (raw, userId) => {
           log7.info(`get_cards: re-painting bg+scope-css for lastChat=${lastChat} userId=${userId}`);
           try {
             const active = await ensureActiveCardForChat(lastChat, null);
+            sendSetActiveChat(active ? lastChat : null);
             if (active) {
               invalidateRenderMcpForChat(lastChat);
               await refreshBgHtml(active, lastChat);
@@ -34534,6 +34552,8 @@ spindle.onFrontendMessage(async (raw, userId) => {
           } catch (err) {
             log7.warn(`get_cards: rehydrate failed chat=${lastChat}: ${errMsg(err)}`);
           }
+        } else {
+          sendSetActiveChat(null);
         }
         break;
       }

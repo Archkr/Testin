@@ -3146,6 +3146,15 @@ function captureUserId(userId: string | undefined, where: string): void {
   }
 }
 
+// Decoupled from bg-html paint so empty-bg cards activate.
+function sendSetActiveChat(activeChatId: string | null): void {
+  try {
+    spindle.sendToFrontend({ type: 'set_active_chat', chatId: activeChatId });
+  } catch (err) {
+    log.warn(`sendSetActiveChat: ${(err as Error).message}`);
+  }
+}
+
 // SETTINGS_UPDATED key='activeChatId' fires on chat navigation. Warms the
 // active-card cache and renders bg-html. Does NOT fire `start` binding (Risu
 // fires `start` only inside sendChat, not on chat open).
@@ -3164,6 +3173,7 @@ spindle.on('SETTINGS_UPDATED', async (raw, userId) => {
   // When chatId clears (ChatView unmount), fire clear_bg_html for the last
   // mounted chat so fixed-positioned bg widgets don't bleed onto other pages.
   if (!chatId) {
+    sendSetActiveChat(null);
     const lastChat = userId ? lastActiveChatByUser.get(userId) : undefined;
     if (lastChat) {
       log.info(
@@ -3187,6 +3197,8 @@ spindle.on('SETTINGS_UPDATED', async (raw, userId) => {
   }
   const active = await ensureActiveCardForChat(chatId, characterId ?? null);
   log.info(`SETTINGS_UPDATED activeChatId: active=${active ? `characterId=${active.card.character_id} hasBgHtml=${!!active.card.risuPayload.background_html} triggers=${active.card.risuPayload.triggers?.length ?? 0}` : '<none>'}`);
+  // Activation precedes paint: lifter clearAll fires on this edge.
+  sendSetActiveChat(active ? chatId : null);
   if (!active) {
     try { spindle.sendToFrontend({ type: 'clear_bg_html', chatId }); } catch { /* */ }
     return;
@@ -3570,6 +3582,15 @@ spindle.on('CHARACTER_DELETED', async (raw, uid) => {
   const cachedWorldBookIds = worldBookIdsByCharacter.get(characterId) ?? [];
   worldBookIdsByCharacter.delete(characterId);
   await deleteCardByChar(characterId, 'cascade');
+
+  // Re-evaluate: deleted char may be the active one.
+  if (uid) {
+    const lastChat = lastActiveChatByUser.get(uid);
+    if (lastChat) {
+      const stillActive = await ensureActiveCardForChat(lastChat, null).catch(() => null);
+      if (!stillActive) sendSetActiveChat(null);
+    }
+  }
 
   if (uid) {
     await runImageCleanupForCharacter(characterId, uid).catch((err) => {
@@ -4989,6 +5010,8 @@ spindle.onFrontendMessage(async (raw, userId) => {
           log.info(`get_cards: re-painting bg+scope-css for lastChat=${lastChat} userId=${userId}`);
           try {
             const active = await ensureActiveCardForChat(lastChat, null);
+            // FE remount lost activeRisuChatId; reaffirm before paint.
+            sendSetActiveChat(active ? lastChat : null);
             if (active) {
               invalidateRenderMcpForChat(lastChat);
               await refreshBgHtml(active, lastChat);
@@ -4997,6 +5020,8 @@ spindle.onFrontendMessage(async (raw, userId) => {
           } catch (err) {
             log.warn(`get_cards: rehydrate failed chat=${lastChat}: ${errMsg(err)}`);
           }
+        } else {
+          sendSetActiveChat(null);
         }
         break;
       }

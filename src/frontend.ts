@@ -382,7 +382,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     const triggerId = el.getAttribute('risu-id') ?? undefined;
     const chatId = activeRisuChatId;
     if (!chatId) {
-      flog.warn(`manual-trigger click: no active Risu chat, ignoring triggerName=${triggerName}`);
+      flog.warn(`manual-trigger click: active chat isn't a lumirealm chat, ignoring triggerName=${triggerName}`);
       return;
     }
     e.preventDefault();
@@ -405,7 +405,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     fire(triggerName: string, triggerId?: string): boolean {
       const chatId = activeRisuChatId;
       if (!chatId) {
-        flog.warn(`__riCompat.fire: no active Risu chat; open one first. triggerName=${triggerName}`);
+        flog.warn(`__riCompat.fire: active chat isn't a lumirealm chat; open one first. triggerName=${triggerName}`);
         return false;
       }
       if (typeof triggerName !== 'string' || triggerName.length === 0) {
@@ -561,23 +561,21 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       }
       ready = true;
     }
+    if (msg.type === 'set_active_chat') {
+      const prevChatId = activeRisuChatId;
+      activeRisuChatId = msg.chatId;
+      if (activeRisuChatId !== prevChatId) {
+        // Without clearAll, null->null transitions leak stale clones across chats.
+        messagePortal.clearAll(activeRisuChatId === null ? 'set_active_chat:null' : 'chat-switch');
+        if (sidebar) sidebar.setActiveChatId(activeRisuChatId);
+      }
+      return;
+    }
     if (msg.type === 'render_bg_html' || msg.type === 'clear_bg_html') {
       try {
         bgRenderer.handleMessage(msg);
       } catch (err) {
         flog.error('bg-html dispatch failed:', err);
-      }
-      // Any clear_bg_html means leaving Risu UI; null unconditionally to avoid stale chatId dispatch.
-      const prevChatId = activeRisuChatId;
-      if (msg.type === 'render_bg_html') activeRisuChatId = msg.chatId;
-      else if (msg.type === 'clear_bg_html') activeRisuChatId = null;
-      // Lifter overlay is per-chat. Drop everything on chat switch.
-      // The new chat's bg-html arrives next and the lifter re-detects.
-      if (activeRisuChatId !== prevChatId) {
-        messagePortal.clearAll(msg.type === 'clear_bg_html' ? 'clear_bg_html' : 'chat-switch');
-      }
-      if (sidebar && activeRisuChatId !== prevChatId) {
-        sidebar.setActiveChatId(activeRisuChatId);
       }
       return;
     }

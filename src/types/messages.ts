@@ -371,6 +371,12 @@ export type BackendToFrontend =
       type: 'clear_bg_html';
       chatId: string;
     }
+  // chatId non-null iff the chat has lumirealm data. Decoupled from
+  // render_bg_html so empty-bg cards still activate.
+  | {
+      type: 'set_active_chat';
+      chatId: string | null;
+    }
   // Pushed on every state-tick. `defaults` is character-level `defaultVariables`
   // (Risu's `getChatVar` fallback when key unset).
   // `seq` is monotonic per-chat; pushes only when snapshot changes (or on explicit request).
