@@ -234,7 +234,7 @@ export type FrontendToBackend =
   //   - `string`: append entries to that character's existing world_book
   //     (create one if absent). Risu's `importLoreBook(mode='global')`
   //     parity. Used by the Viewer tab's per-character import button.
-  //   - `null`: standalone import — create a fresh, unattached world_book.
+  //   - `null`: standalone import , create a fresh, unattached world_book.
   //     Used by Import → Lorebooks. The user can attach it via Lumiverse
   //     later; Risu decorators (Tier 1/2/3) still apply at runtime if a
   //     Risu-imported character ends up using it.
@@ -418,7 +418,7 @@ export type BackendToFrontend =
       kind: 'request' | 'response' | 'error';
       /** Which LLM channel fired this. `aux` = `axLLMMain`/`axLLM`/`LLMMain`;
        *  `submodel` = V2 `runLLM(model='submodel')`. Optional for back-compat
-       *  with older bundles — absent values default to `'aux'` in the panel. */
+       *  with older bundles , absent values default to `'aux'` in the panel. */
       channel?: 'aux' | 'submodel';
       /** `null` for manual-trigger paths invoked outside chat context. */
       chatId: string | null;
@@ -481,7 +481,7 @@ export type BackendToFrontend =
       worldBookName?: string;
       reason?: string;
     }
-  // Streaming state — emitted by BE on 0↔1 transitions of
+  // Streaming state , emitted by BE on 0↔1 transitions of
   // `generationsInFlight[chatId]`. The frontend portal lifter pauses
   // sweeps while `active === true` to avoid the per-chunk
   // drop-and-re-clone cycle (Lumi's React re-renders the bubble per

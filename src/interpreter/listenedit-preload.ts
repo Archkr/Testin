@@ -1,4 +1,4 @@
-// Per-chain preload for `runListenEditChain` — fetches the chat-state
+// Per-chain preload for `runListenEditChain` , fetches the chat-state
 // snapshot ONCE outside the per-trigger loop and shares it across all
 // triggers in the same chain. Plus a short-TTL cross-chain cache so a burst
 // of render-MCP calls (e.g. 14 visible messages on chat-open with a
@@ -40,7 +40,7 @@ export function invalidateListenEditPreload(chatId: string): void {
 }
 
 /**
- * Drop everything — used on shutdown / test reset. Module-scope cache makes
+ * Drop everything , used on shutdown / test reset. Module-scope cache makes
  * unit tests dirty otherwise.
  */
 export function resetListenEditPreloadCache(): void {
@@ -53,12 +53,12 @@ export function resetListenEditPreloadCache(): void {
  *
  * Returns a fully-populated TriggerRuntimePreloaded:
  *   - varsCache (loadVars)
- *   - messagesRaw (api.chat.getMessages — pre-frame-shift; runtime.ts owns
+ *   - messagesRaw (api.chat.getMessages , pre-frame-shift; runtime.ts owns
  *     buildRisuChatView per-trigger so each Lua sees an identical view)
  *   - lorebook (api.characters.get → api.worldInfo.entries.list)
  *
  * Each fetch is wrapped so a single field's failure doesn't poison the
- * whole snapshot — a partial preload still saves the IPCs that succeeded.
+ * whole snapshot , a partial preload still saves the IPCs that succeeded.
  */
 export async function preloadForListenEditChain(
   api: HostApi,
@@ -78,7 +78,7 @@ export async function preloadForListenEditChain(
   }
 
   const t0 = Date.now();
-  // Fetch all three in parallel — they're independent IPCs; serial fetching
+  // Fetch all three in parallel , they're independent IPCs; serial fetching
   // would pay 3× wall clock for no reason. Promise.allSettled so a single
   // failure doesn't bring down the rest.
   const [varsResult, msgsResult, charResult] = await Promise.allSettled([
@@ -106,7 +106,7 @@ export async function preloadForListenEditChain(
       const tLore = Date.now();
       const entries: LorebookCache['entries'] = [];
       // Per-book IPCs run in parallel for the same reason loadVars+getMessages
-      // do — they're independent, so we shouldn't pay N× wall clock.
+      // do , they're independent, so we shouldn't pay N× wall clock.
       const lists = await Promise.allSettled(
         bookIds.map((bid) =>
           api.worldInfo!.entries.list(bid, { limit: 1000 }).then((res) => ({ bid, res })),

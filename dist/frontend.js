@@ -8670,6 +8670,8 @@ function setupIslandStyles(flog, opts = {}) {
         return;
       try {
         sheet.replaceSync("");
+        lastSheetCss = null;
+        lastCrossRuleKey = null;
         nudgeAdopters("clear");
       } catch {}
     },
@@ -8842,6 +8844,23 @@ function setupMessagePortal(ctx, flog) {
     flog.warn("message-portal: min-height MO observe failed", err);
   }
   const prevSweepSigs = new Map;
+  const shadowObservers = new Map;
+  function ensureShadowObserved(shadow) {
+    if (shadowObservers.has(shadow))
+      return;
+    const so = new MutationObserver(() => {
+      try {
+        maybeEmitBalloonTrace("shadow-mutation");
+      } catch {}
+      scheduleSweep("shadow-mutation");
+    });
+    try {
+      so.observe(shadow, { childList: true, subtree: true, characterData: true });
+      shadowObservers.set(shadow, so);
+    } catch (err) {
+      flog.warn("message-portal: shadow MO observe failed", err);
+    }
+  }
   function sigHead(sig) {
     const compact = sig.replace(/\s+/g, " ").slice(0, 600);
     return compact;
@@ -8882,8 +8901,10 @@ function setupMessagePortal(ctx, flog) {
             continue;
           }
           visit(child);
-          if (child.shadowRoot && child.shadowRoot.mode === "open")
+          if (child.shadowRoot && child.shadowRoot.mode === "open") {
+            ensureShadowObserved(child.shadowRoot);
             visit(child.shadowRoot);
+          }
         }
       };
       const container = containerEl;
@@ -8893,8 +8914,10 @@ function setupMessagePortal(ctx, flog) {
       visibleMsgIds.add(msgId);
       const fixed = [];
       visit(container);
-      if (container.shadowRoot && container.shadowRoot.mode === "open")
+      if (container.shadowRoot && container.shadowRoot.mode === "open") {
+        ensureShadowObserved(container.shadowRoot);
         visit(container.shadowRoot);
+      }
       if (fixed.length === 0) {
         if (traceBubbles)
           traceBubbles.push({ msgId, fixedCount: 0, groupCount: 0 });
@@ -9153,7 +9176,14 @@ function setupMessagePortal(ctx, flog) {
     const n = lifted.size;
     lifted.clear();
     clearHidePanelClasses();
-    flog.info(`message-portal: clearAll reason=${reason} cleared=${n}`);
+    const shadowCount = shadowObservers.size;
+    for (const so of shadowObservers.values()) {
+      try {
+        so.disconnect();
+      } catch {}
+    }
+    shadowObservers.clear();
+    flog.info(`message-portal: clearAll reason=${reason} cleared=${n} shadow_observers=${shadowCount}`);
   }
   const mo = new MutationObserver(() => {
     try {
@@ -9239,6 +9269,12 @@ function setupMessagePortal(ctx, flog) {
       try {
         minHeightMo.disconnect();
       } catch {}
+      for (const so of shadowObservers.values()) {
+        try {
+          so.disconnect();
+        } catch {}
+      }
+      shadowObservers.clear();
       window.removeEventListener("resize", onResize);
       if (throttleTimer !== null) {
         clearTimeout(throttleTimer);
@@ -11900,10 +11936,54 @@ function setup(ctx) {
   const originalFetch = window.fetch.bind(window);
   const taggedFetch = async (input, init) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-    const isResolveBatch = typeof url === "string" && url.includes("/api/v1/macros/resolve-batch");
-    if (!isResolveBatch)
+    const urlStr = typeof url === "string" ? url : "";
+    const isResolveBatch = urlStr.includes("/api/v1/macros/resolve-batch");
+    const isRegexApply = urlStr.includes("/api/v1/regex-scripts/apply");
+    const isDisplayPreprocess = urlStr.includes("/display-preprocess");
+    if (!isResolveBatch && !isRegexApply && !isDisplayPreprocess)
       return originalFetch(input, init);
     const t0 = performance.now();
+    if (isRegexApply) {
+      let preview = "";
+      try {
+        const body = init?.body;
+        if (typeof body === "string") {
+          const parsed = JSON.parse(body);
+          const findKeys = Object.keys(parsed.resolved_find_patterns ?? {});
+          const replaceKeys = Object.keys(parsed.resolved_replacements ?? {});
+          const dynKeys = Object.keys(parsed.dynamic_macros ?? {});
+          preview = `scripts=${parsed.scripts?.length ?? 0} content_len=${parsed.content?.length ?? 0} preFind=${findKeys.length} preReplace=${replaceKeys.length} dyn=[${dynKeys.join(",")}]`;
+        }
+      } catch {}
+      flog.info(`[macro-tap] → POST regex-scripts/apply ${preview}`);
+      const resp2 = await originalFetch(input, init);
+      try {
+        const clone = resp2.clone();
+        const text = await clone.text();
+        const parsed = (() => {
+          try {
+            return JSON.parse(text);
+          } catch {
+            return null;
+          }
+        })();
+        if (parsed && typeof parsed.result === "string") {
+          const stillRaw = /\{\{(?!\s*(?:user|char|bot|notChar|not_char|charName)\s*\}\})/i.test(parsed.result);
+          flog.info(`[macro-tap] ← regex-scripts/apply 200 in ${Math.round(performance.now() - t0)}ms result_len=${parsed.result.length} touched=${parsed.touched_vars?.length ?? 0} cacheable=${parsed.cacheable} still_has_raw_cbs=${stillRaw} result[0..200]=${JSON.stringify(parsed.result.slice(0, 200))}`);
+        } else {
+          flog.warn(`[macro-tap] ← regex-scripts/apply HTTP ${resp2.status} in ${Math.round(performance.now() - t0)}ms (body not JSON)`);
+        }
+      } catch (err) {
+        flog.warn("[macro-tap] regex-scripts/apply clone/parse failed:", err);
+      }
+      return resp2;
+    }
+    if (isDisplayPreprocess) {
+      flog.info(`[macro-tap] → POST display-preprocess`);
+      const resp2 = await originalFetch(input, init);
+      flog.info(`[macro-tap] ← display-preprocess HTTP ${resp2.status} in ${Math.round(performance.now() - t0)}ms`);
+      return resp2;
+    }
     let reqPreview = "";
     try {
       const body = init?.body;

@@ -53,11 +53,11 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
   // a session; switching the source resets to 'assets'. Default vars moved
   // to State → Variables → Default in Phase B; lorebook import moved to
   // Import → Lorebooks in Phase E. The 'defaults' subtab no longer renders
-  // here — `_risu_decorators` lookups still go through the viewer-data API
+  // here , `_risu_decorators` lookups still go through the viewer-data API
   // for character introspection, but the editor is gone.
   type ViewerSubTab = 'assets' | 'triggers' | 'lorebook' | 'regex' | 'background' | 'cjs';
   let activeSubTab: ViewerSubTab = 'assets';
-  // Asset virtualization — only the visible window of tiles is mounted at any
+  // Asset virtualization , only the visible window of tiles is mounted at any
   // time. Module-grade asset counts (Cheongwon ships 1500+) used to require
   // pagination; now scrolling reveals tiles on demand without DOM blowup.
   // Tile dimensions are fixed so absolute positioning works.
@@ -66,7 +66,7 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
   const ASSET_OVERSCAN_ROWS = 2;
   // Search persists across re-renders (asset rename/delete/upload).
   let assetSearchTerm = '';
-  // Pagination is dead — kept the variable name elsewhere for now to minimise
+  // Pagination is dead , kept the variable name elsewhere for now to minimise
   // diff churn; ignored in the new windowed renderer.
   let assetPagesShown = 1; void assetPagesShown;
   const attachedByCharacter = new Map<string, readonly AttachedModuleSummary[]>();
@@ -617,7 +617,7 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
       });
     }
 
-    // Search wiring — debounce + full re-render of the subtab so the new
+    // Search wiring , debounce + full re-render of the subtab so the new
     // filter is consumed by the re-mounted virtualized grid.
     let searchTimer: number | undefined;
     search.addEventListener('input', () => {
@@ -1252,7 +1252,7 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
       }
       // `lorebook_import_result` is consumed by the Import → Lorebooks tab
       // (Phase E) for standalone imports. Per-character imports no longer
-      // surface UI here either — moved to that tab.
+      // surface UI here either , moved to that tab.
       case 'error':
         if (loading) {
           loading = false;

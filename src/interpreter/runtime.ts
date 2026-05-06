@@ -277,7 +277,7 @@ export async function makeRisuTriggerRuntime(
     _varsSrc = 'inherited';
   } else if (preloaded?.varsCache) {
     // Shallow-clone so per-trigger writes don't corrupt the shared snapshot.
-    // Risu's listenEdit chain runs each trigger in fresh Lua state — varsCache
+    // Risu's listenEdit chain runs each trigger in fresh Lua state , varsCache
     // mutations from one trigger should not leak into the next via the
     // shared preload (they'd leak via flush() at chain end if needed).
     varsCache = { ...preloaded.varsCache };
@@ -320,7 +320,7 @@ export async function makeRisuTriggerRuntime(
   let _loreSrc: 'preloaded' | 'fetched' = 'fetched';
   if (preloaded?.lorebook) {
     _loreSrc = 'preloaded';
-    // Reuse the entries array by reference — entries are read-only in the
+    // Reuse the entries array by reference , entries are read-only in the
     // listenEdit case (editDisplay can't write lorebook). The primaryBookId
     // carries through for `getLorebookCount`/etc.
     lorebook.entries = preloaded.lorebook.entries;
@@ -642,7 +642,7 @@ export async function makeRisuTriggerRuntime(
         // No-op write: Lua read the message via `getChat(N)`, did some logic
         // that didn't actually mutate the body, then wrote the same string
         // back. Cards do this routinely as part of "set var X then nudge"
-        // patterns (Alternate Hunters V2 ToggleSysSettings — flips
+        // patterns (Alternate Hunters V2 ToggleSysSettings , flips
         // `ui_sys_stat` and re-writes the same already-resolved greeting,
         // expecting the next render to re-evaluate `{{getvar::ui_sys_stat}}`
         // in the display-regex panel rule).

@@ -43,7 +43,7 @@ export async function runListenEditChain<T>(
   if (eligible.length === 0) return value;
 
   const chainStart = Date.now();
-  // valueLen is what we ship to the Lua across the JSON wire — the actual
+  // valueLen is what we ship to the Lua across the JSON wire , the actual
   // payload size matters for both Lua-bridge ser/de cost and downstream
   // parse cost on each trigger.
   log.info(
@@ -55,7 +55,7 @@ export async function runListenEditChain<T>(
   // PER-CHAIN PRELOAD: fetch chat-state ONCE for the whole chain instead of
   // once per trigger. Risu's listenEdit chain runs each trigger in a fresh
   // Lua VM (preserved); the data the Lua reads is identical across triggers
-  // in the same chain (no chat mutations between triggers — editDisplay's
+  // in the same chain (no chat mutations between triggers , editDisplay's
   // commit:false gates writes), so the snapshot is safely shareable.
   //
   // Mortal Realm: 16 triggers × 3 outbound IPCs (loadVars + getMessages +
@@ -131,7 +131,7 @@ export async function runListenEditChain<T>(
         );
       }
       const triggerTotal = Date.now() - tStart;
-      // Per-trigger breakdown — when triggerTotal >> (factory+serde+runLua),
+      // Per-trigger breakdown , when triggerTotal >> (factory+serde+runLua),
       // the gap is JS event loop time spent on concurrently queued Spindle
       // IPC (e.g. Lumi's display-regex pipeline calling our macroInterceptor
       // on adjacent fragments while we're awaiting). That "queued" cost is

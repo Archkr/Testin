@@ -177,19 +177,19 @@ export function setupBgHtmlRenderer(
         // under a parent selector via CSS Nesting. So an aggressive author
         // reset like `* { margin: 0; padding: 0 }` resolves to
         // `<wrapper-selector> *` post-nesting. Pre-fix the wrapper was just
-        // `[data-message-id]` — that includes Lumi's bubble chrome
+        // `[data-message-id]` , that includes Lumi's bubble chrome
         // (`_card_*`/`_content_*`), so the reset zeroed Lumi's padding.
         // (THE AMOROUS REALM II bug, 2026-05-04 log sheet[5] offset 14561.)
         // Fix: scope INSIDE Lumi's chrome via two stable hooks:
-        //   1. `[data-message-id] [data-component="MessageContent"]` — the
+        //   1. `[data-message-id] [data-component="MessageContent"]` , the
         //      live message bubble's content area (bubble chrome sits between
         //      the two attributes, so the reset can't reach it).
-        //   2. `.lumi-message-portal-wrapper` — the runtime DOM lifter's
+        //   2. `.lumi-message-portal-wrapper` , the runtime DOM lifter's
         //      overlay wrapper. Light-DOM clones live inside it; their CSS
         //      reaches them via this branch (see architecture §2.10 / quirks
         //      §3.74). Without this branch the lifter would render unstyled
         //      clones for cards that ship CSS in per-rule <style> blocks.
-        // Selector list with comma is fine inside CSS Nesting — `& X` resolves
+        // Selector list with comma is fine inside CSS Nesting , `& X` resolves
         // against each parent in turn.
         const wrappedCrossRule = crossRuleParts
           .map((p) => stripCssImports(p))

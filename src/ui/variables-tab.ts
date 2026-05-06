@@ -6,15 +6,15 @@ import type {
 import type { FrontendLog } from './drawer.js';
 
 // State → Variables. Three subtabs:
-//   Default  — character-level defaults (cardSide + user_overrides). Editable;
+//   Default  , character-level defaults (cardSide + user_overrides). Editable;
 //              per-character storage propagates across all chats with that
 //              character, mirroring Risu's defaultVariables semantics.
-//   Local    — chat.metadata.macro_variables.local — what Risu's
+//   Local    , chat.metadata.macro_variables.local , what Risu's
 //              setvar/setChatVar/Lua setState write to. Editable per-chat.
-//   Lumi     — global + chat Lumi-native scopes. Read-only (Risu cards don't
+//   Lumi     , global + chat Lumi-native scopes. Read-only (Risu cards don't
 //              touch these; surfaced for diagnostics).
 //
-// The same row component renders all three subtabs so the visual is uniform —
+// The same row component renders all three subtabs so the visual is uniform ,
 // inline `name | value-input | actions`. (Pre-fix the Default editor used the
 // inline pattern but Local used a separate-textarea modal pattern; user found
 // the inconsistency confusing.)
@@ -238,7 +238,7 @@ export function mountVariablesPanel(
           onReset: overridden && original !== undefined
             ? () => sendDeleteDefault(name)
             : null,
-          // Defaults never delete — sending delete reverts to card side.
+          // Defaults never delete , sending delete reverts to card side.
           allowDelete: false,
         }));
       }

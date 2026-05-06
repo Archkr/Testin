@@ -177,7 +177,7 @@ export function mapRegex(
     // its heuristic short-circuits when neither `<style>` nor `style="..."`
     // are present, so a panel that styles itself purely via classes
     // (CSS lives in the card's bg-html) falls through to the markdown
-    // processor — which then renders indented panel HTML as a code block.
+    // processor , which then renders indented panel HTML as a code block.
     // Wrapping with `<div ... style="display:contents">` adds the
     // `style=` Lumi looks for without affecting layout. See island-merge.ts
     // wrapForIslandTriggerIfNeeded for the full chain.

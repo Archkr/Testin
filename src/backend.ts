@@ -390,7 +390,7 @@ if (typeof registerMacroInterceptor === 'function') {
     //
     // Lumi 0.9.6+ ships the messageContentProcessor 'render' origin that
     // fires editDisplay on the actual message body with proper messageIndex
-    // context — that's the load-bearing path. We only need this fallback
+    // context , that's the load-bearing path. We only need this fallback
     // when 'render' isn't available (very old Lumi builds).
     const mcpRenderAvailable = typeof registerMessageContentProcessor === 'function';
     if (!ctx.commit && !mcpRenderAvailable) {
@@ -453,11 +453,11 @@ if (typeof registerMacroInterceptor === 'function') {
         `marker=${resolvedMarker ?? 'none'} still_has_raw_cbs=${stillHasRaw} ` +
         `out_head=${JSON.stringify(resolved.slice(0, 120))}`,
     );
-    // Panel-shape diagnostics — verifies handoff hypothesis H1 / H10
+    // Panel-shape diagnostics , verifies handoff hypothesis H1 / H10
     // (panel HTML accumulating across streaming chunks) and H2 (per-chunk
     // CBS drift inside the panel body). When the resolved output contains
-    // anything that LOOKS like the panel — `<div class="…sys-…` style
-    // wrappers we've seen in the Alternate Hunters V2 card — emit a count
+    // anything that LOOKS like the panel , `<div class="…sys-…` style
+    // wrappers we've seen in the Alternate Hunters V2 card , emit a count
     // + first-50/last-50 fingerprint so we can correlate against the
     // portal-trace log.
     if (resolved.length > 200) {
@@ -914,11 +914,11 @@ const registerWorldInfoInterceptor =
     : null;
 
 if (registerWorldInfoInterceptor) {
-  // log.always — bypasses the user's runtime-log toggle. The decorator
+  // log.always , bypasses the user's runtime-log toggle. The decorator
   // pipeline runs invisibly to the user otherwise.
   log.always(`[decorators] registerWorldInfoInterceptor wired at boot`);
   registerWorldInfoInterceptor(async (ctx) => {
-    // Unconditional entry-trace — confirms the handler fires per
+    // Unconditional entry-trace , confirms the handler fires per
     // generation. Bypasses the user's runtime-log toggle on purpose.
     log.always(
       `[decorators] worldInfoInterceptor ENTER chat=${ctx.chatId} entries=${ctx.entries.length}`,
@@ -2842,7 +2842,7 @@ function extractStyleBlocksTopLevelFallback(template: string): string[] {
 // Realm fires bg-html refresh ~3× on chat-open (SETTINGS_UPDATED +
 // CHAT_CHANGED + GENERATION_*) for byte-identical content. Each redundant
 // send forces the FE to re-parse 88KB of CSS and re-adopt into ~35 live
-// shadow roots — that was the dominant chat-open lag after the listenEdit
+// shadow roots , that was the dominant chat-open lag after the listenEdit
 // fix. Skip when the resolved output matches the prior send.
 const lastSentBgHtmlByChat = new Map<string, string>();
 
@@ -3323,7 +3323,7 @@ const chatChangedCoalescedCount = new Map<string, number>();
 // Accumulates the union of `changedFields` across all events coalesced into
 // a single debounced refresh. Sentinel `'unknown'` means at least one event
 // in the burst had no `changedFields` (e.g. persona reattribution emit at
-// chats.service.ts:977 sends a non-typed payload) — treat as safe-on-unknown
+// chats.service.ts:977 sends a non-typed payload) , treat as safe-on-unknown
 // and run the full fan-out.
 const chatChangedCoalescedFields = new Map<string, Set<string> | 'unknown'>();
 const CHAT_CHANGED_DEBOUNCE_MS = 50;
@@ -3342,7 +3342,7 @@ const CHAT_CHANGED_DEBOUNCE_MS = 50;
 // flow through CHARACTER_EDITED / MESSAGE_* events, not CHAT_CHANGED.
 //
 // Future-proofing: if a new handler starts reading from a new chat metadata
-// path, add the prefix here. Allow-list (vs deny-list) is intentional —
+// path, add the prefix here. Allow-list (vs deny-list) is intentional ,
 // errs toward minimum work for the common case; the tradeoff is "we must
 // remember to update this list when adding a handler that reads new chat
 // metadata." That tradeoff is acceptable because adding such a handler is
@@ -3370,7 +3370,7 @@ function scheduleChatChangedRefresh(
   chatChangedCoalescedCount.set(chatId, (chatChangedCoalescedCount.get(chatId) ?? 0) + 1);
 
   // Accumulate the union of changedFields across this burst. A single
-  // 'unknown' contaminates the rest — once anything in the burst lacked
+  // 'unknown' contaminates the rest , once anything in the burst lacked
   // a typed payload, we MUST run everything (safe-on-unknown).
   const prev = chatChangedCoalescedFields.get(chatId);
   if (changedFields === undefined) {
@@ -3421,13 +3421,13 @@ function scheduleChatChangedRefresh(
 spindle.on('CHAT_CHANGED', async (raw, userId) => {
   captureUserId(userId, 'CHAT_CHANGED');
   const { chatId, characterId } = extractIds(raw);
-  if (!chatId) { log.warn('CHAT_CHANGED: missing chatId — aborting'); return; }
+  if (!chatId) { log.warn('CHAT_CHANGED: missing chatId , aborting'); return; }
 
   // Typed payload (spindle-types 0.4.62+): `chat: {id, ...}, changedFields?: string[]`.
-  // Absent on emits from sources that don't compute the diff — currently
+  // Absent on emits from sources that don't compute the diff , currently
   // chats.service.ts:977 (bulk persona name reattribution), which sends
   // `{chatId, reattributedUserMessages}` instead. Treat undefined as
-  // safe-on-unknown — the gating defaults to running everything in that case.
+  // safe-on-unknown , the gating defaults to running everything in that case.
   const changedFields = (raw as { changedFields?: readonly string[] }).changedFields;
   const requiresRefresh = changedFieldsRequireRefresh(
     changedFields === undefined ? 'unknown' : new Set(changedFields),
@@ -3465,9 +3465,9 @@ spindle.on('MESSAGE_SENT', async (raw, userId) => {
   if (!chatId) return;
   invalidateListenEditPreload(chatId);
   const active = await ensureActiveCardForChat(chatId, characterId);
-  if (!active) { log.info(`MESSAGE_SENT: no active card — skip`); return; }
+  if (!active) { log.info(`MESSAGE_SENT: no active card , skip`); return; }
 
-  log.info(`MESSAGE_SENT: → refreshResolvedContent (no binding — Risu parity)`);
+  log.info(`MESSAGE_SENT: → refreshResolvedContent (no binding , Risu parity)`);
   await refreshResolvedContent(active, chatId);
   await refreshVariables(active, chatId);
 });
@@ -3548,7 +3548,7 @@ spindle.on('GENERATION_ENDED', async (raw, userId) => {
 
 // User-clicked the abort button (or generation otherwise stopped via
 // AbortController). Lumi emits GENERATION_STOPPED in this path INSTEAD OF
-// GENERATION_ENDED — see g:/mousepad_git/Lumiverse/src/services/generate.service.ts:2197,
+// GENERATION_ENDED , see g:/mousepad_git/Lumiverse/src/services/generate.service.ts:2197,
 // 2698, 2793, 3153. Without this handler, `generationsInFlight` for the
 // chat stays >0 forever, the FE streaming gate never releases, and the
 // post-stream sweep that would stash the stale source panel never runs.
@@ -4352,11 +4352,11 @@ async function handleImportLorebook(
   userId: string,
 ): Promise<void> {
   // Two modes:
-  //   characterId !== null  — Risu parity for `importLoreBook(mode='global')`
+  //   characterId !== null  , Risu parity for `importLoreBook(mode='global')`
   //                           (Risu lorebook.svelte.ts:663-697). Append entries
   //                           to the character's existing world_book (create
   //                           one if missing).
-  //   characterId === null  — Standalone import (Import → Lorebooks tab). Create
+  //   characterId === null  , Standalone import (Import → Lorebooks tab). Create
   //                           a fresh, unattached world_book. User attaches via
   //                           Lumiverse if they want.
   // Both paths reuse the same mapper + entry-write loop below.
@@ -5184,7 +5184,7 @@ spindle.onFrontendMessage(async (raw, userId) => {
         // get_cards is the FE's first message after mount/reload. Browser
         // refresh nukes FE state but the worker process keeps running, so
         // any per-chat memos that gated work on "FE already has this" are
-        // stale at this point — drop them so the rehydrate path resends.
+        // stale at this point , drop them so the rehydrate path resends.
         // (The bg-html dedup is the load-bearing one: without this clear,
         // refreshBgHtml on browser-refresh skips the send and the FE never
         // gets the chat-scope CSS at all.)

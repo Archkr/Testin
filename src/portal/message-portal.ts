@@ -81,7 +81,7 @@ export interface MessagePortal {
   setDiagAllSweeps: (on: boolean) => void;
   /** Per-sweep deep trace — logs the full key set diff (added/dropped/kept)
    *  and a sample sig-head for each, so a streaming-time thrash shows the
-   *  exact outerHTML drift between consecutive sweeps. Heavy log volume —
+   *  exact outerHTML drift between consecutive sweeps. Heavy log volume ,
    *  enable only while reproducing a specific bug. */
   setDiagPortalTrace: (on: boolean) => void;
   /** Streaming gate. While `active === true` for a chat, sweeps are
@@ -103,7 +103,7 @@ export interface MessagePortal {
   /** One-shot snapshot of every bubble's height + tall descendants.
    *  Returns the same shape `setDiagBalloonTrace` emits as logs, useful
    *  to call from DevTools at a specific moment ("the bubble just
-   *  ballooned — what's tall right now?"). */
+   *  ballooned , what's tall right now?"). */
   dumpBalloonState: () => readonly BalloonBubbleSample[];
   /** Toggle a per-clear log emission for the runtime min-height clearer.
    *  When on, every time we strip `min-height` from a `_content_*`
@@ -182,16 +182,16 @@ export function setupMessagePortal(ctx: SpindleFrontendContext, flog: Flog): Mes
 
   function scheduleSweep(reason: string): void {
     // Streaming gate. While ANY chat is generating, suppress sweeps
-    // entirely — Lumi React re-renders the bubble per chunk + briefly
+    // entirely , Lumi React re-renders the bubble per chunk + briefly
     // toggles the panel between light-DOM-text and shadow-DOM-text
     // states, so our sig oscillates → drop+re-clone cycle → user sees
     // 20Hz flicker. Pausing eliminates the cycle. The 'stream-end'
     // sweep scheduled by `setStreamingActive(chatId, false)` is the
-    // canonical resume — it runs once after the final chunk lands.
+    // canonical resume , it runs once after the final chunk lands.
     // Manual / external sweeps (`'manual'`, `'island-styles-updated'`,
     // `'fonts-ready'`) are also suppressed because they'd race with
     // the per-chunk re-renders. `clearAll` (chat switch) bypasses
-    // this — see frontend.ts where it fires on `clear_bg_html`.
+    // this , see frontend.ts where it fires on `clear_bg_html`.
     if (streamingChats.size > 0) {
       return;
     }
@@ -270,7 +270,7 @@ export function setupMessagePortal(ctx: SpindleFrontendContext, flog: Flog): Mes
     const style = target.getAttribute("style") ?? "";
     if (style.indexOf("min-height") < 0) return;
 
-    // Gate on "bubble has an island shadow with content" — confirms the
+    // Gate on "bubble has an island shadow with content" , confirms the
     // streaming-balloon pattern (panel extracted to shadow, but Lumi's
     // pre-extraction measurement latched the inline min-height). Without
     // this gate we'd be fighting Lumi's legitimate min-height for plain
@@ -302,7 +302,7 @@ export function setupMessagePortal(ctx: SpindleFrontendContext, flog: Flog): Mes
       })
       // After the strip, the surviving string can have:
       //   - a leading "; " if min-height was the FIRST decl (sep="" but
-      //     a stale `;` from the next decl) — trim handles that;
+      //     a stale `;` from the next decl) , trim handles that;
       //   - a trailing ";" if min-height was the LAST decl and we kept
       //     its leading separator;
       //   - both, if min-height was the only decl.
@@ -329,7 +329,7 @@ export function setupMessagePortal(ctx: SpindleFrontendContext, flog: Flog): Mes
   }
 
   // Dedicated MutationObserver for `style`-attribute changes anywhere
-  // under document.body. Filtering happens inside the callback — cheap
+  // under document.body. Filtering happens inside the callback , cheap
   // for the common case (non-MessageContent elements bail at the first
   // `getAttribute` check).
   const minHeightMo = new MutationObserver((records) => {
@@ -357,11 +357,31 @@ export function setupMessagePortal(ctx: SpindleFrontendContext, flog: Flog): Mes
   // AND to compute the exact first-diff byte offset between consecutive
   // versions of the same msgId's lift. Storing the full sig (not a
   // truncated head) is necessary because real-world drifts can land far
-  // past any reasonable truncation — the chunkFade-strip fix unblocked
+  // past any reasonable truncation , the chunkFade-strip fix unblocked
   // offset-36 drift but a follow-up streaming bug surfaced where ADD/DROP
   // share the same first 200 chars.
   // Only populated when diagPortalTrace is on.
   const prevSweepSigs = new Map<string, string>();
+
+  // Body-level MO doesn't see across shadow boundaries; Lumi's IsolatedHtml
+  // writes shadow.innerHTML directly. Without per-shadow observers a
+  // var-driven content swap leaves the lifted overlay stale forever.
+  // Map (not WeakSet) so we can disconnect on clearAll/destroy.
+  const shadowObservers = new Map<ShadowRoot, MutationObserver>();
+
+  function ensureShadowObserved(shadow: ShadowRoot): void {
+    if (shadowObservers.has(shadow)) return;
+    const so = new MutationObserver(() => {
+      try { maybeEmitBalloonTrace("shadow-mutation"); } catch { /* */ }
+      scheduleSweep("shadow-mutation");
+    });
+    try {
+      so.observe(shadow, { childList: true, subtree: true, characterData: true });
+      shadowObservers.set(shadow, so);
+    } catch (err) {
+      flog.warn("message-portal: shadow MO observe failed", err);
+    }
+  }
 
   function sigHead(sig: string): string {
     // Strip whitespace runs so consecutive renders' "<div\n  class=…>"
@@ -416,11 +436,17 @@ export function setupMessagePortal(ctx: SpindleFrontendContext, flog: Flog): Mes
             continue;
           }
           visit(child);
-          if (child.shadowRoot && child.shadowRoot.mode === "open") visit(child.shadowRoot);
+          if (child.shadowRoot && child.shadowRoot.mode === "open") {
+            ensureShadowObserved(child.shadowRoot);
+            visit(child.shadowRoot);
+          }
         }
       }
       visit(container);
-      if (container.shadowRoot && container.shadowRoot.mode === "open") visit(container.shadowRoot);
+      if (container.shadowRoot && container.shadowRoot.mode === "open") {
+        ensureShadowObserved(container.shadowRoot);
+        visit(container.shadowRoot);
+      }
 
       if (fixed.length === 0) {
         if (traceBubbles) traceBubbles.push({ msgId, fixedCount: 0, groupCount: 0 });
@@ -505,7 +531,7 @@ export function setupMessagePortal(ctx: SpindleFrontendContext, flog: Flog): Mes
           // on every element in the lift set; hide-panel-css updates the
           // document <style> + the constructed sheet adopted into chat
           // shadows. ID-only fixed widgets (Subject Iteration's
-          // `#dg-float-btn` etc.) need the id branch — without it, cards
+          // `#dg-float-btn` etc.) need the id branch , without it, cards
           // that style fixed elements via id selectors slip through.
           const classes: string[] = [];
           const ids: string[] = [];
@@ -551,7 +577,7 @@ export function setupMessagePortal(ctx: SpindleFrontendContext, flog: Flog): Mes
       );
     }
 
-    // Per-sweep deep trace — toggled via __riCompat.setDiagPortalTrace(true).
+    // Per-sweep deep trace , toggled via __riCompat.setDiagPortalTrace(true).
     // Logs: bubble walk summary, key-set diff vs the prior sweep (added/
     // dropped/kept) with sigHead samples + a full-sig diff line whenever
     // ADD/DROP land on the same msgId. The full sig is hashed AFTER the
@@ -599,7 +625,7 @@ export function setupMessagePortal(ctx: SpindleFrontendContext, flog: Flog): Mes
         );
       }
       // If both an add and a drop on the same msgId, log a per-byte hint
-      // showing the first divergent character — the smoking gun for "what
+      // showing the first divergent character , the smoking gun for "what
       // changed inside the panel between renders". Operates on FULL sigs
       // so drift past sigHead's 600-char window is still caught.
       for (const [aKey, aFull] of added) {
@@ -753,11 +779,16 @@ export function setupMessagePortal(ctx: SpindleFrontendContext, flog: Flog): Mes
     // Drop CSS hide-rules so a class learned for card A doesn't bleed
     // into card B (where the same class might refer to non-fixed content).
     clearHidePanelClasses();
-    flog.info(`message-portal: clearAll reason=${reason} cleared=${n}`);
+    const shadowCount = shadowObservers.size;
+    for (const so of shadowObservers.values()) {
+      try { so.disconnect(); } catch { /* */ }
+    }
+    shadowObservers.clear();
+    flog.info(`message-portal: clearAll reason=${reason} cleared=${n} shadow_observers=${shadowCount}`);
   }
 
   const mo = new MutationObserver(() => {
-    // Source-hiding is now declarative via hide-panel-css.ts — no per-
+    // Source-hiding is now declarative via hide-panel-css.ts , no per-
     // mutation sync-stash needed. The throttled sweep below still runs
     // for full accounting (lift state + cleanup + diagnostics).
     try { maybeEmitBalloonTrace("mutation"); } catch { /* */ }
@@ -851,6 +882,10 @@ export function setupMessagePortal(ctx: SpindleFrontendContext, flog: Flog): Mes
     destroy: () => {
       try { mo.disconnect(); } catch { /* */ }
       try { minHeightMo.disconnect(); } catch { /* */ }
+      for (const so of shadowObservers.values()) {
+        try { so.disconnect(); } catch { /* */ }
+      }
+      shadowObservers.clear();
       window.removeEventListener("resize", onResize);
       if (throttleTimer !== null) {
         clearTimeout(throttleTimer);

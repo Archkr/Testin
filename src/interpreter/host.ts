@@ -138,7 +138,7 @@ export interface HostApi {
  * all triggers in the same chain (Risu invariant: "fresh Lua state per
  * trigger" still holds; only the *data* it sees is shared).
  *
- * Each field is independently optional — pass only what you've fetched.
+ * Each field is independently optional , pass only what you've fetched.
  * Unfilled fields fall through to the per-runtime IPC path as before.
  */
 export interface TriggerRuntimePreloaded {

@@ -69,7 +69,7 @@ export function mountModulesPanel(opts: MountModulesPanelOptions): ModulesPanelH
   let lastError: string | null = null;
 
   // Subtab nav (Characters / Modules / Lorebooks). Each subtab is a flat
-  // body — no outer `<details>` chrome since the tab itself isolates content.
+  // body , no outer `<details>` chrome since the tab itself isolates content.
   type ImportSubTabId = 'characters' | 'modules' | 'lorebooks';
   const SUB_TABS: ReadonlyArray<{ id: ImportSubTabId; label: string; title: string }> = [
     { id: 'characters', label: 'Characters', title: 'Imported Risu cards. Click any row to manage attached modules.' },
@@ -455,7 +455,7 @@ export function mountModulesPanel(opts: MountModulesPanelOptions): ModulesPanelH
   });
 
   // Standalone lorebook import. Reads the JSON file inline (single-message
-  // upload — Lumi's 64KB inbound guard limits big books; for now we accept
+  // upload , Lumi's 64KB inbound guard limits big books; for now we accept
   // that limit, matches the existing per-character `import_lorebook` path).
   let lorebookImportInFlight = false;
   lbUploadBtn.addEventListener('click', () => { void onLorebookUploadClicked(); });
@@ -676,7 +676,7 @@ export function mountModulesPanel(opts: MountModulesPanelOptions): ModulesPanelH
         onUploadAck(msg.sessionId, msg.seq, msg.receivedBytes);
         break;
       case 'lorebook_import_result':
-        // Only consume standalone results — per-character imports are still
+        // Only consume standalone results , per-character imports are still
         // handled by the viewer's redirect-section button (Phase F removes that).
         if (msg.characterId === null) {
           lorebookImportInFlight = false;

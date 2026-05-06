@@ -223,17 +223,17 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   // §3). Run `__riCompatDump.balloon()` at the moment the bubble grows;
   // the result enumerates per-bubble `bubbleHeight` + tallest descendants
   // (light DOM AND open shadow roots) with classes + position +
-  // outerHTML head — enough to identify the culprit element without
+  // outerHTML head , enough to identify the culprit element without
   // walking the DOM by hand.
   function dumpBalloon(): unknown {
     return messagePortal.dumpBalloonState();
   }
 
-  // Hide-panel CSS dump — verifies the source-hiding stylesheet is built
+  // Hide-panel CSS dump , verifies the source-hiding stylesheet is built
   // and the document-level <style> is connected. Surfaces:
   //   - classes: list of classes we've added to the hide-set
   //   - documentStyleConnected: true when our <style> is in document.head
-  //   - documentStyleText: the literal CSS body — paste into a sheet and
+  //   - documentStyleText: the literal CSS body , paste into a sheet and
   //     try `document.querySelectorAll('.<class>')` to verify selector match
   //   - sheetRuleCount: rules in the constructed sheet adopted into shadows
   function dumpHidePanel(): unknown {
@@ -440,7 +440,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     },
     /** Toggles a per-clear log line for the runtime min-height clearer
      *  (the runtime fix for the streaming-balloon mismeasurement). Off
-     *  by default. Counter is always tracked — call `minHeightClears()`
+     *  by default. Counter is always tracked , call `minHeightClears()`
      *  to read it without enabling the log. */
     setDiagMinHeightClear(on: boolean): void {
       messagePortal.setDiagMinHeightClear(on === true);
@@ -573,7 +573,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       return;
     }
     if (msg.type === 'generation_state') {
-      // Streaming gate — backend tracks `generationsInFlight[chatId]`
+      // Streaming gate , backend tracks `generationsInFlight[chatId]`
       // and fires this on 0↔N transitions. The portal lifter uses it
       // to suppress sweeps for the duration of streaming, eliminating
       // the per-chunk drop+re-clone cycle that produced visible

@@ -10946,7 +10946,8 @@ function mapRegex(scripts, opts) {
     }
     baseReplace = normalizeReplaceStringForSanitizer(baseReplace);
     const baseHasMacros = baseReplace.indexOf("{{") >= 0 || findHasCbs;
-    const baseSubstitute = baseHasMacros ? "raw" : "none";
+    const hasCaptureRefs = /\$(?:\d+|&|`|'|<[^>]+>)/.test(baseReplace);
+    const baseSubstitute = baseHasMacros ? hasCaptureRefs ? "after" : "escaped" : "none";
     const baseName = nonEmpty(s.comment, `risu_${effectivePhase.target}_${i}`);
     const baseDescription = s.comment ?? "";
     const baseMetadata = {
@@ -27334,7 +27335,12 @@ register8("risu", (_c, a) => {
   const size = a[0] || "45";
   return `<img src="/logo2.png" style="height:${size}px;width:${size}px" />`;
 }, "Embeds the RisuAI logo image.");
-register8("button", (_c, a) => `<button class="x-risu-button-default" risu-trigger="${a[1] ?? ""}">${a[0] ?? ""}</button>`, "HTML button that fires the named risu-trigger when clicked.");
+var BUTTON_LABEL_ESCAPES = { "&": "&amp;", "<": "&lt;", ">": "&gt;" };
+register8("button", (_c, a) => {
+  const label = (a[0] ?? "").replace(/[&<>]/g, (c) => BUTTON_LABEL_ESCAPES[c]);
+  const trigger = (a[1] ?? "").replace(/"/g, "&quot;");
+  return `<button class="x-risu-button-default" risu-trigger="${trigger}">${label}</button>`;
+}, "HTML button that fires the named risu-trigger when clicked.");
 register8("screenwidth", (ctx) => String(ctx.screenWidth ?? 0), "Viewport width in pixels. Read from the frontend-reported value; 0 before the first report.");
 register8("screenheight", (ctx) => String(ctx.screenHeight ?? 0), "Viewport height in pixels. Read from the frontend-reported value; 0 before the first report.");
 register8("moduleenabled", (ctx, a) => {
@@ -30184,7 +30190,7 @@ function projectModuleRegexEntries(moduleId, moduleName, characterId, raw, idGen
       max_depth: target === "prompt" && ruleType === "editinput" ? 0 : null,
       trim_strings: [],
       run_on_edit: false,
-      substitute_macros: replaceString2.indexOf("{{") >= 0 ? "raw" : "none",
+      substitute_macros: replaceString2.indexOf("{{") >= 0 ? /\$(?:\d+|&|`|'|<[^>]+>)/.test(replaceString2) ? "after" : "escaped" : "none",
       disabled,
       sort_order: 1000 + sortBase,
       description: `From .risum module: ${moduleName}`,

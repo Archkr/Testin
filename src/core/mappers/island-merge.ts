@@ -96,14 +96,14 @@ const HTML_TAG_RE = /<[a-zA-Z][a-zA-Z0-9]*\b/;
  *
  * Two-stage gate in Lumi's `MessageContent.tsx`:
  *
- * 1. `extractHtmlIslands:878-879` — short-circuits unless content has
+ * 1. `extractHtmlIslands:878-879` , short-circuits unless content has
  *    `<style>` OR `style="..."` somewhere.
- * 2. `getIslandEndAt:840` — for each candidate element, returns end ONLY
+ * 2. `getIslandEndAt:840` , for each candidate element, returns end ONLY
  *    if its fragment has `<style>` OR `hasSignificantInlineStyles`
- *    (which requires **3+** inline `style="..."` attributes —
+ *    (which requires **3+** inline `style="..."` attributes ,
  *    `MessageContent.tsx:703-710`).
  *
- * A single inline `style="..."` on a wrapper passes #1 but fails #2 — the
+ * A single inline `style="..."` on a wrapper passes #1 but fails #2 , the
  * walker rejects every candidate, no island gets emitted, content falls
  * through to the markdown processor, indented panel HTML renders as a
  * syntax-highlighted code block.
@@ -111,7 +111,7 @@ const HTML_TAG_RE = /<[a-zA-Z][a-zA-Z0-9]*\b/;
  * The cleanest trigger is a leading `<style>` block: Lumi's
  * `findStyleBlockEnd` (line 829) catches it, then
  * `extendThroughAdjacentHtmlSiblings` (line 775) extends the island
- * through every following HTML sibling — exactly the panel content. An
+ * through every following HTML sibling , exactly the panel content. An
  * EMPTY `<style></style>` works because `extractStyleBlocks` (in
  * `richHtmlSanitizer.ts:94`) drops zero-content style blocks during
  * sanitization, so the empty `<style>` is invisible to the user but
@@ -121,7 +121,7 @@ const HTML_TAG_RE = /<[a-zA-Z][a-zA-Z0-9]*\b/;
  * - CBS-generated HTML where the literal `<` doesn't appear at translate
  *   time. `HTML_TAG_RE.test(html)` misses → no prepend → at runtime the
  *   resolved content has HTML but Lumi's heuristic still skips → code
- *   block. Uncommon — most cards inline their HTML.
+ *   block. Uncommon , most cards inline their HTML.
  */
 const ISLAND_TRIGGER_ATTR_RE = /\bdata-risu-island-trigger\b/i;
 const ISLAND_TRIGGER_PREFIX = `<style data-risu-island-trigger></style>`;
@@ -129,7 +129,7 @@ export function wrapForIslandTriggerIfNeeded(html: string): string {
   if (!html || html.length === 0) return html;
   // No HTML element at all → markdown is the right path; don't wrap.
   if (!HTML_TAG_RE.test(html)) return html;
-  // Already has a real <style> tag — Lumi extracts via findStyleBlockEnd.
+  // Already has a real <style> tag , Lumi extracts via findStyleBlockEnd.
   if (STYLE_TAG_RE.test(html)) return html;
   // ≥3 inline `style="..."` already qualifies via hasSignificantInlineStyles.
   if (countInlineStyles(html) >= 3) return html;

@@ -1,10 +1,10 @@
 // Role-name bridge between Risu's `chat.message[]` shape and Lumi's storage shape.
 //
-// Risu chat.message[i].role is `'user' | 'char'` natively (`scriptings.ts:182,201,208` —
+// Risu chat.message[i].role is `'user' | 'char'` natively (`scriptings.ts:182,201,208` ,
 // `setChatRole`/`addChat`/`insertChat` all coerce non-user input to `'char'`). Risu
 // also accepts `'bot'` as a `'char'` alias on outbound LLM payloads (mirrored by
 // `spindle-host.ts:354-358`). `'sys'` is a Risu prompt-payload alias for system
-// messages but is NOT a `chat.message[]` role — Risu's `addChat` would coerce it
+// messages but is NOT a `chat.message[]` role , Risu's `addChat` would coerce it
 // to `'char'` too.
 //
 // Lumi stores `'user' | 'assistant' | 'system'`.

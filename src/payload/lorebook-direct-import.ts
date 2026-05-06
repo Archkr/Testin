@@ -110,7 +110,7 @@ export function parseDirectLorebook(json: string): DirectLorebookParse {
     return { entries: out, dropped, format: 'risu' };
   }
 
-  // CCSv3 / TavernAI shape (lorebook.svelte.ts:684 — entries is an object map)
+  // CCSv3 / TavernAI shape (lorebook.svelte.ts:684 , entries is an object map)
   if (obj['entries'] && typeof obj['entries'] === 'object' && !Array.isArray(obj['entries'])) {
     const entries = obj['entries'] as Record<string, unknown>;
     const out: LoreBook[] = [];
@@ -128,7 +128,7 @@ export function parseDirectLorebook(json: string): DirectLorebookParse {
 
   // Bare array (some exporters do `[entry, entry, ...]` directly).
   if (Array.isArray(obj)) {
-    // unreachable — array isn't object — defensive.
+    // unreachable , array isn't object , defensive.
     return { entries: [], dropped: 0, format: 'unknown' };
   }
 

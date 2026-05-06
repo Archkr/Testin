@@ -4,7 +4,7 @@
 
 import { getHidePanelSheet } from '../portal/hide-panel-css.js';
 
-// Late-binding accessor — `getHidePanelSheet()` lazily ensures the sheet
+// Late-binding accessor , `getHidePanelSheet()` lazily ensures the sheet
 // exists; calling it AT injection time rather than at boot keeps the
 // import pure (no side effects on module load) and lets the test harness
 // reset module state without coupling to setupIslandStyles' boot path.
@@ -147,7 +147,7 @@ export function setupIslandStyles(flog: Flog, opts: SetupIslandStylesOptions = {
     // Only inject into open shadows inside [data-message-id] chat bubbles.
     const root = el.shadowRoot;
     if (!root || root.mode !== 'open') return;
-    // Skip overlay portal wrappers — their shadows host the visible
+    // Skip overlay portal wrappers , their shadows host the visible
     // CLONE; adopting the hide-panel sheet into them would make the
     // clone disappear right after the lift. The wrapper has
     // `data-message-id` (so closest() below would match) and an open
@@ -251,7 +251,7 @@ export function setupIslandStyles(flog: Flog, opts: SetupIslandStylesOptions = {
         for (const s of crossRuleSheets) append.push(s);
         // The hide-panel sheet is owned by the portal-lifter module but
         // adopted into chat-message shadows here. It MUST be re-included
-        // in reAdoptAll's rebuild — `existing.filter(!allOwnedSheets)`
+        // in reAdoptAll's rebuild , `existing.filter(!allOwnedSheets)`
         // strips it (we add it to allOwnedSheets in injectInto so the
         // filter knows about it), but without re-adding it here every
         // setCrossRuleSheets call would silently strip it from the
@@ -297,7 +297,7 @@ export function setupIslandStyles(flog: Flog, opts: SetupIslandStylesOptions = {
     setCrossRuleSheets(cssParts: readonly string[]): void {
       // Same content-skip as setStylesheet. Cross-rule sheets fire
       // alongside setStylesheet on every bg-html refresh. The 9-sheet
-      // bundle is ~62KB on Mortal Realm — re-parsing on byte-identical
+      // bundle is ~62KB on Mortal Realm , re-parsing on byte-identical
       // input was the bulk of the chat-open lag.
       const key = cssParts.length + '\x1f' + cssParts.join('\x1e');
       if (lastCrossRuleKey === key) {

@@ -3,7 +3,7 @@
 // sync-stash mechanism: instead of racing a MutationObserver to set
 // `display:none` on freshly-mounted source DOM, we maintain a CSS rule that
 // hides anything with a known panel class inside chat bubbles. CSS is
-// declarative — applies before paint, doesn't race React commits, doesn't
+// declarative , applies before paint, doesn't race React commits, doesn't
 // need a streaming gate to suppress per-chunk source visibility.
 //
 // Two emission surfaces:
@@ -24,14 +24,14 @@
 // Both surfaces are driven by the same Set of class names. Calling
 // `addHidePanelClasses(classes)` appends + reactively rewrites both. The
 // constructed sheet's `replaceSync` propagates to every shadow that's
-// already adopted it — no re-adoption needed.
+// already adopted it , no re-adoption needed.
 
 const HIDE_STYLE_ID = "lumirealm-portal-hide-panels";
 
 let documentStyleEl: HTMLStyleElement | null = null;
 let constructedSheet: CSSStyleSheet | null = null;
 const knownClasses = new Set<string>();
-// IDs are an independent selector space — cards like Subject Iteration
+// IDs are an independent selector space , cards like Subject Iteration
 // style fixed widgets via `#dg-float-btn` etc. with no class hook. Same
 // reactive rebuild path as classes; rules emit `#<id>` instead of `.<cls>`.
 const knownIds = new Set<string>();
@@ -71,7 +71,7 @@ function ensureSurfaces(): void {
 
 // Internal-only re-entry point used by ensureSurfaces. Forwards to
 // rebuild() but guards against the case where rebuild() itself called
-// ensureSurfaces() (it does — for first-time sheet creation).
+// ensureSurfaces() (it does , for first-time sheet creation).
 let inRebuild = false;
 function rebuildBaseline(): void {
   if (inRebuild) return;
@@ -95,11 +95,11 @@ function escapeIdent(c: string): string {
 // (`position: fixed` with space and `position:fixed` without).
 //
 // `:not([popover]):not(dialog)` excludes browser-managed top-layer
-// surfaces — popovers and dialogs are intentionally skipped by the
+// surfaces , popovers and dialogs are intentionally skipped by the
 // lifter (since they're already overlaid by the browser), so we mustn't
 // hide them either. CSS-only `:has()`-based CB-trap detection isn't
 // practical, so a CB-trapped inline-styled fixed element WILL be
-// caught by this rule and hidden — known-but-rare gap (Lumi's row
+// caught by this rule and hidden , known-but-rare gap (Lumi's row
 // transform creates a CB ancestor at runtime; cards that intend
 // viewport-fixed and are accidentally trapped lose their inline-styled
 // content here. Re-author with class/id to opt out.)
@@ -121,7 +121,7 @@ function rebuild(): void {
       `[data-component="MessageContent"] ${sel} { display: none !important; }`,
     );
     // Adopted-sheet rule: bare selector. CSS's `:host` doesn't chain
-    // with a descendant combinator the way it looks like it should —
+    // with a descendant combinator the way it looks like it should ,
     // `:host(...) .x` is NOT a way to scope shadow descendants. Use a
     // bare selector and rely on adoption discipline (the message-portal
     // module filters this sheet out when copying adopted sheets to the
@@ -132,7 +132,7 @@ function rebuild(): void {
   };
   for (const c of knownClasses) emit(`.${escapeIdent(c)}`);
   for (const id of knownIds) emit(`#${escapeIdent(id)}`);
-  // Static inline-style baseline — always emitted, even when no
+  // Static inline-style baseline , always emitted, even when no
   // class/id has been learned yet. Cheap (two selectors).
   for (const sel of INLINE_STYLE_SELECTORS) emit(sel);
   if (documentStyleEl) {
@@ -143,13 +143,13 @@ function rebuild(): void {
       constructedSheet.replaceSync(shadowRules.join("\n"));
     } catch {
       // replaceSync rejects on @import etc. but our rules are plain
-      // selectors — defensive only.
+      // selectors , defensive only.
     }
   }
 }
 
 // Class tokens we never want to add to the hide-set. `null` shows up when
-// a card writes `class="X {{getvar::Y}}"` and `Y` isn't set — Risu's getvar
+// a card writes `class="X {{getvar::Y}}"` and `Y` isn't set , Risu's getvar
 // returns the literal string `"null"` (chatVar.svelte.ts:36-37). Using
 // `.null { display: none !important }` would hide every other element on
 // the page whose author also literally wrote `class="null"`. Cards that
@@ -194,7 +194,7 @@ export function addHidePanelClasses(classes: Iterable<string>): boolean {
 }
 
 /** Add panel IDs to the hide-set. Subject Iteration and similar cards
- *  style fixed widgets via `#dg-float-btn` etc. — no class hook. */
+ *  style fixed widgets via `#dg-float-btn` etc. , no class hook. */
 export function addHidePanelIds(ids: Iterable<string>): boolean {
   let added = false;
   const newIds: string[] = [];
@@ -233,7 +233,7 @@ export function clearHidePanelClasses(): void {
 }
 
 /** Adopt-target for `island-styles.ts`. Returns null when CSSStyleSheet
- *  is unavailable (very old browsers — same fallback path as island-styles). */
+ *  is unavailable (very old browsers , same fallback path as island-styles). */
 export function getHidePanelSheet(): CSSStyleSheet | null {
   ensureSurfaces();
   return constructedSheet;
@@ -246,12 +246,12 @@ export function getHidePanelClassCount(): number {
 
 /** Full diagnostic state. Call from DevTools to verify hiding is wired
  *  correctly:
- *    - `classes` — what we've ever added.
- *    - `documentStyleConnected` — confirms the document-head <style> is
+ *    - `classes` , what we've ever added.
+ *    - `documentStyleConnected` , confirms the document-head <style> is
  *      attached and visible to the cascade.
- *    - `documentStyleText` — the literal CSS body.
- *    - `sheetRuleCount` — confirms the constructed sheet has rules.
- *    - `sheetAdoptedCount` — how many shadow roots in the document have
+ *    - `documentStyleText` , the literal CSS body.
+ *    - `sheetRuleCount` , confirms the constructed sheet has rules.
+ *    - `sheetAdoptedCount` , how many shadow roots in the document have
  *      adopted our sheet (counts via island-styles' adoption MO; matches
  *      the chat-message shadows' count). */
 export function dumpHidePanelState(): {
