@@ -727,6 +727,14 @@ export interface ViewerTriggerEntry {
   /** First-effect's `triggerlua.code` if present, else null. */
   readonly lua: string | null;
   readonly effectCount: number;
+  /** One-line summaries for non-`triggerlua` effects (lua is surfaced via `lua`). */
+  readonly effects: readonly ViewerTriggerEffectSummary[];
+}
+
+export interface ViewerTriggerEffectSummary {
+  readonly type: string;
+  readonly indent: number;
+  readonly summary: string;
 }
 
 export interface ViewerAssetEntry {

@@ -7,11 +7,13 @@ import type {
   ViewerLorebookEntry,
   ViewerLorebookGroup,
   ViewerRegexEntry,
+  ViewerTriggerEffectSummary,
   ViewerTriggerEntry,
 } from '../types/messages.js';
 import type { LumirealmCharacterData, StoredRegexScript } from '../payload/types.js';
 import type { ModuleEnvelope } from './modules-store.js';
 import { imageUrlFromId } from '../interpreter/image-cache.js';
+import { summarizeEffect } from './viewer-effects.js';
 
 const imageUrl = (imageId: string) => imageUrlFromId(imageId);
 
@@ -134,12 +136,20 @@ function toViewerTrigger(
     ? t.comment
     : `trigger #${idx + 1}`;
   const bindingType = typeof t.type === 'string' ? t.type : 'unknown';
+  const effects: ViewerTriggerEffectSummary[] = [];
+  if (Array.isArray(t.effect)) {
+    for (const e of t.effect) {
+      if (e && typeof e === 'object' && (e as { type?: unknown }).type === 'triggerlua') continue;
+      effects.push(summarizeEffect(e));
+    }
+  }
   return {
     id: fallbackId,
     name,
     bindingType,
     lua: lua.length > 0 ? lua : null,
     effectCount: Array.isArray(t.effect) ? t.effect.length : 0,
+    effects,
   };
 }
 

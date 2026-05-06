@@ -1011,12 +1011,27 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
       const luaDet = document.createElement('details');
       luaDet.className = 'lrv-trigger-lua';
       const luaSum = document.createElement('summary');
-      luaSum.textContent = t.lua ? `Lua (${t.lua.length} chars)` : 'Lua (empty)';
+      const effectsLabel = t.effects.length > 0
+        ? ` · ${t.effects.length} V2 effect${t.effects.length === 1 ? '' : 's'}`
+        : '';
+      const luaLabel = t.lua
+        ? `Lua (${t.lua.length} chars)`
+        : (t.effects.length > 0 ? 'Lua (none)' : 'Lua (empty)');
+      luaSum.textContent = luaLabel + effectsLabel;
       luaDet.appendChild(luaSum);
+      luaDet.open = !t.lua && t.effects.length > 0;
       if (t.lua) {
         const pre = document.createElement('pre');
         pre.className = 'lrv-pre';
         pre.textContent = t.lua;
+        luaDet.appendChild(pre);
+      }
+      if (t.effects.length > 0) {
+        const pre = document.createElement('pre');
+        pre.className = 'lrv-pre';
+        pre.textContent = t.effects
+          .map((e) => `${'  '.repeat(Math.min(e.indent, 12))}${e.summary}`)
+          .join('\n');
         luaDet.appendChild(pre);
       }
       const editBtn = document.createElement('button');
