@@ -107,8 +107,12 @@ register("risu", (_c, a) => {
 
 // Pre-prefixed `x-risu-button-default` to match Risu's compiled stylesheet.
 // Macro output skips the class-rewrite parser pass, so emit post-rewrite directly.
-register("button", (_c, a) => `<button class="x-risu-button-default" risu-trigger="${a[1] ?? ""}">${a[0] ?? ""}</button>`,
-  "HTML button that fires the named risu-trigger when clicked.");
+const BUTTON_LABEL_ESCAPES: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;" };
+register("button", (_c, a) => {
+  const label = (a[0] ?? "").replace(/[&<>]/g, (c) => BUTTON_LABEL_ESCAPES[c]!);
+  const trigger = (a[1] ?? "").replace(/"/g, "&quot;");
+  return `<button class="x-risu-button-default" risu-trigger="${trigger}">${label}</button>`;
+}, "HTML button that fires the named risu-trigger when clicked.");
 
 // Frontend-reported viewport size. 0 before first report.
 register("screenwidth", (ctx) => String(ctx.screenWidth ?? 0),
