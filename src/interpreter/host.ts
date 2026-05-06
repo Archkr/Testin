@@ -189,6 +189,9 @@ export interface TriggerRuntimeOpts {
     readonly repetitionPenalty: number | null;
   };
   readonly auxDebugCapture?: (event: import("./runtime.js").AuxDebugCaptureEvent) => void;
+  /** Backs Lua `cbs(value)`. Used by listenEdit chains that don't run
+   *  inside a dispatch-context window. */
+  readonly resolveTemplate?: (text: string) => Promise<string>;
 }
 
 export interface RegexRuntimeOpts {

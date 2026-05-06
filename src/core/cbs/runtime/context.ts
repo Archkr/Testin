@@ -115,6 +115,12 @@ export interface RisuRuntimeContext {
    *  handler in `risu-compat/handlers/display.ts`. Risu source:
    *  index.svelte.ts:575-584 (positionParser pt_* substitution). */
   readonly positionPt?: Readonly<Record<string, string>>;
+  /** Set when built for a Lua `cbs(value)` call. Handlers branch to match
+   *  Risu output (setvar/asset return literal, chatindex returns "-1"). */
+  readonly cbsContext?: boolean;
+  /** Recursive parser entry. Closure over scanner.evaluate, absent on the
+   *  IPC fallback path. */
+  readonly evaluate?: (text: string) => string;
 }
 
 export interface FunctionRegistry {

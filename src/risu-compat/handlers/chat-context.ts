@@ -27,21 +27,34 @@ register("lorebook", (ctx) => {
   return makeArray(ctx.lorebook.map((e) => JSON.stringify(e)));
 }, "Returns all active lorebook entries as a JSON array (character + chat + module lore concatenated).");
 
-// cbs.ts.
+// Risu recursively parses each msg.data with the matcherArg flags.
+function evalMsg(
+  ctx: import("../../core/cbs/index.js").RisuRuntimeContext,
+  m: { role: "user" | "assistant" | "system"; content: string; createdAt: number; speaker?: string },
+): { role: "user" | "char" | "system"; data: string; time: number; speaker?: string } {
+  const data = ctx.evaluate ? ctx.evaluate(m.content) : m.content;
+  const out: { role: "user" | "char" | "system"; data: string; time: number; speaker?: string } = {
+    role: risuRole(m.role),
+    data,
+    time: m.createdAt,
+  };
+  if (m.speaker) out.speaker = m.speaker;
+  return out;
+}
+
 register("userhistory", (ctx) => {
   const filtered = ctx.messages.all()
     .filter((m) => m.role === "user")
-    .map((m) => JSON.stringify(toSerializableMsg(m)));
+    .map((m) => JSON.stringify(evalMsg(ctx, m)));
   return makeArray(filtered);
-}, "Returns all user messages as a JSON array.");
+}, "Returns all user messages as a JSON array, each .data recursively parsed.");
 
-// cbs.ts.
 register("charhistory", (ctx) => {
   const filtered = ctx.messages.all()
     .filter((m) => m.role === "assistant")
-    .map((m) => JSON.stringify(toSerializableMsg(m)));
+    .map((m) => JSON.stringify(evalMsg(ctx, m)));
   return makeArray(filtered);
-}, "Returns all character (assistant) messages as a JSON array.");
+}, "Returns all character (assistant) messages as a JSON array, each .data recursively parsed.");
 
 // cbs.ts.
 register("history", (ctx, a) => {

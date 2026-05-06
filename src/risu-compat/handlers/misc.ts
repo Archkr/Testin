@@ -153,9 +153,10 @@ register("metadata", (ctx, a) => {
 }, "Returns host metadata. Subset implemented — model fields read from ctx.aiModel; platform fields default to non-native.");
 
 register("chatindex", (ctx) => {
+  // Reads ctx.currentMessageIndex. cbs callers set it to -1.
   const idx = ctx.currentMessageIndex;
   return idx === null ? "" : idx.toString();
-}, "Index of the current message being processed. Empty string outside a message context.");
+}, "Index of the current message being processed. Risu cbs() default returns -1.");
 
 // chat.fmIndex (selected alternate greeting index, -1 = default firstMessage).
 register("firstmsgindex", (ctx) => {

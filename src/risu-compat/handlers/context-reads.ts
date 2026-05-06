@@ -14,25 +14,39 @@ function register(name: string, handler: MacroHandler, description: string): voi
 }
 
 
-// cbs.ts. Risu pipes through risuChatParser; Lumiverse resolves at prompt-assembly time.
-register("exampledialogue", (ctx) => ctx.character.exampleDialogue,
-  "Returns the character's example dialogue field.");
+// Risu's character-field handlers recursively parse with the same flags.
+function recurse(ctx: import("../../core/cbs/index.js").RisuRuntimeContext, field: string): string {
+  return ctx.evaluate ? ctx.evaluate(field) : field;
+}
 
-// cbs.ts.
-register("mainprompt", (ctx) => ctx.character.mainPrompt,
-  "Returns the system/main prompt configured for the current character.");
+// Collision-marked in the catalog: rewriter emits `risu_*` form.
+// dispatch.ts also re-registers under the bare name.
+register("risu_description", (ctx) => recurse(ctx, ctx.character.description),
+  "Returns the character description, recursively parsed.");
 
-// cbs.ts.
-register("jb", (ctx) => ctx.character.jailbreakPrompt,
-  "Returns the jailbreak prompt text.");
+register("risu_personality", (ctx) => recurse(ctx, ctx.character.personality),
+  "Returns the character personality field, recursively parsed.");
 
-// cbs.ts.
-register("globalnote", (ctx) => ctx.character.globalNote,
-  "Returns the global note (system note / ujb) appended to prompts.");
+register("risu_scenario", (ctx) => recurse(ctx, ctx.character.scenario),
+  "Returns the character scenario field, recursively parsed.");
 
-// cbs.ts.
-register("authornote", (ctx) => ctx.character.authorsNote,
-  "Returns the author's note for the current chat.");
+register("risu_persona", (ctx) => recurse(ctx, ctx.identity.personaText),
+  "Returns the user persona prompt, recursively parsed.");
+
+register("exampledialogue", (ctx) => recurse(ctx, ctx.character.exampleDialogue),
+  "Returns the character's example dialogue field, recursively parsed.");
+
+register("mainprompt", (ctx) => recurse(ctx, ctx.character.mainPrompt),
+  "Returns the system/main prompt configured for the current character, recursively parsed.");
+
+register("jb", (ctx) => recurse(ctx, ctx.character.jailbreakPrompt),
+  "Returns the jailbreak prompt text, recursively parsed.");
+
+register("globalnote", (ctx) => recurse(ctx, ctx.character.globalNote),
+  "Returns the global note (system note / ujb), recursively parsed.");
+
+register("authornote", (ctx) => recurse(ctx, ctx.character.authorsNote),
+  "Returns the author's note for the current chat, recursively parsed.");
 
 
 // cbs.ts.

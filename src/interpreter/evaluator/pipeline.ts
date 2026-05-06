@@ -41,6 +41,7 @@ export function runPipeline(input: RunPipelineInput): string {
       : {}),
     ...(input.modulesByNamespace ? { modulesByNamespace: input.modulesByNamespace } : {}),
     ...(input.positionPt ? { positionPt: input.positionPt } : {}),
+    ...(input.cbsContext ? { cbsContext: true } : {}),
     commit,
   });
 

@@ -34,19 +34,17 @@ register("prefillsupported", (ctx) => {
   return ctx.aiModel.startsWith("claude") ? "1" : "0";
 }, "'1' if the current AI model id starts with 'claude' (Claude supports prefill).");
 
-// Display renders br/div.x-risu-risu-file/br. Prompt returns base64-decoded.
-// Class is double-prefixed because Risu's parser already prefixes a `risu-` source.
+// cbs and prompt-assembly decode base64. Display path renders HTML.
 register("file", (ctx, a) => {
-  if (!ctx.commit) {
-    return `<br><div class="x-risu-risu-file">${a[0] ?? ""}</div><br>`;
-  }
+  const decode = ctx.cbsContext || ctx.commit;
+  if (!decode) return `<br><div class="x-risu-risu-file">${a[0] ?? ""}</div><br>`;
   const content = a[1] ?? "";
   try {
     return Buffer.from(content, "base64").toString("utf-8");
   } catch {
     return "";
   }
-}, "Decodes base64 file content to UTF-8 text (prompt mode); renders <div class=\"risu-file\">…</div> in display mode.");
+}, "Decodes base64 file content to UTF-8 (prompt and cbs paths); renders <div class=\"risu-file\">…</div> in display path.");
 
 // cbs.ts.
 register("chardisplayasset", (ctx) => {

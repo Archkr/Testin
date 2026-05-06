@@ -172,6 +172,39 @@ const log = {
 
 log.info(`backend boot: version=${EXTENSION_VERSION}`);
 
+// Without this guard any rejection from a card's Lua bridge call kills the worker.
+{
+  const proc: { on?: (ev: string, cb: (...a: unknown[]) => void) => void } | undefined =
+    (globalThis as { process?: { on?: (ev: string, cb: (...a: unknown[]) => void) => void } }).process;
+  let alertFired = false;
+  proc?.on?.('unhandledRejection', (reason: unknown) => {
+    const msg = reason instanceof Error ? (reason.stack ?? reason.message) : String(reason);
+    log.error(`unhandledRejection (suppressed, worker stays alive): ${msg.slice(0, 1200)}`);
+    if (!alertFired) {
+      alertFired = true;
+      try {
+        spindle.toast.error(
+          'lumirealm: a background task failed (' + (reason instanceof Error ? reason.message : String(reason)).slice(0, 160) + '). Check Logs for details.',
+          { title: 'lumirealm internal error' },
+        );
+      } catch { /* */ }
+    }
+  });
+  proc?.on?.('uncaughtException', (err: unknown) => {
+    const msg = err instanceof Error ? (err.stack ?? err.message) : String(err);
+    log.error(`uncaughtException (suppressed, worker stays alive): ${msg.slice(0, 1200)}`);
+    if (!alertFired) {
+      alertFired = true;
+      try {
+        spindle.toast.error(
+          'lumirealm: an internal error occurred. Worker is still running. Check Logs for details.',
+          { title: 'lumirealm internal error' },
+        );
+      } catch { /* */ }
+    }
+  });
+}
+
 function modulesByNamespaceFromCard(card: StoredRisuCard): Readonly<Record<string, readonly string[]>> | null {
   const extra = card.risuPayload.extra as { modules_by_namespace?: unknown } | undefined;
   const raw = extra?.modules_by_namespace;
@@ -422,6 +455,7 @@ if (typeof registerMacroInterceptor === 'function') {
             {
               chatId,
               characterId: active.card.character_id,
+              resolveTemplate: (text: string) => resolveReadonly(text, chatId, active.card.character_id, { cbsContext: true }),
             },
           );
         } catch (err) {
@@ -576,7 +610,11 @@ if (typeof registerMessageContentProcessor === 'function') {
               editApi,
               { characterId: active.card.character_id, content: ctx.content },
               editScriptNS,
-              { chatId: ctx.chatId, characterId: active.card.character_id },
+              {
+                chatId: ctx.chatId,
+                characterId: active.card.character_id,
+                resolveTemplate: (text: string) => resolveReadonly(text, ctx.chatId, active.card.character_id, { cbsContext: true }),
+              },
             );
             chainMs = Date.now() - tChain;
             log.trace(
@@ -848,7 +886,11 @@ if (typeof registerInterceptor === 'function') {
             editApi,
             { characterId: active.card.character_id, content: orig },
             editScriptNS,
-            { chatId, characterId: active.card.character_id },
+            {
+              chatId,
+              characterId: active.card.character_id,
+              resolveTemplate: (text: string) => resolveReadonly(text, chatId, active.card.character_id, { cbsContext: true }),
+            },
           );
           if (mutated !== orig) {
             log.info(
@@ -873,7 +915,11 @@ if (typeof registerInterceptor === 'function') {
         editApi,
         { characterId: active.card.character_id, content: '' },
         editScriptNS,
-        { chatId, characterId: active.card.character_id },
+        {
+          chatId,
+          characterId: active.card.character_id,
+          resolveTemplate: (text: string) => resolveReadonly(text, chatId, active.card.character_id, { cbsContext: true }),
+        },
       );
       if (Array.isArray(mutated)) {
         if (mutated.length !== out.length) {
@@ -2158,6 +2204,7 @@ async function runBinding(
     submodelModelOverride: settings.submodelModelOverride,
     submodelSamplers: settings.submodelSamplers,
     ...(auxDebugCapture ? { auxDebugCapture } : {}),
+    resolveTemplate: (text: string) => resolveReadonly(text, chatId, characterId, { cbsContext: true }),
   });
   try {
     await dispatchBinding(
@@ -2220,7 +2267,11 @@ async function runBinding(
                 api,
                 { characterId, content: mutated },
                 scriptNS,
-                { chatId, characterId },
+                {
+                  chatId,
+                  characterId,
+                  resolveTemplate: (text: string) => resolveReadonly(text, chatId, characterId, { cbsContext: true }),
+                },
               );
             } catch (err) {
               log.warn(`runBinding: listenEdit editOutput chain threw — ${errMsg(err)}. Continuing.`);
@@ -2364,6 +2415,7 @@ async function dispatchManualTrigger(
         submodelModelOverride: settings.submodelModelOverride,
         submodelSamplers: settings.submodelSamplers,
         ...(auxDebugCapture ? { auxDebugCapture } : {}),
+        resolveTemplate: (text: string) => resolveReadonly(text, chatId, characterId, { cbsContext: true }),
       });
       try {
         const fired = await dispatchByManualName(
@@ -2908,11 +2960,13 @@ async function resolveReadonly(
   template: string,
   chatId: string,
   characterId: string,
+  opts?: { cbsContext?: boolean },
 ): Promise<string> {
   const userId = getUserId();
+  const cbsContext = opts?.cbsContext === true;
   const t0 = Date.now();
   log.debug(
-    `resolveReadonly: START chat=${chatId} char=${characterId} userId=${userId ?? '<none>'} template_len=${template.length} ` +
+    `resolveReadonly: START chat=${chatId} char=${characterId} userId=${userId ?? '<none>'} cbs=${cbsContext} template_len=${template.length} ` +
       `template[0..200]=${JSON.stringify(template.slice(0, 200))}`,
   );
   if (workerEvalEnabled()) {
@@ -2925,7 +2979,7 @@ async function resolveReadonly(
       log.info(`resolveReadonly: worker-eval skipped chat=${chatId} — userId not yet captured; using legacy path`);
     } else {
       try {
-        const out = await resolveReadonlyInWorker(template, chatId, characterId, userId);
+        const out = await resolveReadonlyInWorker(template, chatId, characterId, userId, cbsContext);
         log.debug(
           `resolveReadonly: DONE (worker-eval) chat=${chatId} elapsed=${Date.now() - t0}ms out_len=${out.length} ` +
             `out[0..200]=${JSON.stringify(out.slice(0, 200))}`,
@@ -2968,6 +3022,7 @@ async function resolveReadonlyInWorker(
   chatId: string,
   characterId: string,
   userId: string,
+  cbsContext = false,
 ): Promise<string> {
   const [chat, character, messages, persona] = await Promise.all([
     spindle.chats.get(chatId, userId),
@@ -3006,6 +3061,7 @@ async function resolveReadonlyInWorker(
     chatId,
     ...(userId !== undefined ? { userId } : {}),
     characterId,
+    ...(cbsContext ? { cbsContext: true, currentMessageIndexOverride: -1 } : {}),
     ...(scriptstateDefaults && Object.keys(scriptstateDefaults).length > 0
       ? { scriptstateDefaults }
       : {}),

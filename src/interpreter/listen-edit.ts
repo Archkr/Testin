@@ -23,6 +23,7 @@ export interface ListenEditTrigger {
 export interface ListenEditOpts {
   readonly chatId?: string;
   readonly characterId?: string;
+  readonly resolveTemplate?: (text: string) => Promise<string>;
 }
 
 export async function runListenEditChain<T>(
@@ -95,6 +96,7 @@ export async function runListenEditChain<T>(
           lowLevelAccess: false,
           ...(opts.chatId !== undefined ? { chatId: opts.chatId } : {}),
           ...(opts.characterId !== undefined ? { characterId: opts.characterId } : {}),
+          ...(opts.resolveTemplate !== undefined ? { resolveTemplate: opts.resolveTemplate } : {}),
           // Hand the per-chain snapshot to the runtime so it skips its own
           // 3 IPC fetches (loadVars/getMessages/characters.get+lorebook).
           preloaded,

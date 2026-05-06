@@ -130,6 +130,8 @@ export interface BuildEvaluatorCtxInput {
   readonly modulesByNamespace?: Readonly<Record<string, readonly string[]>>;
   /** Per-chat `{{position::NAME}}` substitution map. See RisuRuntimeContext.positionPt. */
   readonly positionPt?: Readonly<Record<string, string>>;
+  /** Risu cbs() call context. See RisuRuntimeContext.cbsContext. */
+  readonly cbsContext?: boolean;
 }
 
 function indexToCharacterAssets(
@@ -304,7 +306,7 @@ export function buildEvaluatorContext(input: BuildEvaluatorCtxInput): EvaluatorC
         has: (name) => sessionFunctions.has(name),
       };
 
-  return {
+  const out: EvaluatorCtx = {
     vars,
     identity,
     character,
@@ -335,5 +337,16 @@ export function buildEvaluatorContext(input: BuildEvaluatorCtxInput): EvaluatorC
     callStack: 0,
     ...(input.modulesByNamespace ? { modulesByNamespace: input.modulesByNamespace } : {}),
     ...(input.positionPt ? { positionPt: input.positionPt } : {}),
+    ...(input.cbsContext ? { cbsContext: true } : {}),
   };
+  // Late-bound: handlers re-parse field content with the same context.
+  // Lazy require dodges the circular dep through dispatch->handlers.
+  (out as { evaluate?: (text: string) => string }).evaluate = (text: string) => {
+    if (typeof text !== "string" || text.length === 0) return "";
+    if (text.indexOf("{{") < 0 && text.indexOf("<") < 0) return text;
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { evaluate } = require("./scanner.js") as typeof import("./scanner.js");
+    return evaluate(text, out, out.callStack !== undefined ? { callStack: out.callStack } : {});
+  };
+  return out;
 }

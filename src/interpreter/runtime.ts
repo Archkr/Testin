@@ -41,6 +41,21 @@ const _logLLMMain         = makeSafeLogger('runtime.LLMMain');
 const _logAxLLMMain       = makeSafeLogger('runtime.axLLMMain');
 const _logFlush           = makeSafeLogger('runtime.flush');
 const _logLuaPrint        = makeSafeLogger('runtime.lua');
+const _logCbs             = makeSafeLogger('runtime.cbs');
+
+// Per-process alert gate so a Lua loop calling cbs() doesn't stack modals.
+let _cbsUnresolvedAlertFired = false;
+function warnCbsUnresolvedOnce(api: HostApi): void {
+  _logCbs.warn('cbs(): no resolver wired, returning input verbatim');
+  if (_cbsUnresolvedAlertFired) return;
+  _cbsUnresolvedAlertFired = true;
+  try {
+    api.ui?.alert?.(
+      'A card script called cbs(template) but no resolver was wired. Output will contain raw {{...}} markers. Report this if you see it.',
+      'error',
+    );
+  } catch { /* */ }
+}
 
 // Compiled triggers' rtOpts are JSON-frozen, so non-serialisable fields
 // (Function, Set) ride the side-channel. Safe: dispatch is serial,
@@ -712,9 +727,30 @@ export async function makeRisuTriggerRuntime(
         } catch { /* */ }
       },
       sleep: (_id: unknown, ms: unknown) => new Promise<void>((r) => setTimeout(r, Math.max(0, Number(ms) || 0))),
-      cbs: (value: unknown) => {
-        if (!api.utils?.template?.render) return Promise.reject(new Error('risu-compat: lua.cbs requires api.utils.template.render'));
-        return api.utils.template.render(toStr(value), {});
+      // Resolver order: opts, then dispatch-context side-channel (compiled
+      // triggers ship JSON-frozen rtOpts, no Function can ride that surface),
+      // then identity passthrough. Never rejects.
+      cbs: async (value: unknown): Promise<string> => {
+        const text = toStr(value);
+        const resolver = opts.resolveTemplate ?? getDispatchContext()?.resolveTemplate;
+        if (resolver) {
+          try {
+            return await resolver(text);
+          } catch (err) {
+            _logCbs.warn(`cbs resolver threw — returning input verbatim: ${err instanceof Error ? err.message : String(err)}`);
+            return text;
+          }
+        }
+        if (api.utils?.template?.render) {
+          try {
+            return await api.utils.template.render(text, {});
+          } catch (err) {
+            _logCbs.warn(`cbs api.utils.template.render threw — returning input verbatim: ${err instanceof Error ? err.message : String(err)}`);
+            return text;
+          }
+        }
+        warnCbsUnresolvedOnce(api);
+        return text;
       },
       logMain: (value: unknown) => { try { _logLuaPrint.debug(toStr(value)); } catch { /* */ } },
       // reloadDisplay forces refresh from async/callback paths.

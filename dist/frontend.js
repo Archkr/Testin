@@ -651,7 +651,7 @@ var styles_default = `.risu-compat-drawer {\r
 .risu-settings-drawer {\r
   display: flex;\r
   flex-direction: column;\r
-  gap: 36px;\r
+  gap: 12px;\r
   padding: 10px 8px 24px 8px;\r
   color: var(--lumiverse-text, inherit);\r
   font-size: 13px;\r
@@ -682,12 +682,8 @@ var styles_default = `.risu-compat-drawer {\r
   line-height: 1.45;\r
   color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.55));\r
 }\r
-/* Inline-logs host inside the Debug subtab. Tightens spacing vs the original\r
-   standalone panel which had its own intro + frame chrome. */\r
-.lr-settings-logs-host > .lr-logs::before {\r
-  content: none;\r
-}\r
-.lr-settings-logs-host > .lr-logs {\r
+/* Inline-logs host inside the Debug subtab. */\r
+.lr-settings-logs-host .lr-logs {\r
   background: transparent;\r
   border: none;\r
   padding: 0;\r
@@ -1537,8 +1533,8 @@ var styles_default = `.risu-compat-drawer {\r
 .lr-modules-drawer {\r
   display: flex;\r
   flex-direction: column;\r
-  gap: 14px;\r
-  padding: 12px 8px 24px 8px;\r
+  gap: 0;\r
+  padding: 4px 8px 24px 8px;\r
   color: var(--lumiverse-text, inherit);\r
   font-size: 13px;\r
   min-width: 0;\r
@@ -2495,10 +2491,11 @@ var styles_default = `.risu-compat-drawer {\r
   font-size: 10px;\r
   color: #7d8a93;\r
   font-style: italic;\r
-  white-space: nowrap;\r
-  background: rgba(255, 255, 255, 0.04);\r
-  padding: 1px 5px;\r
-  border-radius: 3px;\r
+  padding: 0 8px 6px;\r
+  white-space: normal;\r
+  overflow-wrap: anywhere;\r
+  word-break: break-word;\r
+  line-height: 1.35;\r
 }\r
 \r
 .lr-toggle-checkbox {\r
@@ -2601,16 +2598,6 @@ var styles_default = `.risu-compat-drawer {\r
   border: 1px solid var(--lumiverse-border, rgba(255, 255, 255, 0.07));\r
   border-radius: 6px;\r
 }\r
-.lr-logs::before {\r
-  content: 'Logs';\r
-  display: block;\r
-  font-size: 12px;\r
-  font-weight: 600;\r
-  text-transform: uppercase;\r
-  letter-spacing: 0.5px;\r
-  color: var(--lumiverse-text, inherit);\r
-  margin-bottom: 4px;\r
-}\r
 .lr-logs-intro {\r
   margin: 0;\r
   font-size: 12px;\r
@@ -2629,6 +2616,20 @@ var styles_default = `.risu-compat-drawer {\r
 .lr-logs-row-disabled label {\r
   opacity: 0.5;\r
   cursor: not-allowed;\r
+}\r
+.lr-logs-select {\r
+  flex: 1;\r
+  min-width: 0;\r
+  padding: 4px 8px;\r
+  background: var(--lumiverse-fill, rgba(255, 255, 255, 0.04));\r
+  color: var(--lumiverse-text, #e5e7eb);\r
+  border: 1px solid var(--lumiverse-border, rgba(255, 255, 255, 0.12));\r
+  border-radius: 4px;\r
+  font: inherit;\r
+  cursor: pointer;\r
+}\r
+.lr-logs-select:focus {\r
+  outline: 1px solid var(--lumiverse-accent, #7fbfff);\r
 }\r
 .lr-logs-status {\r
   font-size: 12px;\r
@@ -4101,12 +4102,21 @@ function countTotals(snap) {
 }
 
 // src/ui/logs-tab.ts
+var LEVEL_OPTIONS = [
+  { value: "silent", label: "Silent", title: "Drop everything, including errors. Same as logging off but the master switch stays on." },
+  { value: "error", label: "Error", title: "Errors only." },
+  { value: "warn", label: "Warn", title: "Errors + warnings." },
+  { value: "info", label: "Info (default)", title: "Lifecycle events: chat open/close, import phases, generation start/end, button clicks." },
+  { value: "debug", label: "Debug", title: "Per-call internals: resolveReadonly, ensureActiveCardForChat, refreshBgHtml, macroInterceptor enter/exit." },
+  { value: "trace", label: "Trace", title: "Everything: WS frame traffic, [macro-tap], per-Lua-call ctx, periodic summaries. Very noisy." }
+];
 function mountLogsPanel(opts) {
   const { root, sendToBackend, log } = opts;
   log.info("logs-tab: mounting");
   const state = {
     enabled: false,
     includeChatData: false,
+    level: "info",
     eventCount: 0,
     bufferBytes: 0,
     lastDownloadAt: null,
@@ -4128,7 +4138,8 @@ function mountLogsPanel(opts) {
       sendToBackend({
         type: "log_set_state",
         enabled: checked,
-        includeChatData: state.includeChatData
+        includeChatData: state.includeChatData,
+        level: state.level
       });
     }
   });
@@ -4141,11 +4152,41 @@ function mountLogsPanel(opts) {
       sendToBackend({
         type: "log_set_state",
         enabled: state.enabled,
-        includeChatData: checked
+        includeChatData: checked,
+        level: state.level
       });
     }
   });
   wrap.appendChild(chatRow.row);
+  const levelRow = document.createElement("div");
+  levelRow.className = "lr-logs-row";
+  const levelLabel = document.createElement("label");
+  levelLabel.htmlFor = "lr-logs-level";
+  levelLabel.textContent = "Verbosity";
+  levelLabel.title = "Threshold for which logs are recorded. Higher levels include lower ones.";
+  const levelSelect = document.createElement("select");
+  levelSelect.id = "lr-logs-level";
+  levelSelect.className = "lr-logs-select";
+  for (const opt of LEVEL_OPTIONS) {
+    const o = document.createElement("option");
+    o.value = opt.value;
+    o.textContent = opt.label;
+    o.title = opt.title;
+    levelSelect.appendChild(o);
+  }
+  levelSelect.addEventListener("change", () => {
+    const next = levelSelect.value;
+    log.info(`logs-tab: level set to ${next}`);
+    sendToBackend({
+      type: "log_set_state",
+      enabled: state.enabled,
+      includeChatData: state.includeChatData,
+      level: next
+    });
+  });
+  levelRow.appendChild(levelLabel);
+  levelRow.appendChild(levelSelect);
+  wrap.appendChild(levelRow);
   const status = document.createElement("div");
   status.className = "lr-logs-status";
   wrap.appendChild(status);
@@ -4190,8 +4231,11 @@ function mountLogsPanel(opts) {
     chatRow.input.checked = state.includeChatData;
     chatRow.input.disabled = !state.enabled;
     chatRow.row.classList.toggle("lr-logs-row-disabled", !state.enabled);
+    if (levelSelect.value !== state.level)
+      levelSelect.value = state.level;
     const kb = (state.bufferBytes / 1024).toFixed(1);
-    status.textContent = state.enabled ? `${state.eventCount} events, ${kb} KB` : `Off. ${state.eventCount} events, ${kb} KB.`;
+    const levelTxt = `level=${state.level}`;
+    status.textContent = state.enabled ? `${state.eventCount} events, ${kb} KB · ${levelTxt}` : `Off. ${state.eventCount} events, ${kb} KB · ${levelTxt}.`;
     if (state.lastError) {
       status.textContent += `  ·  ${state.lastError}`;
     }
@@ -4202,6 +4246,8 @@ function mountLogsPanel(opts) {
     if (msg.type === "log_state_pushed") {
       state.enabled = msg.enabled;
       state.includeChatData = msg.includeChatData;
+      if (msg.level !== undefined)
+        state.level = msg.level;
       state.eventCount = msg.eventCount;
       state.bufferBytes = msg.bufferBytes;
       render();
@@ -4423,7 +4469,7 @@ function mountSettingsPanel(opts) {
   debugCaptureHeader.className = "rs-subsection-header";
   const debugCaptureTitle = document.createElement("h4");
   debugCaptureTitle.className = "rs-subsection-title";
-  debugCaptureTitle.textContent = "Debug capture";
+  debugCaptureTitle.textContent = "Aux/Sub Debug Capture";
   debugCaptureTitle.title = "Surface aux/submodel requests and responses in a corner panel.";
   debugCaptureHeader.appendChild(debugCaptureTitle);
   debugCaptureSection.appendChild(debugCaptureHeader);
@@ -5034,7 +5080,7 @@ function mountModulesPanel(opts) {
   lorebooksBody.className = "lrm-section-body lrm-tab-body";
   const lbDesc = document.createElement("div");
   lbDesc.className = "lrm-section-desc";
-  lbDesc.textContent = "Upload a standalone lorebook (Risu native or CCSv3 JSON). Lumiverse stores it as an unattached world_book — attach to characters via Lumiverse's UI. Risu decorators (@@position, @@depth, @@is_greeting, etc.) still apply at runtime when a Risu-imported character uses the book.";
+  lbDesc.textContent = "Upload a standalone lorebook (Risu native or CCSv3 JSON). Lumiverse stores it as an unattached world_book. Attach to characters via Lumiverse's UI.";
   lorebooksBody.appendChild(lbDesc);
   const lbToolbar = document.createElement("div");
   lbToolbar.className = "lrm-toolbar";
@@ -5901,11 +5947,6 @@ function mountViewerPanel(opts) {
   }
   function renderBackgroundHtmlSection(html) {
     const det = document.createElement("section");
-    det.className = "lrv-section";
-    const sum = document.createElement("div");
-    sum.className = "lrv-section-summary";
-    sum.textContent = `Background HTML · ${html.length} chars`;
-    det.appendChild(sum);
     const note = document.createElement("div");
     note.className = "lrv-warning";
     note.textContent = "Painted into chats via the shadow-DOM mount; class names + CSS selectors are rewritten at render time.";
@@ -6018,10 +6059,6 @@ function mountViewerPanel(opts) {
   }
   function renderAssetsSection(assets) {
     const det = document.createElement("section");
-    det.className = "lrv-section";
-    const sum = document.createElement("div");
-    sum.className = "lrv-section-summary";
-    det.appendChild(sum);
     const toolbar2 = document.createElement("div");
     toolbar2.className = "lrv-asset-toolbar";
     const addBtn = document.createElement("button");
@@ -6039,6 +6076,9 @@ function mountViewerPanel(opts) {
     search.value = assetSearchTerm;
     search.spellcheck = false;
     toolbar2.appendChild(search);
+    const filterCount = document.createElement("span");
+    filterCount.className = "lrv-asset-filter-count";
+    toolbar2.appendChild(filterCount);
     if (assetUploadStatus !== null) {
       const status2 = document.createElement("span");
       status2.className = "lrv-asset-upload-status";
@@ -6051,7 +6091,7 @@ function mountViewerPanel(opts) {
     det.appendChild(toolbar2);
     const term = assetSearchTerm.trim().toLowerCase();
     const filtered = term ? assets.filter((a) => a.name.toLowerCase().includes(term)) : assets;
-    sum.textContent = term ? `Assets · ${filtered.length} of ${assets.length}` : `Assets · ${assets.length}`;
+    filterCount.textContent = term ? `${filtered.length} of ${assets.length}` : "";
     if (assets.length === 0) {
       const empty = document.createElement("div");
       empty.className = "lrv-empty";
@@ -6480,11 +6520,6 @@ function mountViewerPanel(opts) {
   }
   function renderTriggersSection(triggers) {
     const det = document.createElement("section");
-    det.className = "lrv-section";
-    const sum = document.createElement("div");
-    sum.className = "lrv-section-summary";
-    sum.textContent = `Triggers · ${triggers.length}`;
-    det.appendChild(sum);
     if (triggers.length === 0) {
       const empty = document.createElement("div");
       empty.className = "lrv-empty";
@@ -6567,12 +6602,22 @@ function mountViewerPanel(opts) {
       const luaDet = document.createElement("details");
       luaDet.className = "lrv-trigger-lua";
       const luaSum = document.createElement("summary");
-      luaSum.textContent = t.lua ? `Lua (${t.lua.length} chars)` : "Lua (empty)";
+      const effectsLabel = t.effects.length > 0 ? ` · ${t.effects.length} V2 effect${t.effects.length === 1 ? "" : "s"}` : "";
+      const luaLabel = t.lua ? `Lua (${t.lua.length} chars)` : t.effects.length > 0 ? "Lua (none)" : "Lua (empty)";
+      luaSum.textContent = luaLabel + effectsLabel;
       luaDet.appendChild(luaSum);
+      luaDet.open = !t.lua && t.effects.length > 0;
       if (t.lua) {
         const pre = document.createElement("pre");
         pre.className = "lrv-pre";
         pre.textContent = t.lua;
+        luaDet.appendChild(pre);
+      }
+      if (t.effects.length > 0) {
+        const pre = document.createElement("pre");
+        pre.className = "lrv-pre";
+        pre.textContent = t.effects.map((e) => `${"  ".repeat(Math.min(e.indent, 12))}${e.summary}`).join(`
+`);
         luaDet.appendChild(pre);
       }
       const editBtn = document.createElement("button");
@@ -6870,9 +6915,17 @@ function mountTogglesPanel(opts) {
       sum.className = "lr-toggle-group-summary";
       sum.textContent = t.value ?? "Group";
       det.appendChild(sum);
+      const children = t.children ?? [];
+      const groupAttr = pickGroupAttribution(children);
+      if (groupAttr) {
+        const attr = document.createElement("div");
+        attr.className = "lr-toggle-attribution";
+        attr.textContent = groupAttr;
+        attr.title = `From module: ${groupAttr}`;
+        det.appendChild(attr);
+      }
       const body = document.createElement("div");
       body.className = "lr-toggle-group-body";
-      const children = t.children ?? [];
       for (const child of children) {
         const cel = renderNode(child);
         if (cel)
@@ -6916,14 +6969,6 @@ function mountTogglesPanel(opts) {
     labelText.textContent = t.value;
     label.appendChild(labelText);
     const key = t.key;
-    const attribution = defs?.attribution[key];
-    if (attribution) {
-      const attr = document.createElement("span");
-      attr.className = "lr-toggle-attribution";
-      attr.textContent = attribution;
-      attr.title = `From module: ${attribution}`;
-      label.appendChild(attr);
-    }
     if (t.type === "checkbox") {
       const stored = readToggle(key);
       const cb = document.createElement("input");
@@ -6936,9 +6981,7 @@ function mountTogglesPanel(opts) {
       });
       row.appendChild(cb);
       row.appendChild(label);
-      return row;
-    }
-    if (t.type === "select") {
+    } else if (t.type === "select") {
       const sel = document.createElement("select");
       sel.className = "lr-toggle-select";
       const stored = readToggle(key);
@@ -6959,15 +7002,7 @@ function mountTogglesPanel(opts) {
       });
       row.appendChild(label);
       row.appendChild(sel);
-      return row;
-    }
-    if (t.type === "text") {
-      let commitText = function() {
-        const next = input.value;
-        textEditBuffers.delete(key);
-        if (next !== stored)
-          sendSet(key, next);
-      };
+    } else if (t.type === "text") {
       const stored = readToggle(key);
       const buffered = textEditBuffers.get(key);
       const input = document.createElement("input");
@@ -6977,6 +7012,12 @@ function mountTogglesPanel(opts) {
       input.addEventListener("input", () => {
         textEditBuffers.set(key, input.value);
       });
+      const commitText = () => {
+        const next = input.value;
+        textEditBuffers.delete(key);
+        if (next !== stored)
+          sendSet(key, next);
+      };
       input.addEventListener("change", commitText);
       input.addEventListener("blur", commitText);
       input.addEventListener("keydown", (e) => {
@@ -6993,15 +7034,7 @@ function mountTogglesPanel(opts) {
       });
       row.appendChild(label);
       row.appendChild(input);
-      return row;
-    }
-    if (t.type === "textarea") {
-      let commitTextarea = function() {
-        const next = ta.value;
-        textEditBuffers.delete(key);
-        if (next !== stored)
-          sendSet(key, next);
-      };
+    } else if (t.type === "textarea") {
       const stored = readToggle(key);
       const buffered = textEditBuffers.get(key);
       const ta = document.createElement("textarea");
@@ -7011,6 +7044,12 @@ function mountTogglesPanel(opts) {
       ta.addEventListener("input", () => {
         textEditBuffers.set(key, ta.value);
       });
+      const commitTextarea = () => {
+        const next = ta.value;
+        textEditBuffers.delete(key);
+        if (next !== stored)
+          sendSet(key, next);
+      };
       ta.addEventListener("change", commitTextarea);
       ta.addEventListener("blur", commitTextarea);
       ta.addEventListener("keydown", (e) => {
@@ -7028,9 +7067,21 @@ function mountTogglesPanel(opts) {
       row.classList.add("lr-toggle-row-stacked");
       row.appendChild(label);
       row.appendChild(ta);
-      return row;
     }
     return row;
+  }
+  function pickGroupAttribution(children) {
+    if (!defs)
+      return null;
+    for (const c of children) {
+      const k = c.key;
+      if (!k)
+        continue;
+      const a = defs.attribution[k];
+      if (a)
+        return a;
+    }
+    return null;
   }
   function readToggle(key) {
     if (!values)
@@ -8270,7 +8321,151 @@ ${p}
   };
 }
 
+// src/log/store.ts
+var LEVEL_RANK = {
+  silent: 0,
+  error: 1,
+  warn: 2,
+  info: 3,
+  debug: 4,
+  trace: 5
+};
+var DEFAULT_LOG_LEVEL = "info";
+var LOG_LEVEL_VALUES = [
+  "silent",
+  "error",
+  "warn",
+  "info",
+  "debug",
+  "trace"
+];
+function isLogThreshold(v) {
+  return typeof v === "string" && LOG_LEVEL_VALUES.includes(v);
+}
+function meetsThreshold(call, threshold) {
+  return LEVEL_RANK[call] <= LEVEL_RANK[threshold];
+}
+var MAX_BYTES = 5 * 1024 * 1024;
+class LogStore {
+  events = [];
+  bytes = 0;
+  state = { enabled: false, includeChatData: false, level: DEFAULT_LOG_LEVEL };
+  isEnabled() {
+    return this.state.enabled;
+  }
+  shouldRedact() {
+    return !this.state.includeChatData;
+  }
+  getLevel() {
+    return this.state.level;
+  }
+  shouldEmit(level) {
+    if (!this.state.enabled)
+      return false;
+    return meetsThreshold(level, this.state.level);
+  }
+  push(level, category, message) {
+    if (!this.shouldEmit(level))
+      return;
+    const text = this.shouldRedact() ? redact(message) : message;
+    const ev = { ts: Date.now(), level, category, message: text };
+    const size = approxBytes(ev);
+    this.events.push(ev);
+    this.bytes += size;
+    while (this.bytes > MAX_BYTES && this.events.length > 1) {
+      const dropped = this.events.shift();
+      if (dropped)
+        this.bytes -= approxBytes(dropped);
+    }
+  }
+  snapshot() {
+    return { events: this.events.slice() };
+  }
+  clear() {
+    this.events = [];
+    this.bytes = 0;
+  }
+  getState() {
+    return { ...this.state, eventCount: this.events.length, bufferBytes: this.bytes };
+  }
+  setState(next) {
+    const before = this.state.enabled;
+    const merged = {
+      enabled: next.enabled ?? this.state.enabled,
+      includeChatData: next.includeChatData ?? this.state.includeChatData,
+      level: isLogThreshold(next.level) ? next.level : this.state.level
+    };
+    this.state = merged;
+    if (!this.state.enabled && before)
+      this.clear();
+    return this.getState();
+  }
+}
+var logStore = new LogStore;
+function approxBytes(ev) {
+  return ev.message.length + ev.category.length + 32;
+}
+var REDACT_PATTERNS = [
+  { re: /Bearer\s+[A-Za-z0-9\-_.~+/]+=*/gi, to: "Bearer [REDACTED]" },
+  { re: /\bsk-[A-Za-z0-9_-]{20,}/g, to: "sk-[REDACTED]" },
+  { re: /\b(api[_-]?key|secret|password|token)\s*[=:]\s*[^\s,;}]+/gi, to: "$1=[REDACTED]" },
+  { re: /\b(content|content_preview|message|message_preview|text|text_preview|raw|raw_preview|template|prompt|response|reply)\s*=\s*"[^"]*"/gi, to: '$1="[REDACTED]"' },
+  { re: /\b(content|content_preview|message|message_preview|text|text_preview|raw|raw_preview|template|prompt|response|reply)\s*=\s*'[^']*'/gi, to: "$1='[REDACTED]'" },
+  { re: /"[^"\n]{80,}"/g, to: '"[CONTENT_REDACTED]"' },
+  { re: /'[^'\n]{80,}'/g, to: "'[CONTENT_REDACTED]'" }
+];
+function redact(input) {
+  let out = input;
+  for (const { re, to } of REDACT_PATTERNS)
+    out = out.replace(re, to);
+  return out;
+}
+
+// src/log/frontend-log.ts
+function formatLine(msg, rest) {
+  if (rest.length === 0)
+    return msg;
+  const tail = rest.map((r) => {
+    if (r instanceof Error)
+      return `${r.name}: ${r.message}`;
+    if (typeof r === "string")
+      return r;
+    try {
+      return JSON.stringify(r);
+    } catch {
+      return String(r);
+    }
+  }).join(" ");
+  return `${msg} ${tail}`;
+}
+function consoleFor(level) {
+  if (level === "error")
+    return console.error.bind(console);
+  if (level === "warn")
+    return console.warn.bind(console);
+  return console.log.bind(console);
+}
+function makeFrontendLogger(category) {
+  function emit(level, msg, rest) {
+    const consoleEmit = level === "error" || logStore.shouldEmit(level);
+    if (consoleEmit) {
+      try {
+        consoleFor(level)("[lumirealm]", `${category}:`, msg, ...rest);
+      } catch {}
+    }
+    logStore.push(level, category, formatLine(msg, rest));
+  }
+  return {
+    error: (m, ...r) => emit("error", m, r),
+    warn: (m, ...r) => emit("warn", m, r),
+    info: (m, ...r) => emit("info", m, r),
+    debug: (m, ...r) => emit("debug", m, r),
+    trace: (m, ...r) => emit("trace", m, r)
+  };
+}
+
 // src/portal/hide-panel-css.ts
+var flog = makeFrontendLogger("hide-panel-css");
 var HIDE_STYLE_ID = "lumirealm-portal-hide-panels";
 var documentStyleEl = null;
 var constructedSheet = null;
@@ -8372,7 +8567,7 @@ function addHidePanelClasses(classes) {
       const docCss = documentStyleEl?.textContent ?? "";
       const sheetRules = constructedSheet ? constructedSheet.cssRules.length : 0;
       const sheetAdopted = constructedSheet ? Array.from(document.adoptedStyleSheets ?? []).includes(constructedSheet) : false;
-      console.info(`[lumirealm] hide-panel-css: added ${JSON.stringify(newClasses)}; ` + `total=${knownClasses.size} doc_chars=${docCss.length} ` + `sheet_rules=${sheetRules} sheet_doc_adopted=${sheetAdopted}`);
+      flog.debug(`added ${JSON.stringify(newClasses)}; ` + `total=${knownClasses.size} doc_chars=${docCss.length} ` + `sheet_rules=${sheetRules} sheet_doc_adopted=${sheetAdopted}`);
     } catch {}
   }
   return added;
@@ -8396,7 +8591,7 @@ function addHidePanelIds(ids) {
     try {
       const docCss = documentStyleEl?.textContent ?? "";
       const sheetRules = constructedSheet ? constructedSheet.cssRules.length : 0;
-      console.info(`[lumirealm] hide-panel-css: added ids=${JSON.stringify(newIds)}; ` + `total_classes=${knownClasses.size} total_ids=${knownIds.size} ` + `doc_chars=${docCss.length} sheet_rules=${sheetRules}`);
+      flog.debug(`added ids=${JSON.stringify(newIds)}; ` + `total_classes=${knownClasses.size} total_ids=${knownIds.size} ` + `doc_chars=${docCss.length} sheet_rules=${sheetRules}`);
     } catch {}
   }
   return added;
@@ -8427,7 +8622,7 @@ function dumpHidePanelState() {
 function getHidePanelSheetForIsland() {
   return getHidePanelSheet();
 }
-function setupIslandStyles(flog, opts = {}) {
+function setupIslandStyles(flog2, opts = {}) {
   let sheet = null;
   let envSheet = null;
   const allOwnedSheets = new WeakSet;
@@ -8435,7 +8630,7 @@ function setupIslandStyles(flog, opts = {}) {
     sheet = new CSSStyleSheet;
     allOwnedSheets.add(sheet);
   } catch (err) {
-    flog.error("island-styles: CSSStyleSheet constructor unavailable (browser predates 2023)", err);
+    flog2.error("island-styles: CSSStyleSheet constructor unavailable (browser predates 2023)", err);
     return {
       setStylesheet: () => {},
       setCrossRuleSheets: () => {},
@@ -8452,9 +8647,9 @@ function setupIslandStyles(flog, opts = {}) {
       envSheet = new CSSStyleSheet;
       allOwnedSheets.add(envSheet);
       envSheet.replaceSync(rescoped.css);
-      flog.info(`island-styles: Risu environment sheet built ${opts.riskuEnvironmentCss.length}->${rescoped.css.length} bytes, ` + `${envSheet.cssRules.length} top-level rules ` + `(rewrites: :root=${rescoped.rootHits} .prose=${rescoped.proseHits} ` + `.prose-invert=${rescoped.proseInvertHits} .chattext=${rescoped.chattextHits} ` + `.chat-width=${rescoped.chatWidthHits})`);
+      flog2.info(`island-styles: Risu environment sheet built ${opts.riskuEnvironmentCss.length}->${rescoped.css.length} bytes, ` + `${envSheet.cssRules.length} top-level rules ` + `(rewrites: :root=${rescoped.rootHits} .prose=${rescoped.proseHits} ` + `.prose-invert=${rescoped.proseInvertHits} .chattext=${rescoped.chattextHits} ` + `.chat-width=${rescoped.chatWidthHits})`);
     } catch (err) {
-      flog.error("island-styles: Risu environment sheet construction failed (falling back to per-card sheet only)", err);
+      flog2.error("island-styles: Risu environment sheet construction failed (falling back to per-card sheet only)", err);
       envSheet = null;
     }
   }
@@ -8500,12 +8695,12 @@ function setupIslandStyles(flog, opts = {}) {
         const childCount = shadow.childElementCount;
         const sheetRules = sheet.cssRules.length;
         const envRules = envSheet ? envSheet.cssRules.length : 0;
-        flog.info(`island-styles: adopted #${adoptionCount} into <${hostTag} class="${hostClass}"> ` + `(shadow has ${childCount} top-level children; envSheet ${envRules} rules + perCardSheet ${sheetRules} rules)`);
+        flog2.debug(`island-styles: adopted #${adoptionCount} into <${hostTag} class="${hostClass}"> ` + `(shadow has ${childCount} top-level children; envSheet ${envRules} rules + perCardSheet ${sheetRules} rules)`);
       } else if (adoptionCount % ADOPT_LOG_STRIDE === 0) {
-        flog.info(`island-styles: adopted=${adoptionCount} (chat shadows visited=${chatShadowCount}, outside-chat shadows visited=${outsideChatShadowCount})`);
+        flog2.info(`island-styles: adopted=${adoptionCount} (chat shadows visited=${chatShadowCount}, outside-chat shadows visited=${outsideChatShadowCount})`);
       }
     } catch (err) {
-      flog.warn("island-styles: adoptedStyleSheets append failed", err);
+      flog2.warn("island-styles: adoptedStyleSheets append failed", err);
     }
   }
   function visit(el) {
@@ -8551,14 +8746,14 @@ function setupIslandStyles(flog, opts = {}) {
   try {
     observer.observe(document.body, { childList: true, subtree: true });
   } catch (err) {
-    flog.error("island-styles: observer.observe failed", err);
+    flog2.error("island-styles: observer.observe failed", err);
   }
   try {
     walkSubtree(document.body);
   } catch (err) {
-    flog.warn("island-styles: initial walk failed", err);
+    flog2.warn("island-styles: initial walk failed", err);
   }
-  flog.info("island-styles: setup complete (adopting into Lumi message-island shadows)");
+  flog2.info("island-styles: setup complete (adopting into Lumi message-island shadows)");
   function nudgeAdopters(reason) {
     if (adoptedRefs.length === 0)
       return;
@@ -8579,7 +8774,7 @@ function setupIslandStyles(flog, opts = {}) {
       } catch {}
     }
     if (nudged > 0 || dead > 0) {
-      flog.info(`island-styles: nudged adopters reason=${reason} ` + `nudged=${nudged} dead_refs_pruned=${dead} live=${adoptedRefs.length}`);
+      flog2.info(`island-styles: nudged adopters reason=${reason} ` + `nudged=${nudged} dead_refs_pruned=${dead} live=${adoptedRefs.length}`);
     }
   }
   function reAdoptAll() {
@@ -8604,7 +8799,7 @@ function setupIslandStyles(flog, opts = {}) {
         const filtered = existing.filter((s) => !allOwnedSheets.has(s));
         shadow.adoptedStyleSheets = [...filtered, ...append];
       } catch (err) {
-        flog.warn("island-styles: re-adopt failed", err);
+        flog2.warn("island-styles: re-adopt failed", err);
       }
     }
   }
@@ -8615,7 +8810,7 @@ function setupIslandStyles(flog, opts = {}) {
     try {
       cb();
     } catch (err) {
-      flog.warn("island-styles: onStylesUpdated callback threw", err);
+      flog2.warn("island-styles: onStylesUpdated callback threw", err);
     }
   }
   return {
@@ -8623,7 +8818,7 @@ function setupIslandStyles(flog, opts = {}) {
       if (!sheet)
         return;
       if (lastSheetCss !== null && lastSheetCss === css) {
-        flog.info(`island-styles: setStylesheet skipped — content unchanged (${css.length} bytes)`);
+        flog2.info(`island-styles: setStylesheet skipped — content unchanged (${css.length} bytes)`);
         return;
       }
       try {
@@ -8631,14 +8826,14 @@ function setupIslandStyles(flog, opts = {}) {
         lastSheetCss = css;
         nudgeAdopters("setStylesheet");
       } catch (err) {
-        flog.error("island-styles: replaceSync failed", err);
+        flog2.error("island-styles: replaceSync failed", err);
       }
       fireUpdated();
     },
     setCrossRuleSheets(cssParts) {
       const key = cssParts.length + "\x1F" + cssParts.join("\x1E");
       if (lastCrossRuleKey === key) {
-        flog.info(`island-styles: setCrossRuleSheets skipped — content unchanged (parts=${cssParts.length})`);
+        flog2.info(`island-styles: setCrossRuleSheets skipped — content unchanged (parts=${cssParts.length})`);
         return;
       }
       const next = [];
@@ -8656,13 +8851,13 @@ function setupIslandStyles(flog, opts = {}) {
           okCount++;
         } catch (err) {
           failCount++;
-          flog.warn(`island-styles: cross-rule sheet ${i} parse failed (skipped): ${err instanceof Error ? err.message : String(err)}`);
+          flog2.warn(`island-styles: cross-rule sheet ${i} parse failed (skipped): ${err instanceof Error ? err.message : String(err)}`);
         }
       }
       crossRuleSheets = next;
       lastCrossRuleKey = key;
       reAdoptAll();
-      flog.info(`island-styles: cross-rule sheets set ok=${okCount} failed=${failCount} total_parts=${cssParts.length}`);
+      flog2.info(`island-styles: cross-rule sheets set ok=${okCount} failed=${failCount} total_parts=${cssParts.length}`);
       fireUpdated();
     },
     clear() {
@@ -8722,8 +8917,8 @@ var risu_environment_default = "@layer properties{@supports (((-webkit-hyphens:n
 var PORTAL_WRAPPER_CLASS = "lumi-message-portal-wrapper";
 var KEY_DELIMITER = "\x1F";
 var SWEEP_THROTTLE_MS = 50;
-var CLEANUP_GRACE_MS = 200;
-function setupMessagePortal(ctx, flog) {
+var CLEANUP_GRACE_MS = 100;
+function setupMessagePortal(ctx, flog2) {
   let overlayHandle;
   try {
     const handle = ctx.ui.mountApp({ position: "end", className: "lumi-message-portal-root" });
@@ -8735,9 +8930,9 @@ function setupMessagePortal(ctx, flog) {
         } catch {}
       }
     };
-    flog.info("message-portal: mountApp acquired overlay root");
+    flog2.info("message-portal: mountApp acquired overlay root");
   } catch (err) {
-    flog.warn("message-portal: mountApp failed; using document.body fallback", err);
+    flog2.warn("message-portal: mountApp failed; using document.body fallback", err);
     const root = document.createElement("div");
     root.className = "lumi-message-portal-root";
     document.body.appendChild(root);
@@ -8752,6 +8947,7 @@ function setupMessagePortal(ctx, flog) {
   let throttleTimer = null;
   let pendingReason = null;
   let lastSweep = null;
+  let cleanupTimer = null;
   function scheduleSweep(reason) {
     if (streamingChats.size > 0) {
       return;
@@ -8820,7 +9016,7 @@ function setupMessagePortal(ctx, flog) {
     minHeightClearCount += 1;
     if (diagMinHeightClear) {
       const msgId = (bubble.getAttribute("data-message-id") ?? "").slice(0, 8);
-      flog.info(`[min-height-clear #${minHeightClearCount}] msg=${msgId} ` + `prev=${JSON.stringify(style.slice(0, 200))} next=${JSON.stringify(next.slice(0, 200))}`);
+      flog2.info(`[min-height-clear #${minHeightClearCount}] msg=${msgId} ` + `prev=${JSON.stringify(style.slice(0, 200))} next=${JSON.stringify(next.slice(0, 200))}`);
     }
   }
   const minHeightMo = new MutationObserver((records) => {
@@ -8830,7 +9026,7 @@ function setupMessagePortal(ctx, flog) {
       try {
         maybeClearLatchedMinHeight(r.target);
       } catch (err) {
-        flog.warn("message-portal: maybeClearLatchedMinHeight threw", err);
+        flog2.warn("message-portal: maybeClearLatchedMinHeight threw", err);
       }
     }
   });
@@ -8841,7 +9037,7 @@ function setupMessagePortal(ctx, flog) {
       subtree: true
     });
   } catch (err) {
-    flog.warn("message-portal: min-height MO observe failed", err);
+    flog2.warn("message-portal: min-height MO observe failed", err);
   }
   const prevSweepSigs = new Map;
   const shadowObservers = new Map;
@@ -8858,7 +9054,7 @@ function setupMessagePortal(ctx, flog) {
       so.observe(shadow, { childList: true, subtree: true, characterData: true });
       shadowObservers.set(shadow, so);
     } catch (err) {
-      flog.warn("message-portal: shadow MO observe failed", err);
+      flog2.warn("message-portal: shadow MO observe failed", err);
     }
   }
   function sigHead(sig) {
@@ -8965,7 +9161,7 @@ function setupMessagePortal(ctx, flog) {
                 ...sourceShadow.adoptedStyleSheets
               ].filter((s) => s !== hidePanel);
             } catch (err) {
-              flog.warn("message-portal: adoptedStyleSheets copy failed", err);
+              flog2.warn("message-portal: adoptedStyleSheets copy failed", err);
             }
             for (const el of liftSet) {
               wrapperShadow.appendChild(el.cloneNode(true));
@@ -9003,16 +9199,32 @@ function setupMessagePortal(ctx, flog) {
       }
     }
     const now = performance.now();
+    let earliestStaleExpiry = Infinity;
     for (const [key, rec] of lifted) {
       if (presentKeys.has(key))
         continue;
-      if (now - rec.lastSeenAt < CLEANUP_GRACE_MS)
+      if (now - rec.lastSeenAt < CLEANUP_GRACE_MS) {
+        const exp = rec.lastSeenAt + CLEANUP_GRACE_MS;
+        if (exp < earliestStaleExpiry)
+          earliestStaleExpiry = exp;
         continue;
+      }
       try {
         rec.wrapper.remove();
       } catch {}
       lifted.delete(key);
       stale++;
+    }
+    if (cleanupTimer !== null) {
+      clearTimeout(cleanupTimer);
+      cleanupTimer = null;
+    }
+    if (earliestStaleExpiry !== Infinity) {
+      const delay = Math.max(0, earliestStaleExpiry - performance.now() + 5);
+      cleanupTimer = window.setTimeout(() => {
+        cleanupTimer = null;
+        scheduleSweep("cleanup-grace-elapsed");
+      }, delay);
     }
     const dt = performance.now() - t0;
     const stats = {
@@ -9026,12 +9238,12 @@ function setupMessagePortal(ctx, flog) {
     };
     lastSweep = stats;
     if (groupsLifted > 0 || hidden > 0 || stale > 0 || dt > 10 || diagAllSweeps) {
-      flog.info(`message-portal: sweep reason=${reason} walked=${walked} bubbles=${visibleMsgIds.size} ` + `groups=${groupsLifted} elements=${elementsLifted} hidden=${hidden} stale=${stale} ` + `${dt.toFixed(1)}ms total_overlay=${lifted.size}`);
+      flog2.info(`message-portal: sweep reason=${reason} walked=${walked} bubbles=${visibleMsgIds.size} ` + `groups=${groupsLifted} elements=${elementsLifted} hidden=${hidden} stale=${stale} ` + `${dt.toFixed(1)}ms total_overlay=${lifted.size}`);
     }
     if (diagPortalTrace && currentKeys) {
       traceSweepNum += 1;
       const bubbleSummary = (traceBubbles ?? []).filter((b) => b.fixedCount > 0).map((b) => `${b.msgId.slice(0, 8)}:fix=${b.fixedCount}/grp=${b.groupCount}`).join(",") || "<no fixed>";
-      flog.info(`[portal-trace #${traceSweepNum}] reason=${reason} bubbles_with_fixed=${bubbleSummary} ` + `prev_keys=${prevSweepSigs.size} curr_keys=${currentKeys.size}`);
+      flog2.info(`[portal-trace #${traceSweepNum}] reason=${reason} bubbles_with_fixed=${bubbleSummary} ` + `prev_keys=${prevSweepSigs.size} curr_keys=${currentKeys.size}`);
       const added = [];
       const dropped = [];
       let kept = 0;
@@ -9045,14 +9257,14 @@ function setupMessagePortal(ctx, flog) {
         if (!currentKeys.has(key))
           dropped.push([key, fullSig]);
       }
-      flog.info(`[portal-trace #${traceSweepNum}] kept=${kept} added=${added.length} dropped=${dropped.length}`);
+      flog2.info(`[portal-trace #${traceSweepNum}] kept=${kept} added=${added.length} dropped=${dropped.length}`);
       for (const [key, fullSig] of added.slice(0, 3)) {
         const msgIdShort = key.split(KEY_DELIMITER)[0]?.slice(0, 8) ?? "?";
-        flog.info(`[portal-trace #${traceSweepNum}]   +ADD msg=${msgIdShort} len=${fullSig.length} ` + `sigHead=${JSON.stringify(sigHead(fullSig))}`);
+        flog2.info(`[portal-trace #${traceSweepNum}]   +ADD msg=${msgIdShort} len=${fullSig.length} ` + `sigHead=${JSON.stringify(sigHead(fullSig))}`);
       }
       for (const [key, fullSig] of dropped.slice(0, 3)) {
         const msgIdShort = key.split(KEY_DELIMITER)[0]?.slice(0, 8) ?? "?";
-        flog.info(`[portal-trace #${traceSweepNum}]   -DROP msg=${msgIdShort} len=${fullSig.length} ` + `sigHead=${JSON.stringify(sigHead(fullSig))}`);
+        flog2.info(`[portal-trace #${traceSweepNum}]   -DROP msg=${msgIdShort} len=${fullSig.length} ` + `sigHead=${JSON.stringify(sigHead(fullSig))}`);
       }
       for (const [aKey, aFull] of added) {
         const aMsg = aKey.split(KEY_DELIMITER)[0];
@@ -9072,7 +9284,7 @@ function setupMessagePortal(ctx, flog) {
           diffAt = len;
         if (diffAt >= 0) {
           const window2 = (s) => JSON.stringify(s.slice(Math.max(0, diffAt - 30), diffAt + 60).replace(/\s+/g, " "));
-          flog.info(`[portal-trace #${traceSweepNum}]   ↻DRIFT msg=${(aMsg ?? "?").slice(0, 8)} firstDiffAt=${diffAt} ` + `prev_len=${dFull.length} curr_len=${aFull.length} ` + `prev=${window2(dFull)} curr=${window2(aFull)}`);
+          flog2.info(`[portal-trace #${traceSweepNum}]   ↻DRIFT msg=${(aMsg ?? "?").slice(0, 8)} firstDiffAt=${diffAt} ` + `prev_len=${dFull.length} curr_len=${aFull.length} ` + `prev=${window2(dFull)} curr=${window2(aFull)}`);
         }
       }
       prevSweepSigs.clear();
@@ -9157,15 +9369,19 @@ function setupMessagePortal(ctx, flog) {
       return;
     const seq = ++balloonSeq;
     const streaming = streamingChats.size > 0;
-    flog.info(`[balloon #${seq}] reason=${reason} streaming=${streaming} ` + `bubbles=${interesting.length}/${samples.length}`);
+    flog2.info(`[balloon #${seq}] reason=${reason} streaming=${streaming} ` + `bubbles=${interesting.length}/${samples.length}`);
     for (const s of interesting) {
-      flog.info(`[balloon #${seq}]   bubble msg=${s.msgId.slice(0, 8)} h=${s.bubbleHeight}px ` + `cssHidden=${s.cssHidden} shadow=${s.shadowVisited} tall=${s.tall.length}`);
+      flog2.info(`[balloon #${seq}]   bubble msg=${s.msgId.slice(0, 8)} h=${s.bubbleHeight}px ` + `cssHidden=${s.cssHidden} shadow=${s.shadowVisited} tall=${s.tall.length}`);
       for (const t of s.tall.slice(0, 5)) {
-        flog.info(`[balloon #${seq}]     ${t.origin}/${t.tag} h=${t.height}px pos=${t.position} ` + `cls=${JSON.stringify(t.className.slice(0, 50))} ` + `head=${JSON.stringify(t.head)}`);
+        flog2.info(`[balloon #${seq}]     ${t.origin}/${t.tag} h=${t.height}px pos=${t.position} ` + `cls=${JSON.stringify(t.className.slice(0, 50))} ` + `head=${JSON.stringify(t.head)}`);
       }
     }
   }
   function clearAll(reason) {
+    if (cleanupTimer !== null) {
+      clearTimeout(cleanupTimer);
+      cleanupTimer = null;
+    }
     if (lifted.size === 0)
       return;
     for (const [, rec] of lifted) {
@@ -9183,7 +9399,7 @@ function setupMessagePortal(ctx, flog) {
       } catch {}
     }
     shadowObservers.clear();
-    flog.info(`message-portal: clearAll reason=${reason} cleared=${n} shadow_observers=${shadowCount}`);
+    flog2.info(`message-portal: clearAll reason=${reason} cleared=${n} shadow_observers=${shadowCount}`);
   }
   const mo = new MutationObserver(() => {
     try {
@@ -9194,7 +9410,7 @@ function setupMessagePortal(ctx, flog) {
   try {
     mo.observe(document.body, { childList: true, subtree: true });
   } catch (err) {
-    flog.error("message-portal: MutationObserver.observe failed", err);
+    flog2.error("message-portal: MutationObserver.observe failed", err);
   }
   scheduleSweep("init");
   let resizeTimer = null;
@@ -9210,7 +9426,7 @@ function setupMessagePortal(ctx, flog) {
   if (typeof document !== "undefined" && "fonts" in document) {
     document.fonts.ready.then(() => scheduleSweep("fonts-ready")).catch(() => {});
   }
-  flog.info("message-portal: setup complete (mode=runtime-DOM-clone-lifter, lift-unit=group-by-parent)");
+  flog2.info("message-portal: setup complete (mode=runtime-DOM-clone-lifter, lift-unit=group-by-parent)");
   return {
     sweep: scheduleSweep,
     clearAll,
@@ -9235,7 +9451,7 @@ function setupMessagePortal(ctx, flog) {
         streamingChats.delete(chatId);
       }
       const isStreaming = streamingChats.size > 0;
-      flog.info(`message-portal: setStreamingActive chat=${chatId.slice(0, 8)} active=${active} ` + `streaming_count=${streamingChats.size}`);
+      flog2.info(`message-portal: setStreamingActive chat=${chatId.slice(0, 8)} active=${active} ` + `streaming_count=${streamingChats.size}`);
       if (wasStreaming && !isStreaming) {
         scheduleSweep("stream-end");
       }
@@ -9249,7 +9465,7 @@ function setupMessagePortal(ctx, flog) {
     setDiagBalloonTrace: (on) => {
       diagBalloonTrace = on;
       lastBalloonEmit = 0;
-      flog.info(`message-portal: setDiagBalloonTrace = ${on}`);
+      flog2.info(`message-portal: setDiagBalloonTrace = ${on}`);
       if (on) {
         try {
           maybeEmitBalloonTrace("toggle-on");
@@ -9259,7 +9475,7 @@ function setupMessagePortal(ctx, flog) {
     dumpBalloonState: () => collectBalloonState(),
     setDiagMinHeightClear: (on) => {
       diagMinHeightClear = on;
-      flog.info(`message-portal: setDiagMinHeightClear = ${on} (cumulative_clears=${minHeightClearCount})`);
+      flog2.info(`message-portal: setDiagMinHeightClear = ${on} (cumulative_clears=${minHeightClearCount})`);
     },
     minHeightClears: () => minHeightClearCount,
     destroy: () => {
@@ -9284,6 +9500,10 @@ function setupMessagePortal(ctx, flog) {
         clearTimeout(resizeTimer);
         resizeTimer = null;
       }
+      if (cleanupTimer !== null) {
+        clearTimeout(cleanupTimer);
+        cleanupTimer = null;
+      }
       for (const [, rec] of lifted) {
         try {
           rec.wrapper.remove();
@@ -9291,7 +9511,7 @@ function setupMessagePortal(ctx, flog) {
       }
       lifted.clear();
       overlayHandle.destroy();
-      flog.info("message-portal: destroyed");
+      flog2.info("message-portal: destroyed");
     }
   };
 }
@@ -11644,70 +11864,6 @@ function setupPickModal(opts) {
   };
 }
 
-// src/log/store.ts
-var MAX_BYTES = 5 * 1024 * 1024;
-class LogStore {
-  events = [];
-  bytes = 0;
-  state = { enabled: false, includeChatData: false };
-  isEnabled() {
-    return this.state.enabled;
-  }
-  shouldRedact() {
-    return !this.state.includeChatData;
-  }
-  push(level, category, message) {
-    if (!this.state.enabled)
-      return;
-    const text = this.shouldRedact() ? redact(message) : message;
-    const ev = { ts: Date.now(), level, category, message: text };
-    const size = approxBytes(ev);
-    this.events.push(ev);
-    this.bytes += size;
-    while (this.bytes > MAX_BYTES && this.events.length > 1) {
-      const dropped = this.events.shift();
-      if (dropped)
-        this.bytes -= approxBytes(dropped);
-    }
-  }
-  snapshot() {
-    return { events: this.events.slice() };
-  }
-  clear() {
-    this.events = [];
-    this.bytes = 0;
-  }
-  getState() {
-    return { ...this.state, eventCount: this.events.length, bufferBytes: this.bytes };
-  }
-  setState(next) {
-    const before = this.state.enabled;
-    this.state = { ...this.state, ...next };
-    if (!this.state.enabled && before)
-      this.clear();
-    return this.getState();
-  }
-}
-var logStore = new LogStore;
-function approxBytes(ev) {
-  return ev.message.length + ev.category.length + 32;
-}
-var REDACT_PATTERNS = [
-  { re: /Bearer\s+[A-Za-z0-9\-_.~+/]+=*/gi, to: "Bearer [REDACTED]" },
-  { re: /\bsk-[A-Za-z0-9_-]{20,}/g, to: "sk-[REDACTED]" },
-  { re: /\b(api[_-]?key|secret|password|token)\s*[=:]\s*[^\s,;}]+/gi, to: "$1=[REDACTED]" },
-  { re: /\b(content|content_preview|message|message_preview|text|text_preview|raw|raw_preview|template|prompt|response|reply)\s*=\s*"[^"]*"/gi, to: '$1="[REDACTED]"' },
-  { re: /\b(content|content_preview|message|message_preview|text|text_preview|raw|raw_preview|template|prompt|response|reply)\s*=\s*'[^']*'/gi, to: "$1='[REDACTED]'" },
-  { re: /"[^"\n]{80,}"/g, to: '"[CONTENT_REDACTED]"' },
-  { re: /'[^'\n]{80,}'/g, to: "'[CONTENT_REDACTED]'" }
-];
-function redact(input) {
-  let out = input;
-  for (const { re, to } of REDACT_PATTERNS)
-    out = out.replace(re, to);
-  return out;
-}
-
 // src/log/frontend-capture.ts
 var CONSOLE_METHODS = ["log", "info", "warn", "error", "debug"];
 var consoleShimInstalled = false;
@@ -11719,7 +11875,9 @@ function methodToLevel(m) {
     return "error";
   if (m === "debug")
     return "debug";
-  return "info";
+  if (m === "info")
+    return "info";
+  return "trace";
 }
 function installConsoleCapture() {
   if (consoleShimInstalled)
@@ -11880,23 +12038,33 @@ function downloadBundle(bundle) {
 
 // src/frontend.ts
 var HANDSHAKE_RETRY_MS = 3000;
-var flog = {
-  info(msg, ...rest) {
-    if (logStore.isEnabled())
-      console.log("[lumirealm]", msg, ...rest);
-    logStore.push("info", "frontend", formatLine(msg, rest));
-  },
-  warn(msg, ...rest) {
-    if (logStore.isEnabled())
-      console.warn("[lumirealm]", msg, ...rest);
-    logStore.push("warn", "frontend", formatLine(msg, rest));
-  },
+var flog2 = {
   error(msg, ...rest) {
     console.error("[lumirealm]", msg, ...rest);
-    logStore.push("error", "frontend", formatLine(msg, rest));
+    logStore.push("error", "frontend", formatLine2(msg, rest));
+  },
+  warn(msg, ...rest) {
+    if (logStore.shouldEmit("warn"))
+      console.warn("[lumirealm]", msg, ...rest);
+    logStore.push("warn", "frontend", formatLine2(msg, rest));
+  },
+  info(msg, ...rest) {
+    if (logStore.shouldEmit("info"))
+      console.log("[lumirealm]", msg, ...rest);
+    logStore.push("info", "frontend", formatLine2(msg, rest));
+  },
+  debug(msg, ...rest) {
+    if (logStore.shouldEmit("debug"))
+      console.log("[lumirealm]", msg, ...rest);
+    logStore.push("debug", "frontend", formatLine2(msg, rest));
+  },
+  trace(msg, ...rest) {
+    if (logStore.shouldEmit("trace"))
+      console.log("[lumirealm]", msg, ...rest);
+    logStore.push("trace", "frontend", formatLine2(msg, rest));
   }
 };
-function formatLine(msg, rest) {
+function formatLine2(msg, rest) {
   if (rest.length === 0)
     return msg;
   const tail = rest.map((r) => {
@@ -11920,7 +12088,11 @@ function hydrateLogStateFromLocalStorage() {
       return;
     const parsed = JSON.parse(raw);
     if (typeof parsed.enabled === "boolean" && typeof parsed.includeChatData === "boolean") {
-      logStore.setState({ enabled: parsed.enabled, includeChatData: parsed.includeChatData });
+      logStore.setState({
+        enabled: parsed.enabled,
+        includeChatData: parsed.includeChatData,
+        level: isLogThreshold(parsed.level) ? parsed.level : DEFAULT_LOG_LEVEL
+      });
     }
   } catch {}
 }
@@ -11931,7 +12103,7 @@ function persistLogStateToLocalStorage(state) {
 }
 function setup(ctx) {
   hydrateLogStateFromLocalStorage();
-  flog.info("frontend setup: begin");
+  flog2.info("frontend setup: begin");
   const cleanups = [];
   const originalFetch = window.fetch.bind(window);
   const taggedFetch = async (input, init) => {
@@ -11955,7 +12127,7 @@ function setup(ctx) {
           preview = `scripts=${parsed.scripts?.length ?? 0} content_len=${parsed.content?.length ?? 0} preFind=${findKeys.length} preReplace=${replaceKeys.length} dyn=[${dynKeys.join(",")}]`;
         }
       } catch {}
-      flog.info(`[macro-tap] → POST regex-scripts/apply ${preview}`);
+      flog2.trace(`[macro-tap] → POST regex-scripts/apply ${preview}`);
       const resp2 = await originalFetch(input, init);
       try {
         const clone = resp2.clone();
@@ -11969,19 +12141,19 @@ function setup(ctx) {
         })();
         if (parsed && typeof parsed.result === "string") {
           const stillRaw = /\{\{(?!\s*(?:user|char|bot|notChar|not_char|charName)\s*\}\})/i.test(parsed.result);
-          flog.info(`[macro-tap] ← regex-scripts/apply 200 in ${Math.round(performance.now() - t0)}ms result_len=${parsed.result.length} touched=${parsed.touched_vars?.length ?? 0} cacheable=${parsed.cacheable} still_has_raw_cbs=${stillRaw} result[0..200]=${JSON.stringify(parsed.result.slice(0, 200))}`);
+          flog2.trace(`[macro-tap] ← regex-scripts/apply 200 in ${Math.round(performance.now() - t0)}ms result_len=${parsed.result.length} touched=${parsed.touched_vars?.length ?? 0} cacheable=${parsed.cacheable} still_has_raw_cbs=${stillRaw} result[0..200]=${JSON.stringify(parsed.result.slice(0, 200))}`);
         } else {
-          flog.warn(`[macro-tap] ← regex-scripts/apply HTTP ${resp2.status} in ${Math.round(performance.now() - t0)}ms (body not JSON)`);
+          flog2.warn(`[macro-tap] ← regex-scripts/apply HTTP ${resp2.status} in ${Math.round(performance.now() - t0)}ms (body not JSON)`);
         }
       } catch (err) {
-        flog.warn("[macro-tap] regex-scripts/apply clone/parse failed:", err);
+        flog2.warn("[macro-tap] regex-scripts/apply clone/parse failed:", err);
       }
       return resp2;
     }
     if (isDisplayPreprocess) {
-      flog.info(`[macro-tap] → POST display-preprocess`);
+      flog2.trace(`[macro-tap] → POST display-preprocess`);
       const resp2 = await originalFetch(input, init);
-      flog.info(`[macro-tap] ← display-preprocess HTTP ${resp2.status} in ${Math.round(performance.now() - t0)}ms`);
+      flog2.trace(`[macro-tap] ← display-preprocess HTTP ${resp2.status} in ${Math.round(performance.now() - t0)}ms`);
       return resp2;
     }
     let reqPreview = "";
@@ -11995,7 +12167,7 @@ function setup(ctx) {
         reqPreview = `templates=${keys.length} chat_id=${parsed.chat_id ?? "?"} character_id=${parsed.character_id ?? "?"} first_template[0..200]=${JSON.stringify((firstTmpl ?? "").slice(0, 200))}`;
       }
     } catch {}
-    flog.info(`[macro-tap] → POST resolve-batch ${reqPreview}`);
+    flog2.trace(`[macro-tap] → POST resolve-batch ${reqPreview}`);
     const resp = await originalFetch(input, init);
     try {
       const clone = resp.clone();
@@ -12011,20 +12183,20 @@ function setup(ctx) {
         const entries = Object.entries(parsed.resolved);
         const leaksRaw = entries.filter(([, v]) => /\{\{/.test(v));
         const emptyKeys = entries.filter(([, v]) => v.length === 0).length;
-        flog.info(`[macro-tap] ← resolve-batch 200 in ${Math.round(performance.now() - t0)}ms keys=${entries.length} leaks_with_raw_macros=${leaksRaw.length} empty_keys=${emptyKeys}`);
+        flog2.trace(`[macro-tap] ← resolve-batch 200 in ${Math.round(performance.now() - t0)}ms keys=${entries.length} leaks_with_raw_macros=${leaksRaw.length} empty_keys=${emptyKeys}`);
         if (leaksRaw.length > 0) {
           for (const [k, v] of leaksRaw.slice(0, 3)) {
-            flog.warn(`[macro-tap]   leak id=${k} resolved[0..300]=${JSON.stringify(v.slice(0, 300))}`);
+            flog2.warn(`[macro-tap]   leak id=${k} resolved[0..300]=${JSON.stringify(v.slice(0, 300))}`);
           }
         }
         for (const [k, v] of entries) {
-          flog.info(`[macro-tap]   id=${k} len=${v.length} resolved[0..200]=${JSON.stringify(v.slice(0, 200))}`);
+          flog2.trace(`[macro-tap]   id=${k} len=${v.length} resolved[0..200]=${JSON.stringify(v.slice(0, 200))}`);
         }
       } else {
-        flog.warn(`[macro-tap] ← resolve-batch HTTP ${resp.status} in ${Math.round(performance.now() - t0)}ms (body not JSON)`);
+        flog2.warn(`[macro-tap] ← resolve-batch HTTP ${resp.status} in ${Math.round(performance.now() - t0)}ms (body not JSON)`);
       }
     } catch (err) {
-      flog.warn("[macro-tap] clone/parse failed:", err);
+      flog2.warn("[macro-tap] clone/parse failed:", err);
     }
     return resp;
   };
@@ -12105,32 +12277,32 @@ function setup(ctx) {
     } catch {}
   });
   cleanups.push(ctx.dom.addStyle(STYLES));
-  flog.info("frontend setup: styles injected");
+  flog2.info("frontend setup: styles injected");
   const QUIET_SEND_TYPES = new Set([
     "import_card_chunk",
     "upload_module_chunk"
   ]);
   const sendToBackend = (msg) => {
     if (!QUIET_SEND_TYPES.has(msg.type)) {
-      flog.info(`frontend send: ${msg.type}`, msg);
+      flog2.trace(`frontend send: ${msg.type}`, msg);
     }
     ctx.sendToBackend(msg);
   };
-  const importOverlay = setupImportOverlay(flog, sendToBackend);
+  const importOverlay = setupImportOverlay(flog2, sendToBackend);
   cleanups.push(() => importOverlay.destroy());
   let sidebar = null;
   try {
     sidebar = createSidebar({
       ctx,
       sendToBackend,
-      log: flog,
+      log: flog2,
       onImportStart: (fileName, onCancel, totalBytes) => importOverlay.notifyImportStart(fileName, "drawer", onCancel, totalBytes),
       onModuleImportStart: (fileName, onCancel, totalBytes) => importOverlay.notifyImportStart(fileName, "module", onCancel, totalBytes)
     });
     cleanups.push(() => sidebar?.destroy());
-    flog.info("frontend setup: unified sidebar registered");
+    flog2.info("frontend setup: unified sidebar registered");
   } catch (err) {
-    flog.error("createSidebar failed:", err);
+    flog2.error("createSidebar failed:", err);
     return () => {
       for (const fn of cleanups) {
         try {
@@ -12139,27 +12311,27 @@ function setup(ctx) {
       }
     };
   }
-  const messagePortal = setupMessagePortal(ctx, flog);
+  const messagePortal = setupMessagePortal(ctx, flog2);
   cleanups.push(() => messagePortal.destroy());
-  const islandStyles = setupIslandStyles(flog, {
+  const islandStyles = setupIslandStyles(flog2, {
     riskuEnvironmentCss: risu_environment_default,
     onStylesUpdated: () => messagePortal.sweep("island-styles-updated")
   });
   cleanups.push(() => islandStyles.destroy());
-  const bgRenderer = setupBgHtmlRenderer(ctx, flog, islandStyles);
+  const bgRenderer = setupBgHtmlRenderer(ctx, flog2, islandStyles);
   cleanups.push(() => bgRenderer.destroy());
-  const bgmPlayer = setupBgmPlayer(flog);
+  const bgmPlayer = setupBgmPlayer(flog2);
   cleanups.push(() => bgmPlayer.destroy());
   let auxDebug = null;
   try {
-    auxDebug = createAuxDebugPanel(flog);
+    auxDebug = createAuxDebugPanel(flog2);
     cleanups.push(() => auxDebug?.destroy());
   } catch (err) {
-    flog.error("createAuxDebugPanel failed:", err);
+    flog2.error("createAuxDebugPanel failed:", err);
   }
-  const alertModal = setupAlertModal({ ctx, sendToBackend, log: flog });
+  const alertModal = setupAlertModal({ ctx, sendToBackend, log: flog2 });
   cleanups.push(() => alertModal.destroy());
-  const pickModal = setupPickModal({ ctx, sendToBackend, log: flog });
+  const pickModal = setupPickModal({ ctx, sendToBackend, log: flog2 });
   cleanups.push(() => pickModal.destroy());
   let realm = null;
   try {
@@ -12168,16 +12340,16 @@ function setup(ctx) {
     realm = setupRealmModal({
       ctx,
       sendToBackend,
-      log: flog,
+      log: flog2,
       mountTarget: sidebar.headerRoot,
       onImportStart: (label) => importOverlay.notifyImportStart(label, "realm")
     });
     cleanups.push(() => realm?.destroy());
-    flog.info("frontend setup: realm modal registered");
+    flog2.info("frontend setup: realm modal registered");
   } catch (err) {
-    flog.error("setupRealmModal failed:", err);
+    flog2.error("setupRealmModal failed:", err);
   }
-  const svgRasterizer = setupSvgRasterizer({ log: flog, sendToBackend });
+  const svgRasterizer = setupSvgRasterizer({ log: flog2, sendToBackend });
   let activeRisuChatId = null;
   const onClickCapture = (e) => {
     const path = typeof e.composedPath === "function" ? e.composedPath() : [];
@@ -12193,12 +12365,12 @@ function setup(ctx) {
     const triggerId = el.getAttribute("risu-id") ?? undefined;
     const chatId = activeRisuChatId;
     if (!chatId) {
-      flog.warn(`manual-trigger click: no active Risu chat, ignoring triggerName=${triggerName}`);
+      flog2.warn(`manual-trigger click: no active Risu chat, ignoring triggerName=${triggerName}`);
       return;
     }
     e.preventDefault();
     e.stopPropagation();
-    flog.info(`manual-trigger click: triggerName=${triggerName} triggerId=${triggerId ?? "<none>"} chatId=${chatId}`);
+    flog2.info(`manual-trigger click: triggerName=${triggerName} triggerId=${triggerId ?? "<none>"} chatId=${chatId}`);
     sendToBackend({
       type: "manual_trigger",
       triggerName,
@@ -12215,11 +12387,11 @@ function setup(ctx) {
     fire(triggerName, triggerId) {
       const chatId = activeRisuChatId;
       if (!chatId) {
-        flog.warn(`__riCompat.fire: no active Risu chat; open one first. triggerName=${triggerName}`);
+        flog2.warn(`__riCompat.fire: no active Risu chat; open one first. triggerName=${triggerName}`);
         return false;
       }
       if (typeof triggerName !== "string" || triggerName.length === 0) {
-        flog.warn("__riCompat.fire: triggerName must be a non-empty string");
+        flog2.warn("__riCompat.fire: triggerName must be a non-empty string");
         return false;
       }
       sendToBackend({
@@ -12241,33 +12413,33 @@ function setup(ctx) {
     },
     setDiagAllSweeps(on) {
       messagePortal.setDiagAllSweeps(on === true);
-      flog.info(`__riCompat.setDiagAllSweeps: ${on === true ? "ON" : "OFF"}`);
+      flog2.info(`__riCompat.setDiagAllSweeps: ${on === true ? "ON" : "OFF"}`);
     },
     setDiagPortalTrace(on) {
       messagePortal.setDiagPortalTrace(on === true);
-      flog.info(`__riCompat.setDiagPortalTrace: ${on === true ? "ON" : "OFF"}`);
+      flog2.info(`__riCompat.setDiagPortalTrace: ${on === true ? "ON" : "OFF"}`);
     },
     setDiagBalloonTrace(on) {
       messagePortal.setDiagBalloonTrace(on === true);
-      flog.info(`__riCompat.setDiagBalloonTrace: ${on === true ? "ON" : "OFF"}`);
+      flog2.info(`__riCompat.setDiagBalloonTrace: ${on === true ? "ON" : "OFF"}`);
     },
     dumpBalloonState() {
       return messagePortal.dumpBalloonState();
     },
     setDiagMinHeightClear(on) {
       messagePortal.setDiagMinHeightClear(on === true);
-      flog.info(`__riCompat.setDiagMinHeightClear: ${on === true ? "ON" : "OFF"}`);
+      flog2.info(`__riCompat.setDiagMinHeightClear: ${on === true ? "ON" : "OFF"}`);
     },
     minHeightClears() {
       return messagePortal.minHeightClears();
     },
     requestVariablesSnapshot() {
       if (!activeRisuChatId) {
-        flog.warn("__riCompat.requestVariablesSnapshot: no active Risu chat");
+        flog2.warn("__riCompat.requestVariablesSnapshot: no active Risu chat");
         return false;
       }
       sendToBackend({ type: "request_variables_snapshot", chatId: activeRisuChatId });
-      flog.info(`__riCompat.requestVariablesSnapshot: requested for chatId=${activeRisuChatId}`);
+      flog2.info(`__riCompat.requestVariablesSnapshot: requested for chatId=${activeRisuChatId}`);
       return true;
     }
   };
@@ -12284,7 +12456,7 @@ function setup(ctx) {
       } catch {}
     });
   } catch (err) {
-    flog.warn(`__riCompat install failed: ${err.message}`);
+    flog2.warn(`__riCompat install failed: ${err.message}`);
   }
   let lastSentW = -1;
   let lastSentH = -1;
@@ -12295,7 +12467,7 @@ function setup(ctx) {
       return;
     lastSentW = w;
     lastSentH = h;
-    flog.info(`screen_dims: reporting reason=${reason} w=${w} h=${h}`);
+    flog2.debug(`screen_dims: reporting reason=${reason} w=${w} h=${h}`);
     sendToBackend({ type: "screen_dims", width: w, height: h });
   };
   let resizeTimer;
@@ -12318,11 +12490,12 @@ function setup(ctx) {
   const unsub = ctx.onBackendMessage((raw) => {
     const msg = raw;
     if (!QUIET_RECV_TYPES.has(msg.type)) {
-      flog.info(`frontend recv: ${msg.type}`, msg);
+      flog2.trace(`frontend recv: ${msg.type}`, msg);
     }
     if (msg.type === "log_state_pushed") {
-      logStore.setState({ enabled: msg.enabled, includeChatData: msg.includeChatData });
-      persistLogStateToLocalStorage({ enabled: msg.enabled, includeChatData: msg.includeChatData });
+      const level = isLogThreshold(msg.level) ? msg.level : DEFAULT_LOG_LEVEL;
+      logStore.setState({ enabled: msg.enabled, includeChatData: msg.includeChatData, level });
+      persistLogStateToLocalStorage({ enabled: msg.enabled, includeChatData: msg.includeChatData, level });
       if (msg.enabled)
         installConsoleCapture();
       else
@@ -12342,13 +12515,13 @@ function setup(ctx) {
         });
         downloadBundle(bundle);
       } catch (err) {
-        flog.error("log_export_pushed: bundle/download failed", err);
+        flog2.error("log_export_pushed: bundle/download failed", err);
       }
       sendToBackend({ type: "log_set_state", enabled: false, includeChatData: false });
     }
     if (msg.type === "cards_updated") {
       if (!ready) {
-        flog.info("handshake complete on first cards_updated");
+        flog2.info("handshake complete on first cards_updated");
         reportDims("cards_updated", true);
       }
       ready = true;
@@ -12357,7 +12530,7 @@ function setup(ctx) {
       try {
         bgRenderer.handleMessage(msg);
       } catch (err) {
-        flog.error("bg-html dispatch failed:", err);
+        flog2.error("bg-html dispatch failed:", err);
       }
       const prevChatId = activeRisuChatId;
       if (msg.type === "render_bg_html")
@@ -12380,7 +12553,7 @@ function setup(ctx) {
       try {
         messagePortal.setStreamingActive(msg.chatId, msg.active === true);
       } catch (err) {
-        flog.warn("generation_state dispatch failed:", err);
+        flog2.warn("generation_state dispatch failed:", err);
       }
       return;
     }
@@ -12401,20 +12574,20 @@ function setup(ctx) {
       try {
         importOverlay.handleBackendMessage(msg);
       } catch (err) {
-        flog.warn("importOverlay realm dispatch threw:", err);
+        flog2.warn("importOverlay realm dispatch threw:", err);
       }
       return;
     }
     try {
       importOverlay.handleBackendMessage(msg);
     } catch (err) {
-      flog.warn("importOverlay dispatch threw:", err);
+      flog2.warn("importOverlay dispatch threw:", err);
     }
     sidebar?.handleBackendMessage(msg);
   });
   cleanups.push(unsub);
   function handshake() {
-    flog.info("handshake: sending get_cards + screen_dims + log_request_state");
+    flog2.info("handshake: sending get_cards + screen_dims + log_request_state");
     sendToBackend({ type: "get_cards" });
     sendToBackend({ type: "log_request_state" });
     reportDims("handshake", true);
@@ -12425,13 +12598,13 @@ function setup(ctx) {
       window.clearInterval(retry);
       return;
     }
-    flog.info(`handshake retry (ready=${ready})`);
+    flog2.debug(`handshake retry (ready=${ready})`);
     handshake();
   }, HANDSHAKE_RETRY_MS);
   cleanups.push(() => window.clearInterval(retry));
-  flog.info("frontend setup: done");
+  flog2.info("frontend setup: done");
   return () => {
-    flog.info("frontend teardown");
+    flog2.info("frontend teardown");
     for (const fn of cleanups) {
       try {
         fn();
@@ -12441,5 +12614,5 @@ function setup(ctx) {
 }
 export {
   setup,
-  flog
+  flog2 as flog
 };

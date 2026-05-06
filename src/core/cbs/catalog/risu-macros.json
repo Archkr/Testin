@@ -968,11 +968,13 @@
       "chardesc"
     ],
     "category": "character_fields",
-    "argShape": "UNCERTAIN",
+    "argShape": "no args",
     "minArgs": 0,
     "maxArgs": 0,
     "pure": false,
-    "readsState": [],
+    "readsState": [
+      "characterFields"
+    ],
     "writesState": [],
     "lumiverseCollision": {
       "name": "description",
@@ -2273,12 +2275,14 @@
     "aliases": [
       "userpersona"
     ],
-    "category": "other",
-    "argShape": "UNCERTAIN",
+    "category": "character_fields",
+    "argShape": "no args",
     "minArgs": 0,
     "maxArgs": 0,
     "pure": false,
-    "readsState": [],
+    "readsState": [
+      "characterFields"
+    ],
     "writesState": [],
     "lumiverseCollision": {
       "name": "persona",
@@ -2296,11 +2300,13 @@
       "charpersona"
     ],
     "category": "character_fields",
-    "argShape": "UNCERTAIN",
+    "argShape": "no args",
     "minArgs": 0,
     "maxArgs": 0,
     "pure": false,
-    "readsState": [],
+    "readsState": [
+      "characterFields"
+    ],
     "writesState": [],
     "lumiverseCollision": {
       "name": "personality",
@@ -2693,11 +2699,13 @@
     "name": "scenario",
     "aliases": [],
     "category": "character_fields",
-    "argShape": "UNCERTAIN",
+    "argShape": "no args",
     "minArgs": 0,
     "maxArgs": 0,
     "pure": false,
-    "readsState": [],
+    "readsState": [
+      "characterFields"
+    ],
     "writesState": [],
     "lumiverseCollision": {
       "name": "scenario",

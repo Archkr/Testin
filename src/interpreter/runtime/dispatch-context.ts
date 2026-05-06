@@ -38,6 +38,8 @@ export interface DispatchContext {
     repetitionPenalty: number | null;
   };
   auxDebugCapture?: (event: AuxDebugCaptureEvent) => void;
+  /** Backs Lua `cbs(value)`. Routes through resolveReadonly. */
+  resolveTemplate?: (text: string) => Promise<string>;
 }
 
 export interface AuxDebugCaptureEvent {
