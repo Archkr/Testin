@@ -84,19 +84,10 @@ import { invalidateListenEditPreload } from './interpreter/listenedit-preload.js
 import {
   runAtActionsForPhase,
   coerceAtActions,
-  type RuntimeAtAtAction,
 } from './interpreter/at-actions-runtime.js';
 import { getActiveAssetIndexes } from './interpreter/asset-cache.js';
 import { setScreenDims, getScreenDims } from './interpreter/screen-dims-cache.js';
-import {
-  containsCbs,
-  clearSidecar,
-  markUserEdited,
-  readSidecar,
-  setSidecarRaw,
-  trackMessagesBatch,
-  type ChatSidecar,
-} from './state/sidecar.js';
+import { puaEncodeFeMacros, puaDecodeFeMacros } from './util/pua-roundtrip.js';
 import { VariableStateStore } from './state/variables-state.js';
 import { ToggleStateStore } from './state/toggle-state.js';
 import {
@@ -529,24 +520,14 @@ if (typeof registerMessageContentProcessor === 'function') {
           (t) => t.effect?.[0]?.type === 'triggerlua',
         );
         const renderAtActions = coerceAtActions(active.card.risuPayload.at_actions);
-        if (!hasLuaTrigger && renderAtActions.length === 0) {
-          log.info(
-            `messageContentProcessor.exit #${seq} path=render-no-hooks chat=${ctx.chatId} ensure=${tB - tA}ms total=${Date.now() - tStart}ms`,
-          );
-          return;
-        }
         const rawIdx = ctx.extra?.['messageIndex'];
         const messageIndex = typeof rawIdx === 'number' ? rawIdx : 0;
         const risuChatIdx = Math.max(-1, messageIndex - 1);
 
-        // No-op cache lookup. Lumi's display-regex cv-bump cycle re-issues
-        // /display-preprocess for every visible bubble on every CHAT_CHANGED
-        // / MESSAGE_* event with no abort + no per-message gating. For
-        // Cheongwon-grade cards (65 KB editDisplay Lua, 30+ visible bubbles,
-        // 88 cv bumps in 45s) ≈98 % of those re-issues produce identical
-        // output (`path=render-noop`). Cache by content hash, replay
-        // instantly. Invalidated explicitly on chat/message events so
-        // var-driven branches inside the hook still see fresh state.
+        // No-op cache lookup. The render path runs on every visible message
+        // per cv-bump (CHAT_CHANGED / MESSAGE_*); cache by content hash so
+        // identical inputs replay instantly. Invalidated explicitly on var
+        // changes so `{{getvar::X}}` re-resolves with fresh state.
         if (ctx.messageId) {
           const cached = lookupRenderMcp(ctx.chatId, ctx.messageId, ctx.content);
           maybeEmitCacheStats();
@@ -611,18 +592,43 @@ if (typeof registerMessageContentProcessor === 'function') {
             }
             atActionsMs = Date.now() - tAt;
           }
+
+          // Risu parity: run the body through the CBS evaluator with
+          // commit:false (= rmVar:true) — body-level setvars are stripped,
+          // everything else (`{{getvar}}`, `{{#risu_if}}`, `{{time}}`, etc.)
+          // resolves against current chat state. Lumi's display-regex still
+          // runs after this with commit:true, so card-authored regex
+          // outScripts CAN commit setvars. The `{{user}}/{{char}}/etc.` set
+          // is PUA-protected so Lumi's FE `resolveDisplayMacros` resolves it
+          // against current persona context per render (the render-MCP and
+          // displayPreprocess caches don't key on personaId).
+          let resolveMs = 0;
+          if (transformed.indexOf('{{') >= 0) {
+            const tResolve = Date.now();
+            try {
+              const enc = puaEncodeFeMacros(transformed);
+              const resolved = await resolveReadonly(
+                enc.text,
+                ctx.chatId,
+                active.card.character_id,
+              );
+              transformed = puaDecodeFeMacros(resolved, enc.tokens);
+            } catch (err) {
+              log.warn(
+                `messageContentProcessor.render body-resolve threw — ${errMsg(err)}. Returning pre-resolve content.`,
+              );
+            }
+            resolveMs = Date.now() - tResolve;
+          }
+
           const totalMs = Date.now() - tStart;
-          // Total budget is Lumi's 10s MCP timeout. Surface the breakdown so
-          // we can see whether wall clock is in our chain, our @@-actions, or
-          // the time the JS event loop spent on Lumi-side display-regex
-          // queueing while we were awaiting (= "other_overhead").
-          const otherOverhead = totalMs - chainMs - atActionsMs - (tB - tA);
+          const otherOverhead = totalMs - chainMs - atActionsMs - resolveMs - (tB - tA);
           if (transformed === ctx.content) {
             if (ctx.messageId) {
               cacheRenderMcp(ctx.chatId, ctx.messageId, ctx.content, { kind: 'noop' });
             }
             log.info(
-              `messageContentProcessor.exit #${seq} path=render-noop chat=${ctx.chatId} msg=${ctx.messageId ?? '<?>'} idx=${messageIndex} total=${totalMs}ms (chain=${chainMs}ms at_actions=${atActionsMs}ms ensure=${tB - tA}ms other=${otherOverhead}ms)`,
+              `messageContentProcessor.exit #${seq} path=render-noop chat=${ctx.chatId} msg=${ctx.messageId ?? '<?>'} idx=${messageIndex} total=${totalMs}ms (chain=${chainMs}ms at_actions=${atActionsMs}ms resolve=${resolveMs}ms ensure=${tB - tA}ms other=${otherOverhead}ms)`,
             );
             return;
           }
@@ -630,7 +636,7 @@ if (typeof registerMessageContentProcessor === 'function') {
             cacheRenderMcp(ctx.chatId, ctx.messageId, ctx.content, { kind: 'transformed', content: transformed });
           }
           log.info(
-            `messageContentProcessor.exit #${seq} path=render-transformed chat=${ctx.chatId} msg=${ctx.messageId ?? '<?>'} idx=${messageIndex} before_len=${ctx.content.length} after_len=${transformed.length} total=${totalMs}ms (chain=${chainMs}ms at_actions=${atActionsMs}ms ensure=${tB - tA}ms other=${otherOverhead}ms)`,
+            `messageContentProcessor.exit #${seq} path=render-transformed chat=${ctx.chatId} msg=${ctx.messageId ?? '<?>'} idx=${messageIndex} before_len=${ctx.content.length} after_len=${transformed.length} total=${totalMs}ms (chain=${chainMs}ms at_actions=${atActionsMs}ms resolve=${resolveMs}ms ensure=${tB - tA}ms other=${otherOverhead}ms)`,
           );
           return { content: transformed };
         } catch (err) {
@@ -641,24 +647,18 @@ if (typeof registerMessageContentProcessor === 'function') {
         }
       }
 
-      let resolved: string;
-      try {
-        resolved = await resolveReadonly(ctx.content, ctx.chatId, active.card.character_id);
-      } catch (err) {
-        log.error(
-          `messageContentProcessor.exit #${seq} path=resolve-failed chat=${ctx.chatId} origin=${ctx.origin} ensure=${tB - tA}ms total=${Date.now() - tStart}ms: ${errMsg(err)}`,
-        );
-        return;
-      }
-      const tC = Date.now();
-
-      // editoutput-phase @@emo / @@repeat_back fire here for write-time origins
-      // (create / update / swipe_*). The 'render' origin is handled separately
-      // above with phase=editdisplay.
+      // Write-time origins (create / update / swipe_add / swipe_update / greeting).
+      // Storage holds RAW post-unbake — no resolveReadonly here. Body-level
+      // macros resolve at render time via the 'render' origin above.
+      // We still run `editoutput`-phase @@-actions (for `@@emo` side-effects
+      // + `@@repeat_back` content concatenation; both fire on the raw body
+      // since they match by literal markers, not by resolved values) and
+      // run the doc-boundary normalize so DOMPurify doesn't drop leading
+      // `<style>` blocks in HTML-document-shaped Lua/LLM output.
       const isUserMessage = ctx.extra?.['is_user'] === true; // best-effort; may be undefined
       const isGreeting = ctx.extra?.['greeting'] === true;
       const atActions = coerceAtActions(active.card.risuPayload.at_actions);
-      let afterAt = resolved;
+      let working = ctx.content;
       if (atActions.length > 0 && !isUserMessage) {
         try {
           const atApi = makeSpindleHost({
@@ -666,50 +666,30 @@ if (typeof registerMessageContentProcessor === 'function') {
             characterId: active.card.character_id,
             userId: ctx.userId,
           });
-          afterAt = await runAtActionsForPhase(atActions, 'editoutput', resolved, {
+          working = await runAtActionsForPhase(atActions, 'editoutput', working, {
             api: atApi,
             chatIndex: isGreeting ? -1 : 0,
             role: 'assistant',
           });
-          if (afterAt !== resolved) {
-            log.info(
-              `messageContentProcessor: at-actions transformed chat=${ctx.chatId} ` +
-                `origin=${ctx.origin} greeting=${isGreeting} ` +
-                `resolve_len=${resolved.length} after_at_len=${afterAt.length}`,
-            );
-            // @@-action OUT templates can emit CBS macros (e.g. `{{raw::$1}}`
-            // after capture substitution). Re-resolve once to expand them.
-            try {
-              afterAt = await resolveReadonly(afterAt, ctx.chatId, active.card.character_id);
-            } catch (err) {
-              log.warn(
-                `messageContentProcessor: post-@@-action CBS re-resolve threw — ${errMsg(err)}. ` +
-                  `Continuing with unresolved @@-action output.`,
-              );
-            }
-          }
         } catch (err) {
           log.warn(
-            `messageContentProcessor: at-actions editdisplay threw — ${errMsg(err)}. ` +
+            `messageContentProcessor: at-actions editoutput threw — ${errMsg(err)}. ` +
               `Continuing with pre-action content.`,
           );
         }
       }
 
-      // Doc-boundary normalize at the MCP write boundary. Greetings stored
-      // raw, LLM HTML output, and Lua-emitted docs need this so DOMPurify
-      // doesn't discard leading `<style>` in fragment mode. Idempotent.
-      const finalContent = normalizeReplaceStringForSanitizer(afterAt);
+      const finalContent = normalizeReplaceStringForSanitizer(working);
 
       if (finalContent === ctx.content) {
         log.info(
-          `messageContentProcessor.exit #${seq} path=noop chat=${ctx.chatId} origin=${ctx.origin} msg=${ctx.messageId ?? '<new>'} ensure=${tB - tA}ms resolve=${tC - tB}ms total=${Date.now() - tStart}ms`,
+          `messageContentProcessor.exit #${seq} path=noop chat=${ctx.chatId} origin=${ctx.origin} msg=${ctx.messageId ?? '<new>'} ensure=${tB - tA}ms total=${Date.now() - tStart}ms`,
         );
         return;
       }
       if (ctx.messageId) rememberOurWrite(ctx.chatId, ctx.messageId, finalContent);
       log.info(
-        `messageContentProcessor.exit #${seq} path=baked chat=${ctx.chatId} origin=${ctx.origin} msg=${ctx.messageId ?? '<new>'} raw_len=${ctx.content.length} resolved_len=${resolved.length} after_at_len=${afterAt.length} final_len=${finalContent.length} doc_normalized=${finalContent !== afterAt} ensure=${tB - tA}ms resolve=${tC - tB}ms total=${Date.now() - tStart}ms`,
+        `messageContentProcessor.exit #${seq} path=transformed chat=${ctx.chatId} origin=${ctx.origin} msg=${ctx.messageId ?? '<new>'} raw_len=${ctx.content.length} final_len=${finalContent.length} doc_normalized=${finalContent !== working} ensure=${tB - tA}ms total=${Date.now() - tStart}ms`,
       );
       return { content: finalContent };
     } finally {
@@ -1098,7 +1078,11 @@ function scheduleStateChangedRefresh(chatId: string): void {
         return;
       }
       const t0 = Date.now();
-      await refreshResolvedContent(active, chatId);
+      // Body content resolves at render time via the 'render' MCP origin.
+      // Var changes invalidate the render-MCP cache (per CHAT_CHANGED) and
+      // Lumi's per-touchedVars displayRegexContentCache, which together
+      // re-fetch only the affected bubbles. No bake walk here.
+      invalidateRenderMcpForChat(chatId);
       await refreshBgHtml(active, chatId);
       await refreshVariables(active, chatId);
       log.info(`scheduleStateChangedRefresh: completed chat=${chatId} elapsed=${Date.now() - t0}ms`);
@@ -1109,18 +1093,6 @@ function scheduleStateChangedRefresh(chatId: string): void {
 
 function makeStateChangedCallback(chatId: string): () => void {
   return () => scheduleStateChangedRefresh(chatId);
-}
-
-function makeTrackSidecarWrite(chatId: string): (msgId: string, rawContent: string) => void {
-  return (msgId, rawContent) => {
-    void (async () => {
-      try {
-        await setSidecarRaw(userStorage(), chatId, msgId, rawContent, getUserId());
-      } catch (err) {
-        log.warn(`trackSidecarWrite: setSidecarRaw failed chat=${chatId} msg=${msgId}: ${errMsg(err)}`);
-      }
-    })();
-  };
 }
 
 // Per-user settings cache. Defaults to DEFAULT_SETTINGS until first read,
@@ -1548,7 +1520,7 @@ async function applySvgRasterIndex(args: {
       try {
         const reloaded = await ensureActiveCardForChat(chatId, null);
         if (reloaded) {
-          await refreshResolvedContent(reloaded, chatId);
+          invalidateRenderMcpForChat(chatId);
           await refreshBgHtml(reloaded, chatId);
         }
       } catch (err) {
@@ -2166,7 +2138,6 @@ async function runBinding(
   const scriptNS = makeDispatcherScriptNS();
   registerManualTriggers(scriptNS, compiled, api);
   const stateChanged = makeStateChangedCallback(chatId);
-  const trackSidecarWrite = makeTrackSidecarWrite(chatId);
   const settings = getCachedSettingsSync(getUserId());
   const auxDebugCapture = makeAuxDebugCapture(chatId, settings);
   const prior = setDispatchContext({
@@ -2174,7 +2145,6 @@ async function runBinding(
     rememberOurWrite,
     binding,
     stateChanged,
-    trackSidecarWrite,
     auxConnectionId: settings.auxConnectionId,
     auxModelOverride: settings.auxModelOverride,
     auxSamplers: settings.auxSamplers,
@@ -2343,7 +2313,6 @@ async function dispatchManualTrigger(
         chatId,
         rememberOurWrite,
         stateChanged: makeStateChangedCallback(chatId),
-        trackSidecarWrite: makeTrackSidecarWrite(chatId),
         auxConnectionId: settings.auxConnectionId,
         auxModelOverride: settings.auxModelOverride,
         auxSamplers: settings.auxSamplers,
@@ -2377,13 +2346,11 @@ async function dispatchManualTrigger(
       const settings = getCachedSettingsSync(getUserId());
       const auxDebugCapture = makeAuxDebugCapture(chatId, settings);
       const stateChanged = makeStateChangedCallback(chatId);
-      const trackSidecarWrite = makeTrackSidecarWrite(chatId);
       const prior = setDispatchContext({
         chatId,
         rememberOurWrite,
         binding: 'manual',
         stateChanged,
-        trackSidecarWrite,
         auxConnectionId: settings.auxConnectionId,
         auxModelOverride: settings.auxModelOverride,
         auxSamplers: settings.auxSamplers,
@@ -2418,8 +2385,9 @@ async function dispatchManualTrigger(
   }
 
   log.info(`dispatchManualTrigger: done triggerName=${triggerName} elapsed=${Date.now() - t0}ms`);
-  // State may have mutated → re-resolve every tracked message + repaint bg
-  await refreshResolvedContent(active, chatId);
+  // State may have mutated → invalidate render-MCP cache so visible bubbles
+  // re-resolve with fresh var state on the next cv-bumped re-fetch.
+  invalidateRenderMcpForChat(chatId);
   await refreshBgHtml(active, chatId);
   await refreshVariables(active, chatId);
 }
@@ -2538,7 +2506,7 @@ async function writeLocalVariable(
     return { ok: false, reason: `chats.update failed: ${errMsg(err)}` };
   }
 
-  await refreshResolvedContent(active, chatId);
+  invalidateRenderMcpForChat(chatId);
   await refreshBgHtml(active, chatId);
   await refreshVariables(active, chatId, { force: true });
 
@@ -2713,7 +2681,7 @@ async function writeToggleValue(
     return { ok: false, reason: `chats.update failed: ${errMsg(err)}` };
   }
 
-  await refreshResolvedContent(active, chatId);
+  invalidateRenderMcpForChat(chatId);
   await refreshBgHtml(active, chatId);
   await refreshVariables(active, chatId, { force: true });
 
@@ -3089,162 +3057,13 @@ async function fetchChatMessages(chatId: string): Promise<readonly ChatMessage[]
 
 // `rememberOurWrite` / `consumeIfOurWrite` extracted to
 // `src/state/recent-writes.ts` (LRU + TTL cache, directly unit-testable).
-async function resolveAndPersist(
-  chatId: string,
-  msgId: string,
-  characterId: string,
-  rawContent: string,
-  currentContent: string,
-  atActions: readonly RuntimeAtAtAction[] = [],
-  chatIndex = 0,
-): Promise<boolean> {
-  let resolved: string;
-  try {
-    resolved = await resolveReadonly(rawContent, chatId, characterId);
-  } catch (err) {
-    log.error(`resolveAndPersist: resolve failed chat=${chatId} msg=${msgId}: ${errMsg(err)}`);
-    return false;
-  }
-
-  // resolveAndPersist re-resolves sidecar entries on state-tick. emo /
-  // repeat_back fire as editdisplay here since the sidecar feeds the rendered
-  // (post-display-regex) view. Side effects are idempotent so repeated runs
-  // converge.
-  if (atActions.length > 0) {
-    try {
-      const atApi = makeSpindleHost({
-        chatId,
-        characterId,
-        userId: getUserId() ?? '',
-      });
-      const beforeAt = resolved;
-      resolved = await runAtActionsForPhase(atActions, 'editdisplay', resolved, {
-        api: atApi,
-        chatIndex,
-        role: 'assistant',
-      });
-      const atChanged = resolved !== beforeAt;
-      log.info(
-        `resolveAndPersist.atActions: chat=${chatId} msg=${msgId} count=${atActions.length} ` +
-          `phase=editdisplay chatIndex=${chatIndex} before_len=${beforeAt.length} after_len=${resolved.length} ` +
-          `changed=${atChanged}`,
-      );
-      if (atChanged) {
-        try {
-          resolved = await resolveReadonly(resolved, chatId, characterId);
-        } catch (err) {
-          log.warn(
-            `resolveAndPersist: post-@@-action CBS re-resolve threw chat=${chatId} msg=${msgId}: ${errMsg(err)} — keeping unresolved @@-action output`,
-          );
-        }
-      }
-    } catch (err) {
-      log.warn(
-        `resolveAndPersist: at-actions editdisplay threw chat=${chatId} msg=${msgId}: ${errMsg(err)} — keeping pre-action content`,
-      );
-    }
-  } else {
-    log.verbose(
-      `resolveAndPersist.atActions: chat=${chatId} msg=${msgId} count=0 — atActions array empty (re-import card to populate?)`,
-    );
-  }
-
-  // Normalize before write; last chokepoint for cards with HTML-doc-shaped content.
-  resolved = normalizeReplaceStringForSanitizer(resolved);
-
-  if (resolved === currentContent) {
-    return true;
-  }
-  try {
-    rememberOurWrite(chatId, msgId, resolved);
-    await spindle.chat.updateMessage(chatId, msgId, {
-      content: resolved,
-      metadata: { edited_by: EDITED_BY_MARKER },
-      skipChunkRebuild: true,
-    });
-    log.info(
-      `resolveAndPersist: chat=${chatId} msg=${msgId} raw=${rawContent.length} resolved=${resolved.length} (prev=${currentContent.length})`,
-    );
-    log.info(`resolveAndPersist: raw[0..400]=${JSON.stringify(rawContent.slice(0, 400))}`);
-    log.info(`resolveAndPersist: resolved=${JSON.stringify(resolved.slice(0, 400))}`);
-    return true;
-  } catch (err) {
-    log.error(`resolveAndPersist: updateMessage failed chat=${chatId} msg=${msgId}: ${errMsg(err)}`);
-    return false;
-  }
-}
-
-async function refreshResolvedContent(active: ActiveCard, chatId: string): Promise<void> {
-  const t0 = Date.now();
-  const characterId = active.card.character_id;
-  const uid = getUserId();
-  const storage = userStorage();
-
-  const messages = await fetchChatMessages(chatId);
-  if (messages.length === 0) return;
-
-  let sidecar: ChatSidecar;
-  try {
-    sidecar = await readSidecar(storage, chatId, uid);
-  } catch (err) {
-    log.error(`refreshResolvedContent: readSidecar failed chat=${chatId}: ${errMsg(err)}`);
-    return;
-  }
-
-  const toStash: { msgId: string; rawContent: string }[] = [];
-  for (const m of messages) {
-    if (m.role === 'user') continue;
-    if (sidecar.msgs[m.id]) continue;
-    // Track all non-user messages, not just CBS-bearing ones. Display-regex
-    // sentinels also need re-resolve. Per-message pipeline short-circuits
-    // when output is unchanged.
-    toStash.push({ msgId: m.id, rawContent: m.content });
-  }
-  if (toStash.length > 0) {
-    try {
-      sidecar = await trackMessagesBatch(storage, chatId, toStash, uid);
-    } catch (err) {
-      log.error(`refreshResolvedContent: trackMessagesBatch failed chat=${chatId}: ${errMsg(err)}`);
-      return;
-    }
-  }
-
-  const contentByMsgId = new Map<string, string>();
-  for (const m of messages) contentByMsgId.set(m.id, m.content);
-
-  const atActions = coerceAtActions(active.card.risuPayload.at_actions);
-
-  // Risu frame: greeting=-1, post-greeting messages 0..N. Shift Lumi's 0-based index by -1.
-  const msgIdToRisuIndex = new Map<string, number>();
-  let riskuIdx = -1; // first non-user message becomes -1 (greeting)
-  for (const m of messages) {
-    if (m.role === 'user') continue;
-    msgIdToRisuIndex.set(m.id, riskuIdx);
-    riskuIdx += 1;
-  }
-
-  let persisted = 0;
-  let skipped = 0;
-  for (const [msgId, entry] of Object.entries(sidecar.msgs)) {
-    if (entry.userEdited) { skipped += 1; continue; }
-    const current = contentByMsgId.get(msgId);
-    if (current === undefined) {
-      continue;
-    }
-    const chatIndex = msgIdToRisuIndex.get(msgId) ?? 0;
-    const ok = await resolveAndPersist(
-      chatId, msgId, characterId, entry.rawContent, current,
-      atActions, chatIndex,
-    );
-    if (ok) persisted += 1;
-  }
-
-  const total = Object.keys(sidecar.msgs).length;
-  log.info(
-    `refreshResolvedContent: chat=${chatId} tracked=${total} stashed_new=${toStash.length} ` +
-      `resolved=${persisted} skipped_userEdited=${skipped} elapsed=${Date.now() - t0}ms`,
-  );
-}
+//
+// Body content is no longer baked at write time. Storage holds raw `{{...}}`
+// and the macro evaluator runs at render time inside the `'render'` MCP
+// origin handler (architecture §2.10.3). The bake-and-refresh path
+// (`resolveAndPersist` + `refreshResolvedContent` + sidecar) was deleted
+// in the unbake refactor — Lumi's display-regex cv-mitigation now handles
+// per-touchedVars invalidation, replacing what the sidecar was for.
 
 function dumpPayload(raw: unknown): string {
   try { return JSON.stringify(raw).slice(0, 400); } catch { return '<unstringifiable>'; }
@@ -3310,7 +3129,7 @@ spindle.on('SETTINGS_UPDATED', async (raw, userId) => {
     try { spindle.sendToFrontend({ type: 'clear_bg_html', chatId }); } catch { /* */ }
     return;
   }
-  await refreshResolvedContent(active, chatId);
+  invalidateRenderMcpForChat(chatId);
   await refreshBgHtml(active, chatId);
   await refreshVariables(active, chatId, { force: true });
   // Force toggle definitions on chat open; toggle values travel via the variables push above.
@@ -3405,7 +3224,6 @@ function scheduleChatChangedRefresh(
         return;
       }
       if (!requiresRefresh) return;
-      await refreshResolvedContent(active, chatId);
       await refreshBgHtml(active, chatId);
       await refreshVariables(active, chatId, { force: true });
     } catch (err) {
@@ -3457,7 +3275,10 @@ spindle.on('CHAT_CHANGED', async (raw, userId) => {
   scheduleChatChangedRefresh(chatId, characterId, changedFields);
 });
 
-// MESSAGE_SENT: editInput is wired via registerInterceptor; sidecar only here.
+// MESSAGE_SENT: editInput is wired via registerInterceptor.
+// Body resolution happens at render time (post-unbake), so we don't need to
+// re-bake here — just refresh the variables snapshot for the drawer in case
+// the new message references vars that the user wants to inspect.
 spindle.on('MESSAGE_SENT', async (raw, userId) => {
   captureUserId(userId, 'MESSAGE_SENT');
   const { chatId, characterId } = extractIds(raw);
@@ -3466,9 +3287,6 @@ spindle.on('MESSAGE_SENT', async (raw, userId) => {
   invalidateListenEditPreload(chatId);
   const active = await ensureActiveCardForChat(chatId, characterId);
   if (!active) { log.info(`MESSAGE_SENT: no active card , skip`); return; }
-
-  log.info(`MESSAGE_SENT: → refreshResolvedContent (no binding , Risu parity)`);
-  await refreshResolvedContent(active, chatId);
   await refreshVariables(active, chatId);
 });
 
@@ -3520,7 +3338,7 @@ spindle.on('GENERATION_STARTED', async (raw, userId) => {
   await runBinding(active, chatId, 'start');
   log.info(`GENERATION_STARTED: → runBinding(request)`);
   await runBinding(active, chatId, 'request');
-  await refreshResolvedContent(active, chatId);
+  invalidateRenderMcpForChat(chatId);
   await refreshBgHtml(active, chatId);
   await refreshVariables(active, chatId);
 });
@@ -3541,7 +3359,7 @@ spindle.on('GENERATION_ENDED', async (raw, userId) => {
   for (const binding of GENERATION_ENDED_BINDINGS) {
     await runBinding(active, chatId, binding);
   }
-  await refreshResolvedContent(active, chatId);
+  invalidateRenderMcpForChat(chatId);
   await refreshBgHtml(active, chatId);
   await refreshVariables(active, chatId);
 });
@@ -3566,21 +3384,17 @@ spindle.on('GENERATION_STOPPED', async (raw, userId) => {
   // No trigger bindings fire on stop (Risu's `output`/`display` bindings
   // are inside its sendChat, which we already mirror via GENERATION_ENDED
   // for the success path; abort = no LLM output, no triggers to fire).
-  // Still refresh resolved content + variables so any user-edits made
-  // during the abort window get rendered.
   const active = await ensureActiveCardForChat(chatId, characterId);
   if (!active) return;
-  await refreshResolvedContent(active, chatId);
+  invalidateRenderMcpForChat(chatId);
   await refreshBgHtml(active, chatId);
   await refreshVariables(active, chatId);
 });
 
 // MESSAGE_SWIPED  - fires when user swipes to an alternate greeting/response
-// (chats.service.ts). The message's `content` changes to the new
-// swipe's text, but our sidecar still has the previous swipe's raw CBS.
-// Drop the stale sidecar entry + re-run ingestion so the new swipe's raw
-// content gets stashed + resolved. Applies to both "swipe greeting" (user
-// cycles through first_mes alternates) and "swipe response" (regenerate).
+// (chats.service.ts). The new swipe's content lands in chat_messages.content
+// raw; the render-MCP cache for this msgId is invalidated so the next render
+// resolves with fresh state. No bake walk (post-unbake).
 spindle.on('MESSAGE_SWIPED', async (raw, userId) => {
   captureUserId(userId, 'MESSAGE_SWIPED');
   const p = raw as {
@@ -3596,28 +3410,6 @@ spindle.on('MESSAGE_SWIPED', async (raw, userId) => {
   invalidateRenderMcpForMessage(chatId, msgId);
   const active = await ensureActiveCardForChat(chatId, null);
   if (!active) return;
-  // Drop the stale sidecar entry so refreshResolvedContent re-stashes the
-  // new swipe's raw. Safe: markUserEdited semantics don't carry across
-  // swipes (each swipe is effectively a different message-body).
-  try {
-    const sidecar = await readSidecar(userStorage(), chatId, getUserId());
-    if (sidecar.msgs[msgId]) {
-      delete (sidecar.msgs as Record<string, unknown>)[msgId];
-      const storage = userStorage();
-      const uid = getUserId();
-      await (storage as unknown as {
-        setJson: (path: string, val: unknown, opts?: { userId?: string }) => Promise<void>;
-      }).setJson(
-        `lumirealm/chats/${chatId}.json`,
-        sidecar,
-        uid === undefined ? {} : { userId: uid },
-      );
-      log.info(`MESSAGE_SWIPED: cleared stale sidecar entry chat=${chatId} msg=${msgId}`);
-    }
-  } catch (err) {
-    log.warn(`MESSAGE_SWIPED: sidecar clear failed chat=${chatId}: ${errMsg(err)}`);
-  }
-  await refreshResolvedContent(active, chatId);
   await refreshBgHtml(active, chatId);
   await refreshVariables(active, chatId);
   // No output/display bindings here. Risu's output trigger fires inside
@@ -3657,55 +3449,16 @@ spindle.on('MESSAGE_EDITED', async (raw, userId) => {
     return;
   }
   invalidateRenderMcpForMessage(chatId, msgId);
-  // Self-echo detection. Content cache is one-shot, consumed on match. The
-  // stored edited_by marker is unreliable: Lumi carries it across subsequent
-  // updates, so user writes can inherit it.
+  // Self-echo detection. Content cache is one-shot, consumed on match. Our
+  // own writes (Lua setChat, editOutput listenEdit writeback) call
+  // `rememberOurWrite` before `editMessage`; we filter the echo here.
   const newContent = String(p.message?.content ?? '');
-  if (consumeIfOurWrite(chatId, msgId, newContent)) {
-    // Our own resolveAndPersist echo. Not a user action.
-    return;
-  }
+  if (consumeIfOurWrite(chatId, msgId, newContent)) return;
   const editedBy = readEditedBy(p);
-  void editedBy;
-  const inFlight = isGenerationInFlight(chatId);
-  const isAssistant = (p.message as { is_user?: unknown } | undefined)?.is_user === false;
-  const looksLikeContentReset = containsCbs(newContent) || (inFlight && isAssistant);
-  if (looksLikeContentReset) {
-    if (inFlight && isAssistant && !containsCbs(newContent)) {
-      log.info(`event MESSAGE_EDITED (streaming-finalize, re-resolving) chatId=${chatId} msgId=${msgId} content_len=${newContent.length} inFlight=true`);
-    }
-    log.info(`event MESSAGE_EDITED (content-reset, re-resolving) chatId=${chatId} msgId=${msgId} content_len=${newContent.length}`);
-    try {
-      const sidecar = await readSidecar(userStorage(), chatId, getUserId());
-      if (sidecar.msgs[msgId]) {
-        delete (sidecar.msgs as Record<string, unknown>)[msgId];
-        const uid = getUserId();
-        await (userStorage() as unknown as {
-          setJson: (path: string, val: unknown, opts?: { userId?: string }) => Promise<void>;
-        }).setJson(
-          `lumirealm/chats/${chatId}.json`,
-          sidecar,
-          uid === undefined ? {} : { userId: uid },
-        );
-      }
-      const active = await ensureActiveCardForChat(chatId, null);
-      if (active) {
-        await refreshResolvedContent(active, chatId);
-        await refreshBgHtml(active, chatId);
-              await refreshVariables(active, chatId);
-      }
-    } catch (err) {
-      log.warn(`MESSAGE_EDITED content-reset: reconcile failed chat=${chatId}: ${errMsg(err)}`);
-    }
-    return;
-  }
-  log.info(`event MESSAGE_EDITED (user) chatId=${chatId} msgId=${msgId} editedBy=${editedBy ?? '<none>'}`);
-  try {
-    const flipped = await markUserEdited(userStorage(), chatId, msgId, getUserId());
-    if (flipped) log.info(`MESSAGE_EDITED: userEdited flag set chat=${chatId} msg=${msgId}`);
-  } catch (err) {
-    log.error(`MESSAGE_EDITED: markUserEdited failed chat=${chatId} msg=${msgId}: ${errMsg(err)}`);
-  }
+  log.info(`event MESSAGE_EDITED (external) chatId=${chatId} msgId=${msgId} editedBy=${editedBy ?? '<none>'} len=${newContent.length}`);
+  // External edit (user typed, streaming finalize, etc.). Storage is raw
+  // post-unbake; render-MCP cache is already invalidated above so the next
+  // render resolves with fresh state. No bake walk.
 });
 
 // MESSAGE_DELETED: refresh portals against the smaller message list.
@@ -3718,29 +3471,9 @@ spindle.on('MESSAGE_DELETED', async (raw, userId) => {
   if (!chatId) return;
   invalidateListenEditPreload(chatId);
   if (msgId) invalidateRenderMcpForMessage(chatId, msgId);
-  if (msgId) {
-    try {
-      const sidecar = await readSidecar(userStorage(), chatId, getUserId());
-      if (sidecar.msgs[msgId]) {
-        delete (sidecar.msgs as Record<string, unknown>)[msgId];
-        const uid = getUserId();
-        await (userStorage() as unknown as {
-          setJson: (path: string, val: unknown, opts?: { userId?: string }) => Promise<void>;
-        }).setJson(
-          `lumirealm/chats/${chatId}.json`,
-          sidecar,
-          uid === undefined ? {} : { userId: uid },
-        );
-        log.info(`MESSAGE_DELETED: cleared sidecar entry chat=${chatId} msg=${msgId}`);
-      }
-    } catch (err) {
-      log.warn(`MESSAGE_DELETED: sidecar cleanup failed chat=${chatId}: ${errMsg(err)}`);
-    }
-  }
   const active = await ensureActiveCardForChat(chatId, null);
   if (!active) return;
   // No output/display bindings: Risu has no binding-firing analogue for deletes.
-  await refreshResolvedContent(active, chatId);
   await refreshBgHtml(active, chatId);
   await refreshVariables(active, chatId);
 });
@@ -3761,11 +3494,6 @@ spindle.on('CHAT_DELETED', async (raw, userId) => {
   clearVarOverlay(chatId);
   variableState.clearChat(chatId);
   toggleState.clearChat(chatId);
-  try {
-    await clearSidecar(userStorage(), chatId, getUserId());
-  } catch (err) {
-    log.warn(`CHAT_DELETED: clearSidecar failed chat=${chatId}: ${errMsg(err)}`);
-  }
 });
 
 spindle.on('CHARACTER_DELETED', async (raw, uid) => {
@@ -5200,8 +4928,8 @@ spindle.onFrontendMessage(async (raw, userId) => {
           try {
             const active = await ensureActiveCardForChat(lastChat, null);
             if (active) {
+              invalidateRenderMcpForChat(lastChat);
               await refreshBgHtml(active, lastChat);
-              await refreshResolvedContent(active, lastChat);
               await refreshVariables(active, lastChat, { force: true });
             }
           } catch (err) {

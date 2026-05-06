@@ -382,11 +382,11 @@ export function rescopeRisuEnvironment(input: string): RescopeResult {
   // (?!,) skips already-paired :root,:host (Tailwind v4 @theme output)
   const rootHits = (css.match(/:root\b(?!,)/g) ?? []).length;
   css = css.replaceAll(/:root\b(?!,)/g, ':root,:host');
-  // overflow:visible overrides Lumi's _htmlIsland_* host class (overflow:hidden),
-  // needed for hover popups.
+  // overflow:visible overrides Lumi's `_htmlIsland_*` host class
+  // (`overflow: hidden`, set from outside the shadow);
   css +=
     '\n/* Risu chat-shell baseline plus host overflow. */\n' +
-    ':host{font-size:0.875rem !important;line-height:1.25rem !important;overflow:visible !important}\n';
+    ':host{font-size:0.875rem;line-height:1.25rem;overflow:visible !important}\n';
 
   return {
     css,

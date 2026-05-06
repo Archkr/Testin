@@ -9406,7 +9406,7 @@ function applyDecoratorsToEntry(entry, decorators) {
     }));
     if (state.reverse_depth_seen) {
       stashedSerial.push({ name: "_risu_reverse_depth_note", args: [
-        "reverse_depth was applied as Lumi position=4 depth=N; Risu's reverse-from-start semantic is not preserved without a runtime intercept."
+        "reverse_depth applied as Lumi position=4 depth=N. The reverse-from-start semantic needs a runtime intercept."
       ] });
     }
     ext["_risu_decorators"] = stashedSerial;
@@ -9542,7 +9542,7 @@ function applyOne(dec, state) {
     }
     default: {
       if (TIER2_DECORATOR_NAMES.has(name)) {
-        return { kind: "stashed", reason: `Tier 2 \u2014 needs runtime intercept` };
+        return { kind: "stashed", reason: `Tier 2: needs runtime intercept` };
       }
       return { kind: "dropped", reason: `unknown decorator: ${name}` };
     }
@@ -10672,6 +10672,138 @@ function wrapIslandMergeIfNeeded(html) {
   return `<div data-risu-island-merge style="display:contents">` + html + `</div>`;
 }
 var HTML_TAG_RE = /<[a-zA-Z][a-zA-Z0-9]*\b/;
+var VOID_ELEMENTS = new Set([
+  "input",
+  "img",
+  "br",
+  "hr",
+  "meta",
+  "link",
+  "source",
+  "track",
+  "wbr",
+  "area",
+  "base",
+  "col",
+  "embed",
+  "param"
+]);
+function extractFirstTopLevelElementFragment(raw) {
+  let i = 0;
+  while (i < raw.length) {
+    if (raw[i] === "<") {
+      if (raw.startsWith("<!--", i)) {
+        const end = raw.indexOf("-->", i + 4);
+        if (end < 0)
+          return "";
+        i = end + 3;
+        continue;
+      }
+      if (raw[i + 1] === "!" || raw[i + 1] === "?") {
+        const end = raw.indexOf(">", i);
+        if (end < 0)
+          return "";
+        i = end + 1;
+        continue;
+      }
+      if (/[a-zA-Z]/.test(raw[i + 1] ?? ""))
+        break;
+    }
+    i++;
+  }
+  if (i >= raw.length)
+    return "";
+  const start = i;
+  const tagMatch = raw.slice(i).match(/^<([a-zA-Z][a-zA-Z0-9]*)\b/);
+  if (!tagMatch)
+    return "";
+  const tag = tagMatch[1].toLowerCase();
+  let j = i + 1 + tagMatch[1].length;
+  let inAttr = false;
+  let attrQuote = "";
+  while (j < raw.length) {
+    const ch = raw[j];
+    if (inAttr) {
+      if (ch === attrQuote)
+        inAttr = false;
+      j++;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      inAttr = true;
+      attrQuote = ch;
+      j++;
+      continue;
+    }
+    if (ch === ">")
+      break;
+    j++;
+  }
+  if (j >= raw.length)
+    return "";
+  const openEnd = j;
+  if (raw[openEnd - 1] === "/" || VOID_ELEMENTS.has(tag)) {
+    return raw.slice(start, openEnd + 1);
+  }
+  let depth = 1;
+  let k = openEnd + 1;
+  while (k < raw.length && depth > 0) {
+    if (raw[k] === "<") {
+      if (raw.startsWith("<!--", k)) {
+        const e = raw.indexOf("-->", k + 4);
+        if (e < 0)
+          return raw.slice(start);
+        k = e + 3;
+        continue;
+      }
+      if (raw[k + 1] === "/") {
+        const m = raw.slice(k).match(/^<\/([a-zA-Z][a-zA-Z0-9]*)\b/);
+        if (m && m[1].toLowerCase() === tag) {
+          depth--;
+          let p = k + m[0].length;
+          while (p < raw.length && raw[p] !== ">")
+            p++;
+          k = p + 1;
+          continue;
+        }
+      } else if (/^<[a-zA-Z]/.test(raw.slice(k))) {
+        const m = raw.slice(k).match(/^<([a-zA-Z][a-zA-Z0-9]*)\b/);
+        if (m && m[1].toLowerCase() === tag) {
+          let p = k + 1 + m[1].length;
+          let inAt = false;
+          let q = "";
+          while (p < raw.length) {
+            const ch = raw[p];
+            if (inAt) {
+              if (ch === q)
+                inAt = false;
+              p++;
+              continue;
+            }
+            if (ch === '"' || ch === "'") {
+              inAt = true;
+              q = ch;
+              p++;
+              continue;
+            }
+            if (ch === ">")
+              break;
+            p++;
+          }
+          if (raw[p - 1] === "/" || VOID_ELEMENTS.has(m[1].toLowerCase())) {
+            k = p + 1;
+            continue;
+          }
+          depth++;
+          k = p + 1;
+          continue;
+        }
+      }
+    }
+    k++;
+  }
+  return raw.slice(start, k);
+}
 var ISLAND_TRIGGER_ATTR_RE = /\bdata-risu-island-trigger\b/i;
 var ISLAND_TRIGGER_PREFIX = `<style data-risu-island-trigger></style>`;
 function wrapForIslandTriggerIfNeeded(html) {
@@ -10681,11 +10813,12 @@ function wrapForIslandTriggerIfNeeded(html) {
     return html;
   if (STYLE_TAG_RE.test(html))
     return html;
-  if (countInlineStyles(html) >= 3)
-    return html;
   if (ISLAND_TRIGGER_ATTR_RE.test(html.slice(0, 200)))
     return html;
   if (NO_MERGE_ATTR_RE.test(html.split(">")[0] ?? ""))
+    return html;
+  const firstFrag = extractFirstTopLevelElementFragment(html);
+  if (firstFrag.length > 0 && countInlineStyles(firstFrag) >= 3)
     return html;
   return ISLAND_TRIGGER_PREFIX + html;
 }
@@ -10870,18 +11003,18 @@ function mapRegex(scripts, opts) {
     const s = scripts[i];
     const path = `${origin === "character" ? "customscript" : "module.regex"}[${i}]`;
     if (typeof s.in !== "string" || s.in.length === 0) {
-      issues.push({ path, message: "empty `in` field \u2014 skipped (Risu scripts.ts)" });
+      issues.push({ path, message: "empty `in` field, skipped" });
       continue;
     }
     if (typeof s.out !== "string") {
-      issues.push({ path, message: "non-string `out` field \u2014 skipped" });
+      issues.push({ path, message: "non-string `out` field, skipped" });
       continue;
     }
     const phase = RISU_PHASE_MAP[s.type];
     if (!phase) {
       issues.push({
         path,
-        message: `unknown Risu regex phase \`${s.type}\` \u2014 entry preserved as disabled display-target`
+        message: `unknown Risu regex phase \`${s.type}\`, entry preserved as disabled display-target`
       });
     }
     const effectivePhase = phase ?? UNKNOWN_PHASE_FALLBACK;
@@ -14150,7 +14283,6 @@ async function makeRisuTriggerRuntime(api, data, scriptNs, opts = {}) {
   const portalChatId = opts.chatId ?? dispatchCtx.chatId;
   const rememberOurWrite = opts.rememberOurWrite ?? dispatchCtx.rememberOurWrite;
   const stateChanged = opts.stateChanged ?? dispatchCtx.stateChanged;
-  const trackSidecarWrite = opts.trackSidecarWrite ?? dispatchCtx.trackSidecarWrite;
   const auxConnectionId = opts.auxConnectionId ?? dispatchCtx.auxConnectionId ?? null;
   const auxModelOverride = opts.auxModelOverride ?? dispatchCtx.auxModelOverride ?? null;
   const auxSamplers = opts.auxSamplers ?? dispatchCtx.auxSamplers ?? null;
@@ -14169,7 +14301,7 @@ async function makeRisuTriggerRuntime(api, data, scriptNs, opts = {}) {
     try {
       stateChanged();
     } catch (err) {
-      _logStateChanged.warn(`callback threw \u2014 ${err.message}`);
+      _logStateChanged.warn(`callback threw: ${err.message}`);
     }
   }
   {
@@ -14371,7 +14503,7 @@ async function makeRisuTriggerRuntime(api, data, scriptNs, opts = {}) {
       const idx = opts2.indexOf(toStr(r));
       return idx >= 0 ? String(idx) : "";
     }
-    return unsupported("alertSelect", "requires api.ui.pick (host should provide one \u2014 spindle-host wires this to a frontend modal round-trip)");
+    return unsupported("alertSelect", "requires api.ui.pick");
   }
   async function runLLM2(value, model, _streaming) {
     return runLLM(api, {
@@ -14414,7 +14546,7 @@ async function makeRisuTriggerRuntime(api, data, scriptNs, opts = {}) {
     if (triggerCodeWarned.has(key))
       return;
     triggerCodeWarned.add(key);
-    _logTriggercode.warn(`dropped (Risu parity \u2014 triggercode is no longer dispatched). ` + `characterId=${characterId ?? "<none>"} binding=${binding ?? "<none>"} ` + `body[0..60]=${JSON.stringify(key)}`);
+    _logTriggercode.warn(`dropped (Risu parity: triggercode no longer dispatched). ` + `characterId=${characterId ?? "<none>"} binding=${binding ?? "<none>"} ` + `body[0..60]=${JSON.stringify(key)}`);
   }
   async function runLua(code, luaOpts) {
     let verbose = false;
@@ -14434,7 +14566,7 @@ async function makeRisuTriggerRuntime(api, data, scriptNs, opts = {}) {
     rverbose(`luaOpts=${JSON.stringify(luaOpts ?? {})}`);
     const lua = await scriptNs.require("risu-compat-lua");
     if (!lua || typeof lua.execute !== "function") {
-      rerr(`risu-compat-lua bridge missing/invalid \u2014 require returned ${lua === null ? "null" : typeof lua}`);
+      rerr(`risu-compat-lua bridge missing/invalid: require returned ${lua === null ? "null" : typeof lua}`);
       return unsupported("runLua", "risu-compat-lua bridge failed to load exports.execute");
     }
     const entryMap = {
@@ -14460,14 +14592,14 @@ async function makeRisuTriggerRuntime(api, data, scriptNs, opts = {}) {
         stopSending = true;
       return result;
     } catch (err) {
-      rerr(`THREW after ${Date.now() - tStart}ms \u2014 ${err.message}`);
+      rerr(`THREW after ${Date.now() - tStart}ms: ${err.message}`);
       throw err;
     }
   }
   function makeRisuLuaGlobals() {
     function luaReject(name, reason) {
       return function() {
-        return Promise.reject(new Error("risu-compat: lua." + name + " unavailable \u2014 " + reason));
+        return Promise.reject(new Error("risu-compat: lua." + name + " unavailable: " + reason));
       };
     }
     return {
@@ -14523,14 +14655,14 @@ async function makeRisuTriggerRuntime(api, data, scriptNs, opts = {}) {
         const n = Number(index);
         const real = n >= 0 ? n : messagesCache.length + n;
         if (!messagesCache[real]) {
-          _logSetChat.warn(`out-of-range index=${index} ` + `(real=${real}, messagesCache.length=${messagesCache.length}) \u2014 ignored`);
+          _logSetChat.warn(`out-of-range index=${index} ` + `(real=${real}, messagesCache.length=${messagesCache.length}): ignored`);
           return;
         }
         const raw = normalizeReplaceStringForSanitizer(toStr(value));
         const msgId = messagesCache[real].id;
         const prevContent = messagesCache[real].content;
         if (raw === prevContent) {
-          _logSetChat.info(`index=${index} (real=${real}) msgId=${msgId} len=${raw.length} ` + `chatId=${portalChatId ?? "<none>"} no-op (raw === prev) \u2014 ` + `skipped sidecarWrite + editMessage`);
+          _logSetChat.info(`index=${index} (real=${real}) msgId=${msgId} len=${raw.length} ` + `chatId=${portalChatId ?? "<none>"} no-op (raw === prev) \u2014 ` + `skipped editMessage`);
           return;
         }
         messagesCache[real] = { ...messagesCache[real], content: raw };
@@ -14539,12 +14671,7 @@ async function makeRisuTriggerRuntime(api, data, scriptNs, opts = {}) {
             rememberOurWrite(portalChatId, msgId, raw);
           } catch {}
         }
-        if (trackSidecarWrite) {
-          try {
-            trackSidecarWrite(msgId, raw);
-          } catch {}
-        }
-        _logSetChat.info(`index=${index} (real=${real}) msgId=${msgId} ` + `len=${raw.length} chatId=${portalChatId ?? "<none>"} ` + `rememberOurWrite=${rememberOurWrite && portalChatId ? "called" : "skipped"} ` + `sidecarWrite=${trackSidecarWrite ? "called" : "skipped"}`);
+        _logSetChat.info(`index=${index} (real=${real}) msgId=${msgId} ` + `len=${raw.length} chatId=${portalChatId ?? "<none>"} ` + `rememberOurWrite=${rememberOurWrite && portalChatId ? "called" : "skipped"}`);
         try {
           api.chat.editMessage?.(msgId, raw);
         } catch {}
@@ -14626,7 +14753,7 @@ async function makeRisuTriggerRuntime(api, data, scriptNs, opts = {}) {
         if (!lowLevelAccess) {
           return JSON.stringify({
             success: false,
-            result: "risu-compat: lua.LLMMain unavailable \u2014 trigger lacks lowLevelAccess"
+            result: "risu-compat: lua.LLMMain unavailable, trigger lacks lowLevelAccess"
           });
         }
         if (!api.llm?.generate) {
@@ -14644,7 +14771,7 @@ async function makeRisuTriggerRuntime(api, data, scriptNs, opts = {}) {
           return JSON.stringify({ success: true, result: out });
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          _logLLMMain.warn(`failed elapsed=${Date.now() - tStart}ms \u2014 ${msg}`);
+          _logLLMMain.warn(`failed elapsed=${Date.now() - tStart}ms: ${msg}`);
           return JSON.stringify({ success: false, result: "Error: " + msg });
         }
       },
@@ -14652,7 +14779,7 @@ async function makeRisuTriggerRuntime(api, data, scriptNs, opts = {}) {
         if (!lowLevelAccess) {
           return JSON.stringify({
             success: false,
-            result: "risu-compat: lua.axLLMMain unavailable \u2014 trigger lacks lowLevelAccess"
+            result: "risu-compat: lua.axLLMMain unavailable, trigger lacks lowLevelAccess"
           });
         }
         if (!api.llm?.generate) {
@@ -14702,7 +14829,7 @@ async function makeRisuTriggerRuntime(api, data, scriptNs, opts = {}) {
         } catch (err) {
           const errMsg2 = err instanceof Error ? err.message : String(err);
           const elapsed = Date.now() - tStart;
-          _logAxLLMMain.warn(`failed elapsed=${elapsed}ms \u2014 ${errMsg2}`);
+          _logAxLLMMain.warn(`failed elapsed=${elapsed}ms: ${errMsg2}`);
           if (auxDebugCapture) {
             try {
               auxDebugCapture({
@@ -14754,9 +14881,9 @@ async function makeRisuTriggerRuntime(api, data, scriptNs, opts = {}) {
           return Math.ceil(text.length / 4);
         }
       },
-      similarity: luaReject("similarity", "requires HypaProcessor / vector-store bridge; corpus usage = 0 effects"),
-      request: luaReject("request", "arbitrary-URL fetch from user Lua is out of scope; use a translator-side opt-in"),
-      generateImage: luaReject("generateImage", "requires Lumiverse image-gen pipeline; corpus usage = 0 effects"),
+      similarity: luaReject("similarity", "requires vector-store bridge"),
+      request: luaReject("request", "arbitrary-URL fetch from user Lua is out of scope"),
+      generateImage: luaReject("generateImage", "requires image-gen pipeline"),
       getCharacterImageMain: async (_id) => {
         try {
           if (!characterId)
@@ -14877,7 +15004,7 @@ async function makeRisuTriggerRuntime(api, data, scriptNs, opts = {}) {
         await saveVars(api, varsCache);
         flog(`saveVars OK`);
       } catch (err) {
-        _logFlush.error(`saveVars FAILED \u2014 ${err.message}`);
+        _logFlush.error(`saveVars FAILED: ${err.message}`);
       }
     }
     dirty.value = false;
@@ -29502,115 +29629,34 @@ function getScreenDims(userId) {
   return byUser.get(userId) ?? null;
 }
 
-// src/state/sidecar.ts
-var SIDECAR_PREFIX = "lumirealm/chats/";
-function sidecarPath(chatId) {
-  return `${SIDECAR_PREFIX}${chatId}.json`;
+// src/util/pua-roundtrip.ts
+var ENCODE_OPEN = String.fromCharCode(63728);
+var ENCODE_CLOSE = String.fromCharCode(63729);
+var FE_MACRO_RE = /\{\{\s*(user|char|charName|notChar|not_char)\s*\}\}/g;
+var DECODE_RE = new RegExp(`${ENCODE_OPEN}(\\d+)${ENCODE_CLOSE}`, "g");
+function puaEncodeFeMacros(text) {
+  if (!text || text.indexOf("{{") < 0)
+    return { text, tokens: [] };
+  const tokens = [];
+  const out = text.replace(FE_MACRO_RE, (_match, name) => {
+    const idx = tokens.length;
+    tokens.push(name);
+    return `${ENCODE_OPEN}${idx}${ENCODE_CLOSE}`;
+  });
+  return { text: out, tokens };
 }
-function logInfo4(msg) {
-  try {
-    spindle?.log?.info?.(`[lumirealm] sidecar: ${msg}`);
-  } catch {}
-}
-function logWarn4(msg) {
-  try {
-    spindle?.log?.warn?.(`[lumirealm] sidecar: ${msg}`);
-  } catch {}
-}
-function emptySidecar(chatId) {
-  return { schema_version: 1, chat_id: chatId, msgs: {} };
-}
-function isSidecar(v, chatId) {
-  if (typeof v !== "object" || v === null)
-    return false;
-  const rec = v;
-  if (rec.schema_version !== 1)
-    return false;
-  if (typeof rec.chat_id !== "string" || rec.chat_id !== chatId)
-    return false;
-  if (typeof rec.msgs !== "object" || rec.msgs === null)
-    return false;
-  return true;
-}
-function containsCbs(s) {
-  return s.indexOf("{{") >= 0;
-}
-async function readSidecar(storage, chatId, userId) {
-  const path = sidecarPath(chatId);
-  const fallback = emptySidecar(chatId);
-  try {
-    const raw = await storage.getJson(path, userId === undefined ? { fallback } : { fallback, userId });
-    if (isSidecar(raw, chatId))
-      return raw;
-    return fallback;
-  } catch (err) {
-    logWarn4(`read ${path} failed (${err instanceof Error ? err.message : String(err)}) \u2014 returning empty`);
-    return fallback;
-  }
-}
-async function writeSidecar(storage, sidecar, userId) {
-  await storage.setJson(sidecarPath(sidecar.chat_id), sidecar, { userId });
-}
-async function trackMessagesBatch(storage, chatId, entries, userId) {
-  const current = await readSidecar(storage, chatId, userId);
-  if (entries.length === 0)
-    return current;
-  const msgs = { ...current.msgs };
-  let changed = 0;
-  for (const { msgId, rawContent } of entries) {
-    const existing = msgs[msgId];
-    if (existing?.userEdited)
-      continue;
-    if (existing?.rawContent === rawContent)
-      continue;
-    msgs[msgId] = { rawContent, userEdited: false };
-    changed += 1;
-  }
-  if (changed === 0)
-    return current;
-  const updated = { schema_version: 1, chat_id: chatId, msgs };
-  await writeSidecar(storage, updated, userId);
-  logInfo4(`trackMessagesBatch chat=${chatId} wrote=${changed} total_tracked=${Object.keys(msgs).length}`);
-  return updated;
-}
-async function markUserEdited(storage, chatId, msgId, userId) {
-  const current = await readSidecar(storage, chatId, userId);
-  const existing = current.msgs[msgId];
-  if (!existing)
-    return false;
-  if (existing.userEdited)
-    return false;
-  const updated = {
-    schema_version: 1,
-    chat_id: chatId,
-    msgs: { ...current.msgs, [msgId]: { ...existing, userEdited: true } }
-  };
-  await writeSidecar(storage, updated, userId);
-  logInfo4(`markUserEdited chat=${chatId} msg=${msgId}`);
-  return true;
-}
-async function setSidecarRaw(storage, chatId, msgId, rawContent, userId) {
-  const current = await readSidecar(storage, chatId, userId);
-  const existing = current.msgs[msgId];
-  if (existing && existing.rawContent === rawContent && !existing.userEdited) {
-    return false;
-  }
-  const updated = {
-    schema_version: 1,
-    chat_id: chatId,
-    msgs: { ...current.msgs, [msgId]: { rawContent, userEdited: false } }
-  };
-  await writeSidecar(storage, updated, userId);
-  logInfo4(`setSidecarRaw chat=${chatId} msg=${msgId} content_len=${rawContent.length} cleared_userEdited=${existing?.userEdited === true}`);
-  return true;
-}
-async function clearSidecar(storage, chatId, userId) {
-  try {
-    await storage.delete(sidecarPath(chatId), userId);
-    logInfo4(`clearSidecar chat=${chatId}`);
-  } catch (err) {
-    logWarn4(`clearSidecar chat=${chatId} swallowed: ${err instanceof Error ? err.message : String(err)}`);
-  }
+function puaDecodeFeMacros(text, tokens) {
+  if (tokens.length === 0)
+    return text;
+  if (text.indexOf(ENCODE_OPEN) < 0)
+    return text;
+  return text.replace(DECODE_RE, (_match, idxStr) => {
+    const idx = Number(idxStr);
+    const name = tokens[idx];
+    if (name === undefined)
+      return _match;
+    return `{{${name}}}`;
+  });
 }
 
 // src/state/variables-state.ts
@@ -30767,10 +30813,6 @@ if (typeof registerMessageContentProcessor === "function") {
         const luaScripts = active.card.risuPayload.lua_scripts;
         const hasLuaTrigger = triggers2.some((t) => t.effect?.[0]?.type === "triggerlua");
         const renderAtActions = coerceAtActions(active.card.risuPayload.at_actions);
-        if (!hasLuaTrigger && renderAtActions.length === 0) {
-          log7.info(`messageContentProcessor.exit #${seq} path=render-no-hooks chat=${ctx.chatId} ensure=${tB - tA}ms total=${Date.now() - tStart}ms`);
-          return;
-        }
         const rawIdx = ctx.extra?.["messageIndex"];
         const messageIndex = typeof rawIdx === "number" ? rawIdx : 0;
         const risuChatIdx = Math.max(-1, messageIndex - 1);
@@ -30820,37 +30862,41 @@ if (typeof registerMessageContentProcessor === "function") {
             }
             atActionsMs = Date.now() - tAt;
           }
+          let resolveMs = 0;
+          if (transformed.indexOf("{{") >= 0) {
+            const tResolve = Date.now();
+            try {
+              const enc = puaEncodeFeMacros(transformed);
+              const resolved = await resolveReadonly(enc.text, ctx.chatId, active.card.character_id);
+              transformed = puaDecodeFeMacros(resolved, enc.tokens);
+            } catch (err) {
+              log7.warn(`messageContentProcessor.render body-resolve threw \u2014 ${errMsg(err)}. Returning pre-resolve content.`);
+            }
+            resolveMs = Date.now() - tResolve;
+          }
           const totalMs = Date.now() - tStart;
-          const otherOverhead = totalMs - chainMs - atActionsMs - (tB - tA);
+          const otherOverhead = totalMs - chainMs - atActionsMs - resolveMs - (tB - tA);
           if (transformed === ctx.content) {
             if (ctx.messageId) {
               cacheRenderMcp(ctx.chatId, ctx.messageId, ctx.content, { kind: "noop" });
             }
-            log7.info(`messageContentProcessor.exit #${seq} path=render-noop chat=${ctx.chatId} msg=${ctx.messageId ?? "<?>"} idx=${messageIndex} total=${totalMs}ms (chain=${chainMs}ms at_actions=${atActionsMs}ms ensure=${tB - tA}ms other=${otherOverhead}ms)`);
+            log7.info(`messageContentProcessor.exit #${seq} path=render-noop chat=${ctx.chatId} msg=${ctx.messageId ?? "<?>"} idx=${messageIndex} total=${totalMs}ms (chain=${chainMs}ms at_actions=${atActionsMs}ms resolve=${resolveMs}ms ensure=${tB - tA}ms other=${otherOverhead}ms)`);
             return;
           }
           if (ctx.messageId) {
             cacheRenderMcp(ctx.chatId, ctx.messageId, ctx.content, { kind: "transformed", content: transformed });
           }
-          log7.info(`messageContentProcessor.exit #${seq} path=render-transformed chat=${ctx.chatId} msg=${ctx.messageId ?? "<?>"} idx=${messageIndex} before_len=${ctx.content.length} after_len=${transformed.length} total=${totalMs}ms (chain=${chainMs}ms at_actions=${atActionsMs}ms ensure=${tB - tA}ms other=${otherOverhead}ms)`);
+          log7.info(`messageContentProcessor.exit #${seq} path=render-transformed chat=${ctx.chatId} msg=${ctx.messageId ?? "<?>"} idx=${messageIndex} before_len=${ctx.content.length} after_len=${transformed.length} total=${totalMs}ms (chain=${chainMs}ms at_actions=${atActionsMs}ms resolve=${resolveMs}ms ensure=${tB - tA}ms other=${otherOverhead}ms)`);
           return { content: transformed };
         } catch (err) {
           log7.warn(`messageContentProcessor.exit #${seq} path=render-threw chat=${ctx.chatId} msg=${ctx.messageId ?? "<?>"} err=${errMsg(err)} total=${Date.now() - tStart}ms`);
           return;
         }
       }
-      let resolved;
-      try {
-        resolved = await resolveReadonly(ctx.content, ctx.chatId, active.card.character_id);
-      } catch (err) {
-        log7.error(`messageContentProcessor.exit #${seq} path=resolve-failed chat=${ctx.chatId} origin=${ctx.origin} ensure=${tB - tA}ms total=${Date.now() - tStart}ms: ${errMsg(err)}`);
-        return;
-      }
-      const tC = Date.now();
       const isUserMessage = ctx.extra?.["is_user"] === true;
       const isGreeting = ctx.extra?.["greeting"] === true;
       const atActions = coerceAtActions(active.card.risuPayload.at_actions);
-      let afterAt = resolved;
+      let working = ctx.content;
       if (atActions.length > 0 && !isUserMessage) {
         try {
           const atApi = makeSpindleHost({
@@ -30858,31 +30904,23 @@ if (typeof registerMessageContentProcessor === "function") {
             characterId: active.card.character_id,
             userId: ctx.userId
           });
-          afterAt = await runAtActionsForPhase(atActions, "editoutput", resolved, {
+          working = await runAtActionsForPhase(atActions, "editoutput", working, {
             api: atApi,
             chatIndex: isGreeting ? -1 : 0,
             role: "assistant"
           });
-          if (afterAt !== resolved) {
-            log7.info(`messageContentProcessor: at-actions transformed chat=${ctx.chatId} ` + `origin=${ctx.origin} greeting=${isGreeting} ` + `resolve_len=${resolved.length} after_at_len=${afterAt.length}`);
-            try {
-              afterAt = await resolveReadonly(afterAt, ctx.chatId, active.card.character_id);
-            } catch (err) {
-              log7.warn(`messageContentProcessor: post-@@-action CBS re-resolve threw \u2014 ${errMsg(err)}. ` + `Continuing with unresolved @@-action output.`);
-            }
-          }
         } catch (err) {
-          log7.warn(`messageContentProcessor: at-actions editdisplay threw \u2014 ${errMsg(err)}. ` + `Continuing with pre-action content.`);
+          log7.warn(`messageContentProcessor: at-actions editoutput threw \u2014 ${errMsg(err)}. ` + `Continuing with pre-action content.`);
         }
       }
-      const finalContent = normalizeReplaceStringForSanitizer(afterAt);
+      const finalContent = normalizeReplaceStringForSanitizer(working);
       if (finalContent === ctx.content) {
-        log7.info(`messageContentProcessor.exit #${seq} path=noop chat=${ctx.chatId} origin=${ctx.origin} msg=${ctx.messageId ?? "<new>"} ensure=${tB - tA}ms resolve=${tC - tB}ms total=${Date.now() - tStart}ms`);
+        log7.info(`messageContentProcessor.exit #${seq} path=noop chat=${ctx.chatId} origin=${ctx.origin} msg=${ctx.messageId ?? "<new>"} ensure=${tB - tA}ms total=${Date.now() - tStart}ms`);
         return;
       }
       if (ctx.messageId)
         rememberOurWrite(ctx.chatId, ctx.messageId, finalContent);
-      log7.info(`messageContentProcessor.exit #${seq} path=baked chat=${ctx.chatId} origin=${ctx.origin} msg=${ctx.messageId ?? "<new>"} raw_len=${ctx.content.length} resolved_len=${resolved.length} after_at_len=${afterAt.length} final_len=${finalContent.length} doc_normalized=${finalContent !== afterAt} ensure=${tB - tA}ms resolve=${tC - tB}ms total=${Date.now() - tStart}ms`);
+      log7.info(`messageContentProcessor.exit #${seq} path=transformed chat=${ctx.chatId} origin=${ctx.origin} msg=${ctx.messageId ?? "<new>"} raw_len=${ctx.content.length} final_len=${finalContent.length} doc_normalized=${finalContent !== working} ensure=${tB - tA}ms total=${Date.now() - tStart}ms`);
       return { content: finalContent };
     } finally {
       mcpInFlight--;
@@ -31121,7 +31159,7 @@ function scheduleStateChangedRefresh2(chatId) {
       return;
     }
     const t0 = Date.now();
-    await refreshResolvedContent(active, chatId);
+    invalidateRenderMcpForChat(chatId);
     await refreshBgHtml(active, chatId);
     await refreshVariables(active, chatId);
     log7.info(`scheduleStateChangedRefresh: completed chat=${chatId} elapsed=${Date.now() - t0}ms`);
@@ -31129,17 +31167,6 @@ function scheduleStateChangedRefresh2(chatId) {
 }
 function makeStateChangedCallback(chatId) {
   return () => scheduleStateChangedRefresh2(chatId);
-}
-function makeTrackSidecarWrite(chatId) {
-  return (msgId, rawContent) => {
-    (async () => {
-      try {
-        await setSidecarRaw(userStorage(), chatId, msgId, rawContent, getUserId());
-      } catch (err) {
-        log7.warn(`trackSidecarWrite: setSidecarRaw failed chat=${chatId} msg=${msgId}: ${errMsg(err)}`);
-      }
-    })();
-  };
 }
 var settingsByUser = new Map;
 async function getSettingsForUser(userId) {
@@ -31476,7 +31503,7 @@ async function applySvgRasterIndex(args) {
       try {
         const reloaded = await ensureActiveCardForChat(chatId, null);
         if (reloaded) {
-          await refreshResolvedContent(reloaded, chatId);
+          invalidateRenderMcpForChat(chatId);
           await refreshBgHtml(reloaded, chatId);
         }
       } catch (err) {
@@ -31938,7 +31965,6 @@ async function runBinding(active, chatId, binding) {
   const scriptNS = makeDispatcherScriptNS();
   registerManualTriggers(scriptNS, compiled, api);
   const stateChanged = makeStateChangedCallback(chatId);
-  const trackSidecarWrite = makeTrackSidecarWrite(chatId);
   const settings = getCachedSettingsSync(getUserId());
   const auxDebugCapture = makeAuxDebugCapture(chatId, settings);
   const prior = setDispatchContext({
@@ -31946,7 +31972,6 @@ async function runBinding(active, chatId, binding) {
     rememberOurWrite,
     binding,
     stateChanged,
-    trackSidecarWrite,
     auxConnectionId: settings.auxConnectionId,
     auxModelOverride: settings.auxModelOverride,
     auxSamplers: settings.auxSamplers,
@@ -32056,7 +32081,6 @@ async function dispatchManualTrigger(chatId, triggerName, triggerId) {
         chatId,
         rememberOurWrite,
         stateChanged: makeStateChangedCallback(chatId),
-        trackSidecarWrite: makeTrackSidecarWrite(chatId),
         auxConnectionId: settings.auxConnectionId,
         auxModelOverride: settings.auxModelOverride,
         auxSamplers: settings.auxSamplers,
@@ -32082,13 +32106,11 @@ async function dispatchManualTrigger(chatId, triggerName, triggerId) {
       const settings = getCachedSettingsSync(getUserId());
       const auxDebugCapture = makeAuxDebugCapture(chatId, settings);
       const stateChanged = makeStateChangedCallback(chatId);
-      const trackSidecarWrite = makeTrackSidecarWrite(chatId);
       const prior = setDispatchContext({
         chatId,
         rememberOurWrite,
         binding: "manual",
         stateChanged,
-        trackSidecarWrite,
         auxConnectionId: settings.auxConnectionId,
         auxModelOverride: settings.auxModelOverride,
         auxSamplers: settings.auxSamplers,
@@ -32118,7 +32140,7 @@ async function dispatchManualTrigger(chatId, triggerName, triggerId) {
     }
   }
   log7.info(`dispatchManualTrigger: done triggerName=${triggerName} elapsed=${Date.now() - t0}ms`);
-  await refreshResolvedContent(active, chatId);
+  invalidateRenderMcpForChat(chatId);
   await refreshBgHtml(active, chatId);
   await refreshVariables(active, chatId);
 }
@@ -32199,7 +32221,7 @@ async function writeLocalVariable(chatId, key3, value) {
   } catch (err) {
     return { ok: false, reason: `chats.update failed: ${errMsg(err)}` };
   }
-  await refreshResolvedContent(active, chatId);
+  invalidateRenderMcpForChat(chatId);
   await refreshBgHtml(active, chatId);
   await refreshVariables(active, chatId, { force: true });
   log7.info(`variables.write: chat=${chatId} key=${trimmedKey} ` + (value === null ? "deleted" : `len=${String(value).length}`));
@@ -32330,7 +32352,7 @@ async function writeToggleValue(chatId, key3, value) {
   } catch (err) {
     return { ok: false, reason: `chats.update failed: ${errMsg(err)}` };
   }
-  await refreshResolvedContent(active, chatId);
+  invalidateRenderMcpForChat(chatId);
   await refreshBgHtml(active, chatId);
   await refreshVariables(active, chatId, { force: true });
   log7.info(`toggles.write: chat=${chatId} key=${storeKey} ` + (value === null ? "deleted" : `len=${String(value).length}`));
@@ -32495,7 +32517,6 @@ async function refreshBgHtml(active, chatId) {
     log7.warn(`refreshBgHtml: send failed: ${err.message}`);
   }
 }
-var EDITED_BY_MARKER = "lumirealm";
 async function resolveReadonly(template, chatId, characterId) {
   const userId = getUserId();
   const t0 = Date.now();
@@ -32598,124 +32619,6 @@ async function fetchChatMessages(chatId) {
     return [];
   }
 }
-async function resolveAndPersist(chatId, msgId, characterId, rawContent, currentContent, atActions = [], chatIndex = 0) {
-  let resolved;
-  try {
-    resolved = await resolveReadonly(rawContent, chatId, characterId);
-  } catch (err) {
-    log7.error(`resolveAndPersist: resolve failed chat=${chatId} msg=${msgId}: ${errMsg(err)}`);
-    return false;
-  }
-  if (atActions.length > 0) {
-    try {
-      const atApi = makeSpindleHost({
-        chatId,
-        characterId,
-        userId: getUserId() ?? ""
-      });
-      const beforeAt = resolved;
-      resolved = await runAtActionsForPhase(atActions, "editdisplay", resolved, {
-        api: atApi,
-        chatIndex,
-        role: "assistant"
-      });
-      const atChanged = resolved !== beforeAt;
-      log7.info(`resolveAndPersist.atActions: chat=${chatId} msg=${msgId} count=${atActions.length} phase=editdisplay chatIndex=${chatIndex} before_len=${beforeAt.length} after_len=${resolved.length} changed=${atChanged}`);
-      if (atChanged) {
-        try {
-          resolved = await resolveReadonly(resolved, chatId, characterId);
-        } catch (err) {
-          log7.warn(`resolveAndPersist: post-@@-action CBS re-resolve threw chat=${chatId} msg=${msgId}: ${errMsg(err)} \u2014 keeping unresolved @@-action output`);
-        }
-      }
-    } catch (err) {
-      log7.warn(`resolveAndPersist: at-actions editdisplay threw chat=${chatId} msg=${msgId}: ${errMsg(err)} \u2014 keeping pre-action content`);
-    }
-  } else {
-    log7.verbose(`resolveAndPersist.atActions: chat=${chatId} msg=${msgId} count=0 \u2014 atActions array empty (re-import card to populate?)`);
-  }
-  resolved = normalizeReplaceStringForSanitizer(resolved);
-  if (resolved === currentContent) {
-    return true;
-  }
-  try {
-    rememberOurWrite(chatId, msgId, resolved);
-    await spindle.chat.updateMessage(chatId, msgId, {
-      content: resolved,
-      metadata: { edited_by: EDITED_BY_MARKER },
-      skipChunkRebuild: true
-    });
-    log7.info(`resolveAndPersist: chat=${chatId} msg=${msgId} raw=${rawContent.length} resolved=${resolved.length} (prev=${currentContent.length})`);
-    log7.info(`resolveAndPersist: raw[0..400]=${JSON.stringify(rawContent.slice(0, 400))}`);
-    log7.info(`resolveAndPersist: resolved=${JSON.stringify(resolved.slice(0, 400))}`);
-    return true;
-  } catch (err) {
-    log7.error(`resolveAndPersist: updateMessage failed chat=${chatId} msg=${msgId}: ${errMsg(err)}`);
-    return false;
-  }
-}
-async function refreshResolvedContent(active, chatId) {
-  const t0 = Date.now();
-  const characterId = active.card.character_id;
-  const uid = getUserId();
-  const storage = userStorage();
-  const messages = await fetchChatMessages(chatId);
-  if (messages.length === 0)
-    return;
-  let sidecar;
-  try {
-    sidecar = await readSidecar(storage, chatId, uid);
-  } catch (err) {
-    log7.error(`refreshResolvedContent: readSidecar failed chat=${chatId}: ${errMsg(err)}`);
-    return;
-  }
-  const toStash = [];
-  for (const m of messages) {
-    if (m.role === "user")
-      continue;
-    if (sidecar.msgs[m.id])
-      continue;
-    toStash.push({ msgId: m.id, rawContent: m.content });
-  }
-  if (toStash.length > 0) {
-    try {
-      sidecar = await trackMessagesBatch(storage, chatId, toStash, uid);
-    } catch (err) {
-      log7.error(`refreshResolvedContent: trackMessagesBatch failed chat=${chatId}: ${errMsg(err)}`);
-      return;
-    }
-  }
-  const contentByMsgId = new Map;
-  for (const m of messages)
-    contentByMsgId.set(m.id, m.content);
-  const atActions = coerceAtActions(active.card.risuPayload.at_actions);
-  const msgIdToRisuIndex = new Map;
-  let riskuIdx = -1;
-  for (const m of messages) {
-    if (m.role === "user")
-      continue;
-    msgIdToRisuIndex.set(m.id, riskuIdx);
-    riskuIdx += 1;
-  }
-  let persisted = 0;
-  let skipped = 0;
-  for (const [msgId, entry] of Object.entries(sidecar.msgs)) {
-    if (entry.userEdited) {
-      skipped += 1;
-      continue;
-    }
-    const current = contentByMsgId.get(msgId);
-    if (current === undefined) {
-      continue;
-    }
-    const chatIndex = msgIdToRisuIndex.get(msgId) ?? 0;
-    const ok = await resolveAndPersist(chatId, msgId, characterId, entry.rawContent, current, atActions, chatIndex);
-    if (ok)
-      persisted += 1;
-  }
-  const total = Object.keys(sidecar.msgs).length;
-  log7.info(`refreshResolvedContent: chat=${chatId} tracked=${total} stashed_new=${toStash.length} resolved=${persisted} skipped_userEdited=${skipped} elapsed=${Date.now() - t0}ms`);
-}
 function dumpPayload(raw) {
   try {
     return JSON.stringify(raw).slice(0, 400);
@@ -32752,7 +32655,7 @@ spindle.on("SETTINGS_UPDATED", async (raw, userId) => {
   if (!chatId) {
     const lastChat = userId ? lastActiveChatByUser.get(userId) : undefined;
     if (lastChat) {
-      log7.info(`SETTINGS_UPDATED activeChatId: cleared \u2014 dismounting bg-host for last chat=${lastChat}`);
+      log7.info(`SETTINGS_UPDATED activeChatId cleared, dismounting bg-host for last chat=${lastChat}`);
       try {
         spindle.sendToFrontend({ type: "clear_bg_html", chatId: lastChat });
       } catch (err) {
@@ -32761,7 +32664,7 @@ spindle.on("SETTINGS_UPDATED", async (raw, userId) => {
       if (userId)
         lastActiveChatByUser.delete(userId);
     } else {
-      log7.info(`SETTINGS_UPDATED activeChatId: cleared \u2014 no last chat to dismount`);
+      log7.info(`SETTINGS_UPDATED activeChatId cleared, no last chat to dismount`);
     }
     return;
   }
@@ -32783,7 +32686,7 @@ spindle.on("SETTINGS_UPDATED", async (raw, userId) => {
     } catch {}
     return;
   }
-  await refreshResolvedContent(active, chatId);
+  invalidateRenderMcpForChat(chatId);
   await refreshBgHtml(active, chatId);
   await refreshVariables(active, chatId, { force: true });
   await refreshToggleDefinitions(active, chatId, { force: true });
@@ -32842,7 +32745,6 @@ function scheduleChatChangedRefresh(chatId, characterId, changedFields) {
       }
       if (!requiresRefresh)
         return;
-      await refreshResolvedContent(active, chatId);
       await refreshBgHtml(active, chatId);
       await refreshVariables(active, chatId, { force: true });
     } catch (err) {
@@ -32858,7 +32760,7 @@ spindle.on("CHAT_CHANGED", async (raw, userId) => {
   captureUserId(userId, "CHAT_CHANGED");
   const { chatId, characterId } = extractIds(raw);
   if (!chatId) {
-    log7.warn("CHAT_CHANGED: missing chatId \u2014 aborting");
+    log7.warn("CHAT_CHANGED: missing chatId , aborting");
     return;
   }
   const changedFields = raw.changedFields;
@@ -32885,17 +32787,12 @@ spindle.on("MESSAGE_SENT", async (raw, userId) => {
   invalidateListenEditPreload(chatId);
   const active = await ensureActiveCardForChat(chatId, characterId);
   if (!active) {
-    log7.info(`MESSAGE_SENT: no active card \u2014 skip`);
+    log7.info(`MESSAGE_SENT: no active card , skip`);
     return;
   }
-  log7.info(`MESSAGE_SENT: \u2192 refreshResolvedContent (no binding \u2014 Risu parity)`);
-  await refreshResolvedContent(active, chatId);
   await refreshVariables(active, chatId);
 });
 var generationsInFlight = new Map;
-function isGenerationInFlight(chatId) {
-  return (generationsInFlight.get(chatId) ?? 0) > 0;
-}
 function markGenerationStart(chatId) {
   const prev = generationsInFlight.get(chatId) ?? 0;
   generationsInFlight.set(chatId, prev + 1);
@@ -32926,7 +32823,7 @@ spindle.on("GENERATION_STARTED", async (raw, userId) => {
   await runBinding(active, chatId, "start");
   log7.info(`GENERATION_STARTED: \u2192 runBinding(request)`);
   await runBinding(active, chatId, "request");
-  await refreshResolvedContent(active, chatId);
+  invalidateRenderMcpForChat(chatId);
   await refreshBgHtml(active, chatId);
   await refreshVariables(active, chatId);
 });
@@ -32946,7 +32843,7 @@ spindle.on("GENERATION_ENDED", async (raw, userId) => {
   for (const binding of GENERATION_ENDED_BINDINGS) {
     await runBinding(active, chatId, binding);
   }
-  await refreshResolvedContent(active, chatId);
+  invalidateRenderMcpForChat(chatId);
   await refreshBgHtml(active, chatId);
   await refreshVariables(active, chatId);
 });
@@ -32963,7 +32860,7 @@ spindle.on("GENERATION_STOPPED", async (raw, userId) => {
   const active = await ensureActiveCardForChat(chatId, characterId);
   if (!active)
     return;
-  await refreshResolvedContent(active, chatId);
+  invalidateRenderMcpForChat(chatId);
   await refreshBgHtml(active, chatId);
   await refreshVariables(active, chatId);
 });
@@ -32980,19 +32877,6 @@ spindle.on("MESSAGE_SWIPED", async (raw, userId) => {
   const active = await ensureActiveCardForChat(chatId, null);
   if (!active)
     return;
-  try {
-    const sidecar = await readSidecar(userStorage(), chatId, getUserId());
-    if (sidecar.msgs[msgId]) {
-      delete sidecar.msgs[msgId];
-      const storage = userStorage();
-      const uid = getUserId();
-      await storage.setJson(`lumirealm/chats/${chatId}.json`, sidecar, uid === undefined ? {} : { userId: uid });
-      log7.info(`MESSAGE_SWIPED: cleared stale sidecar entry chat=${chatId} msg=${msgId}`);
-    }
-  } catch (err) {
-    log7.warn(`MESSAGE_SWIPED: sidecar clear failed chat=${chatId}: ${errMsg(err)}`);
-  }
-  await refreshResolvedContent(active, chatId);
   await refreshBgHtml(active, chatId);
   await refreshVariables(active, chatId);
 });
@@ -33018,44 +32902,10 @@ spindle.on("MESSAGE_EDITED", async (raw, userId) => {
   }
   invalidateRenderMcpForMessage(chatId, msgId);
   const newContent = String(p.message?.content ?? "");
-  if (consumeIfOurWrite(chatId, msgId, newContent)) {
+  if (consumeIfOurWrite(chatId, msgId, newContent))
     return;
-  }
   const editedBy = readEditedBy(p);
-  const inFlight = isGenerationInFlight(chatId);
-  const isAssistant = p.message?.is_user === false;
-  const looksLikeContentReset = containsCbs(newContent) || inFlight && isAssistant;
-  if (looksLikeContentReset) {
-    if (inFlight && isAssistant && !containsCbs(newContent)) {
-      log7.info(`event MESSAGE_EDITED (streaming-finalize, re-resolving) chatId=${chatId} msgId=${msgId} content_len=${newContent.length} inFlight=true`);
-    }
-    log7.info(`event MESSAGE_EDITED (content-reset, re-resolving) chatId=${chatId} msgId=${msgId} content_len=${newContent.length}`);
-    try {
-      const sidecar = await readSidecar(userStorage(), chatId, getUserId());
-      if (sidecar.msgs[msgId]) {
-        delete sidecar.msgs[msgId];
-        const uid = getUserId();
-        await userStorage().setJson(`lumirealm/chats/${chatId}.json`, sidecar, uid === undefined ? {} : { userId: uid });
-      }
-      const active = await ensureActiveCardForChat(chatId, null);
-      if (active) {
-        await refreshResolvedContent(active, chatId);
-        await refreshBgHtml(active, chatId);
-        await refreshVariables(active, chatId);
-      }
-    } catch (err) {
-      log7.warn(`MESSAGE_EDITED content-reset: reconcile failed chat=${chatId}: ${errMsg(err)}`);
-    }
-    return;
-  }
-  log7.info(`event MESSAGE_EDITED (user) chatId=${chatId} msgId=${msgId} editedBy=${editedBy ?? "<none>"}`);
-  try {
-    const flipped = await markUserEdited(userStorage(), chatId, msgId, getUserId());
-    if (flipped)
-      log7.info(`MESSAGE_EDITED: userEdited flag set chat=${chatId} msg=${msgId}`);
-  } catch (err) {
-    log7.error(`MESSAGE_EDITED: markUserEdited failed chat=${chatId} msg=${msgId}: ${errMsg(err)}`);
-  }
+  log7.info(`event MESSAGE_EDITED (external) chatId=${chatId} msgId=${msgId} editedBy=${editedBy ?? "<none>"} len=${newContent.length}`);
 });
 spindle.on("MESSAGE_DELETED", async (raw, userId) => {
   captureUserId(userId, "MESSAGE_DELETED");
@@ -33068,23 +32918,9 @@ spindle.on("MESSAGE_DELETED", async (raw, userId) => {
   invalidateListenEditPreload(chatId);
   if (msgId)
     invalidateRenderMcpForMessage(chatId, msgId);
-  if (msgId) {
-    try {
-      const sidecar = await readSidecar(userStorage(), chatId, getUserId());
-      if (sidecar.msgs[msgId]) {
-        delete sidecar.msgs[msgId];
-        const uid = getUserId();
-        await userStorage().setJson(`lumirealm/chats/${chatId}.json`, sidecar, uid === undefined ? {} : { userId: uid });
-        log7.info(`MESSAGE_DELETED: cleared sidecar entry chat=${chatId} msg=${msgId}`);
-      }
-    } catch (err) {
-      log7.warn(`MESSAGE_DELETED: sidecar cleanup failed chat=${chatId}: ${errMsg(err)}`);
-    }
-  }
   const active = await ensureActiveCardForChat(chatId, null);
   if (!active)
     return;
-  await refreshResolvedContent(active, chatId);
   await refreshBgHtml(active, chatId);
   await refreshVariables(active, chatId);
 });
@@ -33105,11 +32941,6 @@ spindle.on("CHAT_DELETED", async (raw, userId) => {
   clearVarOverlay(chatId);
   variableState.clearChat(chatId);
   toggleState.clearChat(chatId);
-  try {
-    await clearSidecar(userStorage(), chatId, getUserId());
-  } catch (err) {
-    log7.warn(`CHAT_DELETED: clearSidecar failed chat=${chatId}: ${errMsg(err)}`);
-  }
 });
 spindle.on("CHARACTER_DELETED", async (raw, uid) => {
   captureUserId(uid, "CHARACTER_DELETED");
@@ -34194,8 +34025,8 @@ spindle.onFrontendMessage(async (raw, userId) => {
           try {
             const active = await ensureActiveCardForChat(lastChat, null);
             if (active) {
+              invalidateRenderMcpForChat(lastChat);
               await refreshBgHtml(active, lastChat);
-              await refreshResolvedContent(active, lastChat);
               await refreshVariables(active, lastChat, { force: true });
             }
           } catch (err) {

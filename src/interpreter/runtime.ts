@@ -210,8 +210,6 @@ export async function makeRisuTriggerRuntime(
     opts.rememberOurWrite ?? dispatchCtx.rememberOurWrite;
   const stateChanged: (() => void) | undefined =
     opts.stateChanged ?? dispatchCtx.stateChanged;
-  const trackSidecarWrite: ((msgId: string, rawContent: string) => void) | undefined =
-    opts.trackSidecarWrite ?? dispatchCtx.trackSidecarWrite;
   const auxConnectionId: string | null =
     (opts.auxConnectionId ?? dispatchCtx.auxConnectionId ?? null);
   const auxModelOverride: string | null =
@@ -647,27 +645,15 @@ export async function makeRisuTriggerRuntime(
         // expecting the next render to re-evaluate `{{getvar::ui_sys_stat}}`
         // in the display-regex panel rule).
         //
-        // The harm: Risu's setChat writes to chat.message[i].data, but the
-        // GREETING (chat.message excludes greeting in Risu) lives separately
-        // in character.firstMessage and remains untouched. Lumi puts the
-        // greeting at index 0 of chat_messages, so a Lua `setChat(0, ...)`
-        // overwrites it. The sidecar's stored CBS template gets clobbered
-        // with the resolved post-CBS body, and subsequent setvar-driven
-        // re-resolves have no CBS to re-evaluate. Symptom: language toggles
-        // never switch the greeting, and panel-UI signatures thrash during
-        // streaming (each render produces a slightly different resolved
-        // class string from drifted vars).
-        //
-        // Skip the write when the value is identical to what's already
-        // stored. Lua's intent ("nudge a re-render") is satisfied by the
+        // Skip when the value is identical to what's already stored. Lua's
+        // intent ("nudge a re-render") is satisfied by the
         // `notifyStateChanged` calls earlier in the same trigger body
-        // (reloadDisplay / v2UpdateGUI). The sidecar / chat row stays
-        // unchanged.
+        // (reloadDisplay / v2UpdateGUI). The chat row stays unchanged.
         if (raw === prevContent) {
           _logSetChat.info(
             `index=${index} (real=${real}) msgId=${msgId} len=${raw.length} ` +
               `chatId=${portalChatId ?? '<none>'} no-op (raw === prev) — ` +
-              `skipped sidecarWrite + editMessage`,
+              `skipped editMessage`,
           );
           return;
         }
@@ -680,17 +666,10 @@ export async function makeRisuTriggerRuntime(
           catch { /* */ }
         }
 
-        // Sidecar must see the new raw or the next state-tick re-resolves stale content over it.
-        if (trackSidecarWrite) {
-          try { trackSidecarWrite(msgId, raw); }
-          catch { /* never crash trigger work for a sidecar update */ }
-        }
-
         _logSetChat.info(
           `index=${index} (real=${real}) msgId=${msgId} ` +
             `len=${raw.length} chatId=${portalChatId ?? '<none>'} ` +
-            `rememberOurWrite=${rememberOurWrite && portalChatId ? 'called' : 'skipped'} ` +
-            `sidecarWrite=${trackSidecarWrite ? 'called' : 'skipped'}`,
+            `rememberOurWrite=${rememberOurWrite && portalChatId ? 'called' : 'skipped'}`,
         );
 
         try { api.chat.editMessage?.(msgId, raw); } catch { /* */ }

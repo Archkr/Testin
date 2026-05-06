@@ -38,7 +38,6 @@ export interface DispatchContext {
     repetitionPenalty: number | null;
   };
   auxDebugCapture?: (event: AuxDebugCaptureEvent) => void;
-  trackSidecarWrite?: (msgId: string, rawContent: string) => void;
 }
 
 export interface AuxDebugCaptureEvent {

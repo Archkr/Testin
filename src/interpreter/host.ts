@@ -189,7 +189,6 @@ export interface TriggerRuntimeOpts {
     readonly repetitionPenalty: number | null;
   };
   readonly auxDebugCapture?: (event: import("./runtime.js").AuxDebugCaptureEvent) => void;
-  readonly trackSidecarWrite?: (msgId: string, rawContent: string) => void;
 }
 
 export interface RegexRuntimeOpts {

@@ -8435,7 +8435,7 @@ function setupIslandStyles(flog, opts = {}) {
     sheet = new CSSStyleSheet;
     allOwnedSheets.add(sheet);
   } catch (err) {
-    flog.error("island-styles: CSSStyleSheet constructor unavailable — this browser predates 2023", err);
+    flog.error("island-styles: CSSStyleSheet constructor unavailable (browser predates 2023)", err);
     return {
       setStylesheet: () => {},
       setCrossRuleSheets: () => {},
@@ -8452,9 +8452,9 @@ function setupIslandStyles(flog, opts = {}) {
       envSheet = new CSSStyleSheet;
       allOwnedSheets.add(envSheet);
       envSheet.replaceSync(rescoped.css);
-      flog.info(`island-styles: Risu environment sheet built — ${opts.riskuEnvironmentCss.length}→${rescoped.css.length} bytes, ` + `${envSheet.cssRules.length} top-level rules ` + `(rewrites: :root→${rescoped.rootHits} .prose→${rescoped.proseHits} ` + `.prose-invert→${rescoped.proseInvertHits} .chattext→${rescoped.chattextHits} ` + `.chat-width→${rescoped.chatWidthHits})`);
+      flog.info(`island-styles: Risu environment sheet built ${opts.riskuEnvironmentCss.length}->${rescoped.css.length} bytes, ` + `${envSheet.cssRules.length} top-level rules ` + `(rewrites: :root=${rescoped.rootHits} .prose=${rescoped.proseHits} ` + `.prose-invert=${rescoped.proseInvertHits} .chattext=${rescoped.chattextHits} ` + `.chat-width=${rescoped.chatWidthHits})`);
     } catch (err) {
-      flog.error("island-styles: Risu environment sheet construction failed — falling back to per-card sheet only", err);
+      flog.error("island-styles: Risu environment sheet construction failed (falling back to per-card sheet only)", err);
       envSheet = null;
     }
   }
@@ -8502,7 +8502,7 @@ function setupIslandStyles(flog, opts = {}) {
         const envRules = envSheet ? envSheet.cssRules.length : 0;
         flog.info(`island-styles: adopted #${adoptionCount} into <${hostTag} class="${hostClass}"> ` + `(shadow has ${childCount} top-level children; envSheet ${envRules} rules + perCardSheet ${sheetRules} rules)`);
       } else if (adoptionCount % ADOPT_LOG_STRIDE === 0) {
-        flog.info(`island-styles: adopted=${adoptionCount} (chat shadows visited=${chatShadowCount}, outside-chat shadows visited=${outsideChatShadowCount}) ` + `— chat/outside ratio is the drift indicator for Lumi's extractHtmlIslands heuristic`);
+        flog.info(`island-styles: adopted=${adoptionCount} (chat shadows visited=${chatShadowCount}, outside-chat shadows visited=${outsideChatShadowCount})`);
       }
     } catch (err) {
       flog.warn("island-styles: adoptedStyleSheets append failed", err);
@@ -8702,8 +8702,8 @@ function rescopeRisuEnvironment(input) {
   const rootHits = (css.match(/:root\b(?!,)/g) ?? []).length;
   css = css.replaceAll(/:root\b(?!,)/g, ":root,:host");
   css += `
-/* LumiRealm: Risu chat-shell baseline (Chat.svelte:408-409 + host overflow). */
-` + `:host{font-size:0.875rem !important;line-height:1.25rem !important;overflow:visible !important}
+/* Risu chat-shell baseline plus host overflow. */
+` + `:host{font-size:0.875rem;line-height:1.25rem;overflow:visible !important}
 `;
   return {
     css,
