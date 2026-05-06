@@ -1,4 +1,56 @@
+`<a name="readme-top"></a>`
+
+<div align="center">
+
+<img src="logo.png" alt="LumiRealm" width="640"/>
+
+English | [한국어](.github/readme-ko_kr.md) | [日本語](.github/readme-ja_jp.md) | [简体中文](.github/readme-zh_cn.md) | [繁體中文](.github/readme-zh_tw.md) | [Deutsch](.github/readme-de_de.md) | [Русский](.github/readme-ru_ru.md)
+
+[![License](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)](LICENSE)
+[![Lumiverse](https://img.shields.io/badge/Lumiverse-0.9.6%2B-blueviolet)](https://discord.gg/fdB56XdgBb)
+[![RisuAI](https://img.shields.io/badge/RisuAI-port-9cf?logo=svelte)](https://github.com/kwaroran/Risuai)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5-blue?logo=typescript)](https://www.typescriptlang.org/)
+[![Bun](https://img.shields.io/badge/Bun-bundle-fbf0df?logo=bun)](https://bun.sh)
+
+</div>
+
+---
+
+LumiRealm is a [Lumiverse](https://discord.gg/fdB56XdgBb) extension that runs [RisuAI](https://github.com/kwaroran/Risuai) character cards, modules, and lorebooks natively inside Lumiverse. Includes an inbuilt RisuRealm bot browser.
+
+Full guide on the **[Wiki](https://github.com/AMousePad/LumiRealm/wiki)**.
+
+## Screenshots
+
+|                  Example Card                  |                                                    RisuRealm browse                                                    |
+| :--------------------------------------------: | :---------------------------------------------------------------------------------------------------------------------: |
+| ![1778064388761](image/README/1778064388761.png) | ![1778064256839](https://file+.vscode-resource.vscode-cdn.net/g%3A/mousepad_git/LumiRealm/image/README/1778064256839.png) |
+
+|                     Viewer                     |                     State                     |
+| :--------------------------------------------: | :--------------------------------------------: |
+| ![1778064299483](image/README/1778064299483.png) | ![1778064443131](image/README/1778064443131.png) |
+
+## Installation
+
+LumiRealm installs as a Lumiverse extension. Lumiverse must be at version **0.9.7 or later (STAGING BRANCH).**
+
+1. Open your Lumiverse instance.
+2. Go to **Settings → Extensions** and add:
+
+   ```txt
+   https://github.com/AMousePad/LumiRealm
+   ```
+3. Enable all of the permissions first. LumiRealm needs them all to run. [Why?](https://github.com/AMousePad/LumiRealm/wiki/Architecture)
+4. Enable the extension. The **LumiRealm** tab appears in the sidebar.
+
+## Community
+
+- **[Discord](https://github.com/AMousePad/LumiRealm/wiki/Discord)**: In the Lumiverse server!
+- **[Issues](https://github.com/AMousePad/LumiRealm/issues)**: bug reports + feature requests.
+- **[Wiki](https://github.com/AMousePad/LumiRealm/wiki)**: user guide + architecture deep-dive.
 
 ## License
 
-**GPL-3.0-or-later.** LumiRealm is a derivative work of [RisuAI](https://github.com/kwaroran/RisuAI) (also GPLv3, © 2024 Kwaroran)
+**GPL-3.0-or-later.** LumiRealm is a derivative work of [RisuAI](https://github.com/kwaroran/Risuai) (GPL-3.0, © 2024 Kwaroran). Entire modules (Lua bridge prelude, all CBS handlers, `processScriptFull` port, module/toggle DSL parser, lorebook decorator parser) are direct ports. Risu's compiled CSS bundle ships verbatim.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
