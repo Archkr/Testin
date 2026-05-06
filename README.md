@@ -1,4 +1,4 @@
-`<a name="readme-top"></a>`
+<a name="readme-top"></a>
 
 <div align="center">
 
@@ -24,7 +24,7 @@ Full guide on the **[Wiki](https://github.com/AMousePad/LumiRealm/wiki)**.
 
 |                  Example Card                  |                                                    RisuRealm browse                                                    |
 | :--------------------------------------------: | :---------------------------------------------------------------------------------------------------------------------: |
-| ![1778064388761](image/README/1778064388761.png) | ![1778064256839](https://file+.vscode-resource.vscode-cdn.net/g%3A/mousepad_git/LumiRealm/image/README/1778064256839.png) |
+| ![1778064388761](image/README/1778064388761.png) | ![1778064256839](image/README/1778064256839.png) |
 
 |                     Viewer                     |                     State                     |
 | :--------------------------------------------: | :--------------------------------------------: |
