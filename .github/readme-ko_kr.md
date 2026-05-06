@@ -7,7 +7,7 @@
 [English](../README.md) | **한국어** | [日本語](readme-ja_jp.md) | [简体中文](readme-zh_cn.md) | [繁體中文](readme-zh_tw.md) | [Deutsch](readme-de_de.md) | [Русский](readme-ru_ru.md)
 
 [![License](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)](../LICENSE)
-[![Lumiverse](https://img.shields.io/badge/Lumiverse-0.9.6%2B-blueviolet)](https://discord.gg/fdB56XdgBb)
+[![Lumiverse](https://img.shields.io/badge/Lumiverse-0.9.7%2B-blueviolet)](https://github.com/prolix-oc/Lumiverse)
 [![RisuAI](https://img.shields.io/badge/RisuAI-port-9cf?logo=svelte)](https://github.com/kwaroran/Risuai)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-blue?logo=typescript)](https://www.typescriptlang.org/)
 [![Bun](https://img.shields.io/badge/Bun-bundle-fbf0df?logo=bun)](https://bun.sh)
@@ -16,7 +16,7 @@
 
 ---
 
-LumiRealm은 [RisuAI](https://github.com/kwaroran/Risuai) 캐릭터 카드, 모듈, 로어북을 [Lumiverse](https://discord.gg/fdB56XdgBb) 안에서 네이티브로 실행하는 Lumiverse 확장입니다. RisuRealm 봇 브라우저가 내장되어 있습니다.
+LumiRealm은 [RisuAI](https://github.com/kwaroran/Risuai) 캐릭터 카드, 모듈, 로어북을 [Lumiverse](https://github.com/prolix-oc/Lumiverse) 안에서 네이티브로 실행하는 Lumiverse 확장입니다. RisuRealm 봇 브라우저가 내장되어 있습니다.
 
 자세한 안내는 **[위키](https://github.com/AMousePad/LumiRealm/wiki)** 를 참고하세요.
 

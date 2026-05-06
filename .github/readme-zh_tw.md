@@ -7,7 +7,7 @@
 [English](../README.md) | [한국어](readme-ko_kr.md) | [日本語](readme-ja_jp.md) | [简体中文](readme-zh_cn.md) | **繁體中文** | [Deutsch](readme-de_de.md) | [Русский](readme-ru_ru.md)
 
 [![License](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)](../LICENSE)
-[![Lumiverse](https://img.shields.io/badge/Lumiverse-0.9.6%2B-blueviolet)](https://discord.gg/fdB56XdgBb)
+[![Lumiverse](https://img.shields.io/badge/Lumiverse-0.9.7%2B-blueviolet)](https://github.com/prolix-oc/Lumiverse)
 [![RisuAI](https://img.shields.io/badge/RisuAI-port-9cf?logo=svelte)](https://github.com/kwaroran/Risuai)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-blue?logo=typescript)](https://www.typescriptlang.org/)
 [![Bun](https://img.shields.io/badge/Bun-bundle-fbf0df?logo=bun)](https://bun.sh)
@@ -16,7 +16,7 @@
 
 ---
 
-LumiRealm 是一個 [Lumiverse](https://discord.gg/fdB56XdgBb) 擴充功能,可在 Lumiverse 中原生執行 [RisuAI](https://github.com/kwaroran/Risuai) 的角色卡、模組與世界書。內建 RisuRealm 機器人瀏覽器。
+LumiRealm 是一個 [Lumiverse](https://github.com/prolix-oc/Lumiverse) 擴充功能,可在 Lumiverse 中原生執行 [RisuAI](https://github.com/kwaroran/Risuai) 的角色卡、模組與世界書。內建 RisuRealm 機器人瀏覽器。
 
 完整指南請見 **[Wiki](https://github.com/AMousePad/LumiRealm/wiki)**。
 

@@ -7,7 +7,7 @@
 English | [한국어](.github/readme-ko_kr.md) | [日本語](.github/readme-ja_jp.md) | [简体中文](.github/readme-zh_cn.md) | [繁體中文](.github/readme-zh_tw.md) | [Deutsch](.github/readme-de_de.md) | [Русский](.github/readme-ru_ru.md)
 
 [![License](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)](LICENSE)
-[![Lumiverse](https://img.shields.io/badge/Lumiverse-0.9.6%2B-blueviolet)](https://discord.gg/fdB56XdgBb)
+[![Lumiverse](https://img.shields.io/badge/Lumiverse-0.9.7%2B-blueviolet)](https://github.com/prolix-oc/Lumiverse)
 [![RisuAI](https://img.shields.io/badge/RisuAI-port-9cf?logo=svelte)](https://github.com/kwaroran/Risuai)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-blue?logo=typescript)](https://www.typescriptlang.org/)
 [![Bun](https://img.shields.io/badge/Bun-bundle-fbf0df?logo=bun)](https://bun.sh)
@@ -16,7 +16,7 @@ English | [한국어](.github/readme-ko_kr.md) | [日本語](.github/readme-ja_j
 
 ---
 
-LumiRealm is a [Lumiverse](https://discord.gg/fdB56XdgBb) extension that runs [RisuAI](https://github.com/kwaroran/Risuai) character cards, modules, and lorebooks natively inside Lumiverse. Includes an inbuilt RisuRealm bot browser.
+LumiRealm is a [Lumiverse](https://github.com/prolix-oc/Lumiverse) extension that runs [RisuAI](https://github.com/kwaroran/Risuai) character cards, modules, and lorebooks natively inside Lumiverse. Includes an inbuilt RisuRealm bot browser.
 
 Full guide on the **[Wiki](https://github.com/AMousePad/LumiRealm/wiki)**.
 
