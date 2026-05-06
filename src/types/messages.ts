@@ -307,7 +307,12 @@ export type FrontendToBackend =
       imageIdByMarker: Readonly<Record<string, string | null>>;
     }
   | { type: 'log_request_state' }
-  | { type: 'log_set_state'; enabled: boolean; includeChatData: boolean }
+  | {
+      type: 'log_set_state';
+      enabled: boolean;
+      includeChatData: boolean;
+      level?: LogLevelWire;
+    }
   | { type: 'log_request_export' }
   | { type: 'log_clear' }
   | { type: 'alert_dismissed'; requestId: string }
@@ -554,6 +559,7 @@ export type BackendToFrontend =
       type: 'log_state_pushed';
       enabled: boolean;
       includeChatData: boolean;
+      level?: LogLevelWire;
       eventCount: number;
       bufferBytes: number;
     }
@@ -583,10 +589,12 @@ export type BackendToFrontend =
 
 export interface LogEventWire {
   readonly ts: number;
-  readonly level: 'info' | 'warn' | 'error' | 'debug';
+  readonly level: 'error' | 'warn' | 'info' | 'debug' | 'trace';
   readonly category: string;
   readonly message: string;
 }
+
+export type LogLevelWire = 'silent' | 'error' | 'warn' | 'info' | 'debug' | 'trace';
 
 /** Wire shape for one parsed toggle row. Mirrors `SidebarToggle` from
  *  `src/core/toggle-syntax.ts`, duplicated here to avoid a dep on `core/`. */

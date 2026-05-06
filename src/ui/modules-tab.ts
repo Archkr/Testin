@@ -152,7 +152,7 @@ export function mountModulesPanel(opts: MountModulesPanelOptions): ModulesPanelH
   const lbDesc = document.createElement('div');
   lbDesc.className = 'lrm-section-desc';
   lbDesc.textContent =
-    "Upload a standalone lorebook (Risu native or CCSv3 JSON). Lumiverse stores it as an unattached world_book — attach to characters via Lumiverse's UI. Risu decorators (@@position, @@depth, @@is_greeting, etc.) still apply at runtime when a Risu-imported character uses the book.";
+    "Upload a standalone lorebook (Risu native or CCSv3 JSON). Lumiverse stores it as an unattached world_book. Attach to characters via Lumiverse's UI.";
   lorebooksBody.appendChild(lbDesc);
 
   const lbToolbar = document.createElement('div');

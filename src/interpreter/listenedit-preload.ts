@@ -35,7 +35,7 @@ const cache = new Map<string, CachedSnapshot>();
  */
 export function invalidateListenEditPreload(chatId: string): void {
   if (cache.delete(chatId)) {
-    log.info(`invalidate chat=${chatId}`);
+    log.debug(`invalidate chat=${chatId}`);
   }
 }
 
@@ -69,8 +69,7 @@ export async function preloadForListenEditChain(
   if (chatId) {
     const cached = cache.get(chatId);
     if (cached && Date.now() - cached.ts < CACHE_TTL_MS && cached.characterId === (characterId ?? null)) {
-      log.info(
-        `cache.hit chat=${chatId} age=${Date.now() - cached.ts}ms ` +
+      log.trace(`cache.hit chat=${chatId} age=${Date.now() - cached.ts}ms ` +
           `entries=${cached.snapshot.lorebook?.entries.length ?? 0} msgs=${cached.snapshot.messagesRaw?.length ?? 0}`,
       );
       return cached.snapshot;
@@ -120,7 +119,7 @@ export async function preloadForListenEditChain(
       }
       entries.sort((a, b) => Number(b.orderValue || 0) - Number(a.orderValue || 0));
       lorebook = { entries, primaryBookId: bookIds[0] ?? null };
-      log.info(`lorebook fetched chat=${chatId ?? '<none>'} books=${bookIds.length} entries=${entries.length} elapsed=${Date.now() - tLore}ms`);
+      log.debug(`lorebook fetched chat=${chatId ?? '<none>'} books=${bookIds.length} entries=${entries.length} elapsed=${Date.now() - tLore}ms`);
     } else {
       lorebook = { entries: [], primaryBookId: bookIds[0] ?? null };
     }
@@ -138,8 +137,7 @@ export async function preloadForListenEditChain(
     cache.set(chatId, { snapshot, ts: Date.now(), characterId: characterId ?? null });
   }
 
-  log.info(
-    `preload.done chat=${chatId ?? '<none>'} parallel_fetch=${tParallel}ms ` +
+  log.trace(`preload.done chat=${chatId ?? '<none>'} parallel_fetch=${tParallel}ms ` +
       `total=${Date.now() - t0}ms ` +
       `vars=${varsCache ? Object.keys(varsCache).length : '<failed>'} ` +
       `msgs=${messagesRaw?.length ?? '<failed>'} ` +

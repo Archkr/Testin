@@ -10,11 +10,12 @@ type ConsoleMethod = (typeof CONSOLE_METHODS)[number];
 let consoleShimInstalled = false;
 const originalConsole: Partial<Record<ConsoleMethod, (...args: unknown[]) => void>> = {};
 
-function methodToLevel(m: ConsoleMethod): 'info' | 'warn' | 'error' | 'debug' {
+function methodToLevel(m: ConsoleMethod): 'error' | 'warn' | 'info' | 'debug' | 'trace' {
   if (m === 'warn') return 'warn';
   if (m === 'error') return 'error';
   if (m === 'debug') return 'debug';
-  return 'info';
+  if (m === 'info') return 'info';
+  return 'trace';
 }
 
 export function installConsoleCapture(): void {

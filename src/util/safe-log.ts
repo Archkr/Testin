@@ -1,15 +1,13 @@
-// Routes to spindle.log when available, console as fallback.
-// Errors always emit; info/warn gate on logStore.isEnabled().
-// Both flow into the in-memory log store for export.
-
 import { logStore, type LogLevel } from '../log/store.js';
 
 type LogFn = (msg: string) => void;
 
 export interface SafeLogger {
-  info: LogFn;
-  warn: LogFn;
   error: LogFn;
+  warn: LogFn;
+  info: LogFn;
+  debug: LogFn;
+  trace: LogFn;
 }
 
 interface SpindleLogShape {
@@ -26,24 +24,33 @@ function consoleFor(level: 'info' | 'warn' | 'error'): LogFn {
   return (m) => { try { console.log(m); } catch { /* */ } };
 }
 
+function spindleChannel(level: LogLevel): 'info' | 'warn' | 'error' {
+  if (level === 'error') return 'error';
+  if (level === 'warn')  return 'warn';
+  return 'info';
+}
+
 export function makeSafeLogger(prefix: string): SafeLogger {
-  function emit(level: 'info' | 'warn' | 'error', msg: string): void {
+  function emit(level: LogLevel, msg: string): void {
     const line = `[lumirealm] ${prefix}: ${msg}`;
-    const enabled = logStore.isEnabled();
-    if (level === 'error' || enabled) {
+    const consoleEmit = level === 'error' || logStore.shouldEmit(level);
+    if (consoleEmit) {
+      const ch = spindleChannel(level);
       const sp = getSpindle();
-      const fn = sp?.log?.[level];
+      const fn = sp?.log?.[ch];
       if (fn) {
-        try { fn(line); } catch { consoleFor(level)(line); }
+        try { fn(line); } catch { consoleFor(ch)(line); }
       } else {
-        consoleFor(level)(line);
+        consoleFor(ch)(line);
       }
     }
-    logStore.push(level as LogLevel, prefix, msg);
+    logStore.push(level, prefix, msg);
   }
   return {
-    info:  (m) => emit('info',  m),
-    warn:  (m) => emit('warn',  m),
     error: (m) => emit('error', m),
+    warn:  (m) => emit('warn',  m),
+    info:  (m) => emit('info',  m),
+    debug: (m) => emit('debug', m),
+    trace: (m) => emit('trace', m),
   };
 }

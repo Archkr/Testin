@@ -1,6 +1,9 @@
-declare const spindle: import('lumiverse-spindle-types').SpindleAPI | undefined;
-
 import { cardStoragePath, type StoredRisuCard } from './types.js';
+import { makeSafeLogger } from '../util/safe-log.js';
+
+const logger = makeSafeLogger('installer');
+const logInfo = (msg: string): void => logger.info(msg);
+const logWarn = (msg: string): void => logger.warn(msg);
 
 export interface UserStorageLike {
   getJson<T>(
@@ -15,13 +18,6 @@ export interface UserStorageLike {
   delete(path: string, userId?: string): Promise<void>;
 }
 
-// No-op when spindle is absent (unit tests); logs in the live extension.
-function logInfo(msg: string): void {
-  try { spindle?.log?.info?.(`[lumirealm] ${msg}`); } catch { /* ignore */ }
-}
-function logWarn(msg: string): void {
-  try { spindle?.log?.warn?.(`[lumirealm] ${msg}`); } catch { /* ignore */ }
-}
 
 export async function saveCard(
   storage: UserStorageLike,

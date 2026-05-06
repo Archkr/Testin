@@ -13,9 +13,11 @@ function getHidePanelSheetForIsland(): CSSStyleSheet | null {
 }
 
 interface Flog {
-  info(msg: string, ...rest: unknown[]): void;
-  warn(msg: string, ...rest: unknown[]): void;
   error(msg: string, ...rest: unknown[]): void;
+  warn(msg: string, ...rest: unknown[]): void;
+  info(msg: string, ...rest: unknown[]): void;
+  debug(msg: string, ...rest: unknown[]): void;
+  trace(msg: string, ...rest: unknown[]): void;
 }
 
 export interface IslandStyles {
@@ -129,7 +131,7 @@ export function setupIslandStyles(flog: Flog, opts: SetupIslandStylesOptions = {
         const childCount = shadow.childElementCount;
         const sheetRules = sheet.cssRules.length;
         const envRules = envSheet ? envSheet.cssRules.length : 0;
-        flog.info(
+        flog.debug(
           `island-styles: adopted #${adoptionCount} into <${hostTag} class="${hostClass}"> ` +
             `(shadow has ${childCount} top-level children; envSheet ${envRules} rules + perCardSheet ${sheetRules} rules)`,
         );

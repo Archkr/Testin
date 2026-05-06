@@ -105,9 +105,17 @@ export function mountTogglesPanel(opts: MountTogglesPanelOptions): TogglesTabHan
       sum.className = 'lr-toggle-group-summary';
       sum.textContent = t.value ?? 'Group';
       det.appendChild(sum);
+      const children = t.children ?? [];
+      const groupAttr = pickGroupAttribution(children);
+      if (groupAttr) {
+        const attr = document.createElement('div');
+        attr.className = 'lr-toggle-attribution';
+        attr.textContent = groupAttr;
+        attr.title = `From module: ${groupAttr}`;
+        det.appendChild(attr);
+      }
       const body = document.createElement('div');
       body.className = 'lr-toggle-group-body';
-      const children = t.children ?? [];
       for (const child of children) {
         const cel = renderNode(child as GroupedNode);
         if (cel) body.appendChild(cel);
@@ -152,14 +160,6 @@ export function mountTogglesPanel(opts: MountTogglesPanelOptions): TogglesTabHan
     label.appendChild(labelText);
 
     const key = (t as { key: string }).key;
-    const attribution = defs?.attribution[key];
-    if (attribution) {
-      const attr = document.createElement('span');
-      attr.className = 'lr-toggle-attribution';
-      attr.textContent = attribution;
-      attr.title = `From module: ${attribution}`;
-      label.appendChild(attr);
-    }
 
     if (t.type === 'checkbox') {
       const stored = readToggle(key);
@@ -171,13 +171,9 @@ export function mountTogglesPanel(opts: MountTogglesPanelOptions): TogglesTabHan
         const next = cb.checked ? '1' : '0';
         sendSet(key, next);
       });
-      // Checkbox before label text (visual convention).
       row.appendChild(cb);
       row.appendChild(label);
-      return row;
-    }
-
-    if (t.type === 'select') {
+    } else if (t.type === 'select') {
       const sel = document.createElement('select');
       sel.className = 'lr-toggle-select';
       const stored = readToggle(key);
@@ -189,7 +185,6 @@ export function mountTogglesPanel(opts: MountTogglesPanelOptions): TogglesTabHan
         if (stored === String(i)) opt.selected = true;
         sel.appendChild(opt);
       }
-      // Don't write back an unset default. Let the user pick explicitly.
       if (!stored && options.length > 0) {
         sel.selectedIndex = 0;
       }
@@ -198,10 +193,7 @@ export function mountTogglesPanel(opts: MountTogglesPanelOptions): TogglesTabHan
       });
       row.appendChild(label);
       row.appendChild(sel);
-      return row;
-    }
-
-    if (t.type === 'text') {
+    } else if (t.type === 'text') {
       const stored = readToggle(key);
       const buffered = textEditBuffers.get(key);
       const input = document.createElement('input');
@@ -211,6 +203,11 @@ export function mountTogglesPanel(opts: MountTogglesPanelOptions): TogglesTabHan
       input.addEventListener('input', () => {
         textEditBuffers.set(key, input.value);
       });
+      const commitText = (): void => {
+        const next = input.value;
+        textEditBuffers.delete(key);
+        if (next !== stored) sendSet(key, next);
+      };
       input.addEventListener('change', commitText);
       input.addEventListener('blur', commitText);
       input.addEventListener('keydown', (e) => {
@@ -219,16 +216,7 @@ export function mountTogglesPanel(opts: MountTogglesPanelOptions): TogglesTabHan
       });
       row.appendChild(label);
       row.appendChild(input);
-      return row;
-
-      function commitText(): void {
-        const next = input.value;
-        textEditBuffers.delete(key);
-        if (next !== stored) sendSet(key, next);
-      }
-    }
-
-    if (t.type === 'textarea') {
+    } else if (t.type === 'textarea') {
       const stored = readToggle(key);
       const buffered = textEditBuffers.get(key);
       const ta = document.createElement('textarea');
@@ -238,6 +226,11 @@ export function mountTogglesPanel(opts: MountTogglesPanelOptions): TogglesTabHan
       ta.addEventListener('input', () => {
         textEditBuffers.set(key, ta.value);
       });
+      const commitTextarea = (): void => {
+        const next = ta.value;
+        textEditBuffers.delete(key);
+        if (next !== stored) sendSet(key, next);
+      };
       ta.addEventListener('change', commitTextarea);
       ta.addEventListener('blur', commitTextarea);
       ta.addEventListener('keydown', (e) => {
@@ -247,16 +240,20 @@ export function mountTogglesPanel(opts: MountTogglesPanelOptions): TogglesTabHan
       row.classList.add('lr-toggle-row-stacked');
       row.appendChild(label);
       row.appendChild(ta);
-      return row;
-
-      function commitTextarea(): void {
-        const next = ta.value;
-        textEditBuffers.delete(key);
-        if (next !== stored) sendSet(key, next);
-      }
     }
 
     return row;
+  }
+
+  function pickGroupAttribution(children: readonly SidebarToggleWire[]): string | null {
+    if (!defs) return null;
+    for (const c of children) {
+      const k = (c as { key?: string }).key;
+      if (!k) continue;
+      const a = defs.attribution[k];
+      if (a) return a;
+    }
+    return null;
   }
 
   function readToggle(key: string): string {

@@ -1,9 +1,20 @@
-import type { BackendToFrontend, FrontendToBackend } from '../types/messages.js';
+import type { BackendToFrontend, FrontendToBackend, LogLevelWire } from '../types/messages.js';
 import type { FrontendLog } from './drawer.js';
 
-// Diagnostic logging panel. Off by default. Two switches: "Enable logging"
-// turns the in-memory ring buffer on, "Include chat data" keeps message/var
-// content unredacted. Download produces a structured JSON bundle then disables logging.
+interface LevelOption {
+  readonly value: LogLevelWire;
+  readonly label: string;
+  readonly title: string;
+}
+
+const LEVEL_OPTIONS: readonly LevelOption[] = [
+  { value: 'silent', label: 'Silent',  title: 'Drop everything, including errors. Same as logging off but the master switch stays on.' },
+  { value: 'error',  label: 'Error',   title: 'Errors only.' },
+  { value: 'warn',   label: 'Warn',    title: 'Errors + warnings.' },
+  { value: 'info',   label: 'Info (default)', title: 'Lifecycle events: chat open/close, import phases, generation start/end, button clicks.' },
+  { value: 'debug',  label: 'Debug',   title: 'Per-call internals: resolveReadonly, ensureActiveCardForChat, refreshBgHtml, macroInterceptor enter/exit.' },
+  { value: 'trace',  label: 'Trace',   title: 'Everything: WS frame traffic, [macro-tap], per-Lua-call ctx, periodic summaries. Very noisy.' },
+];
 
 interface MountOpts {
   readonly root: HTMLElement;
@@ -19,6 +30,7 @@ interface LogsPanelHandle {
 interface State {
   enabled: boolean;
   includeChatData: boolean;
+  level: LogLevelWire;
   eventCount: number;
   bufferBytes: number;
   lastDownloadAt: number | null;
@@ -32,6 +44,7 @@ export function mountLogsPanel(opts: MountOpts): LogsPanelHandle {
   const state: State = {
     enabled: false,
     includeChatData: false,
+    level: 'info',
     eventCount: 0,
     bufferBytes: 0,
     lastDownloadAt: null,
@@ -58,6 +71,7 @@ export function mountLogsPanel(opts: MountOpts): LogsPanelHandle {
         type: 'log_set_state',
         enabled: checked,
         includeChatData: state.includeChatData,
+        level: state.level,
       });
     },
   });
@@ -72,10 +86,41 @@ export function mountLogsPanel(opts: MountOpts): LogsPanelHandle {
         type: 'log_set_state',
         enabled: state.enabled,
         includeChatData: checked,
+        level: state.level,
       });
     },
   });
   wrap.appendChild(chatRow.row);
+
+  const levelRow = document.createElement('div');
+  levelRow.className = 'lr-logs-row';
+  const levelLabel = document.createElement('label');
+  levelLabel.htmlFor = 'lr-logs-level';
+  levelLabel.textContent = 'Verbosity';
+  levelLabel.title = 'Threshold for which logs are recorded. Higher levels include lower ones.';
+  const levelSelect = document.createElement('select');
+  levelSelect.id = 'lr-logs-level';
+  levelSelect.className = 'lr-logs-select';
+  for (const opt of LEVEL_OPTIONS) {
+    const o = document.createElement('option');
+    o.value = opt.value;
+    o.textContent = opt.label;
+    o.title = opt.title;
+    levelSelect.appendChild(o);
+  }
+  levelSelect.addEventListener('change', () => {
+    const next = levelSelect.value as LogLevelWire;
+    log.info(`logs-tab: level set to ${next}`);
+    sendToBackend({
+      type: 'log_set_state',
+      enabled: state.enabled,
+      includeChatData: state.includeChatData,
+      level: next,
+    });
+  });
+  levelRow.appendChild(levelLabel);
+  levelRow.appendChild(levelSelect);
+  wrap.appendChild(levelRow);
 
   const status = document.createElement('div');
   status.className = 'lr-logs-status';
@@ -123,11 +168,13 @@ export function mountLogsPanel(opts: MountOpts): LogsPanelHandle {
     chatRow.input.checked = state.includeChatData;
     chatRow.input.disabled = !state.enabled;
     chatRow.row.classList.toggle('lr-logs-row-disabled', !state.enabled);
+    if (levelSelect.value !== state.level) levelSelect.value = state.level;
 
     const kb = (state.bufferBytes / 1024).toFixed(1);
+    const levelTxt = `level=${state.level}`;
     status.textContent = state.enabled
-      ? `${state.eventCount} events, ${kb} KB`
-      : `Off. ${state.eventCount} events, ${kb} KB.`;
+      ? `${state.eventCount} events, ${kb} KB · ${levelTxt}`
+      : `Off. ${state.eventCount} events, ${kb} KB · ${levelTxt}.`;
     if (state.lastError) {
       status.textContent += `  ·  ${state.lastError}`;
     }
@@ -141,6 +188,7 @@ export function mountLogsPanel(opts: MountOpts): LogsPanelHandle {
     if (msg.type === 'log_state_pushed') {
       state.enabled = msg.enabled;
       state.includeChatData = msg.includeChatData;
+      if (msg.level !== undefined) state.level = msg.level;
       state.eventCount = msg.eventCount;
       state.bufferBytes = msg.bufferBytes;
       render();

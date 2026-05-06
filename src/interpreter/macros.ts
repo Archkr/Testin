@@ -21,17 +21,16 @@ import { getDecoratorBuffers } from './decorator-buffers.js';
 import { getActiveCharacterImage, getActivePersonaImage } from './image-cache.js';
 import type { AssetIndexEntry } from '../payload/types.js';
 
+import { makeSafeLogger } from '../util/safe-log.js';
+
 declare const spindle: import('lumiverse-spindle-types').SpindleAPI | undefined;
 
 const spindleGlobal: import('lumiverse-spindle-types').SpindleAPI | undefined =
   typeof spindle !== 'undefined' ? spindle : undefined;
 
-function logInfo(msg: string): void {
-  try { spindleGlobal?.log?.info?.(`[lumirealm] macros: ${msg}`); } catch { /* ignore */ }
-}
-function logWarn(msg: string): void {
-  try { spindleGlobal?.log?.warn?.(`[lumirealm] macros: ${msg}`); } catch { /* ignore */ }
-}
+const logger = makeSafeLogger('macros');
+const logInfo = (msg: string): void => logger.info(msg);
+const logWarn = (msg: string): void => logger.warn(msg);
 
 // Opt in per-invoke trace with RISU_COMPAT_TRACE_MACROS=1; off by default
 // because a single #each over 1500 assets produces ~28k log lines per render.

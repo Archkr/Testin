@@ -128,6 +128,7 @@ import {
   logStore,
   loadPersistedLogState,
   persistLogState,
+  isLogThreshold,
   type LogState,
   type LogStateSnapshot,
 } from './log/store.js';
@@ -137,28 +138,34 @@ import { resolvePickResolution } from './interpreter/pick-bridge.js';
 const EXTENSION_VERSION = '0.1.0';
 
 const log = {
-  info(msg: string): void {
-    if (logStore.isEnabled()) spindle.log.info(`[lumirealm] ${msg}`);
-    logStore.push('info', 'backend', msg);
-  },
-  warn(msg: string): void {
-    if (logStore.isEnabled()) spindle.log.warn(`[lumirealm] ${msg}`);
-    logStore.push('warn', 'backend', msg);
-  },
   error(msg: string): void {
     spindle.log.error(`[lumirealm] ${msg}`);
     logStore.push('error', 'backend', msg);
   },
-  verbose(msg: string): void {
-    if (logStore.isEnabled()) spindle.log.info(`[lumirealm] ${msg}`);
+  warn(msg: string): void {
+    if (logStore.shouldEmit('warn')) spindle.log.warn(`[lumirealm] ${msg}`);
+    logStore.push('warn', 'backend', msg);
+  },
+  info(msg: string): void {
+    if (logStore.shouldEmit('info')) spindle.log.info(`[lumirealm] ${msg}`);
+    logStore.push('info', 'backend', msg);
+  },
+  debug(msg: string): void {
+    if (logStore.shouldEmit('debug')) spindle.log.info(`[lumirealm] ${msg}`);
     logStore.push('debug', 'backend', msg);
   },
-  /** Bypasses the user's logStore toggle. Use SPARINGLY — for one-off
-   *  triage lines that need to surface even when the user has runtime
-   *  logging off. The frontend log store still receives a copy so the
-   *  Logs tab "Export" still includes it. */
+  trace(msg: string): void {
+    if (logStore.shouldEmit('trace')) spindle.log.info(`[lumirealm] ${msg}`);
+    logStore.push('trace', 'backend', msg);
+  },
+  /** @deprecated Alias for `debug`. */
+  verbose(msg: string): void {
+    if (logStore.shouldEmit('debug')) spindle.log.info(`[lumirealm] ${msg}`);
+    logStore.push('debug', 'backend', msg);
+  },
+  /** @deprecated Alias for `info`. */
   always(msg: string): void {
-    spindle.log.info(`[lumirealm] ${msg}`);
+    if (logStore.shouldEmit('info')) spindle.log.info(`[lumirealm] ${msg}`);
     logStore.push('info', 'backend', msg);
   },
 };
@@ -249,7 +256,7 @@ if (typeof registerMacroInterceptor === 'function') {
     const templateHead = ctx.template.slice(0, 120);
     const hasMarker = /★[A-Z_]+★|###[A-Z_]+###/.test(ctx.template);
     const chatEnv = ctx.env.chat as { id?: string; messageCount?: number; lastMessageId?: number };
-    log.info(
+    log.trace(
       `macroInterceptor.enter #${callId} chat=${chatId ?? '<none>'} active_present=${activeBefore} ` +
         `commit=${ctx.commit} phase=${ctx.phase} userId=${ctx.userId ?? '<none>'} ` +
         `tmpl_len=${ctx.template.length} has_marker=${hasMarker} ` +
@@ -258,14 +265,14 @@ if (typeof registerMacroInterceptor === 'function') {
     );
 
     if (!ctx.template.includes('{{')) {
-      log.info(`macroInterceptor.exit #${callId} path=no_cbs elapsed=${Date.now() - t0}ms`);
+      log.trace(`macroInterceptor.exit #${callId} path=no_cbs elapsed=${Date.now() - t0}ms`);
       return;
     }
 
     captureUserId(ctx.userId, 'macroInterceptor');
 
     if (!chatId) {
-      log.info(`macroInterceptor.exit #${callId} path=no_chat_id elapsed=${Date.now() - t0}ms`);
+      log.trace(`macroInterceptor.exit #${callId} path=no_chat_id elapsed=${Date.now() - t0}ms`);
       return;
     }
     const active = activeCardByChat.get(chatId);
@@ -429,7 +436,7 @@ if (typeof registerMacroInterceptor === 'function') {
     }
 
     if (resolved === ctx.template) {
-      log.info(
+      log.trace(
         `macroInterceptor.exit #${callId} path=unchanged_passthrough elapsed=${Date.now() - t0}ms ` +
           `tmpl_len=${ctx.template.length} marker=${resolvedMarker ?? 'none'}`,
       );
@@ -438,7 +445,7 @@ if (typeof registerMacroInterceptor === 'function') {
     // Doc-boundary normalize is not applied here: macroInterceptor fires for
     // both replace_string templates and find_regex patterns. Wrapping a
     // find_regex would break regex compilation.
-    log.info(
+    log.trace(
       `macroInterceptor.exit #${callId} path=resolved elapsed=${Date.now() - t0}ms ` +
         `in_len=${ctx.template.length} out_len=${resolved.length} ` +
         `marker=${resolvedMarker ?? 'none'} still_has_raw_cbs=${stillHasRaw} ` +
@@ -496,7 +503,7 @@ if (typeof registerMessageContentProcessor === 'function') {
     const tStart = Date.now();
     const seq = ++mcpEnterSeq;
     const enteredAt = ++mcpInFlight;
-    log.info(
+    log.trace(
       `messageContentProcessor.enter #${seq} chat=${ctx.chatId} origin=${ctx.origin} msg=${ctx.messageId ?? '<new>'} raw_len=${ctx.content.length} inflight=${enteredAt}`,
     );
     try {
@@ -505,7 +512,7 @@ if (typeof registerMessageContentProcessor === 'function') {
       const active = await ensureActiveCardForChat(ctx.chatId, null);
       const tB = Date.now();
       if (!active) {
-        log.info(
+        log.trace(
           `messageContentProcessor.exit #${seq} path=skip-not-lumirealm chat=${ctx.chatId} ensure=${tB - tA}ms total=${Date.now() - tStart}ms`,
         );
         return;
@@ -534,12 +541,12 @@ if (typeof registerMessageContentProcessor === 'function') {
           if (cached) {
             const totalMs = Date.now() - tStart;
             if (cached.kind === 'noop') {
-              log.info(
+              log.trace(
                 `messageContentProcessor.exit #${seq} path=render-cache-noop chat=${ctx.chatId} msg=${ctx.messageId} idx=${messageIndex} total=${totalMs}ms`,
               );
               return;
             }
-            log.info(
+            log.trace(
               `messageContentProcessor.exit #${seq} path=render-cache-hit chat=${ctx.chatId} msg=${ctx.messageId} idx=${messageIndex} before_len=${ctx.content.length} after_len=${cached.content.length} total=${totalMs}ms`,
             );
             return { content: cached.content };
@@ -572,7 +579,7 @@ if (typeof registerMessageContentProcessor === 'function') {
               { chatId: ctx.chatId, characterId: active.card.character_id },
             );
             chainMs = Date.now() - tChain;
-            log.info(
+            log.trace(
               `messageContentProcessor.render chain.elapsed #${seq} chain=${chainMs}ms (mcp_total_so_far=${Date.now() - tStart}ms)`,
             );
           }
@@ -627,7 +634,7 @@ if (typeof registerMessageContentProcessor === 'function') {
             if (ctx.messageId) {
               cacheRenderMcp(ctx.chatId, ctx.messageId, ctx.content, { kind: 'noop' });
             }
-            log.info(
+            log.trace(
               `messageContentProcessor.exit #${seq} path=render-noop chat=${ctx.chatId} msg=${ctx.messageId ?? '<?>'} idx=${messageIndex} total=${totalMs}ms (chain=${chainMs}ms at_actions=${atActionsMs}ms resolve=${resolveMs}ms ensure=${tB - tA}ms other=${otherOverhead}ms)`,
             );
             return;
@@ -635,7 +642,7 @@ if (typeof registerMessageContentProcessor === 'function') {
           if (ctx.messageId) {
             cacheRenderMcp(ctx.chatId, ctx.messageId, ctx.content, { kind: 'transformed', content: transformed });
           }
-          log.info(
+          log.trace(
             `messageContentProcessor.exit #${seq} path=render-transformed chat=${ctx.chatId} msg=${ctx.messageId ?? '<?>'} idx=${messageIndex} before_len=${ctx.content.length} after_len=${transformed.length} total=${totalMs}ms (chain=${chainMs}ms at_actions=${atActionsMs}ms resolve=${resolveMs}ms ensure=${tB - tA}ms other=${otherOverhead}ms)`,
           );
           return { content: transformed };
@@ -682,13 +689,13 @@ if (typeof registerMessageContentProcessor === 'function') {
       const finalContent = normalizeReplaceStringForSanitizer(working);
 
       if (finalContent === ctx.content) {
-        log.info(
+        log.trace(
           `messageContentProcessor.exit #${seq} path=noop chat=${ctx.chatId} origin=${ctx.origin} msg=${ctx.messageId ?? '<new>'} ensure=${tB - tA}ms total=${Date.now() - tStart}ms`,
         );
         return;
       }
       if (ctx.messageId) rememberOurWrite(ctx.chatId, ctx.messageId, finalContent);
-      log.info(
+      log.trace(
         `messageContentProcessor.exit #${seq} path=transformed chat=${ctx.chatId} origin=${ctx.origin} msg=${ctx.messageId ?? '<new>'} raw_len=${ctx.content.length} final_len=${finalContent.length} doc_normalized=${finalContent !== working} ensure=${tB - tA}ms total=${Date.now() - tStart}ms`,
       );
       return { content: finalContent };
@@ -896,11 +903,9 @@ const registerWorldInfoInterceptor =
 if (registerWorldInfoInterceptor) {
   // log.always , bypasses the user's runtime-log toggle. The decorator
   // pipeline runs invisibly to the user otherwise.
-  log.always(`[decorators] registerWorldInfoInterceptor wired at boot`);
+  log.info(`[decorators] registerWorldInfoInterceptor wired at boot`);
   registerWorldInfoInterceptor(async (ctx) => {
-    // Unconditional entry-trace , confirms the handler fires per
-    // generation. Bypasses the user's runtime-log toggle on purpose.
-    log.always(
+    log.info(
       `[decorators] worldInfoInterceptor ENTER chat=${ctx.chatId} entries=${ctx.entries.length}`,
     );
     const verbose = (() => {
@@ -962,7 +967,7 @@ if (registerWorldInfoInterceptor) {
       // log.always: bypass the user's runtime-log toggle. This is the
       // load-bearing pipeline-state line for triaging "decorator silently
       // not firing" without forcing the user to flip their toggle.
-      log.always(
+      log.info(
         `[decorators] worldInfoInterceptor chat=${ctx.chatId} ` +
           `entries_in=${ctx.entries.length} ` +
           `dec_carriers=stashed:${stashedDecCount}+inline:${inlineDecCount} ` +
@@ -999,7 +1004,7 @@ if (registerWorldInfoInterceptor) {
             { metadata: { ...meta, macro_variables: mv } as never },
             ctx.userId,
           );
-          log.always(
+          log.info(
             `[decorators] sticky_writes chat=${ctx.chatId} count=${changed}/${outcome.stickyWrites.length} ` +
               `keys=[${outcome.stickyWrites.slice(0, 3).map((w) => w.varName).join(',')}${outcome.stickyWrites.length > 3 ? ',…' : ''}]`,
           );
@@ -1019,7 +1024,7 @@ if (registerWorldInfoInterceptor) {
         injectAt: outcome.injectAt,
         positionPt,
       });
-      log.always(
+      log.info(
         `[decorators] tier3_buffer chat=${ctx.chatId} ` +
           `injectAt=${outcome.injectAt.length} ` +
           `positionPt=${outcome.positionPt.length}`,
@@ -1642,6 +1647,7 @@ function sendLogState(): void {
     type: 'log_state_pushed',
     enabled: s.enabled,
     includeChatData: s.includeChatData,
+    level: s.level,
     eventCount: s.eventCount,
     bufferBytes: s.bufferBytes,
   });
@@ -1945,7 +1951,7 @@ async function ensureActiveCardForChat(
   const tEnter = Date.now();
   const cached = activeCardByChat.get(chatId);
   if (cached) {
-    log.verbose(`ensureActiveCardForChat: cache hit chatId=${chatId} characterId=${cached.card.character_id}`);
+    log.debug(`ensureActiveCardForChat: cache hit chatId=${chatId} characterId=${cached.card.character_id}`);
     return cached;
   }
   const userId = getUserId();
@@ -2103,7 +2109,7 @@ async function refreshPersonaImage(userId: string): Promise<void> {
       imageUrlFromId(typeof rawId === 'string' ? rawId : null),
     );
   } catch (err) {
-    log.verbose(`refreshPersonaImage: ${errMsg(err)}`);
+    log.debug(`refreshPersonaImage: ${errMsg(err)}`);
   }
 }
 
@@ -2399,7 +2405,7 @@ async function refreshVariables(
 ): Promise<void> {
   const userId = getUserId();
   if (userId === undefined) {
-    log.verbose(`variables.refresh: skip chat=${chatId} — userId not yet captured`);
+    log.debug(`variables.refresh: skip chat=${chatId} — userId not yet captured`);
     return;
   }
   let chat: { metadata?: unknown } | null = null;
@@ -2448,7 +2454,7 @@ async function refreshVariables(
         `${counts} forced=${!!opts?.force}`,
     );
   } else {
-    log.verbose(`variables.refresh: unchanged chat=${chatId} seq=${result.entry.seq}`);
+    log.debug(`variables.refresh: unchanged chat=${chatId} seq=${result.entry.seq}`);
   }
 }
 
@@ -2600,7 +2606,7 @@ async function refreshToggleDefinitions(
 ): Promise<void> {
   const userId = getUserId();
   if (userId === undefined) {
-    log.verbose(`toggles.refresh: skip chat=${chatId} — userId not yet captured`);
+    log.debug(`toggles.refresh: skip chat=${chatId} — userId not yet captured`);
     return;
   }
   const { flatToggles, attribution } = await loadToggleDsl(
@@ -2623,7 +2629,7 @@ async function refreshToggleDefinitions(
         `count=${wire.length} keys=${extractToggleKeys(flatToggles).length} forced=${!!opts?.force}`,
     );
   } else {
-    log.verbose(`toggles.refresh: unchanged chat=${chatId} seq=${result.entry.seq}`);
+    log.debug(`toggles.refresh: unchanged chat=${chatId} seq=${result.entry.seq}`);
   }
 }
 
@@ -2820,7 +2826,7 @@ async function refreshBgHtml(active: ActiveCard, chatId: string): Promise<void> 
   const bgCombined = (bgRaw ?? '') + (moduleBg.length > 0 ? '\n' + moduleBg : '');
   const characterId = active.card.character_id;
 
-  log.verbose(
+  log.debug(
     `refreshBgHtml: START chatId=${chatId} bgRaw_len=${bgRaw?.length ?? 0} ` +
       `moduleBg_len=${moduleBg.length} bgCombined_len=${bgCombined.length}`,
   );
@@ -2850,7 +2856,7 @@ async function refreshBgHtml(active: ActiveCard, chatId: string): Promise<void> 
   const elapsed = Date.now() - tResolve;
 
   if (resolvedBg.length === 0 && crossRuleStyles.length === 0) {
-    log.verbose(`refreshBgHtml: no bg_html and no cross-rule styles — sending clear_bg_html`);
+    log.debug(`refreshBgHtml: no bg_html and no cross-rule styles — sending clear_bg_html`);
     try {
       spindle.sendToFrontend({ type: 'clear_bg_html', chatId });
     } catch (err) {
@@ -2884,7 +2890,7 @@ async function refreshBgHtml(active: ActiveCard, chatId: string): Promise<void> 
       bgHtml: resolvedBg,
       ...(crossRuleStyles.length > 0 ? { crossRuleStyles } : {}),
     } as never);
-    log.verbose(`refreshBgHtml: sendToFrontend render_bg_html OK chatId=${chatId}`);
+    log.debug(`refreshBgHtml: sendToFrontend render_bg_html OK chatId=${chatId}`);
   } catch (err) {
     log.warn(`refreshBgHtml: send failed: ${(err as Error).message}`);
   }
@@ -2905,7 +2911,7 @@ async function resolveReadonly(
 ): Promise<string> {
   const userId = getUserId();
   const t0 = Date.now();
-  log.verbose(
+  log.debug(
     `resolveReadonly: START chat=${chatId} char=${characterId} userId=${userId ?? '<none>'} template_len=${template.length} ` +
       `template[0..200]=${JSON.stringify(template.slice(0, 200))}`,
   );
@@ -2920,7 +2926,7 @@ async function resolveReadonly(
     } else {
       try {
         const out = await resolveReadonlyInWorker(template, chatId, characterId, userId);
-        log.info(
+        log.debug(
           `resolveReadonly: DONE (worker-eval) chat=${chatId} elapsed=${Date.now() - t0}ms out_len=${out.length} ` +
             `out[0..200]=${JSON.stringify(out.slice(0, 200))}`,
         );
@@ -2942,7 +2948,7 @@ async function resolveReadonly(
       commit: false,
       ...(userId === undefined ? {} : { userId }),
     });
-    log.info(
+    log.debug(
       `resolveReadonly: DONE chat=${chatId} elapsed=${Date.now() - t0}ms out_len=${result.text.length} ` +
         `diagnostics=${(result.diagnostics ?? []).length} out[0..200]=${JSON.stringify(result.text.slice(0, 200))}`,
     );
@@ -4901,7 +4907,7 @@ const realmHandle: RealmBackendHandle = setupRealmBackend({
 spindle.onFrontendMessage(async (raw, userId) => {
   activeUserId = userId;
   const msg = raw as FrontendToBackend;
-  log.info(`frontend msg type=${msg.type} userId=${userId ?? '<none>'}`);
+  log.trace(`frontend msg type=${msg.type} userId=${userId ?? '<none>'}`);
   try {
     if (isRealmFrontendMessage(msg)) {
       await realmHandle.handle(msg);
@@ -5658,7 +5664,7 @@ spindle.onFrontendMessage(async (raw, userId) => {
       case 'screen_dims': {
         if (userId) {
           setScreenDims(userId, { width: Number(msg.width) || 0, height: Number(msg.height) || 0 });
-          log.info(`screen_dims: user=${userId} w=${msg.width} h=${msg.height}`);
+          log.debug(`screen_dims: user=${userId} w=${msg.width} h=${msg.height}`);
         } else {
           log.warn(`screen_dims: received but userId is empty — cache not updated`);
         }
@@ -5670,7 +5676,11 @@ spindle.onFrontendMessage(async (raw, userId) => {
         break;
       }
       case 'log_set_state': {
-        const next: LogState = { enabled: !!msg.enabled, includeChatData: !!msg.includeChatData };
+        const next: Partial<LogState> = {
+          enabled: !!msg.enabled,
+          includeChatData: !!msg.includeChatData,
+        };
+        if (isLogThreshold(msg.level)) next.level = msg.level;
         logStore.setState(next);
         if (userId) await persistLogState(userStorage(), userId);
         sendLogState();

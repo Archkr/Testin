@@ -1,7 +1,29 @@
-// Structured log store for diagnostics export.
-// Off by default; ~5 MB ring buffer, oldest events evict first.
+export type LogLevel = 'error' | 'warn' | 'info' | 'debug' | 'trace';
 
-export type LogLevel = 'info' | 'warn' | 'error' | 'debug';
+export type LogThreshold = 'silent' | LogLevel;
+
+export const LEVEL_RANK: Readonly<Record<LogThreshold, number>> = {
+  silent: 0,
+  error: 1,
+  warn: 2,
+  info: 3,
+  debug: 4,
+  trace: 5,
+};
+
+export const DEFAULT_LOG_LEVEL: LogThreshold = 'info';
+
+export const LOG_LEVEL_VALUES: readonly LogThreshold[] = [
+  'silent', 'error', 'warn', 'info', 'debug', 'trace',
+];
+
+export function isLogThreshold(v: unknown): v is LogThreshold {
+  return typeof v === 'string' && (LOG_LEVEL_VALUES as readonly string[]).includes(v);
+}
+
+export function meetsThreshold(call: LogLevel, threshold: LogThreshold): boolean {
+  return LEVEL_RANK[call] <= LEVEL_RANK[threshold];
+}
 
 export interface LogEvent {
   ts: number;
@@ -13,6 +35,7 @@ export interface LogEvent {
 export interface LogState {
   enabled: boolean;
   includeChatData: boolean;
+  level: LogThreshold;
 }
 
 export interface LogStateSnapshot extends LogState {
@@ -27,13 +50,19 @@ const STATE_STORAGE_KEY = 'lumirealm/log-state.json';
 class LogStore {
   private events: LogEvent[] = [];
   private bytes = 0;
-  private state: LogState = { enabled: false, includeChatData: false };
+  private state: LogState = { enabled: false, includeChatData: false, level: DEFAULT_LOG_LEVEL };
 
   isEnabled(): boolean { return this.state.enabled; }
   shouldRedact(): boolean { return !this.state.includeChatData; }
+  getLevel(): LogThreshold { return this.state.level; }
+
+  shouldEmit(level: LogLevel): boolean {
+    if (!this.state.enabled) return false;
+    return meetsThreshold(level, this.state.level);
+  }
 
   push(level: LogLevel, category: string, message: string): void {
-    if (!this.state.enabled) return;
+    if (!this.shouldEmit(level)) return;
     const text = this.shouldRedact() ? redact(message) : message;
     const ev: LogEvent = { ts: Date.now(), level, category, message: text };
     const size = approxBytes(ev);
@@ -60,7 +89,12 @@ class LogStore {
 
   setState(next: Partial<LogState>): LogStateSnapshot {
     const before = this.state.enabled;
-    this.state = { ...this.state, ...next };
+    const merged: LogState = {
+      enabled: next.enabled ?? this.state.enabled,
+      includeChatData: next.includeChatData ?? this.state.includeChatData,
+      level: isLogThreshold(next.level) ? next.level : this.state.level,
+    };
+    this.state = merged;
     if (!this.state.enabled && before) this.clear();
     return this.getState();
   }
@@ -88,7 +122,6 @@ export function redact(input: string): string {
   return out;
 }
 
-// Best-effort persistence: failures are silent (storage I/O can race shutdown).
 interface StorageGetJson {
   getJson<T>(path: string, opts?: { fallback?: T; userId?: string | undefined }): Promise<T>;
 }
@@ -96,17 +129,28 @@ interface StorageSetJson {
   setJson(path: string, value: unknown, opts?: { userId?: string | undefined }): Promise<void>;
 }
 
+interface PersistedShape {
+  enabled?: boolean;
+  includeChatData?: boolean;
+  level?: LogThreshold;
+}
+
 export async function loadPersistedLogState(storage: StorageGetJson, userId: string): Promise<void> {
   try {
-    const fallback: LogState = { enabled: false, includeChatData: false };
-    const got = await storage.getJson<LogState>(STATE_STORAGE_KEY, { fallback, userId });
-    logStore.setState(got);
+    const fallback: PersistedShape = { enabled: false, includeChatData: false, level: DEFAULT_LOG_LEVEL };
+    const got = await storage.getJson<PersistedShape>(STATE_STORAGE_KEY, { fallback, userId });
+    logStore.setState({
+      enabled: got.enabled === true,
+      includeChatData: got.includeChatData === true,
+      level: isLogThreshold(got.level) ? got.level : DEFAULT_LOG_LEVEL,
+    });
   } catch { /* keep defaults */ }
 }
 
 export async function persistLogState(storage: StorageSetJson, userId: string): Promise<void> {
   try {
     const s = logStore.getState();
-    await storage.setJson(STATE_STORAGE_KEY, { enabled: s.enabled, includeChatData: s.includeChatData }, { userId });
+    const payload: PersistedShape = { enabled: s.enabled, includeChatData: s.includeChatData, level: s.level };
+    await storage.setJson(STATE_STORAGE_KEY, payload, { userId });
   } catch { /* swallow */ }
 }

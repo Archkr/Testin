@@ -134,7 +134,7 @@ export function invalidateRenderMcpForChat(chatId: string): void {
       removed += 1;
     }
   }
-  if (removed > 0) log.info(`invalidate chat=${chatId} entries=${removed}`);
+  if (removed > 0) log.debug(`invalidate chat=${chatId} entries=${removed}`);
 }
 
 /** Invalidate one specific (chatId, msgId) entry. Wired into MESSAGE_*
@@ -142,7 +142,7 @@ export function invalidateRenderMcpForChat(chatId: string): void {
  *  cache entry without taking down the rest of the chat. */
 export function invalidateRenderMcpForMessage(chatId: string, msgId: string): void {
   const k = key(chatId, msgId);
-  if (cache.delete(k)) log.info(`invalidate chat=${chatId} msg=${msgId}`);
+  if (cache.delete(k)) log.debug(`invalidate chat=${chatId} msg=${msgId}`);
 }
 
 /** Test hook + diagnostic. */

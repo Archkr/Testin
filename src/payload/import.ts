@@ -1,6 +1,3 @@
-
-declare const spindle: import('lumiverse-spindle-types').SpindleAPI | undefined;
-
 import { translateCharx } from '../core/pipeline/index.js';
 import type { LumiBundle } from '../core/pipeline/index.js';
 import { CatalogIndex, parseCatalog } from '../core/cbs/index.js';
@@ -18,17 +15,12 @@ import type {
 } from './types.js';
 import { LUMIREALM_EXT_KEY } from './types.js';
 import { appendImageIdsToJournal } from '../state/image-journal.js';
+import { makeSafeLogger } from '../util/safe-log.js';
 
-// No-op in unit tests (no global spindle); each step logged for in-flight diagnosis.
-function logInfo(msg: string): void {
-  try { spindle?.log?.info?.(`[lumirealm] import: ${msg}`); } catch { /* ignore */ }
-}
-function logWarn(msg: string): void {
-  try { spindle?.log?.warn?.(`[lumirealm] import: ${msg}`); } catch { /* ignore */ }
-}
-function logError(msg: string): void {
-  try { spindle?.log?.error?.(`[lumirealm] import: ${msg}`); } catch { /* ignore */ }
-}
+const logger = makeSafeLogger('import');
+const logInfo = (msg: string): void => logger.info(msg);
+const logWarn = (msg: string): void => logger.warn(msg);
+const logError = (msg: string): void => logger.error(msg);
 
 import catalogJson from '../core/cbs/catalog/risu-macros.json';
 let cachedCatalog: CatalogIndex | null = null;

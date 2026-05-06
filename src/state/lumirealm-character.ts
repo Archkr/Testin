@@ -3,8 +3,6 @@
 // `extensions: { lumirealm: null }` writes a null sentinel, not a deletion.
 // `isLumirealmData(null) === false` so consumers treat null as absent.
 
-declare const spindle: import('lumiverse-spindle-types').SpindleAPI | undefined;
-
 import { isLumirealmData } from '../payload/codec.js';
 import {
   LUMIREALM_EXT_KEY,
@@ -17,16 +15,12 @@ import {
 } from '../payload/types.js';
 import { parseScriptstateDefaults } from '../core/pipeline/risu-payload.js';
 import { expectCharacterEdit } from './own-character-edit.js';
+import { makeSafeLogger } from '../util/safe-log.js';
 
-function logInfo(msg: string): void {
-  try { spindle?.log?.info?.(`[lumirealm:character] ${msg}`); } catch { /* ignore */ }
-}
-function logWarn(msg: string): void {
-  try { spindle?.log?.warn?.(`[lumirealm:character] ${msg}`); } catch { /* ignore */ }
-}
-function logError(msg: string): void {
-  try { spindle?.log?.error?.(`[lumirealm:character] ${msg}`); } catch { /* ignore */ }
-}
+const logger = makeSafeLogger('lumirealm:character');
+const logInfo = (msg: string): void => logger.info(msg);
+const logWarn = (msg: string): void => logger.warn(msg);
+const logError = (msg: string): void => logger.error(msg);
 
 // Structural subset so unit tests can inject a mock without the full SpindleAPI.
 

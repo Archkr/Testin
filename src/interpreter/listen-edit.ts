@@ -46,7 +46,7 @@ export async function runListenEditChain<T>(
   // valueLen is what we ship to the Lua across the JSON wire , the actual
   // payload size matters for both Lua-bridge ser/de cost and downstream
   // parse cost on each trigger.
-  log.info(
+  log.trace(
     `chain.start mode=${mode} eligible=${eligible.length}/${triggers.length} ` +
       `value_len=${typeof value === 'string' ? value.length : Array.isArray(value) ? value.length : -1} ` +
       `chatId=${opts.chatId ?? "<none>"} characterId=${opts.characterId ?? "<none>"}`,
@@ -137,7 +137,7 @@ export async function runListenEditChain<T>(
       // on adjacent fragments while we're awaiting). That "queued" cost is
       // not under listenEdit's control; the factory cost IS.
       const otherMs = triggerTotal - factoryMs - serdeMs - runLuaMs;
-      log.info(
+      log.trace(
         `trigger[${i}] mode=${mode} elapsed=${triggerTotal}ms ` +
           `factory=${factoryMs}ms serde=${serdeMs}ms runLua=${runLuaMs}ms ` +
           `other=${otherMs}ms (lua_len=${t.luaCode.length})`,
@@ -151,7 +151,7 @@ export async function runListenEditChain<T>(
   }
 
   const chainTotal = Date.now() - chainStart;
-  log.info(
+  log.trace(
     `chain.done mode=${mode} elapsed=${chainTotal}ms eligible=${eligible.length} ` +
       `preload=${preloadMs}ms ` +
       `factory_sum=${totalFactoryMs}ms runLua_sum=${totalRunLuaMs}ms ` +

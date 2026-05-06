@@ -312,7 +312,7 @@ export function mountSettingsPanel(
   debugCaptureHeader.className = 'rs-subsection-header';
   const debugCaptureTitle = document.createElement('h4');
   debugCaptureTitle.className = 'rs-subsection-title';
-  debugCaptureTitle.textContent = 'Debug capture';
+  debugCaptureTitle.textContent = 'Aux/Sub Debug Capture';
   debugCaptureTitle.title = 'Surface aux/submodel requests and responses in a corner panel.';
   debugCaptureHeader.appendChild(debugCaptureTitle);
   debugCaptureSection.appendChild(debugCaptureHeader);

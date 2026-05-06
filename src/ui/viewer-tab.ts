@@ -328,11 +328,6 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
 
   function renderBackgroundHtmlSection(html: string): HTMLElement {
     const det = document.createElement('section');
-    det.className = 'lrv-section';
-    const sum = document.createElement('div');
-    sum.className = 'lrv-section-summary';
-    sum.textContent = `Background HTML · ${html.length} chars`;
-    det.appendChild(sum);
     const note = document.createElement('div');
     note.className = 'lrv-warning';
     note.textContent =
@@ -451,10 +446,6 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
 
   function renderAssetsSection(assets: readonly ViewerAssetEntry[]): HTMLElement {
     const det = document.createElement('section');
-    det.className = 'lrv-section';
-    const sum = document.createElement('div');
-    sum.className = 'lrv-section-summary';
-    det.appendChild(sum);
 
     const toolbar = document.createElement('div');
     toolbar.className = 'lrv-asset-toolbar';
@@ -471,6 +462,9 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
     search.value = assetSearchTerm;
     search.spellcheck = false;
     toolbar.appendChild(search);
+    const filterCount = document.createElement('span');
+    filterCount.className = 'lrv-asset-filter-count';
+    toolbar.appendChild(filterCount);
     if (assetUploadStatus !== null) {
       const status = document.createElement('span');
       status.className = 'lrv-asset-upload-status';
@@ -487,9 +481,7 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
     const filtered = term
       ? assets.filter((a) => a.name.toLowerCase().includes(term))
       : assets;
-    sum.textContent = term
-      ? `Assets · ${filtered.length} of ${assets.length}`
-      : `Assets · ${assets.length}`;
+    filterCount.textContent = term ? `${filtered.length} of ${assets.length}` : '';
 
     if (assets.length === 0) {
       const empty = document.createElement('div');
@@ -938,11 +930,6 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
 
   function renderTriggersSection(triggers: readonly ViewerTriggerEntry[]): HTMLElement {
     const det = document.createElement('section');
-    det.className = 'lrv-section';
-    const sum = document.createElement('div');
-    sum.className = 'lrv-section-summary';
-    sum.textContent = `Triggers · ${triggers.length}`;
-    det.appendChild(sum);
     if (triggers.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'lrv-empty';

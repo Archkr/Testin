@@ -15,7 +15,7 @@ import { setupSvgRasterizer } from './svg-raster.js';
 import { setupRealmModal, isRealmBackendMessage } from './realm/frontend.js';
 import { setupAlertModal } from './ui/alert-modal.js';
 import { setupPickModal } from './ui/pick-modal.js';
-import { logStore } from './log/store.js';
+import { logStore, isLogThreshold, DEFAULT_LOG_LEVEL, type LogThreshold } from './log/store.js';
 import {
   installConsoleCapture,
   removeConsoleCapture,
@@ -26,17 +26,25 @@ import {
 const HANDSHAKE_RETRY_MS = 3000;
 
 export const flog = {
-  info(msg: string, ...rest: unknown[]): void {
-    if (logStore.isEnabled()) console.log('[lumirealm]', msg, ...rest);
-    logStore.push('info', 'frontend', formatLine(msg, rest));
-  },
-  warn(msg: string, ...rest: unknown[]): void {
-    if (logStore.isEnabled()) console.warn('[lumirealm]', msg, ...rest);
-    logStore.push('warn', 'frontend', formatLine(msg, rest));
-  },
   error(msg: string, ...rest: unknown[]): void {
     console.error('[lumirealm]', msg, ...rest);
     logStore.push('error', 'frontend', formatLine(msg, rest));
+  },
+  warn(msg: string, ...rest: unknown[]): void {
+    if (logStore.shouldEmit('warn')) console.warn('[lumirealm]', msg, ...rest);
+    logStore.push('warn', 'frontend', formatLine(msg, rest));
+  },
+  info(msg: string, ...rest: unknown[]): void {
+    if (logStore.shouldEmit('info')) console.log('[lumirealm]', msg, ...rest);
+    logStore.push('info', 'frontend', formatLine(msg, rest));
+  },
+  debug(msg: string, ...rest: unknown[]): void {
+    if (logStore.shouldEmit('debug')) console.log('[lumirealm]', msg, ...rest);
+    logStore.push('debug', 'frontend', formatLine(msg, rest));
+  },
+  trace(msg: string, ...rest: unknown[]): void {
+    if (logStore.shouldEmit('trace')) console.log('[lumirealm]', msg, ...rest);
+    logStore.push('trace', 'frontend', formatLine(msg, rest));
   },
 };
 
@@ -56,14 +64,18 @@ function hydrateLogStateFromLocalStorage(): void {
   try {
     const raw = localStorage.getItem(LOG_STATE_LS_KEY);
     if (!raw) return;
-    const parsed = JSON.parse(raw) as { enabled?: unknown; includeChatData?: unknown };
+    const parsed = JSON.parse(raw) as { enabled?: unknown; includeChatData?: unknown; level?: unknown };
     if (typeof parsed.enabled === 'boolean' && typeof parsed.includeChatData === 'boolean') {
-      logStore.setState({ enabled: parsed.enabled, includeChatData: parsed.includeChatData });
+      logStore.setState({
+        enabled: parsed.enabled,
+        includeChatData: parsed.includeChatData,
+        level: isLogThreshold(parsed.level) ? parsed.level : DEFAULT_LOG_LEVEL,
+      });
     }
   } catch { /* */ }
 }
 
-function persistLogStateToLocalStorage(state: { enabled: boolean; includeChatData: boolean }): void {
+function persistLogStateToLocalStorage(state: { enabled: boolean; includeChatData: boolean; level: LogThreshold }): void {
   try {
     localStorage.setItem(LOG_STATE_LS_KEY, JSON.stringify(state));
   } catch { /* */ }
@@ -98,7 +110,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
           preview = `scripts=${parsed.scripts?.length ?? 0} content_len=${parsed.content?.length ?? 0} preFind=${findKeys.length} preReplace=${replaceKeys.length} dyn=[${dynKeys.join(',')}]`;
         }
       } catch { /* */ }
-      flog.info(`[macro-tap] → POST regex-scripts/apply ${preview}`);
+      flog.trace(`[macro-tap] → POST regex-scripts/apply ${preview}`);
       const resp = await originalFetch(input, init);
       try {
         const clone = resp.clone();
@@ -106,7 +118,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         const parsed = (() => { try { return JSON.parse(text) as { result?: string; touched_vars?: string[]; cacheable?: boolean }; } catch { return null; } })();
         if (parsed && typeof parsed.result === 'string') {
           const stillRaw = /\{\{(?!\s*(?:user|char|bot|notChar|not_char|charName)\s*\}\})/i.test(parsed.result);
-          flog.info(`[macro-tap] ← regex-scripts/apply 200 in ${Math.round(performance.now() - t0)}ms result_len=${parsed.result.length} touched=${parsed.touched_vars?.length ?? 0} cacheable=${parsed.cacheable} still_has_raw_cbs=${stillRaw} result[0..200]=${JSON.stringify(parsed.result.slice(0, 200))}`);
+          flog.trace(`[macro-tap] ← regex-scripts/apply 200 in ${Math.round(performance.now() - t0)}ms result_len=${parsed.result.length} touched=${parsed.touched_vars?.length ?? 0} cacheable=${parsed.cacheable} still_has_raw_cbs=${stillRaw} result[0..200]=${JSON.stringify(parsed.result.slice(0, 200))}`);
         } else {
           flog.warn(`[macro-tap] ← regex-scripts/apply HTTP ${resp.status} in ${Math.round(performance.now() - t0)}ms (body not JSON)`);
         }
@@ -116,9 +128,9 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       return resp;
     }
     if (isDisplayPreprocess) {
-      flog.info(`[macro-tap] → POST display-preprocess`);
+      flog.trace(`[macro-tap] → POST display-preprocess`);
       const resp = await originalFetch(input, init);
-      flog.info(`[macro-tap] ← display-preprocess HTTP ${resp.status} in ${Math.round(performance.now() - t0)}ms`);
+      flog.trace(`[macro-tap] ← display-preprocess HTTP ${resp.status} in ${Math.round(performance.now() - t0)}ms`);
       return resp;
     }
     let reqPreview: string = '';
@@ -132,7 +144,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         reqPreview = `templates=${keys.length} chat_id=${parsed.chat_id ?? '?'} character_id=${parsed.character_id ?? '?'} first_template[0..200]=${JSON.stringify((firstTmpl ?? '').slice(0, 200))}`;
       }
     } catch { /* */ }
-    flog.info(`[macro-tap] → POST resolve-batch ${reqPreview}`);
+    flog.trace(`[macro-tap] → POST resolve-batch ${reqPreview}`);
     const resp = await originalFetch(input, init);
     try {
       const clone = resp.clone();
@@ -142,14 +154,14 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         const entries = Object.entries(parsed.resolved);
         const leaksRaw = entries.filter(([, v]) => /\{\{/.test(v));
         const emptyKeys = entries.filter(([, v]) => v.length === 0).length;
-        flog.info(`[macro-tap] ← resolve-batch 200 in ${Math.round(performance.now() - t0)}ms keys=${entries.length} leaks_with_raw_macros=${leaksRaw.length} empty_keys=${emptyKeys}`);
+        flog.trace(`[macro-tap] ← resolve-batch 200 in ${Math.round(performance.now() - t0)}ms keys=${entries.length} leaks_with_raw_macros=${leaksRaw.length} empty_keys=${emptyKeys}`);
         if (leaksRaw.length > 0) {
           for (const [k, v] of leaksRaw.slice(0, 3)) {
             flog.warn(`[macro-tap]   leak id=${k} resolved[0..300]=${JSON.stringify(v.slice(0, 300))}`);
           }
         }
         for (const [k, v] of entries) {
-          flog.info(`[macro-tap]   id=${k} len=${v.length} resolved[0..200]=${JSON.stringify(v.slice(0, 200))}`);
+          flog.trace(`[macro-tap]   id=${k} len=${v.length} resolved[0..200]=${JSON.stringify(v.slice(0, 200))}`);
         }
       } else {
         flog.warn(`[macro-tap] ← resolve-batch HTTP ${resp.status} in ${Math.round(performance.now() - t0)}ms (body not JSON)`);
@@ -266,7 +278,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   ]);
   const sendToBackend = (msg: FrontendToBackend): void => {
     if (!QUIET_SEND_TYPES.has(msg.type)) {
-      flog.info(`frontend send: ${msg.type}`, msg);
+      flog.trace(`frontend send: ${msg.type}`, msg);
     }
     ctx.sendToBackend(msg);
   };
@@ -486,7 +498,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     if (!force && w === lastSentW && h === lastSentH) return;
     lastSentW = w;
     lastSentH = h;
-    flog.info(`screen_dims: reporting reason=${reason} w=${w} h=${h}`);
+    flog.debug(`screen_dims: reporting reason=${reason} w=${w} h=${h}`);
     sendToBackend({ type: 'screen_dims', width: w, height: h });
   };
   let resizeTimer: number | undefined;
@@ -511,11 +523,12 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   const unsub = ctx.onBackendMessage((raw) => {
     const msg = raw as BackendToFrontend;
     if (!QUIET_RECV_TYPES.has(msg.type)) {
-      flog.info(`frontend recv: ${msg.type}`, msg);
+      flog.trace(`frontend recv: ${msg.type}`, msg);
     }
     if (msg.type === 'log_state_pushed') {
-      logStore.setState({ enabled: msg.enabled, includeChatData: msg.includeChatData });
-      persistLogStateToLocalStorage({ enabled: msg.enabled, includeChatData: msg.includeChatData });
+      const level: LogThreshold = isLogThreshold(msg.level) ? msg.level : DEFAULT_LOG_LEVEL;
+      logStore.setState({ enabled: msg.enabled, includeChatData: msg.includeChatData, level });
+      persistLogStateToLocalStorage({ enabled: msg.enabled, includeChatData: msg.includeChatData, level });
       if (msg.enabled) installConsoleCapture();
       else removeConsoleCapture();
       // Fall through to sidebar broadcast; the Logs panel needs it.
@@ -625,7 +638,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       window.clearInterval(retry);
       return;
     }
-    flog.info(`handshake retry (ready=${ready})`);
+    flog.debug(`handshake retry (ready=${ready})`);
     handshake();
   }, HANDSHAKE_RETRY_MS);
   cleanups.push(() => window.clearInterval(retry));

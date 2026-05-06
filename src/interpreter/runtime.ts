@@ -40,6 +40,7 @@ const _logAddChat         = makeSafeLogger('runtime.addChat');
 const _logLLMMain         = makeSafeLogger('runtime.LLMMain');
 const _logAxLLMMain       = makeSafeLogger('runtime.axLLMMain');
 const _logFlush           = makeSafeLogger('runtime.flush');
+const _logLuaPrint        = makeSafeLogger('runtime.lua');
 
 // Compiled triggers' rtOpts are JSON-frozen, so non-serialisable fields
 // (Function, Set) ride the side-channel. Safe: dispatch is serial,
@@ -715,7 +716,7 @@ export async function makeRisuTriggerRuntime(
         if (!api.utils?.template?.render) return Promise.reject(new Error('risu-compat: lua.cbs requires api.utils.template.render'));
         return api.utils.template.render(toStr(value), {});
       },
-      logMain: (value: unknown) => { try { console.log('[lua]', toStr(value)); } catch { /* */ } },
+      logMain: (value: unknown) => { try { _logLuaPrint.debug(toStr(value)); } catch { /* */ } },
       // reloadDisplay forces refresh from async/callback paths.
       reloadDisplay: (_id: unknown) => {
         notifyStateChanged('reloadDisplay');

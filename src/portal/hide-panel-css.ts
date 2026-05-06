@@ -26,6 +26,10 @@
 // constructed sheet's `replaceSync` propagates to every shadow that's
 // already adopted it , no re-adoption needed.
 
+import { makeFrontendLogger } from '../log/frontend-log.js';
+
+const flog = makeFrontendLogger('hide-panel-css');
+
 const HIDE_STYLE_ID = "lumirealm-portal-hide-panels";
 
 let documentStyleEl: HTMLStyleElement | null = null;
@@ -182,9 +186,8 @@ export function addHidePanelClasses(classes: Iterable<string>): boolean {
       const sheetAdopted = constructedSheet
         ? Array.from((document.adoptedStyleSheets ?? []) as CSSStyleSheet[]).includes(constructedSheet)
         : false;
-      // eslint-disable-next-line no-console
-      console.info(
-        `[lumirealm] hide-panel-css: added ${JSON.stringify(newClasses)}; ` +
+      flog.debug(
+        `added ${JSON.stringify(newClasses)}; ` +
           `total=${knownClasses.size} doc_chars=${docCss.length} ` +
           `sheet_rules=${sheetRules} sheet_doc_adopted=${sheetAdopted}`,
       );
@@ -212,8 +215,8 @@ export function addHidePanelIds(ids: Iterable<string>): boolean {
     try {
       const docCss = documentStyleEl?.textContent ?? "";
       const sheetRules = constructedSheet ? constructedSheet.cssRules.length : 0;
-      console.info(
-        `[lumirealm] hide-panel-css: added ids=${JSON.stringify(newIds)}; ` +
+      flog.debug(
+        `added ids=${JSON.stringify(newIds)}; ` +
           `total_classes=${knownClasses.size} total_ids=${knownIds.size} ` +
           `doc_chars=${docCss.length} sheet_rules=${sheetRules}`,
       );
