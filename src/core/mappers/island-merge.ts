@@ -90,52 +90,125 @@ export function wrapIslandMergeIfNeeded(html: string): string {
 
 const HTML_TAG_RE = /<[a-zA-Z][a-zA-Z0-9]*\b/;
 
-/**
- * Ensure the replace_string triggers Lumi's `extractHtmlIslands` to actually
- * EXTRACT this content as an island (not just pass the precondition check).
- *
- * Two-stage gate in Lumi's `MessageContent.tsx`:
- *
- * 1. `extractHtmlIslands:878-879` , short-circuits unless content has
- *    `<style>` OR `style="..."` somewhere.
- * 2. `getIslandEndAt:840` , for each candidate element, returns end ONLY
- *    if its fragment has `<style>` OR `hasSignificantInlineStyles`
- *    (which requires **3+** inline `style="..."` attributes ,
- *    `MessageContent.tsx:703-710`).
- *
- * A single inline `style="..."` on a wrapper passes #1 but fails #2 , the
- * walker rejects every candidate, no island gets emitted, content falls
- * through to the markdown processor, indented panel HTML renders as a
- * syntax-highlighted code block.
- *
- * The cleanest trigger is a leading `<style>` block: Lumi's
- * `findStyleBlockEnd` (line 829) catches it, then
- * `extendThroughAdjacentHtmlSiblings` (line 775) extends the island
- * through every following HTML sibling , exactly the panel content. An
- * EMPTY `<style></style>` works because `extractStyleBlocks` (in
- * `richHtmlSanitizer.ts:94`) drops zero-content style blocks during
- * sanitization, so the empty `<style>` is invisible to the user but
- * still triggers Lumi's island detection.
- *
- * Failure mode this fix doesn't cover:
- * - CBS-generated HTML where the literal `<` doesn't appear at translate
- *   time. `HTML_TAG_RE.test(html)` misses → no prepend → at runtime the
- *   resolved content has HTML but Lumi's heuristic still skips → code
- *   block. Uncommon , most cards inline their HTML.
- */
+const VOID_ELEMENTS = new Set([
+  "input", "img", "br", "hr", "meta", "link", "source", "track",
+  "wbr", "area", "base", "col", "embed", "param",
+]);
+
+export function extractFirstTopLevelElementFragment(raw: string): string {
+  let i = 0;
+  while (i < raw.length) {
+    if (raw[i] === "<") {
+      if (raw.startsWith("<!--", i)) {
+        const end = raw.indexOf("-->", i + 4);
+        if (end < 0) return "";
+        i = end + 3;
+        continue;
+      }
+      if (raw[i + 1] === "!" || raw[i + 1] === "?") {
+        const end = raw.indexOf(">", i);
+        if (end < 0) return "";
+        i = end + 1;
+        continue;
+      }
+      if (/[a-zA-Z]/.test(raw[i + 1] ?? "")) break;
+    }
+    i++;
+  }
+  if (i >= raw.length) return "";
+  const start = i;
+  const tagMatch = raw.slice(i).match(/^<([a-zA-Z][a-zA-Z0-9]*)\b/);
+  if (!tagMatch) return "";
+  const tag = tagMatch[1]!.toLowerCase();
+  let j = i + 1 + tagMatch[1]!.length;
+  let inAttr = false;
+  let attrQuote = "";
+  while (j < raw.length) {
+    const ch = raw[j];
+    if (inAttr) {
+      if (ch === attrQuote) inAttr = false;
+      j++;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      inAttr = true;
+      attrQuote = ch;
+      j++;
+      continue;
+    }
+    if (ch === ">") break;
+    j++;
+  }
+  if (j >= raw.length) return "";
+  const openEnd = j;
+  if (raw[openEnd - 1] === "/" || VOID_ELEMENTS.has(tag)) {
+    return raw.slice(start, openEnd + 1);
+  }
+  let depth = 1;
+  let k = openEnd + 1;
+  while (k < raw.length && depth > 0) {
+    if (raw[k] === "<") {
+      if (raw.startsWith("<!--", k)) {
+        const e = raw.indexOf("-->", k + 4);
+        if (e < 0) return raw.slice(start);
+        k = e + 3;
+        continue;
+      }
+      if (raw[k + 1] === "/") {
+        const m = raw.slice(k).match(/^<\/([a-zA-Z][a-zA-Z0-9]*)\b/);
+        if (m && m[1]!.toLowerCase() === tag) {
+          depth--;
+          let p = k + m[0].length;
+          while (p < raw.length && raw[p] !== ">") p++;
+          k = p + 1;
+          continue;
+        }
+      } else if (/^<[a-zA-Z]/.test(raw.slice(k))) {
+        const m = raw.slice(k).match(/^<([a-zA-Z][a-zA-Z0-9]*)\b/);
+        if (m && m[1]!.toLowerCase() === tag) {
+          let p = k + 1 + m[1]!.length;
+          let inAt = false;
+          let q = "";
+          while (p < raw.length) {
+            const ch = raw[p];
+            if (inAt) {
+              if (ch === q) inAt = false;
+              p++;
+              continue;
+            }
+            if (ch === '"' || ch === "'") {
+              inAt = true;
+              q = ch;
+              p++;
+              continue;
+            }
+            if (ch === ">") break;
+            p++;
+          }
+          if (raw[p - 1] === "/" || VOID_ELEMENTS.has(m[1]!.toLowerCase())) {
+            k = p + 1;
+            continue;
+          }
+          depth++;
+          k = p + 1;
+          continue;
+        }
+      }
+    }
+    k++;
+  }
+  return raw.slice(start, k);
+}
+
 const ISLAND_TRIGGER_ATTR_RE = /\bdata-risu-island-trigger\b/i;
 const ISLAND_TRIGGER_PREFIX = `<style data-risu-island-trigger></style>`;
 export function wrapForIslandTriggerIfNeeded(html: string): string {
   if (!html || html.length === 0) return html;
-  // No HTML element at all → markdown is the right path; don't wrap.
   if (!HTML_TAG_RE.test(html)) return html;
-  // Already has a real <style> tag , Lumi extracts via findStyleBlockEnd.
   if (STYLE_TAG_RE.test(html)) return html;
-  // ≥3 inline `style="..."` already qualifies via hasSignificantInlineStyles.
-  if (countInlineStyles(html) >= 3) return html;
-  // Idempotency.
   if (ISLAND_TRIGGER_ATTR_RE.test(html.slice(0, 200))) return html;
-  // Per-rule opt-out (same attr as island-merge).
   if (NO_MERGE_ATTR_RE.test(html.split(">")[0] ?? "")) return html;
+  const firstFrag = extractFirstTopLevelElementFragment(html);
+  if (firstFrag.length > 0 && countInlineStyles(firstFrag) >= 3) return html;
   return ISLAND_TRIGGER_PREFIX + html;
 }
