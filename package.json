@@ -1,6 +1,6 @@
 {
   "name": "lumirealm",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "license": "GPL-3.0-or-later",
@@ -28,7 +28,7 @@
     "fengari": "^0.1.5",
     "happy-dom": "^15.0.0",
     "juice": "^11.0.0",
-    "lumiverse-spindle-types": "0.4.62",
+    "lumiverse-spindle-types": "0.4.64",
     "playwright": "^1.59.1",
     "tsx": "^4.21.0",
     "typescript": "^5.5.0",
