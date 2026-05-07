@@ -19540,7 +19540,7 @@ function base64ToBytes(b64) {
 }
 
 // src/core/payload/types.ts
-var CURRENT_TRANSLATOR_SCHEMA_VERSION = 2;
+var CURRENT_TRANSLATOR_SCHEMA_VERSION = 3;
 var LUMIREALM_EXT_KEY = "lumirealm";
 // src/payload/codec.ts
 class RisuCompatUnsupportedError extends Error {
@@ -21583,6 +21583,83 @@ var TIER2_DECORATOR_NAMES = new Set([
   "inject_prepend"
 ]);
 
+// src/core/mappers/lorebook-hash.ts
+var ENTRY_HASH_FIELDS = [
+  "key",
+  "keysecondary",
+  "content",
+  "comment",
+  "position",
+  "depth",
+  "role",
+  "order_value",
+  "selective",
+  "constant",
+  "disabled",
+  "group_name",
+  "group_override",
+  "group_weight",
+  "probability",
+  "scan_depth",
+  "case_sensitive",
+  "match_whole_words",
+  "automation_id",
+  "use_regex",
+  "prevent_recursion",
+  "exclude_recursion",
+  "delay_until_recursion",
+  "priority",
+  "sticky",
+  "cooldown",
+  "delay",
+  "selective_logic",
+  "use_probability"
+];
+function fnv1aHash8(str) {
+  let h = 2166136261;
+  for (let i = 0;i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return (h >>> 0).toString(16).padStart(8, "0");
+}
+function stableStringify(value) {
+  if (value === null || typeof value !== "object")
+    return JSON.stringify(value);
+  if (Array.isArray(value))
+    return "[" + value.map(stableStringify).join(",") + "]";
+  const obj = value;
+  const keys = Object.keys(obj).sort();
+  return "{" + keys.map((k) => JSON.stringify(k) + ":" + stableStringify(obj[k])).join(",") + "}";
+}
+function computeEntrySourceHash(entry) {
+  const fields = {};
+  for (const k of ENTRY_HASH_FIELDS)
+    fields[k] = entry[k];
+  const ext = entry["extensions"];
+  if (ext && typeof ext === "object" && !Array.isArray(ext)) {
+    const cleaned = { ...ext };
+    delete cleaned["_risu_source_hash"];
+    fields["extensions"] = cleaned;
+  } else {
+    fields["extensions"] = {};
+  }
+  return fnv1aHash8(stableStringify(fields));
+}
+function hasUserEditedAnyEntry(entries) {
+  for (const e of entries) {
+    if (!e || typeof e !== "object")
+      continue;
+    const eo = e;
+    const ext = eo["extensions"];
+    const stored = ext && typeof ext === "object" ? ext["_risu_source_hash"] : undefined;
+    if (typeof stored !== "string")
+      continue;
+    if (stored !== computeEntrySourceHash(eo))
+      return true;
+  }
+  return false;
+}
 // src/core/mappers/lorebook.ts
 function buildFolderIndex(entries) {
   const byId = new Map;
@@ -21642,47 +21719,52 @@ function mapLoreBookEntryWithStats(entry, worldBookId, folders, now, uuid) {
     stashed: applied.stashed.length,
     dropped: applied.dropped.length
   };
+  const built = {
+    id: uuid(),
+    world_book_id: worldBookId,
+    uid: entry.id ?? uuid(),
+    key: finalKey,
+    keysecondary: splitKeywords(entry.secondkey),
+    content: finalContent,
+    comment: entry.comment,
+    position: applied.patch.position ?? position,
+    depth: applied.patch.depth ?? 0,
+    role: applied.patch.role ?? null,
+    order_value: entry.insertorder,
+    selective: entry.selective,
+    constant: applied.patch.constant ?? constant,
+    disabled: applied.patch.disabled ?? disabled,
+    group_name: groupName,
+    group_override: false,
+    group_weight: 1,
+    probability: applied.patch.probability ?? probability,
+    scan_depth: applied.patch.scan_depth ?? null,
+    case_sensitive: caseSensitive,
+    match_whole_words: applied.patch.match_whole_words ?? false,
+    automation_id: null,
+    use_regex: entry.useRegex === true,
+    prevent_recursion: applied.patch.prevent_recursion ?? false,
+    exclude_recursion: applied.patch.exclude_recursion ?? false,
+    delay_until_recursion: false,
+    priority: applied.patch.priority ?? 0,
+    sticky: 0,
+    cooldown: 0,
+    delay: 0,
+    selective_logic: 0,
+    use_probability: applied.patch.use_probability ?? (entry.activationPercent !== undefined && entry.activationPercent !== null),
+    vectorized: false,
+    vector_index_status: "not_enabled",
+    vector_indexed_at: null,
+    vector_index_error: null,
+    extensions: finalExtensions,
+    created_at: now,
+    updated_at: now
+  };
+  const sourceHash = computeEntrySourceHash(built);
   return {
     entry: {
-      id: uuid(),
-      world_book_id: worldBookId,
-      uid: entry.id ?? uuid(),
-      key: finalKey,
-      keysecondary: splitKeywords(entry.secondkey),
-      content: finalContent,
-      comment: entry.comment,
-      position: applied.patch.position ?? position,
-      depth: applied.patch.depth ?? 0,
-      role: applied.patch.role ?? null,
-      order_value: entry.insertorder,
-      selective: entry.selective,
-      constant: applied.patch.constant ?? constant,
-      disabled: applied.patch.disabled ?? disabled,
-      group_name: groupName,
-      group_override: false,
-      group_weight: 1,
-      probability: applied.patch.probability ?? probability,
-      scan_depth: applied.patch.scan_depth ?? null,
-      case_sensitive: caseSensitive,
-      match_whole_words: applied.patch.match_whole_words ?? false,
-      automation_id: null,
-      use_regex: entry.useRegex === true,
-      prevent_recursion: applied.patch.prevent_recursion ?? false,
-      exclude_recursion: applied.patch.exclude_recursion ?? false,
-      delay_until_recursion: false,
-      priority: applied.patch.priority ?? 0,
-      sticky: 0,
-      cooldown: 0,
-      delay: 0,
-      selective_logic: 0,
-      use_probability: applied.patch.use_probability ?? (entry.activationPercent !== undefined && entry.activationPercent !== null),
-      vectorized: false,
-      vector_index_status: "not_enabled",
-      vector_indexed_at: null,
-      vector_index_error: null,
-      extensions: finalExtensions,
-      created_at: now,
-      updated_at: now
+      ...built,
+      extensions: { ...built.extensions, _risu_source_hash: sourceHash }
     },
     stats
   };
@@ -24800,6 +24882,38 @@ async function migrateCharacterIfNeeded(args, deps) {
     const errMsg2 = err instanceof Error ? err.message : String(err);
     deps.log.error(`migrate(${args.characterId}): v${stored}->v${target} FAILED: ${errMsg2}`);
     return { kind: "failed", from: stored, to: target, error: errMsg2 };
+  }
+}
+
+// src/state/module-migrations.ts
+async function migrateModuleIfNeeded(env, deps) {
+  const stored = env.translator_schema_version ?? 1;
+  const target = CURRENT_TRANSLATOR_SCHEMA_VERSION;
+  if (stored >= target)
+    return { kind: "noop", storedVersion: stored };
+  try {
+    const t0 = Date.now();
+    const wbId = await deps.syncWorldBook(env);
+    const charCount = await deps.reinstallArtifactsForAttached(env.id);
+    const next = {
+      ...env,
+      ...wbId ? { installed_world_book_id: wbId } : {},
+      translator_schema_version: target
+    };
+    await deps.writeEnvelope(next);
+    deps.log.info(`migrate-module(${env.id}): v${stored}->v${target} ` + `wb=${wbId ?? "none"} chars_refreshed=${charCount} ` + `elapsed=${Date.now() - t0}ms`);
+    return {
+      kind: "migrated",
+      moduleId: env.id,
+      from: stored,
+      to: target,
+      worldBookId: wbId,
+      regexReinstalledChars: charCount
+    };
+  } catch (err) {
+    const errStr = err instanceof Error ? err.message : String(err);
+    deps.log.error(`migrate-module(${env.id}): v${stored}->v${target} FAILED: ${errStr}`);
+    return { kind: "failed", moduleId: env.id, from: stored, to: target, error: errStr };
   }
 }
 
@@ -33013,6 +33127,7 @@ async function ensureActiveCardForChat(chatId, characterId, userId) {
 }
 var translatorMigrationChecked = new Set;
 var legacyReimportWarned = new Set;
+var massMigrationStartedThisBoot = new Set;
 function maybeMigrateCharacterTranslator(characterId, characterName, userId, envelope) {
   if (translatorMigrationChecked.has(characterId))
     return;
@@ -33092,6 +33207,198 @@ async function runCharacterMigration(characterId, characterName, userId, envelop
     log7.error(`migration failed char=${characterId}: ${result.error} (will retry next boot)`);
     translatorMigrationChecked.delete(characterId);
   }
+}
+async function runModuleMigration(moduleId, userId) {
+  const env = await readEnvelope(moduleStorage(), userId, moduleId);
+  if (!env)
+    return { ok: true };
+  const stored = env.translator_schema_version ?? 1;
+  if (stored >= CURRENT_TRANSLATOR_SCHEMA_VERSION)
+    return { ok: true };
+  let archiveWbId = null;
+  const deps = {
+    syncWorldBook: async (e) => {
+      archiveWbId = await archiveModuleWorldBookBeforeMigration(e, userId);
+      return syncModuleWorldBook(e, userId);
+    },
+    reinstallArtifactsForAttached: async (mid) => {
+      const charIds = await charactersAttachedTo(mid, userId);
+      let count = 0;
+      for (const charId of charIds) {
+        try {
+          await dispatchModuleArtifactInstall(charId, env, userId);
+          count++;
+        } catch (err) {
+          log7.warn(`runModuleMigration: reinstall char=${charId} module=${mid} threw: ${errMsg(err)}`);
+        }
+      }
+      return count;
+    },
+    writeEnvelope: async (next) => {
+      await writeEnvelope(moduleStorage(), userId, next);
+    },
+    log: log7
+  };
+  const result = await migrateModuleIfNeeded(env, deps);
+  if (result.kind === "migrated") {
+    const charIds = await charactersAttachedTo(moduleId, userId);
+    for (const charId of charIds)
+      invalidateActiveForCharacter(charId, userId);
+    if (archiveWbId) {
+      const m = env.module;
+      const moduleName = typeof m.name === "string" && m.name.length > 0 ? m.name : env.id;
+      notifyLorebookMigrationArchive(`Module: ${moduleName}`, archiveWbId, userId);
+    }
+    return { ok: true };
+  }
+  if (result.kind === "failed")
+    return { ok: false };
+  return { ok: true };
+}
+var MIGRATION_STATE_PATH = "lumirealm/migration-state.json";
+async function readMigrationState(userId) {
+  try {
+    const raw = await spindle.userStorage.getJson(MIGRATION_STATE_PATH, { userId });
+    if (!raw || typeof raw !== "object")
+      return null;
+    if (raw.schema_version !== 1)
+      return null;
+    return raw;
+  } catch {
+    return null;
+  }
+}
+async function writeMigrationState(userId, state) {
+  await spindle.userStorage.setJson(MIGRATION_STATE_PATH, state, { indent: 2, userId });
+}
+async function runMassModuleMigrationIfNeeded(userId) {
+  if (massMigrationStartedThisBoot.has(userId))
+    return;
+  massMigrationStartedThisBoot.add(userId);
+  const state = await readMigrationState(userId);
+  if (state && state.last_swept_translator_version >= CURRENT_TRANSLATOR_SCHEMA_VERSION) {
+    log7.info(`mass-migration: user=${userId} already swept to v${state.last_swept_translator_version}, skipping`);
+    return;
+  }
+  const allModules = await listModules(moduleStorage(), userId);
+  const candidates = [];
+  for (const m of allModules) {
+    const env = await readEnvelope(moduleStorage(), userId, m.id);
+    if (!env)
+      continue;
+    if ((env.translator_schema_version ?? 1) < CURRENT_TRANSLATOR_SCHEMA_VERSION) {
+      candidates.push(m.id);
+    }
+  }
+  if (candidates.length === 0) {
+    await writeMigrationState(userId, {
+      schema_version: 1,
+      last_swept_translator_version: CURRENT_TRANSLATOR_SCHEMA_VERSION
+    });
+    log7.info(`mass-migration: user=${userId} no modules below v${CURRENT_TRANSLATOR_SCHEMA_VERSION}, sweep marker bumped`);
+    return;
+  }
+  const opId = `mass-migration-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  const opTitle = "Updating module lorebooks";
+  emitOperationProgress(userId, opId, "started", opTitle, `Updating ${candidates.length} module${candidates.length === 1 ? "" : "s"}\u2026`, 0);
+  log7.info(`mass-migration: user=${userId} starting count=${candidates.length} opId=${opId}`);
+  let processed = 0;
+  let failed = 0;
+  for (const moduleId of candidates) {
+    try {
+      const r = await runModuleMigration(moduleId, userId);
+      if (!r.ok)
+        failed++;
+    } catch (err) {
+      failed++;
+      log7.warn(`mass-migration: module=${moduleId} threw: ${errMsg(err)}`);
+    }
+    processed++;
+    emitOperationProgress(userId, opId, "progress", opTitle, `Updated ${processed}/${candidates.length} module${candidates.length === 1 ? "" : "s"}`, processed / candidates.length);
+  }
+  if (failed === 0) {
+    await writeMigrationState(userId, {
+      schema_version: 1,
+      last_swept_translator_version: CURRENT_TRANSLATOR_SCHEMA_VERSION
+    });
+    log7.info(`mass-migration: user=${userId} done processed=${processed} opId=${opId}`);
+  } else {
+    log7.warn(`mass-migration: user=${userId} done with failures processed=${processed} failed=${failed} (sweep marker NOT bumped, will retry next boot)`);
+  }
+  emitOperationProgress(userId, opId, "done", opTitle, failed === 0 ? `Updated ${processed} module${processed === 1 ? "" : "s"}` : `Updated ${processed - failed}/${processed} (${failed} failed, will retry next start)`, 1);
+  const existingTimer = archiveFlushTimerByUser.get(userId);
+  if (existingTimer) {
+    clearTimeout(existingTimer);
+    archiveFlushTimerByUser.delete(userId);
+  }
+  await flushLorebookMigrationArchives(userId);
+}
+var pendingArchivesByUser = new Map;
+var archiveFlushTimerByUser = new Map;
+var ARCHIVE_BATCH_DELAY_MS = 2000;
+function notifyLorebookMigrationArchive(subjectLabel, archiveWbId, userId) {
+  const list = pendingArchivesByUser.get(userId) ?? [];
+  list.push({ subjectLabel, archiveWbId });
+  pendingArchivesByUser.set(userId, list);
+  const existing = archiveFlushTimerByUser.get(userId);
+  if (existing)
+    clearTimeout(existing);
+  const timer = setTimeout(() => {
+    archiveFlushTimerByUser.delete(userId);
+    flushLorebookMigrationArchives(userId);
+  }, ARCHIVE_BATCH_DELAY_MS);
+  if (typeof timer.unref === "function") {
+    timer.unref();
+  }
+  archiveFlushTimerByUser.set(userId, timer);
+}
+async function flushLorebookMigrationArchives(userId) {
+  const pending3 = pendingArchivesByUser.get(userId);
+  if (!pending3 || pending3.length === 0)
+    return;
+  pendingArchivesByUser.delete(userId);
+  const items = [];
+  for (const p of pending3) {
+    let archiveName = null;
+    try {
+      const wb = await spindle.world_books.get(p.archiveWbId, userId);
+      archiveName = wb?.name ?? null;
+    } catch (err) {
+      log7.warn(`flushLorebookMigrationArchives: world_books.get(${p.archiveWbId}) failed: ${errMsg(err)}`);
+    }
+    items.push({ subjectLabel: p.subjectLabel, archiveName });
+  }
+  const count = items.length;
+  const MAX_LIST = 10;
+  const listed = items.slice(0, MAX_LIST);
+  const overflow = count - listed.length;
+  const bullets = listed.map((i) => i.archiveName ? `\u2022 ${i.archiveName}` : `\u2022 ${i.subjectLabel} (backup)`).join(`
+`);
+  const overflowSuffix = overflow > 0 ? `
+\u2026and ${overflow} more` : "";
+  const title = count === 1 ? "Lorebook updated" : `${count} lorebooks updated`;
+  const message = `${count} lorebook${count === 1 ? " was" : "s were"} updated to apply the latest LumiRealm fixes. Your manual edits were saved as separate backup lorebooks in the Lorebook tab:
+
+${bullets}${overflowSuffix}
+
+Copy any edits from these backups into the updated lorebooks if you want to keep them.`;
+  const modalApi = spindle.modal;
+  if (modalApi?.confirm) {
+    try {
+      await modalApi.confirm({
+        title,
+        message,
+        variant: "info",
+        confirmLabel: "Got it",
+        cancelLabel: "Dismiss",
+        userId
+      });
+      return;
+    } catch (err) {
+      log7.warn(`flushLorebookMigrationArchives: modal.confirm threw: ${errMsg(err)}`);
+    }
+  }
+  toastFor(userId, "info", message, { title });
 }
 async function seedAuthorsNoteFromDepthPrompt(chatId, userId, characterExtensions) {
   let chat;
@@ -33882,6 +34189,11 @@ function captureUserId(userId, where) {
   setTimeout(() => {
     promptOrphanReviewIfAny(userId).catch((err) => {
       log7.warn(`captureUserId: orphan-review prompt failed: ${errMsg(err)}`);
+    });
+  }, 3000);
+  setTimeout(() => {
+    runMassModuleMigrationIfNeeded(userId).catch((err) => {
+      log7.warn(`captureUserId: mass module migration failed: ${errMsg(err)}`);
     });
   }, 3000);
 }
@@ -34804,56 +35116,63 @@ async function handleImportLorebook(msg, userId) {
     ...written === 0 && entryWriteFailures > 0 ? { reason: "all entry writes failed; see log for details" } : {}
   }, userId);
 }
-function buildModuleWorldBookEntryInput(raw, moduleId) {
-  if (!raw || typeof raw !== "object")
-    return null;
-  const eo = raw;
-  const keyRaw = eo["key"];
-  const key3 = Array.isArray(keyRaw) ? keyRaw.filter((x) => typeof x === "string") : typeof keyRaw === "string" ? keyRaw.split(",").map((s) => s.trim()).filter((s) => s.length > 0) : [];
-  const content = typeof eo["content"] === "string" ? eo["content"] : "";
-  if (key3.length === 0 && content.length === 0)
-    return null;
-  const input = {
-    key: key3,
-    content,
-    metadata: { _risu: { module_id: moduleId } }
-  };
-  if (typeof eo["comment"] === "string")
-    input["comment"] = eo["comment"];
-  const isConstant = eo["constant"] === true || eo["alwaysActive"] === true || eo["mode"] === "constant";
-  if (isConstant)
-    input["constant"] = true;
-  const isFolder = eo["mode"] === "folder";
-  if (isFolder) {
-    input["disabled"] = true;
-    input["constant"] = false;
-  } else if (typeof eo["disabled"] === "boolean") {
-    input["disabled"] = eo["disabled"];
+function projectModuleLorebookForCreate(rawLorebook, moduleId, worldBookId) {
+  const valid = [];
+  for (const raw of rawLorebook) {
+    const parsed = loreBookSchema.safeParse(raw);
+    if (!parsed.success)
+      continue;
+    const lb = parsed.data;
+    if (lb.key.length === 0 && lb.content.length === 0)
+      continue;
+    valid.push(lb);
   }
-  if (typeof eo["position"] === "string")
-    input["position"] = eo["position"];
-  if (typeof eo["priority"] === "number")
-    input["priority"] = eo["priority"];
-  if (typeof eo["insertorder"] === "number")
-    input["order_value"] = eo["insertorder"];
-  else if (typeof eo["order"] === "number")
-    input["order_value"] = eo["order"];
-  if (Array.isArray(eo["secondary_keys"])) {
-    input["keysecondary"] = eo["secondary_keys"].filter((x) => typeof x === "string");
-  } else if (typeof eo["secondkey"] === "string" && eo["secondkey"].length > 0) {
-    input["keysecondary"] = eo["secondkey"].split(",").map((s) => s.trim()).filter((s) => s.length > 0);
+  const entries = mapLoreBook(valid, { worldBookId });
+  return entries.map((e) => ({
+    ...e,
+    extensions: { ...e.extensions ?? {}, _risu_module_id: moduleId }
+  }));
+}
+async function archiveWorldBookIfEdited(sourceWbId, archiveName, userId, context2) {
+  const allEntries = [];
+  let offset = 0;
+  while (true) {
+    const page = await spindle.world_books.entries.list(sourceWbId, { limit: 200, offset, userId });
+    if (page.data.length === 0)
+      break;
+    allEntries.push(...page.data);
+    if (page.data.length < 200)
+      break;
+    offset += 200;
   }
-  if (typeof eo["selective"] === "boolean")
-    input["selective"] = eo["selective"];
-  if (eo["extentions"] && typeof eo["extentions"] === "object" && !Array.isArray(eo["extentions"])) {
-    const ex = eo["extentions"];
-    if (ex["risu_case_sensitive"] === true)
-      input["case_sensitive"] = true;
-    if (typeof ex["risu_activationPercent"] === "number") {
-      input["probability"] = ex["risu_activationPercent"];
+  if (allEntries.length === 0)
+    return null;
+  if (!hasUserEditedAnyEntry(allEntries)) {
+    log7.info(`archive(${context2}): skip \u2014 no user edits detected across ${allEntries.length} entries`);
+    return null;
+  }
+  const archive = await spindle.world_books.create({ name: archiveName }, userId);
+  let copied = 0;
+  for (const e of allEntries) {
+    const { id: _id, world_book_id: _wbId, ...rest } = e;
+    try {
+      await spindle.world_books.entries.create(archive.id, rest, userId);
+      copied++;
+    } catch (err) {
+      log7.warn(`archive(${context2}): copy entry failed: ${errMsg(err)}`);
     }
   }
-  return input;
+  log7.info(`archive(${context2}): archived=${copied}/${allEntries.length} wb=${archive.id} name="${archive.name}"`);
+  return archive.id;
+}
+async function archiveModuleWorldBookBeforeMigration(env, userId) {
+  const wbId = env.installed_world_book_id;
+  if (!wbId)
+    return null;
+  const m = env.module;
+  const moduleName = typeof m.name === "string" && m.name.length > 0 ? m.name : env.id;
+  const stamp = new Date().toISOString().slice(0, 10);
+  return archiveWorldBookIfEdited(wbId, `[LumiRealm Backup ${stamp}] Module: ${moduleName}`, userId, `module=${env.id}`);
 }
 async function syncModuleWorldBook(env, userId) {
   const m = env.module;
@@ -34884,12 +35203,11 @@ async function syncModuleWorldBook(env, userId) {
       await spindle.world_books.update(existingId, { name: `Module: ${moduleName}` }, userId).catch(() => {
         return;
       });
-      for (const raw of lorebook2) {
-        const input = buildModuleWorldBookEntryInput(raw, env.id);
-        if (input)
-          await spindle.world_books.entries.create(existingId, input, userId);
+      const projected2 = projectModuleLorebookForCreate(lorebook2, env.id, existingId);
+      for (const entry of projected2) {
+        await spindle.world_books.entries.create(existingId, entry, userId);
       }
-      log7.info(`syncModuleWorldBook: refreshed module=${env.id} wb=${existingId} entries=${lorebook2.length}`);
+      log7.info(`syncModuleWorldBook: refreshed module=${env.id} wb=${existingId} entries=${projected2.length}/${lorebook2.length}`);
       return existingId;
     } catch (err) {
       log7.warn(`syncModuleWorldBook: refresh failed module=${env.id} wb=${existingId}: ${errMsg(err)} \u2014 recreating`);
@@ -34897,12 +35215,11 @@ async function syncModuleWorldBook(env, userId) {
     }
   }
   const wb = await spindle.world_books.create({ name: `Module: ${moduleName}` }, userId);
-  for (const raw of lorebook2) {
-    const input = buildModuleWorldBookEntryInput(raw, env.id);
-    if (input)
-      await spindle.world_books.entries.create(wb.id, input, userId);
+  const projected = projectModuleLorebookForCreate(lorebook2, env.id, wb.id);
+  for (const entry of projected) {
+    await spindle.world_books.entries.create(wb.id, entry, userId);
   }
-  log7.info(`syncModuleWorldBook: created module=${env.id} wb=${wb.id} entries=${lorebook2.length}`);
+  log7.info(`syncModuleWorldBook: created module=${env.id} wb=${wb.id} entries=${projected.length}/${lorebook2.length}`);
   return wb.id;
 }
 async function deleteModuleWorldBookEverywhere(moduleId, worldBookId, userId) {
@@ -35323,10 +35640,16 @@ var realmHandle = setupRealmBackend({
   },
   importCardFromBytes: (bytesB64, fileName, userId) => importCardFromBytes(bytesB64, fileName, userId)
 });
+var HIGH_VOLUME_FRONTEND_MSG_TYPES = new Set([
+  "import_card_chunk",
+  "upload_module_chunk"
+]);
 spindle.onFrontendMessage(userScoped(async (raw, userId) => {
   captureUserId(userId, "frontend-message");
   const msg = raw;
-  log7.trace(`frontend msg type=${msg.type} userId=${userId ?? "<none>"}`);
+  if (!HIGH_VOLUME_FRONTEND_MSG_TYPES.has(msg.type)) {
+    log7.trace(`frontend msg type=${msg.type} userId=${userId ?? "<none>"}`);
+  }
   if (!userId) {
     log7.warn(`frontend msg type=${msg.type} dropped: no userId`);
     return;

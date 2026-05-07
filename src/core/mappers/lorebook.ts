@@ -5,6 +5,12 @@ import {
   parseDecorators,
   applyDecoratorsToEntry,
 } from "./lorebook-decorators.js";
+export {
+  ENTRY_HASH_FIELDS,
+  computeEntrySourceHash,
+  hasUserEditedAnyEntry,
+} from "./lorebook-hash.js";
+import { computeEntrySourceHash } from "./lorebook-hash.js";
 
 
 export interface MapLorebookOptions {
@@ -125,8 +131,7 @@ export function mapLoreBookEntryWithStats(
     dropped: applied.dropped.length,
   };
 
-  return {
-    entry: {
+  const built: LumiWorldBookEntry = {
     id: uuid(),
     world_book_id: worldBookId,
     uid: entry.id ?? uuid(),
@@ -175,6 +180,12 @@ export function mapLoreBookEntryWithStats(
     extensions: finalExtensions,
     created_at: now,
     updated_at: now,
+  };
+  const sourceHash = computeEntrySourceHash(built as unknown as Record<string, unknown>);
+  return {
+    entry: {
+      ...built,
+      extensions: { ...built.extensions, _risu_source_hash: sourceHash },
     },
     stats,
   };

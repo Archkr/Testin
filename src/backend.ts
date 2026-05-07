@@ -32,6 +32,10 @@ import {
   type MigrationDeps,
 } from './state/translator-migrations.js';
 import {
+  migrateModuleIfNeeded,
+  type ModuleMigrationDeps,
+} from './state/module-migrations.js';
+import {
   appendImageIdsToJournal,
   clearImageJournal,
   listImageJournalCharacterIds,
@@ -66,7 +70,8 @@ import { makeRisuTriggerRuntime, withDispatchContext } from './interpreter/runti
 import type { RisuBinding } from './interpreter/runtime.js';
 import { importCard, loadCatalog, type SpindleImportApi } from './payload/import.js';
 import { parseDirectLorebook } from './payload/lorebook-direct-import.js';
-import { mapLoreBook } from './core/mappers/lorebook.js';
+import { mapLoreBook, hasUserEditedAnyEntry } from './core/mappers/lorebook.js';
+import { loreBookSchema, type LoreBook } from './core/schemas/lorebook.js';
 import { registerAll as registerAllMacros } from './interpreter/macros.js';
 import { setActiveAssetIndexes, clearActiveAssetIndexes } from './interpreter/asset-cache.js';
 import {
@@ -2537,6 +2542,8 @@ const translatorMigrationChecked = new Set<string>();
 // Tracks legacy-no-source warnings already issued per session so we don't
 // spam the same toast on every chat-open.
 const legacyReimportWarned = new Set<string>();
+// Per-userId per-boot dedupe so the mass walk runs once per worker boot.
+const massMigrationStartedThisBoot = new Set<string>();
 
 function maybeMigrateCharacterTranslator(
   characterId: string,
@@ -2636,6 +2643,239 @@ async function runCharacterMigration(
     );
     translatorMigrationChecked.delete(characterId);
   }
+}
+
+async function runModuleMigration(
+  moduleId: string,
+  userId: string,
+): Promise<{ ok: boolean }> {
+  const env = await readModuleEnvelope(moduleStorage(), userId, moduleId);
+  if (!env) return { ok: true };
+  const stored = env.translator_schema_version ?? 1;
+  if (stored >= CURRENT_TRANSLATOR_SCHEMA_VERSION) return { ok: true };
+  let archiveWbId: string | null = null;
+  const deps: ModuleMigrationDeps = {
+    syncWorldBook: async (e) => {
+      archiveWbId = await archiveModuleWorldBookBeforeMigration(e, userId);
+      return syncModuleWorldBook(e, userId);
+    },
+    reinstallArtifactsForAttached: async (mid) => {
+      const charIds = await charactersAttachedTo(mid, userId);
+      let count = 0;
+      for (const charId of charIds) {
+        try {
+          await dispatchModuleArtifactInstall(charId, env, userId);
+          count++;
+        } catch (err) {
+          log.warn(
+            `runModuleMigration: reinstall char=${charId} module=${mid} threw: ${errMsg(err)}`,
+          );
+        }
+      }
+      return count;
+    },
+    writeEnvelope: async (next) => {
+      await writeModuleEnvelope(moduleStorage(), userId, next);
+    },
+    log,
+  };
+  const result = await migrateModuleIfNeeded(env, deps);
+  if (result.kind === 'migrated') {
+    const charIds = await charactersAttachedTo(moduleId, userId);
+    for (const charId of charIds) invalidateActiveForCharacter(charId, userId);
+    if (archiveWbId) {
+      const m = env.module as { name?: unknown };
+      const moduleName = typeof m.name === 'string' && m.name.length > 0 ? m.name : env.id;
+      notifyLorebookMigrationArchive(`Module: ${moduleName}`, archiveWbId, userId);
+    }
+    return { ok: true };
+  }
+  if (result.kind === 'failed') return { ok: false };
+  return { ok: true };
+}
+
+const MIGRATION_STATE_PATH = 'lumirealm/migration-state.json';
+
+interface MigrationState {
+  readonly schema_version: 1;
+  readonly last_swept_translator_version: number;
+}
+
+async function readMigrationState(userId: string): Promise<MigrationState | null> {
+  try {
+    const raw = await spindle.userStorage.getJson<MigrationState>(MIGRATION_STATE_PATH, { userId });
+    if (!raw || typeof raw !== 'object') return null;
+    if ((raw as { schema_version?: unknown }).schema_version !== 1) return null;
+    return raw;
+  } catch {
+    return null;
+  }
+}
+
+async function writeMigrationState(userId: string, state: MigrationState): Promise<void> {
+  await spindle.userStorage.setJson(MIGRATION_STATE_PATH, state, { indent: 2, userId });
+}
+
+async function runMassModuleMigrationIfNeeded(userId: string): Promise<void> {
+  if (massMigrationStartedThisBoot.has(userId)) return;
+  massMigrationStartedThisBoot.add(userId);
+  const state = await readMigrationState(userId);
+  if (state && state.last_swept_translator_version >= CURRENT_TRANSLATOR_SCHEMA_VERSION) {
+    log.info(`mass-migration: user=${userId} already swept to v${state.last_swept_translator_version}, skipping`);
+    return;
+  }
+  const allModules = await listModuleStore(moduleStorage(), userId);
+  const candidates: string[] = [];
+  for (const m of allModules) {
+    const env = await readModuleEnvelope(moduleStorage(), userId, m.id);
+    if (!env) continue;
+    if ((env.translator_schema_version ?? 1) < CURRENT_TRANSLATOR_SCHEMA_VERSION) {
+      candidates.push(m.id);
+    }
+  }
+  if (candidates.length === 0) {
+    await writeMigrationState(userId, {
+      schema_version: 1,
+      last_swept_translator_version: CURRENT_TRANSLATOR_SCHEMA_VERSION,
+    });
+    log.info(`mass-migration: user=${userId} no modules below v${CURRENT_TRANSLATOR_SCHEMA_VERSION}, sweep marker bumped`);
+    return;
+  }
+  const opId = `mass-migration-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  const opTitle = 'Updating module lorebooks';
+  emitOperationProgress(
+    userId,
+    opId,
+    'started',
+    opTitle,
+    `Updating ${candidates.length} module${candidates.length === 1 ? '' : 's'}…`,
+    0,
+  );
+  log.info(`mass-migration: user=${userId} starting count=${candidates.length} opId=${opId}`);
+  let processed = 0;
+  let failed = 0;
+  for (const moduleId of candidates) {
+    try {
+      const r = await runModuleMigration(moduleId, userId);
+      if (!r.ok) failed++;
+    } catch (err) {
+      failed++;
+      log.warn(`mass-migration: module=${moduleId} threw: ${errMsg(err)}`);
+    }
+    processed++;
+    emitOperationProgress(
+      userId,
+      opId,
+      'progress',
+      opTitle,
+      `Updated ${processed}/${candidates.length} module${candidates.length === 1 ? '' : 's'}`,
+      processed / candidates.length,
+    );
+  }
+  if (failed === 0) {
+    await writeMigrationState(userId, {
+      schema_version: 1,
+      last_swept_translator_version: CURRENT_TRANSLATOR_SCHEMA_VERSION,
+    });
+    log.info(`mass-migration: user=${userId} done processed=${processed} opId=${opId}`);
+  } else {
+    log.warn(
+      `mass-migration: user=${userId} done with failures processed=${processed} failed=${failed} ` +
+        `(sweep marker NOT bumped, will retry next boot)`,
+    );
+  }
+  emitOperationProgress(
+    userId,
+    opId,
+    'done',
+    opTitle,
+    failed === 0
+      ? `Updated ${processed} module${processed === 1 ? '' : 's'}`
+      : `Updated ${processed - failed}/${processed} (${failed} failed, will retry next start)`,
+    1,
+  );
+  const existingTimer = archiveFlushTimerByUser.get(userId);
+  if (existingTimer) {
+    clearTimeout(existingTimer);
+    archiveFlushTimerByUser.delete(userId);
+  }
+  await flushLorebookMigrationArchives(userId);
+}
+
+interface PendingArchiveNotification {
+  readonly subjectLabel: string;
+  readonly archiveWbId: string;
+}
+const pendingArchivesByUser = new Map<string, PendingArchiveNotification[]>();
+const archiveFlushTimerByUser = new Map<string, ReturnType<typeof setTimeout>>();
+const ARCHIVE_BATCH_DELAY_MS = 2000;
+
+function notifyLorebookMigrationArchive(
+  subjectLabel: string,
+  archiveWbId: string,
+  userId: string,
+): void {
+  const list = pendingArchivesByUser.get(userId) ?? [];
+  list.push({ subjectLabel, archiveWbId });
+  pendingArchivesByUser.set(userId, list);
+  const existing = archiveFlushTimerByUser.get(userId);
+  if (existing) clearTimeout(existing);
+  const timer = setTimeout(() => {
+    archiveFlushTimerByUser.delete(userId);
+    void flushLorebookMigrationArchives(userId);
+  }, ARCHIVE_BATCH_DELAY_MS);
+  if (typeof (timer as { unref?: () => void }).unref === 'function') {
+    (timer as { unref: () => void }).unref();
+  }
+  archiveFlushTimerByUser.set(userId, timer);
+}
+
+async function flushLorebookMigrationArchives(userId: string): Promise<void> {
+  const pending = pendingArchivesByUser.get(userId);
+  if (!pending || pending.length === 0) return;
+  pendingArchivesByUser.delete(userId);
+  const items: { subjectLabel: string; archiveName: string | null }[] = [];
+  for (const p of pending) {
+    let archiveName: string | null = null;
+    try {
+      const wb = await spindle.world_books.get(p.archiveWbId, userId);
+      archiveName = (wb as { name?: string })?.name ?? null;
+    } catch (err) {
+      log.warn(`flushLorebookMigrationArchives: world_books.get(${p.archiveWbId}) failed: ${errMsg(err)}`);
+    }
+    items.push({ subjectLabel: p.subjectLabel, archiveName });
+  }
+  const count = items.length;
+  const MAX_LIST = 10;
+  const listed = items.slice(0, MAX_LIST);
+  const overflow = count - listed.length;
+  const bullets = listed
+    .map((i) => i.archiveName ? `• ${i.archiveName}` : `• ${i.subjectLabel} (backup)`)
+    .join('\n');
+  const overflowSuffix = overflow > 0 ? `\n…and ${overflow} more` : '';
+  const title = count === 1 ? 'Lorebook updated' : `${count} lorebooks updated`;
+  const message =
+    `${count} lorebook${count === 1 ? ' was' : 's were'} updated to apply the latest LumiRealm fixes. ` +
+    `Your manual edits were saved as separate backup lorebooks in the Lorebook tab:\n\n` +
+    `${bullets}${overflowSuffix}\n\n` +
+    `Copy any edits from these backups into the updated lorebooks if you want to keep them.`;
+  const modalApi = (spindle as unknown as { modal?: SpindleModalConfirmLike }).modal;
+  if (modalApi?.confirm) {
+    try {
+      await modalApi.confirm({
+        title,
+        message,
+        variant: 'info',
+        confirmLabel: 'Got it',
+        cancelLabel: 'Dismiss',
+        userId,
+      });
+      return;
+    } catch (err) {
+      log.warn(`flushLorebookMigrationArchives: modal.confirm threw: ${errMsg(err)}`);
+    }
+  }
+  toastFor(userId, 'info', message, { title });
 }
 
 async function seedAuthorsNoteFromDepthPrompt(
@@ -3753,6 +3993,13 @@ function captureUserId(userId: string | undefined, where: string): void {
   setTimeout(() => {
     void promptOrphanReviewIfAny(userId).catch((err) => {
       log.warn(`captureUserId: orphan-review prompt failed: ${errMsg(err)}`);
+    });
+  }, 3000);
+  // Translator schema sweep, also deferred. Sequential, non-cancellable, the
+  // last_swept_translator_version marker is bumped only on full success.
+  setTimeout(() => {
+    void runMassModuleMigrationIfNeeded(userId).catch((err) => {
+      log.warn(`captureUserId: mass module migration failed: ${errMsg(err)}`);
     });
   }, 3000);
 }
@@ -5034,63 +5281,99 @@ async function handleImportLorebook(
   }, userId);
 }
 
-function buildModuleWorldBookEntryInput(raw: unknown, moduleId: string): Record<string, unknown> | null {
-  if (!raw || typeof raw !== 'object') return null;
-  const eo = raw as Record<string, unknown>;
-  const keyRaw = eo['key'];
-  // Risu's native shape stores key as a comma-separated string. Module
-  // entries shipped from .risum follow that convention. Tolerate arrays
-  // for FE-shaped inputs.
-  const key = Array.isArray(keyRaw)
-    ? keyRaw.filter((x): x is string => typeof x === 'string')
-    : typeof keyRaw === 'string'
-      ? keyRaw.split(',').map((s) => s.trim()).filter((s) => s.length > 0)
-      : [];
-  const content = typeof eo['content'] === 'string' ? eo['content'] : '';
-  if (key.length === 0 && content.length === 0) return null;
-  const input: Record<string, unknown> = {
-    key,
-    content,
-    metadata: { _risu: { module_id: moduleId } },
-  };
-  if (typeof eo['comment'] === 'string') input['comment'] = eo['comment'];
-  // Risu LoreBook uses alwaysActive: boolean (or mode: 'constant') for the
-  // constant flag. Also accept CCSv3 `constant: true` for FE-shaped inputs.
-  const isConstant =
-    eo['constant'] === true ||
-    eo['alwaysActive'] === true ||
-    eo['mode'] === 'constant';
-  if (isConstant) input['constant'] = true;
-  // Folder-mode entries are display-only group headers: disabled, no constant.
-  const isFolder = eo['mode'] === 'folder';
-  if (isFolder) {
-    input['disabled'] = true;
-    input['constant'] = false;
-  } else if (typeof eo['disabled'] === 'boolean') {
-    input['disabled'] = eo['disabled'];
+function projectModuleLorebookForCreate(
+  rawLorebook: readonly unknown[],
+  moduleId: string,
+  worldBookId: string,
+): readonly Record<string, unknown>[] {
+  const valid: LoreBook[] = [];
+  for (const raw of rawLorebook) {
+    const parsed = loreBookSchema.safeParse(raw);
+    if (!parsed.success) continue;
+    const lb = parsed.data;
+    if (lb.key.length === 0 && lb.content.length === 0) continue;
+    valid.push(lb);
   }
-  if (typeof eo['position'] === 'string') input['position'] = eo['position'];
-  if (typeof eo['priority'] === 'number') input['priority'] = eo['priority'];
-  // Risu's native shape uses `insertorder` (one word). Accept both the
-  // native spelling and `order` as a tolerance for FE-shaped inputs.
-  if (typeof eo['insertorder'] === 'number') input['order_value'] = eo['insertorder'];
-  else if (typeof eo['order'] === 'number') input['order_value'] = eo['order'];
-  // Risu's native shape uses `secondkey` (string, comma-separated).
-  // `secondary_keys` is the CCSv3 shape (string[]). Accept both.
-  if (Array.isArray(eo['secondary_keys'])) {
-    input['keysecondary'] = eo['secondary_keys'].filter((x): x is string => typeof x === 'string');
-  } else if (typeof eo['secondkey'] === 'string' && eo['secondkey'].length > 0) {
-    input['keysecondary'] = eo['secondkey'].split(',').map((s) => s.trim()).filter((s) => s.length > 0);
+  const entries = mapLoreBook(valid, { worldBookId });
+  return entries.map((e) => ({
+    ...e,
+    extensions: { ...(e.extensions ?? {}), _risu_module_id: moduleId },
+  }));
+}
+
+// Snapshot a wb's entries into a detached, clearly-labeled standalone wb so
+// user edits survive a destructive in-place migration. Returns the archive wb
+// id, or null when nothing to archive (empty source or no detected edits).
+async function archiveWorldBookIfEdited(
+  sourceWbId: string,
+  archiveName: string,
+  userId: string,
+  context: string,
+): Promise<string | null> {
+  const allEntries: unknown[] = [];
+  let offset = 0;
+  while (true) {
+    const page = await spindle.world_books.entries.list(sourceWbId, { limit: 200, offset, userId });
+    if (page.data.length === 0) break;
+    allEntries.push(...page.data);
+    if (page.data.length < 200) break;
+    offset += 200;
   }
-  if (typeof eo['selective'] === 'boolean') input['selective'] = eo['selective'];
-  if (eo['extentions'] && typeof eo['extentions'] === 'object' && !Array.isArray(eo['extentions'])) {
-    const ex = eo['extentions'] as Record<string, unknown>;
-    if (ex['risu_case_sensitive'] === true) input['case_sensitive'] = true;
-    if (typeof ex['risu_activationPercent'] === 'number') {
-      input['probability'] = ex['risu_activationPercent'];
+  if (allEntries.length === 0) return null;
+  if (!hasUserEditedAnyEntry(allEntries)) {
+    log.info(`archive(${context}): skip — no user edits detected across ${allEntries.length} entries`);
+    return null;
+  }
+  const archive = await spindle.world_books.create({ name: archiveName }, userId);
+  let copied = 0;
+  for (const e of allEntries) {
+    const { id: _id, world_book_id: _wbId, ...rest } = e as Record<string, unknown>;
+    void _id;
+    void _wbId;
+    try {
+      await spindle.world_books.entries.create(archive.id, rest as never, userId);
+      copied++;
+    } catch (err) {
+      log.warn(`archive(${context}): copy entry failed: ${errMsg(err)}`);
     }
   }
-  return input;
+  log.info(
+    `archive(${context}): archived=${copied}/${allEntries.length} ` +
+      `wb=${archive.id} name="${archive.name}"`,
+  );
+  return archive.id;
+}
+
+async function archiveModuleWorldBookBeforeMigration(
+  env: ModuleEnvelope,
+  userId: string,
+): Promise<string | null> {
+  const wbId = env.installed_world_book_id;
+  if (!wbId) return null;
+  const m = env.module as { name?: unknown };
+  const moduleName = typeof m.name === 'string' && m.name.length > 0 ? m.name : env.id;
+  const stamp = new Date().toISOString().slice(0, 10);
+  return archiveWorldBookIfEdited(
+    wbId,
+    `[LumiRealm Backup ${stamp}] Module: ${moduleName}`,
+    userId,
+    `module=${env.id}`,
+  );
+}
+
+async function archiveCharacterWorldBookBeforeMigration(
+  characterId: string,
+  characterName: string,
+  worldBookId: string,
+  userId: string,
+): Promise<string | null> {
+  const stamp = new Date().toISOString().slice(0, 10);
+  return archiveWorldBookIfEdited(
+    worldBookId,
+    `[LumiRealm Backup ${stamp}] Character: ${characterName}`,
+    userId,
+    `char=${characterId}`,
+  );
 }
 
 async function syncModuleWorldBook(
@@ -5119,11 +5402,11 @@ async function syncModuleWorldBook(
         if (page.data.length < 200) break;
       }
       await spindle.world_books.update(existingId, { name: `Module: ${moduleName}` }, userId).catch(() => undefined);
-      for (const raw of lorebook) {
-        const input = buildModuleWorldBookEntryInput(raw, env.id);
-        if (input) await spindle.world_books.entries.create(existingId, input as never, userId);
+      const projected = projectModuleLorebookForCreate(lorebook, env.id, existingId);
+      for (const entry of projected) {
+        await spindle.world_books.entries.create(existingId, entry as never, userId);
       }
-      log.info(`syncModuleWorldBook: refreshed module=${env.id} wb=${existingId} entries=${lorebook.length}`);
+      log.info(`syncModuleWorldBook: refreshed module=${env.id} wb=${existingId} entries=${projected.length}/${lorebook.length}`);
       return existingId;
     } catch (err) {
       log.warn(`syncModuleWorldBook: refresh failed module=${env.id} wb=${existingId}: ${errMsg(err)} — recreating`);
@@ -5131,11 +5414,11 @@ async function syncModuleWorldBook(
     }
   }
   const wb = await spindle.world_books.create({ name: `Module: ${moduleName}` }, userId);
-  for (const raw of lorebook) {
-    const input = buildModuleWorldBookEntryInput(raw, env.id);
-    if (input) await spindle.world_books.entries.create(wb.id, input as never, userId);
+  const projected = projectModuleLorebookForCreate(lorebook, env.id, wb.id);
+  for (const entry of projected) {
+    await spindle.world_books.entries.create(wb.id, entry as never, userId);
   }
-  log.info(`syncModuleWorldBook: created module=${env.id} wb=${wb.id} entries=${lorebook.length}`);
+  log.info(`syncModuleWorldBook: created module=${env.id} wb=${wb.id} entries=${projected.length}/${lorebook.length}`);
   return wb.id;
 }
 

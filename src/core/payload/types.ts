@@ -123,8 +123,8 @@ export interface LumirealmStoredSource {
   readonly path_to_image_id: Readonly<Record<string, string>>;
 }
 
-// Last bump: v2, class-prefix unprefix + entity normalize.
-export const CURRENT_TRANSLATOR_SCHEMA_VERSION = 2;
+// v3: module lorebook entries route through mapLoreBook (decorator pipeline).
+export const CURRENT_TRANSLATOR_SCHEMA_VERSION = 3;
 
 export interface PortalCandidate {
   readonly id: string;
