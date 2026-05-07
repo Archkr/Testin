@@ -7591,6 +7591,7 @@ function mountTogglesPanel(opts) {
       if (values && values.chatId !== chatId)
         values = null;
       sendToBackend({ type: "request_toggle_definitions", chatId });
+      sendToBackend({ type: "request_variables_snapshot", chatId });
     } else {
       defs = null;
       values = null;
