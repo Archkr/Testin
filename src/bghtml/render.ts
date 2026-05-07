@@ -1,5 +1,5 @@
 import type { SpindleFrontendContext } from "lumiverse-spindle-types";
-import { splitAndRewriteBgBundle } from "./rewriter.js";
+import { splitAndRewriteBgBundle, unprefixCssClassSelectors } from "./rewriter.js";
 import { mountBgHost, type BgMountHandle } from "./mount.js";
 import type { IslandStyles } from "./island-styles.js";
 import { stripCssImports, splitCssImports } from "./strip-imports.js";
@@ -113,9 +113,9 @@ export function setupBgHtmlRenderer(
           scopePrefix: "[data-message-id] ",
           // Universal selectors become :host-scoped, inert at document level.
           rewriteUniversalToHost: true,
-          // Display-regex HTML uses unprefixed class names, CSS selectors must match.
           rewriteClassNames: false,
         });
+        chatBundle = { ...chatBundle, css: unprefixCssClassSelectors(chatBundle.css) };
       } catch (err) {
         flog.error("bg-html renderer: chat-scope rewrite failed", err);
         chatBundle = null;
@@ -131,6 +131,7 @@ export function setupBgHtmlRenderer(
             rewriteUniversalToHost: false,
             rewriteClassNames: false,
           });
+          islandBundle = { ...islandBundle, css: unprefixCssClassSelectors(islandBundle.css) };
         } catch (err) {
           flog.error("bg-html renderer: island-style rewrite failed", err);
           islandBundle = null;
@@ -154,7 +155,7 @@ export function setupBgHtmlRenderer(
           );
         }
         const crossRuleParts = msg.crossRuleStyles ?? [];
-        const cleanedParts = crossRuleParts.map((p) => stripCssImports(p));
+        const cleanedParts = crossRuleParts.map((p) => unprefixCssClassSelectors(stripCssImports(p)));
         islandStyles.setCrossRuleSheets(cleanedParts);
       }
       if (chatBundle) {
@@ -194,7 +195,7 @@ export function setupBgHtmlRenderer(
         // Selector list with comma is fine inside CSS Nesting , `& X` resolves
         // against each parent in turn.
         const wrappedCrossRule = crossRuleParts
-          .map((p) => stripCssImports(p))
+          .map((p) => unprefixCssClassSelectors(stripCssImports(p)))
           .filter((p) => p.trim().length > 0)
           .map((p) => `[data-message-id] [data-component="MessageContent"], .lumi-message-portal-wrapper {\n${p}\n}\n`)
           .join("\n");

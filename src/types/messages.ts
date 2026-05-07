@@ -98,6 +98,17 @@ export type FrontendToBackend =
       /** Chat the click came from. Must be active-Risu-card. */
       chatId: string;
     }
+  // Risu Chat.svelte runLuaButtonTrigger path, separate from runTrigger:
+  // iterates every triggerlua trigger, invokes Lua `onButtonClick(id, btn)`.
+  | {
+      type: 'manual_button_click';
+      /** Value of the `risu-btn` attribute on the clicked element. */
+      btn: string;
+      /** Optional `risu-id` attribute. */
+      btnId?: string;
+      /** Chat the click came from. Must be active-Risu-card. */
+      chatId: string;
+    }
   // Cards branch PC vs mobile CSS in bg-html (`{{? {{screen_width}} > 768 }}`).
   // Backend has no viewport; frontend reports once at setup + on debounced resize;
   // backend caches per-user, plumbs into `resolveReadonlyInWorker`.

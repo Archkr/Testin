@@ -33,7 +33,6 @@ export function rewriteHtmlClasses(html: string): string {
   );
 }
 
-
 export interface CssRewriteOpts {
   /** Ancestor scope prepended to every rewritten selector (Risu uses `.chattext `). */
   readonly scopePrefix?: string;
@@ -42,6 +41,24 @@ export interface CssRewriteOpts {
   /** Replace @import url(data:*) with data:, Default true. */
   readonly killDataImports?: boolean;
   readonly rewriteClassNames?: boolean;
+  // Strip leading `x-risu-` from class selectors so author-prefixed rules
+  // match unprefixed HTML (Lumirealm doesn't apply Risu's render-time prefix).
+  readonly unprefixClassNames?: boolean;
+}
+
+export function unprefixCssClassSelectors(css: string): string {
+  if (!css || css.length === 0) return css;
+  try {
+    return rewriteCss(css, {
+      rewriteClassNames: false,
+      unprefixClassNames: true,
+      rewriteUniversalToHost: false,
+      scopePrefix: "",
+      killDataImports: true,
+    });
+  } catch {
+    return css;
+  }
 }
 
 const DEFAULT_OPTS: Required<CssRewriteOpts> = {
@@ -49,6 +66,7 @@ const DEFAULT_OPTS: Required<CssRewriteOpts> = {
   rewriteUniversalToHost: true,
   killDataImports: true,
   rewriteClassNames: true,
+  unprefixClassNames: false,
 };
 
 export function rewriteCss(css: string, opts: CssRewriteOpts = {}): string {
@@ -390,6 +408,11 @@ function rewriteSelector(selector: string, opts: Required<CssRewriteOpts>): stri
         }
         return `.${CLASS_PREFIX}${name}`;
       },
+    );
+  } else if (opts.unprefixClassNames) {
+    core = core.replace(
+      /(?<![\\])\.x-risu-(-?[_a-zA-Z][\w-]*)/g,
+      (_m, name: string) => `.${name}`,
     );
   }
 

@@ -2451,6 +2451,82 @@ async function dispatchManualTrigger(
   await refreshVariables(active, chatId);
 }
 
+// Risu's runLuaButtonTrigger: iterates every triggerlua, runs onButtonClick(id, btn).
+// Distinct from manual_trigger which targets a single named Lua function.
+async function dispatchButtonClick(
+  chatId: string,
+  btn: string,
+  btnId?: string,
+): Promise<void> {
+  const active = await ensureActiveCardForChat(chatId, null);
+  if (!active) {
+    log.warn(`dispatchButtonClick: no active card for chatId=${chatId} — skip`);
+    return;
+  }
+  const characterId = active.card.character_id;
+  interface LuaTrigger {
+    effect: readonly { type: string; code?: string }[];
+    type?: string;
+    comment?: string;
+  }
+  const triggers = (active.card.risuPayload.triggers ?? []) as unknown as readonly LuaTrigger[];
+  const luaTriggers = triggers.filter(
+    (t) => Array.isArray(t.effect) && t.effect[0] && t.effect[0].type === 'triggerlua',
+  );
+  if (luaTriggers.length === 0) {
+    log.warn(
+      `dispatchButtonClick: no triggerlua on character=${characterId} — Risu would no-op`,
+    );
+    return;
+  }
+  log.info(
+    `dispatchButtonClick: btn="${btn}" btnId=${btnId ?? '<none>'} lua=${luaTriggers.length} chatId=${chatId}`,
+  );
+  const api = makeSpindleHost({ chatId, characterId, userId: getUserId() });
+  const scriptNS = makeDispatcherScriptNS();
+  const effectiveId = btnId ?? String(Math.random()).slice(2, 10);
+  const t0 = Date.now();
+  for (const trigger of luaTriggers) {
+    const firstEffect = trigger.effect[0];
+    if (!firstEffect) continue;
+    const luaCode = String(firstEffect.code ?? '');
+    if (luaCode.length === 0) continue;
+    try {
+      const settings = getCachedSettingsSync(getUserId());
+      const auxDebugCapture = makeAuxDebugCapture(chatId, settings);
+      const runtime = await makeRisuTriggerRuntime(api, { characterId }, scriptNS, {
+        characterId,
+        binding: 'manual',
+        chatId,
+        rememberOurWrite,
+        stateChanged: makeStateChangedCallback(chatId),
+        auxConnectionId: settings.auxConnectionId,
+        auxModelOverride: settings.auxModelOverride,
+        auxSamplers: settings.auxSamplers,
+        submodelConnectionId: settings.submodelConnectionId,
+        submodelModelOverride: settings.submodelModelOverride,
+        submodelSamplers: settings.submodelSamplers,
+        ...(auxDebugCapture ? { auxDebugCapture } : {}),
+        resolveTemplate: (text: string) => resolveReadonly(text, chatId, characterId, { cbsContext: true }),
+      });
+      log.info(
+        `dispatchButtonClick: invoking onButtonClick args=[${effectiveId}, ${btn}] chatId=${chatId}`,
+      );
+      await runtime.runLua(luaCode, {
+        entry: 'onButtonClick',
+        args: [effectiveId, btn],
+      });
+      await (runtime as unknown as { flush?: () => Promise<void> }).flush?.();
+    } catch (err) {
+      log.error(`dispatchButtonClick: Lua failed btn="${btn}": ${errMsg(err)}`);
+    }
+  }
+  log.info(`dispatchButtonClick: done btn="${btn}" elapsed=${Date.now() - t0}ms`);
+  invalidateRenderMcpForChat(chatId);
+  await refreshBgHtml(active, chatId);
+  await refreshVariables(active, chatId);
+}
+
 async function refreshVariables(
   active: ActiveCard,
   chatId: string,
@@ -5194,6 +5270,11 @@ spindle.onFrontendMessage(async (raw, userId) => {
       case 'manual_trigger': {
         log.info(`manual_trigger: triggerName=${msg.triggerName} triggerId=${msg.triggerId ?? '<none>'} chatId=${msg.chatId}`);
         await dispatchManualTrigger(msg.chatId, msg.triggerName, msg.triggerId);
+        break;
+      }
+      case 'manual_button_click': {
+        log.info(`manual_button_click: btn=${msg.btn} btnId=${msg.btnId ?? '<none>'} chatId=${msg.chatId}`);
+        await dispatchButtonClick(msg.chatId, msg.btn, msg.btnId);
         break;
       }
       case 'set_variable': {

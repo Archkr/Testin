@@ -378,22 +378,34 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     const el = t.closest('[risu-trigger], [risu-btn]') as HTMLElement | null;
     if (!el) return;
     const triggerName = el.getAttribute('risu-trigger');
-    if (!triggerName) return; // risu-btn without risu-trigger is a Lua-ctrl case; not wired yet
-    const triggerId = el.getAttribute('risu-id') ?? undefined;
+    const btn = triggerName ? null : el.getAttribute('risu-btn');
+    if (!triggerName && !btn) return;
+    const idAttr = el.getAttribute('risu-id') ?? undefined;
     const chatId = activeRisuChatId;
     if (!chatId) {
-      flog.warn(`manual-trigger click: active chat isn't a lumirealm chat, ignoring triggerName=${triggerName}`);
+      const label = triggerName ?? `btn=${btn}`;
+      flog.warn(`manual click: active chat isn't a lumirealm chat, ignoring ${label}`);
       return;
     }
     e.preventDefault();
     e.stopPropagation();
-    flog.info(`manual-trigger click: triggerName=${triggerName} triggerId=${triggerId ?? '<none>'} chatId=${chatId}`);
-    sendToBackend({
-      type: 'manual_trigger',
-      triggerName,
-      ...(triggerId !== undefined ? { triggerId } : {}),
-      chatId,
-    });
+    if (triggerName) {
+      flog.info(`manual-trigger click: triggerName=${triggerName} triggerId=${idAttr ?? '<none>'} chatId=${chatId}`);
+      sendToBackend({
+        type: 'manual_trigger',
+        triggerName,
+        ...(idAttr !== undefined ? { triggerId: idAttr } : {}),
+        chatId,
+      });
+    } else if (btn) {
+      flog.info(`manual-button click: btn=${btn} btnId=${idAttr ?? '<none>'} chatId=${chatId}`);
+      sendToBackend({
+        type: 'manual_button_click',
+        btn,
+        ...(idAttr !== undefined ? { btnId: idAttr } : {}),
+        chatId,
+      });
+    }
   };
   document.addEventListener('click', onClickCapture, /* capture */ true);
   cleanups.push(() => document.removeEventListener('click', onClickCapture, /* capture */ true));
