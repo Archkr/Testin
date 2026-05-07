@@ -4,6 +4,8 @@ import { newUuid, nowMs, splitKeywords } from "./util.js";
 import {
   parseDecorators,
   applyDecoratorsToEntry,
+  serializeDecorator,
+  type ParsedDecorator,
 } from "./lorebook-decorators.js";
 export {
   ENTRY_HASH_FIELDS,
@@ -72,6 +74,35 @@ function buildExtensions(e: LoreBook): Record<string, unknown> {
   return ext;
 }
 
+// Keep Tier 2/3 decorators inline so the runtime worldInfoInterceptor re-parses
+// them on every activation and users can edit them via Lumi's content editor.
+// `@@@`-fallback chains preserve the full block (dropping middle items shifts
+// suspend semantics).
+function rebuildContentWithStashedDecorators(
+  rawContent: string,
+  decorators: readonly ParsedDecorator[],
+  applied: readonly ParsedDecorator[],
+): string {
+  if (decorators.length === 0) return rawContent;
+  const hasFallback = decorators.some((d) => d.isFallback);
+  if (hasFallback) return rawContent;
+  const appliedSet = new Set(applied);
+  const kept = decorators.filter((d) => !appliedSet.has(d));
+  const lines = rawContent.split("\n");
+  let cutoff = 0;
+  for (let i = 0; i < lines.length; i++) {
+    const line = (lines[i] ?? "").trim();
+    if (!line.startsWith("@@")) { cutoff = i; break; }
+    cutoff = i + 1;
+  }
+  const remaining = lines.slice(cutoff).join("\n").trim();
+  if (kept.length === 0) return remaining;
+  const keptLines = kept.map(serializeDecorator);
+  return remaining.length === 0
+    ? keptLines.join("\n")
+    : keptLines.join("\n") + "\n" + remaining;
+}
+
 export interface MappedLoreBookEntry {
   readonly entry: LumiWorldBookEntry;
   readonly stats: {
@@ -122,7 +153,7 @@ export function mapLoreBookEntryWithStats(
   // Decorator patch wins over Risu mode/extension defaults for Tier 1 fields.
   const finalKey = applied.patch.key ?? draftKey;
   const finalExtensions = applied.patch.extensions ?? draftExt;
-  const finalContent = parsed.decorators.length > 0 ? parsed.remainingContent : entry.content;
+  const finalContent = rebuildContentWithStashedDecorators(entry.content, parsed.decorators, applied.applied);
 
   const stats = {
     decoratorsSeen: parsed.decorators.length,

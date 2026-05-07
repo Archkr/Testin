@@ -62,8 +62,17 @@ export function parseDecorators(content: string): DecoratorParseResult {
 }
 
 
+// Round-trips a parsed decorator back to its `@@<name> arg, arg` line form.
+// Used by mapLoreBookEntryWithStats to keep Tier 2/3 decorators inline in
+// content while stripping Tier 1 ones that already have native Lumi fields.
+export function serializeDecorator(d: ParsedDecorator): string {
+  const prefix = d.isFallback ? "@@@" : "@@";
+  if (d.args.length === 0) return `${prefix}${d.name}`;
+  return `${prefix}${d.name} ${d.args.join(", ")}`;
+}
+
 // Tier-1 decorator names map directly to a Lumi entry field. Everything else
-// is stashed on extensions._risu_decorators for a future intercept.
+// stays inline in content for the runtime worldInfoInterceptor to re-parse.
 const TIER1_DECORATOR_NAMES: ReadonlySet<string> = new Set([
   "position",
   "depth",
@@ -180,20 +189,12 @@ export function applyDecoratorsToEntry(
     patch.key = [...entry.key, ...state.additional_keys];
   }
 
-  // Stash Tier 2/3 (and the reverse_depth note) on `extensions._risu_decorators`.
-  if (stashed.length > 0 || state.reverse_depth_seen) {
+  // Tier 2/3 decorators stay inline in content. Runtime worldInfoInterceptor
+  // re-parses entry.content per activation, so no extension stash is needed.
+  if (state.reverse_depth_seen) {
     const ext = { ...entry.extensions };
-    const stashedSerial = stashed.map((d) => ({
-      name: d.name,
-      args: [...d.args],
-      ...(d.isFallback ? { fallback: true } : {}),
-    }));
-    if (state.reverse_depth_seen) {
-      stashedSerial.push({ name: "_risu_reverse_depth_note", args: [
-        "reverse_depth applied as Lumi position=4 depth=N. The reverse-from-start semantic needs a runtime intercept.",
-      ] });
-    }
-    ext["_risu_decorators"] = stashedSerial;
+    ext["_risu_reverse_depth_note"] =
+      "reverse_depth applied as Lumi position=4 depth=N. Risu counts from chat start, Lumi from end.";
     patch.extensions = ext;
   }
 

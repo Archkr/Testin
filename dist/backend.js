@@ -19540,7 +19540,7 @@ function base64ToBytes(b64) {
 }
 
 // src/core/payload/types.ts
-var CURRENT_TRANSLATOR_SCHEMA_VERSION = 3;
+var CURRENT_TRANSLATOR_SCHEMA_VERSION = 4;
 var LUMIREALM_EXT_KEY = "lumirealm";
 // src/payload/codec.ts
 class RisuCompatUnsupportedError extends Error {
@@ -21342,6 +21342,12 @@ function parseDecorators(content) {
   }
   return { decorators, remainingContent: "" };
 }
+function serializeDecorator(d) {
+  const prefix = d.isFallback ? "@@@" : "@@";
+  if (d.args.length === 0)
+    return `${prefix}${d.name}`;
+  return `${prefix}${d.name} ${d.args.join(", ")}`;
+}
 var TIER1_DECORATOR_NAMES = new Set([
   "position",
   "depth",
@@ -21413,19 +21419,9 @@ function applyDecoratorsToEntry(entry, decorators) {
   if (state.additional_keys.length > 0) {
     patch.key = [...entry.key, ...state.additional_keys];
   }
-  if (stashed.length > 0 || state.reverse_depth_seen) {
+  if (state.reverse_depth_seen) {
     const ext = { ...entry.extensions };
-    const stashedSerial = stashed.map((d) => ({
-      name: d.name,
-      args: [...d.args],
-      ...d.isFallback ? { fallback: true } : {}
-    }));
-    if (state.reverse_depth_seen) {
-      stashedSerial.push({ name: "_risu_reverse_depth_note", args: [
-        "reverse_depth applied as Lumi position=4 depth=N. The reverse-from-start semantic needs a runtime intercept."
-      ] });
-    }
-    ext["_risu_decorators"] = stashedSerial;
+    ext["_risu_reverse_depth_note"] = "reverse_depth applied as Lumi position=4 depth=N. Risu counts from chat start, Lumi from end.";
     patch.extensions = ext;
   }
   return { patch, applied, stashed, dropped };
@@ -21701,6 +21697,35 @@ function buildExtensions2(e) {
     ext["risu_entry_id"] = e.id;
   return ext;
 }
+function rebuildContentWithStashedDecorators(rawContent, decorators, applied) {
+  if (decorators.length === 0)
+    return rawContent;
+  const hasFallback = decorators.some((d) => d.isFallback);
+  if (hasFallback)
+    return rawContent;
+  const appliedSet = new Set(applied);
+  const kept = decorators.filter((d) => !appliedSet.has(d));
+  const lines = rawContent.split(`
+`);
+  let cutoff = 0;
+  for (let i = 0;i < lines.length; i++) {
+    const line = (lines[i] ?? "").trim();
+    if (!line.startsWith("@@")) {
+      cutoff = i;
+      break;
+    }
+    cutoff = i + 1;
+  }
+  const remaining = lines.slice(cutoff).join(`
+`).trim();
+  if (kept.length === 0)
+    return remaining;
+  const keptLines = kept.map(serializeDecorator);
+  return remaining.length === 0 ? keptLines.join(`
+`) : keptLines.join(`
+`) + `
+` + remaining;
+}
 function mapLoreBookEntryWithStats(entry, worldBookId, folders, now, uuid) {
   const { constant, disabled, position } = mapMode(entry);
   const groupName = resolveFolderName(entry, folders);
@@ -21712,7 +21737,7 @@ function mapLoreBookEntryWithStats(entry, worldBookId, folders, now, uuid) {
   const applied = applyDecoratorsToEntry({ key: draftKey, extensions: draftExt }, parsed.decorators);
   const finalKey = applied.patch.key ?? draftKey;
   const finalExtensions = applied.patch.extensions ?? draftExt;
-  const finalContent = parsed.decorators.length > 0 ? parsed.remainingContent : entry.content;
+  const finalContent = rebuildContentWithStashedDecorators(entry.content, parsed.decorators, applied.applied);
   const stats = {
     decoratorsSeen: parsed.decorators.length,
     mapped: applied.applied.length,

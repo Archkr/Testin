@@ -123,8 +123,8 @@ export interface LumirealmStoredSource {
   readonly path_to_image_id: Readonly<Record<string, string>>;
 }
 
-// v3: module lorebook entries route through mapLoreBook (decorator pipeline).
-export const CURRENT_TRANSLATOR_SCHEMA_VERSION = 3;
+// v4: Tier 2/3 decorators stay inline in content for runtime re-parsing.
+export const CURRENT_TRANSLATOR_SCHEMA_VERSION = 4;
 
 export interface PortalCandidate {
   readonly id: string;
