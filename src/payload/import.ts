@@ -1,5 +1,8 @@
-import { translateCharx } from '../core/pipeline/index.js';
+import { translateFromCharxBundle } from '../core/pipeline/index.js';
+import { readCharx } from '../core/charx/reader.js';
 import type { LumiBundle } from '../core/pipeline/index.js';
+import { CURRENT_TRANSLATOR_SCHEMA_VERSION } from './types.js';
+import type { LumirealmStoredSource } from './types.js';
 import { CatalogIndex, parseCatalog } from '../core/cbs/index.js';
 import {
   buildLumirealmData,
@@ -24,7 +27,7 @@ const logError = (msg: string): void => logger.error(msg);
 
 import catalogJson from '../core/cbs/catalog/risu-macros.json';
 let cachedCatalog: CatalogIndex | null = null;
-function loadCatalog(): CatalogIndex {
+export function loadCatalog(): CatalogIndex {
   if (cachedCatalog) return cachedCatalog;
   cachedCatalog = new CatalogIndex(parseCatalog(catalogJson as unknown));
   return cachedCatalog;
@@ -172,7 +175,8 @@ export async function importCard(args: ImportCardArgs): Promise<ImportResult> {
   const tTranslate = Date.now();
   const catalog = loadCatalog();
   logInfo(`(2) translate: starting translateCharx bytes=${bytes.byteLength}`);
-  const bundle: LumiBundle = translateCharx(bytes, {
+  const charxBundle = readCharx(bytes);
+  const bundle: LumiBundle = translateFromCharxBundle(charxBundle, {
     sourceId: args.sourceId ?? `file:${args.fileName}`,
     mode: 'full',
     catalog,
@@ -654,6 +658,13 @@ export async function importCard(args: ImportCardArgs): Promise<ImportResult> {
     folder: r.folder,
     metadata: r.metadata,
   }));
+  const storedSource: LumirealmStoredSource = {
+    schema_version: 1,
+    captured_at: Date.now(),
+    card: charxBundle.card,
+    module: charxBundle.moduleEnvelope?.module ?? null,
+    path_to_image_id: { ...pathToImageId },
+  };
   const lumirealmData = buildLumirealmData(
     bundle.risuPayload,
     args.extensionVersion,
@@ -662,6 +673,8 @@ export async function importCard(args: ImportCardArgs): Promise<ImportResult> {
     emotionIndex,  // populated alongside (last-wins per emotion name)
     Date.now(),
     userOverrides,
+    storedSource,
+    CURRENT_TRANSLATOR_SCHEMA_VERSION,
   );
   try {
     await args.spindle.characters.update(

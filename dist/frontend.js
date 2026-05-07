@@ -2805,6 +2805,31 @@ var styles_default = `.risu-compat-drawer {\r
   outline-offset: 2px;\r
 }\r
 \r
+.lr-alert-lead {\r
+  margin: 0;\r
+  font-size: 15px;\r
+  font-weight: 600;\r
+  line-height: 1.45;\r
+}\r
+.lr-alert-card-name {\r
+  font-weight: 600;\r
+  color: var(--lumiverse-primary, #9370db);\r
+}\r
+.lr-alert-note {\r
+  margin: 4px 0 0 0;\r
+  padding: 10px 12px;\r
+  background: var(--lumiverse-surface-alt, rgba(147, 112, 219, 0.08));\r
+  border-left: 3px solid var(--lumiverse-primary, #9370db);\r
+  border-radius: 4px;\r
+  font-size: 13px;\r
+  line-height: 1.5;\r
+  color: var(--lumiverse-text-muted, inherit);\r
+}\r
+.lr-alert-note-label {\r
+  font-weight: 600;\r
+  margin-right: 4px;\r
+}\r
+\r
 .lr-pick-modal {\r
   display: flex;\r
   flex-direction: column;\r
@@ -3419,6 +3444,8 @@ function mountCardsPanel(opts) {
         break;
       case "install_regex_scripts":
         onInstallRegexScripts(msg);
+        break;
+      case "notify_legacy_card_needs_reimport":
         break;
       case "error":
         log.error(`drawer.error: ${msg.message}`);
@@ -11884,6 +11911,88 @@ function setupPickModal(opts) {
   };
 }
 
+// src/ui/legacy-reimport-modal.ts
+function setupLegacyReimportModal(opts) {
+  const { ctx, log } = opts;
+  opts.sendToBackend;
+  const open = new Map;
+  const shownThisSession = new Set;
+  function show(msg) {
+    if (shownThisSession.has(msg.characterId))
+      return;
+    shownThisSession.add(msg.characterId);
+    let modal;
+    try {
+      modal = ctx.ui.showModal({ title: "Legacy Card Detected", width: 460 });
+    } catch (err) {
+      log.error("legacy-reimport-modal: showModal failed", err);
+      return;
+    }
+    open.set(msg.characterId, modal);
+    const root = modal.root;
+    root.classList.add("lr-alert-modal");
+    const lead = document.createElement("p");
+    lead.className = "lr-alert-lead";
+    lead.textContent = "If you notice any issues with this card, please re-import it.";
+    root.appendChild(lead);
+    const context = document.createElement("p");
+    context.className = "lr-alert-message";
+    const nameEl = document.createElement("span");
+    nameEl.className = "lr-alert-card-name";
+    nameEl.textContent = msg.characterName;
+    context.appendChild(nameEl);
+    context.appendChild(document.createTextNode(" was imported before LumiRealm 0.3.0. Future translator updates apply " + "automatically only to cards imported on 0.3.0 or later."));
+    root.appendChild(context);
+    const guidance = document.createElement("p");
+    guidance.className = "lr-alert-message";
+    guidance.textContent = "You only need to re-import this card if you notice something rendering incorrectly. " + "This is a one-time prompt.";
+    root.appendChild(guidance);
+    const note = document.createElement("p");
+    note.className = "lr-alert-note";
+    const label = document.createElement("span");
+    label.className = "lr-alert-note-label";
+    label.textContent = "Note:";
+    note.appendChild(label);
+    note.appendChild(document.createTextNode(" you will never need to re-import cards imported from today onward. " + "This is a one-time improvement to our translator pipeline."));
+    root.appendChild(note);
+    const actions = document.createElement("div");
+    actions.className = "lr-alert-actions";
+    const okBtn = document.createElement("button");
+    okBtn.type = "button";
+    okBtn.className = "lr-alert-ok";
+    okBtn.textContent = "Got it";
+    okBtn.addEventListener("click", () => {
+      try {
+        modal.dismiss();
+      } catch {}
+    });
+    actions.appendChild(okBtn);
+    root.appendChild(actions);
+    modal.onDismiss(() => {
+      open.delete(msg.characterId);
+    });
+    queueMicrotask(() => {
+      try {
+        okBtn.focus();
+      } catch {}
+    });
+  }
+  return {
+    handleBackendMessage(msg) {
+      if (msg.type === "notify_legacy_card_needs_reimport")
+        show(msg);
+    },
+    destroy() {
+      for (const m of open.values()) {
+        try {
+          m.dismiss();
+        } catch {}
+      }
+      open.clear();
+    }
+  };
+}
+
 // src/log/frontend-capture.ts
 var CONSOLE_METHODS = ["log", "info", "warn", "error", "debug"];
 var consoleShimInstalled = false;
@@ -12353,6 +12462,8 @@ function setup(ctx) {
   cleanups.push(() => alertModal.destroy());
   const pickModal = setupPickModal({ ctx, sendToBackend, log: flog2 });
   cleanups.push(() => pickModal.destroy());
+  const legacyReimportModal = setupLegacyReimportModal({ ctx, sendToBackend, log: flog2 });
+  cleanups.push(() => legacyReimportModal.destroy());
   let realm = null;
   try {
     if (!sidebar)
@@ -12598,6 +12709,10 @@ function setup(ctx) {
     }
     if (msg.type === "request_pick") {
       pickModal.handleBackendMessage(msg);
+      return;
+    }
+    if (msg.type === "notify_legacy_card_needs_reimport") {
+      legacyReimportModal.handleBackendMessage(msg);
       return;
     }
     if (isRealmBackendMessage(msg)) {

@@ -369,6 +369,13 @@ export type BackendToFrontend =
       characterName: string;
       scripts: readonly PendingRegexScriptMsg[];
     }
+  // Lazy-migration trigger for legacy cards imported before raw-source storage.
+  // Translator changes can't auto-apply without source, FE shows a one-time toast.
+  | {
+      type: 'notify_legacy_card_needs_reimport';
+      characterId: string;
+      characterName: string;
+    }
   // `risuPayload.background_html` resolved per state tick. FE pipes through Risu-compat
   // rewriter (HTML class prefix + CSS `.chattext` scope + `:host` universals) and paints
   // into a Shadow-DOM host.

@@ -728,6 +728,9 @@ export function mountCardsPanel(opts: MountCardsPanelOptions): DrawerHandle {
       case 'install_regex_scripts':
         void onInstallRegexScripts(msg);
         break;
+      case 'notify_legacy_card_needs_reimport':
+        // Handled by setupLegacyReimportModal.
+        break;
       case 'error':
         log.error(`drawer.error: ${msg.message}`);
         state.progress = {

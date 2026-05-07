@@ -2804,6 +2804,31 @@
   outline-offset: 2px;
 }
 
+.lr-alert-lead {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.45;
+}
+.lr-alert-card-name {
+  font-weight: 600;
+  color: var(--lumiverse-primary, #9370db);
+}
+.lr-alert-note {
+  margin: 4px 0 0 0;
+  padding: 10px 12px;
+  background: var(--lumiverse-surface-alt, rgba(147, 112, 219, 0.08));
+  border-left: 3px solid var(--lumiverse-primary, #9370db);
+  border-radius: 4px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--lumiverse-text-muted, inherit);
+}
+.lr-alert-note-label {
+  font-weight: 600;
+  margin-right: 4px;
+}
+
 .lr-pick-modal {
   display: flex;
   flex-direction: column;

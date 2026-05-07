@@ -53,6 +53,38 @@ export function translateCharx(
   bytes: Uint8Array,
   opts: TranslateCharxOptions = {},
 ): LumiBundle {
+  return translateFromCharxBundle(readCharx(bytes), opts);
+}
+
+// Synthesizes a CharxBundle from stored Risu source so we can re-run the
+// translator without keeping the original .charx bytes.
+export function translateFromStoredSource(
+  source: { card: unknown; module: unknown | null },
+  opts: TranslateCharxOptions = {},
+): LumiBundle {
+  const moduleEnvelope = source.module
+    ? { version: 1, module: source.module, assets: [], payloadText: "" }
+    : null;
+  const bundle = {
+    card: source.card,
+    cardJsonText: null,
+    moduleBytes: null,
+    moduleEnvelope,
+    assets: new Map<string, Uint8Array>(),
+    xMeta: new Map<string, unknown>(),
+    oversizedEntries: [],
+    unsafeEntries: [],
+    issues: [],
+    isPolyglot: false,
+    jpegPreview: null,
+  };
+  return translateFromCharxBundle(bundle as ReturnType<typeof readCharx>, opts);
+}
+
+export function translateFromCharxBundle(
+  bundle: ReturnType<typeof readCharx>,
+  opts: TranslateCharxOptions = {},
+): LumiBundle {
   const now = opts.now ?? nowMs;
   const uuid = opts.uuid ?? newUuid;
   const issues: { path: string; message: string }[] = [];
@@ -76,7 +108,6 @@ export function translateCharx(
       ? opts.rewriteCbs
       : mode === "full" && Boolean(opts.catalog);
 
-  const bundle = readCharx(bytes);
   for (const iss of bundle.issues) issues.push(iss);
 
   if (!bundle.card) {

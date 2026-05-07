@@ -47,6 +47,8 @@ export interface ModuleEnvelope {
   readonly module: RisuModule;
   readonly asset_index: Readonly<Record<string, AssetRef>>;
   readonly installed_world_book_id?: string;
+  // Lazy retranslation on attach fires when stored < current.
+  readonly translator_schema_version?: number;
 }
 
 export interface AssetRef {

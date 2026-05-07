@@ -2,6 +2,7 @@ export {
   cardStoragePath,
   LUMIREALM_EXT_KEY,
   PORTAL_ANALYZER_VERSION,
+  CURRENT_TRANSLATOR_SCHEMA_VERSION,
   type RisuPayload,
   type RisuAsset,
   type RisuRequires,
@@ -10,6 +11,7 @@ export {
   type StoredRegexScript,
   type AssetIndexEntry,
   type LumirealmCharacterData,
+  type LumirealmStoredSource,
   type LumirealmUserOverrides,
   type PortalCandidate,
 } from "./types.js";

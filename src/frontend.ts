@@ -15,6 +15,7 @@ import { setupSvgRasterizer } from './svg-raster.js';
 import { setupRealmModal, isRealmBackendMessage } from './realm/frontend.js';
 import { setupAlertModal } from './ui/alert-modal.js';
 import { setupPickModal } from './ui/pick-modal.js';
+import { setupLegacyReimportModal } from './ui/legacy-reimport-modal.js';
 import { logStore, isLogThreshold, DEFAULT_LOG_LEVEL, type LogThreshold } from './log/store.js';
 import {
   installConsoleCapture,
@@ -347,6 +348,9 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   const pickModal = setupPickModal({ ctx, sendToBackend, log: flog });
   cleanups.push(() => pickModal.destroy());
 
+  const legacyReimportModal = setupLegacyReimportModal({ ctx, sendToBackend, log: flog });
+  cleanups.push(() => legacyReimportModal.destroy());
+
   let realm: ReturnType<typeof setupRealmModal> | null = null;
   try {
     if (!sidebar) throw new Error('realm: sidebar required');
@@ -618,6 +622,10 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     }
     if (msg.type === 'request_pick') {
       pickModal.handleBackendMessage(msg);
+      return;
+    }
+    if (msg.type === 'notify_legacy_card_needs_reimport') {
+      legacyReimportModal.handleBackendMessage(msg);
       return;
     }
     if (isRealmBackendMessage(msg)) {

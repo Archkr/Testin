@@ -9,6 +9,7 @@ import {
 } from './realm/backend.js';
 import type { RealmBackendToFrontend } from './realm/messages.js';
 import type { AssetIndexEntry, StoredRisuCard } from './payload/types.js';
+import { CURRENT_TRANSLATOR_SCHEMA_VERSION } from './payload/types.js';
 import {
   type UserStorageLike,
 } from './payload/installer.js';
@@ -19,12 +20,17 @@ import {
 } from './payload/codec.js';
 import {
   readLumirealm,
+  writeLumirealm,
   updateLumirealm,
   clearLumirealm,
   listLumirealmCharacters,
   buildSyntheticStoredCard,
   type SpindleCharactersApi,
 } from './state/lumirealm-character.js';
+import {
+  migrateCharacterIfNeeded,
+  type MigrationDeps,
+} from './state/translator-migrations.js';
 import {
   appendImageIdsToJournal,
   clearImageJournal,
@@ -56,7 +62,7 @@ import {
 import { makeSpindleHost } from './interpreter/spindle-host.js';
 import { makeRisuTriggerRuntime, setDispatchContext } from './interpreter/runtime.js';
 import type { RisuBinding } from './interpreter/runtime.js';
-import { importCard, type SpindleImportApi } from './payload/import.js';
+import { importCard, loadCatalog, type SpindleImportApi } from './payload/import.js';
 import { parseDirectLorebook } from './payload/lorebook-direct-import.js';
 import { mapLoreBook } from './core/mappers/lorebook.js';
 import { registerAll as registerAllMacros } from './interpreter/macros.js';
@@ -2111,10 +2117,117 @@ async function ensureActiveCardForChat(
   void refreshPersonaImage(userId);
   // One-time seed of authors_note from CCSv3 depth_prompt on first open.
   void seedAuthorsNoteFromDepthPrompt(chatId, userId, fetched.character.extensions ?? {});
+  void maybeMigrateCharacterTranslator(characterId, fetched.character.name, userId, fetched.data);
   log.info(
     `ensureActiveCardForChat: DONE chatId=${chatId} characterId=${characterId} total=${Date.now() - tEnter}ms`,
   );
   return active;
+}
+
+// Dedupe per-character per-worker-boot. Set on first migration check fire.
+const translatorMigrationChecked = new Set<string>();
+// Tracks legacy-no-source warnings already issued per session so we don't
+// spam the same toast on every chat-open.
+const legacyReimportWarned = new Set<string>();
+
+function maybeMigrateCharacterTranslator(
+  characterId: string,
+  characterName: string,
+  userId: string,
+  envelope: import('./payload/types.js').LumirealmCharacterData,
+): void {
+  if (translatorMigrationChecked.has(characterId)) return;
+  const stored = envelope.translator_schema_version ?? 1;
+  if (stored >= CURRENT_TRANSLATOR_SCHEMA_VERSION) {
+    translatorMigrationChecked.add(characterId);
+    return;
+  }
+  translatorMigrationChecked.add(characterId);
+  void runCharacterMigration(characterId, characterName, userId, envelope);
+}
+
+async function runCharacterMigration(
+  characterId: string,
+  characterName: string,
+  userId: string,
+  envelope: import('./payload/types.js').LumirealmCharacterData,
+): Promise<void> {
+  const deps: MigrationDeps = {
+    loadCatalog,
+    extensionVersion: EXTENSION_VERSION,
+    log,
+    installCharacterRegexScripts: async (charId, charName, scripts) => {
+      send({
+        type: 'install_regex_scripts',
+        characterId: charId,
+        characterName: charName,
+        scripts: scripts.map((s) => ({ ...s, metadata: { ...(s.metadata ?? {}) } })),
+      });
+    },
+    reinstallAttachedModules: async (charId) => {
+      const ids = envelope.user_overrides.attached_module_ids ?? [];
+      let count = 0;
+      for (const moduleId of ids) {
+        try {
+          const env = await readModuleEnvelope(moduleStorage(), userId, moduleId);
+          if (!env) continue;
+          await dispatchModuleArtifactInstall(charId, env);
+          count++;
+        } catch (err) {
+          log.warn(
+            `runCharacterMigration: reinstall module=${moduleId} char=${charId} threw: ${errMsg(err)}`,
+          );
+        }
+      }
+      return count;
+    },
+    dispatchSvgRasterize: (charId, charName, svgs) => {
+      const filtered = svgs.filter((t) => t.classification !== 'templated');
+      if (filtered.length === 0) return;
+      log.info(
+        `runCharacterMigration: dispatching rasterize_svgs char=${charId} count=${filtered.length}`,
+      );
+      send({
+        type: 'rasterize_svgs',
+        characterId: charId,
+        characterName: charName,
+        svgs: filtered.map((t) => ({
+          markerN: t.markerN,
+          svg: t.svg,
+          classification: t.classification as 'simple' | 'theme-reactive' | 'animated',
+          width: t.width,
+          height: t.height,
+        })),
+      });
+    },
+    writeEnvelope: async (charId, data, uid) => {
+      await writeLumirealm(charactersApi(), charId, data, uid);
+    },
+  };
+  const result = await migrateCharacterIfNeeded(
+    { characterId, characterName, userId, envelope },
+    deps,
+  );
+  if (result.kind === 'migrated') {
+    invalidateActiveForCharacter(characterId);
+    spindle.toast.success(
+      `Updated ${characterName} for the latest LumiRealm fixes.`,
+      { title: 'lumirealm' },
+    );
+  } else if (result.kind === 'needs_reimport') {
+    if (legacyReimportWarned.has(characterId)) return;
+    legacyReimportWarned.add(characterId);
+    send({
+      type: 'notify_legacy_card_needs_reimport',
+      characterId,
+      characterName,
+    });
+  } else if (result.kind === 'failed') {
+    log.error(
+      `migration failed char=${characterId}: ${result.error} (will retry next boot)`,
+    );
+    translatorMigrationChecked.delete(characterId);
+  }
 }
 
 async function seedAuthorsNoteFromDepthPrompt(
@@ -3991,6 +4104,7 @@ async function processModuleUpload(
     uploaded_at: Date.now(),
     module: moduleBody,
     asset_index: moduleAssetIndex,
+    translator_schema_version: CURRENT_TRANSLATOR_SCHEMA_VERSION,
     ...(previousEnvelope?.installed_world_book_id
       ? { installed_world_book_id: previousEnvelope.installed_world_book_id }
       : {}),
@@ -4006,6 +4120,9 @@ async function processModuleUpload(
     uploaded_at: baseEnvelope.uploaded_at,
     module: baseEnvelope.module,
     asset_index: baseEnvelope.asset_index,
+    ...(baseEnvelope.translator_schema_version !== undefined
+      ? { translator_schema_version: baseEnvelope.translator_schema_version }
+      : {}),
     ...(wbId ? { installed_world_book_id: wbId } : {}),
   };
   await writeModuleEnvelope(moduleStorage(), userId, envelope);

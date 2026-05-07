@@ -92,6 +92,10 @@ export interface LumirealmCharacterData {
   readonly imported_at: number;
   readonly extension_version: string;
   readonly translator_version: string;
+  // Lazy retranslation on chat-open fires when stored < current.
+  readonly translator_schema_version?: number;
+  // Pre-translation Risu source, lets us re-translate without the .charx.
+  readonly source?: LumirealmStoredSource;
   readonly payload: {
     readonly triggers: readonly unknown[];
     readonly lua_scripts: readonly string[];
@@ -110,6 +114,17 @@ export interface LumirealmCharacterData {
   readonly portal_candidates?: readonly PortalCandidate[];
   readonly user_overrides: LumirealmUserOverrides;
 }
+
+export interface LumirealmStoredSource {
+  readonly schema_version: 1;
+  readonly captured_at: number;
+  readonly card: unknown;
+  readonly module: unknown | null;
+  readonly path_to_image_id: Readonly<Record<string, string>>;
+}
+
+// Last bump: v2, class-prefix unprefix + entity normalize.
+export const CURRENT_TRANSLATOR_SCHEMA_VERSION = 2;
 
 export interface PortalCandidate {
   readonly id: string;

@@ -99,12 +99,16 @@ export function buildLumirealmData(
   emotionIndex: Readonly<Record<string, AssetIndexEntry>> = {},
   importedAt: number = Date.now(),
   userOverrides: LumirealmUserOverrides = {},
+  source?: import('./types.js').LumirealmStoredSource,
+  translatorSchemaVersion?: number,
 ): LumirealmCharacterData {
   return {
     schema_version: 1,
     imported_at: importedAt,
     extension_version: extensionVersion,
     translator_version: payload.translator_version,
+    ...(translatorSchemaVersion !== undefined ? { translator_schema_version: translatorSchemaVersion } : {}),
+    ...(source ? { source } : {}),
     payload: {
       triggers: payload.triggers,
       lua_scripts: payload.lua_scripts,
