@@ -21325,6 +21325,38 @@ function applyIframePolicy(html) {
   return { html: out, youtubeReplaced, stripped };
 }
 
+// src/bghtml/rewriter.ts
+function unprefixHtmlClassValue(value) {
+  if (!value)
+    return value;
+  const PREFIX = "x-risu-";
+  return value.split(/(\s+)/).map((seg) => seg.startsWith(PREFIX) ? seg.slice(PREFIX.length) : seg).join("");
+}
+function unprefixHtmlClasses(html) {
+  if (!html || html.length === 0)
+    return html;
+  return html.replace(/\bclass\s*=\s*(["'])([\s\S]*?)\1/g, (_match, quote, value) => `class=${quote}${unprefixHtmlClassValue(value)}${quote}`);
+}
+var NESTING_AT_RULES = new Set([
+  "media",
+  "supports",
+  "container",
+  "document",
+  "-moz-document",
+  "host",
+  "layer",
+  "scope"
+]);
+var DECLARATION_AT_RULES = new Set([
+  "font-face",
+  "page",
+  "property",
+  "counter-style",
+  "viewport",
+  "-ms-viewport"
+]);
+var KEYFRAMES_AT_RULES = new Set(["keyframes", "-webkit-keyframes", "-moz-keyframes", "-o-keyframes"]);
+
 // src/core/mappers/regex.ts
 var AT_ACTION_PREFIXES = [
   "@@emo",
@@ -21436,6 +21468,9 @@ function mapRegex(scripts, opts) {
       baseReplace = wrapForIslandTriggerIfNeeded(baseReplace);
     }
     baseReplace = normalizeReplaceStringForSanitizer(baseReplace);
+    if (effectivePhase.target === "display" && baseReplace.length > 0) {
+      baseReplace = unprefixHtmlClasses(baseReplace);
+    }
     const baseHasMacros = baseReplace.indexOf("{{") >= 0 || findHasCbs;
     const hasCaptureRefs = /\$(?:\d+|&|`|'|<[^>]+>)/.test(baseReplace);
     const baseSubstitute = baseHasMacros ? hasCaptureRefs ? "after" : "escaped" : "none";
@@ -30543,11 +30578,14 @@ function projectModuleRegexEntries(moduleId, moduleName, characterId, raw, idGen
       continue;
     const eo = e;
     const findRegex = typeof eo["in"] === "string" ? eo["in"] : "";
-    const replaceString2 = typeof eo["out"] === "string" ? eo["out"] : "";
+    let replaceString2 = typeof eo["out"] === "string" ? eo["out"] : "";
     if (findRegex.length === 0)
       continue;
     const ruleType = typeof eo["type"] === "string" ? eo["type"] : "editdisplay";
     const { placement, target, disabled } = riskCustomScriptTypeToLumi(ruleType);
+    if (target === "display" && replaceString2.length > 0) {
+      replaceString2 = unprefixHtmlClasses(replaceString2);
+    }
     let flags = typeof eo["flag"] === "string" ? eo["flag"] : "";
     flags = flags.replace(/[^dgimsuvy]/g, "");
     flags = [...new Set(flags.split(""))].join("");
@@ -32677,6 +32715,64 @@ async function dispatchManualTrigger(chatId, triggerName, triggerId) {
   await refreshBgHtml(active, chatId);
   await refreshVariables(active, chatId);
 }
+async function dispatchButtonClick(chatId, btn, btnId) {
+  const active = await ensureActiveCardForChat(chatId, null);
+  if (!active) {
+    log7.warn(`dispatchButtonClick: no active card for chatId=${chatId} \u2014 skip`);
+    return;
+  }
+  const characterId = active.card.character_id;
+  const triggers2 = active.card.risuPayload.triggers ?? [];
+  const luaTriggers = triggers2.filter((t) => Array.isArray(t.effect) && t.effect[0] && t.effect[0].type === "triggerlua");
+  if (luaTriggers.length === 0) {
+    log7.warn(`dispatchButtonClick: no triggerlua on character=${characterId} \u2014 Risu would no-op`);
+    return;
+  }
+  log7.info(`dispatchButtonClick: btn="${btn}" btnId=${btnId ?? "<none>"} lua=${luaTriggers.length} chatId=${chatId}`);
+  const api = makeSpindleHost({ chatId, characterId, userId: getUserId() });
+  const scriptNS = makeDispatcherScriptNS();
+  const effectiveId = btnId ?? String(Math.random()).slice(2, 10);
+  const t0 = Date.now();
+  for (const trigger of luaTriggers) {
+    const firstEffect = trigger.effect[0];
+    if (!firstEffect)
+      continue;
+    const luaCode = String(firstEffect.code ?? "");
+    if (luaCode.length === 0)
+      continue;
+    try {
+      const settings = getCachedSettingsSync(getUserId());
+      const auxDebugCapture = makeAuxDebugCapture(chatId, settings);
+      const runtime2 = await makeRisuTriggerRuntime(api, { characterId }, scriptNS, {
+        characterId,
+        binding: "manual",
+        chatId,
+        rememberOurWrite,
+        stateChanged: makeStateChangedCallback(chatId),
+        auxConnectionId: settings.auxConnectionId,
+        auxModelOverride: settings.auxModelOverride,
+        auxSamplers: settings.auxSamplers,
+        submodelConnectionId: settings.submodelConnectionId,
+        submodelModelOverride: settings.submodelModelOverride,
+        submodelSamplers: settings.submodelSamplers,
+        ...auxDebugCapture ? { auxDebugCapture } : {},
+        resolveTemplate: (text) => resolveReadonly(text, chatId, characterId, { cbsContext: true })
+      });
+      log7.info(`dispatchButtonClick: invoking onButtonClick args=[${effectiveId}, ${btn}] chatId=${chatId}`);
+      await runtime2.runLua(luaCode, {
+        entry: "onButtonClick",
+        args: [effectiveId, btn]
+      });
+      await runtime2.flush?.();
+    } catch (err) {
+      log7.error(`dispatchButtonClick: Lua failed btn="${btn}": ${errMsg(err)}`);
+    }
+  }
+  log7.info(`dispatchButtonClick: done btn="${btn}" elapsed=${Date.now() - t0}ms`);
+  invalidateRenderMcpForChat(chatId);
+  await refreshBgHtml(active, chatId);
+  await refreshVariables(active, chatId);
+}
 async function refreshVariables(active, chatId, opts) {
   const userId = getUserId();
   if (userId === undefined) {
@@ -34742,6 +34838,11 @@ spindle.onFrontendMessage(async (raw, userId) => {
       case "manual_trigger": {
         log7.info(`manual_trigger: triggerName=${msg.triggerName} triggerId=${msg.triggerId ?? "<none>"} chatId=${msg.chatId}`);
         await dispatchManualTrigger(msg.chatId, msg.triggerName, msg.triggerId);
+        break;
+      }
+      case "manual_button_click": {
+        log7.info(`manual_button_click: btn=${msg.btn} btnId=${msg.btnId ?? "<none>"} chatId=${msg.chatId}`);
+        await dispatchButtonClick(msg.chatId, msg.btn, msg.btnId);
         break;
       }
       case "set_variable": {

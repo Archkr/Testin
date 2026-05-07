@@ -7736,11 +7736,27 @@ function rewriteClassValue(value) {
 function rewriteHtmlClasses(html) {
   return html.replace(/\bclass\s*=\s*(["'])([\s\S]*?)\1/g, (_match, quote, value) => `class=${quote}${rewriteClassValue(value)}${quote}`);
 }
+function unprefixCssClassSelectors(css) {
+  if (!css || css.length === 0)
+    return css;
+  try {
+    return rewriteCss(css, {
+      rewriteClassNames: false,
+      unprefixClassNames: true,
+      rewriteUniversalToHost: false,
+      scopePrefix: "",
+      killDataImports: true
+    });
+  } catch {
+    return css;
+  }
+}
 var DEFAULT_OPTS = {
   scopePrefix: ".chattext ",
   rewriteUniversalToHost: true,
   killDataImports: true,
-  rewriteClassNames: true
+  rewriteClassNames: true,
+  unprefixClassNames: false
 };
 function rewriteCss(css, opts = {}) {
   const o = { ...DEFAULT_OPTS, ...opts };
@@ -8060,6 +8076,8 @@ function rewriteSelector(selector, opts) {
       }
       return `.${CLASS_PREFIX}${name}`;
     });
+  } else if (opts.unprefixClassNames) {
+    core = core.replace(/(?<![\\])\.x-risu-(-?[_a-zA-Z][\w-]*)/g, (_m, name) => `.${name}`);
   }
   if (opts.rewriteUniversalToHost) {
     core = rewriteUniversalLead(core);
@@ -8264,6 +8282,7 @@ function setupBgHtmlRenderer(ctx, flog, islandStyles) {
           rewriteUniversalToHost: true,
           rewriteClassNames: false
         });
+        chatBundle = { ...chatBundle, css: unprefixCssClassSelectors(chatBundle.css) };
       } catch (err) {
         flog.error("bg-html renderer: chat-scope rewrite failed", err);
         chatBundle = null;
@@ -8276,6 +8295,7 @@ function setupBgHtmlRenderer(ctx, flog, islandStyles) {
             rewriteUniversalToHost: false,
             rewriteClassNames: false
           });
+          islandBundle = { ...islandBundle, css: unprefixCssClassSelectors(islandBundle.css) };
         } catch (err) {
           flog.error("bg-html renderer: island-style rewrite failed", err);
           islandBundle = null;
@@ -8290,7 +8310,7 @@ function setupBgHtmlRenderer(ctx, flog, islandStyles) {
           flog.info(`bg-html renderer: island-styles updated css_len=${islandCss.length} (raw=${islandBundle.css.length}, @import stripped)`);
         }
         const crossRuleParts = msg.crossRuleStyles ?? [];
-        const cleanedParts = crossRuleParts.map((p) => stripCssImports(p));
+        const cleanedParts = crossRuleParts.map((p) => unprefixCssClassSelectors(stripCssImports(p)));
         islandStyles.setCrossRuleSheets(cleanedParts);
       }
       if (chatBundle) {
@@ -8301,7 +8321,7 @@ function setupBgHtmlRenderer(ctx, flog, islandStyles) {
         const bubbleContainment = `[data-message-id] { overflow: visible !important; contain: none !important; }
 `;
         const crossRuleParts = msg.crossRuleStyles ?? [];
-        const wrappedCrossRule = crossRuleParts.map((p) => stripCssImports(p)).filter((p) => p.trim().length > 0).map((p) => `[data-message-id] [data-component="MessageContent"], .lumi-message-portal-wrapper {
+        const wrappedCrossRule = crossRuleParts.map((p) => unprefixCssClassSelectors(stripCssImports(p))).filter((p) => p.trim().length > 0).map((p) => `[data-message-id] [data-component="MessageContent"], .lumi-message-portal-wrapper {
 ${p}
 }
 `).join(`
@@ -12360,23 +12380,35 @@ function setup(ctx) {
     if (!el)
       return;
     const triggerName = el.getAttribute("risu-trigger");
-    if (!triggerName)
+    const btn = triggerName ? null : el.getAttribute("risu-btn");
+    if (!triggerName && !btn)
       return;
-    const triggerId = el.getAttribute("risu-id") ?? undefined;
+    const idAttr = el.getAttribute("risu-id") ?? undefined;
     const chatId = activeRisuChatId;
     if (!chatId) {
-      flog2.warn(`manual-trigger click: active chat isn't a lumirealm chat, ignoring triggerName=${triggerName}`);
+      const label = triggerName ?? `btn=${btn}`;
+      flog2.warn(`manual click: active chat isn't a lumirealm chat, ignoring ${label}`);
       return;
     }
     e.preventDefault();
     e.stopPropagation();
-    flog2.info(`manual-trigger click: triggerName=${triggerName} triggerId=${triggerId ?? "<none>"} chatId=${chatId}`);
-    sendToBackend({
-      type: "manual_trigger",
-      triggerName,
-      ...triggerId !== undefined ? { triggerId } : {},
-      chatId
-    });
+    if (triggerName) {
+      flog2.info(`manual-trigger click: triggerName=${triggerName} triggerId=${idAttr ?? "<none>"} chatId=${chatId}`);
+      sendToBackend({
+        type: "manual_trigger",
+        triggerName,
+        ...idAttr !== undefined ? { triggerId: idAttr } : {},
+        chatId
+      });
+    } else if (btn) {
+      flog2.info(`manual-button click: btn=${btn} btnId=${idAttr ?? "<none>"} chatId=${chatId}`);
+      sendToBackend({
+        type: "manual_button_click",
+        btn,
+        ...idAttr !== undefined ? { btnId: idAttr } : {},
+        chatId
+      });
+    }
   };
   document.addEventListener("click", onClickCapture, true);
   cleanups.push(() => document.removeEventListener("click", onClickCapture, true));
