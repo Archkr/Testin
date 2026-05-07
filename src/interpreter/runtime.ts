@@ -63,20 +63,16 @@ function warnCbsUnresolvedOnce(api: HostApi): void {
 import {
   type DispatchContext,
   type AuxDebugCaptureEvent,
-  setDispatchContext,
   getDispatchContext,
 } from './runtime/dispatch-context.js';
 export {
-  setDispatchContext,
   getDispatchContext,
+  withDispatchContext,
 } from './runtime/dispatch-context.js';
 export type { AuxDebugCaptureEvent } from './runtime/dispatch-context.js';
 
 import { loadVars, saveVars } from './runtime/chat-state.js';
-
-// Stack of inherited varsCache. Nested runTrigger shares parent's pending
-// writes by reference, skipping reload-from-storage. Pop on throw via try/finally.
-const _inheritedVarsCacheStack: Array<Record<string, string>> = [];
+import { inheritedVarsAls, withInheritedVarsCache } from './runtime/als.js';
 
 export { compareValues } from './runtime/compare.js';
 export { applyMatchTemplate } from './runtime/match-template.js';
@@ -239,6 +235,10 @@ export async function makeRisuTriggerRuntime(
   const submodelSamplers = opts.submodelSamplers ?? dispatchCtx.submodelSamplers ?? auxSamplers;
   const auxDebugCapture: ((event: AuxDebugCaptureEvent) => void) | undefined =
     opts.auxDebugCapture ?? dispatchCtx.auxDebugCapture;
+  // Bind at factory time so cbs() invoked from Lua resolves against the
+  // user this runtime was built for, not whoever last set the global.
+  const capturedResolveTemplate: ((text: string) => Promise<string>) | undefined =
+    opts.resolveTemplate ?? dispatchCtx.resolveTemplate;
   const auxParamsWire = samplersToWire(auxSamplers);
   const submodelParamsWire = samplersToWire(submodelSamplers);
   function notifyStateChanged(source: string): void {
@@ -285,8 +285,9 @@ export async function makeRisuTriggerRuntime(
   let isInheritedVarsCache = false;
   let _tVars = 0;
   let _varsSrc: 'inherited' | 'preloaded' | 'fetched' = 'fetched';
-  if (_inheritedVarsCacheStack.length > 0) {
-    varsCache = _inheritedVarsCacheStack[_inheritedVarsCacheStack.length - 1]!;
+  const inheritedFrame = inheritedVarsAls.getStore();
+  if (inheritedFrame) {
+    varsCache = inheritedFrame;
     isInheritedVarsCache = true;
     _varsSrc = 'inherited';
   } else if (preloaded?.varsCache) {
@@ -511,8 +512,7 @@ export async function makeRisuTriggerRuntime(
 
   async function runTrigger(name: unknown): Promise<void> {
     const candidates = ['risu-manual-' + toStr(name), toStr(name)];
-    _inheritedVarsCacheStack.push(varsCache);
-    try {
+    await withInheritedVarsCache(varsCache, async () => {
       for (const n of candidates) {
         try {
           const mod = await scriptNs.require(n);
@@ -523,9 +523,7 @@ export async function makeRisuTriggerRuntime(
           }
         } catch { /* try next */ }
       }
-    } finally {
-      _inheritedVarsCacheStack.pop();
-    }
+    });
   }
 
   // Risu dropped triggercode; runCode is a no-op for parity.
@@ -736,7 +734,10 @@ export async function makeRisuTriggerRuntime(
       // Risu parity: user-facing `cbs` is sync. The lua-bridge prelude wraps `cbsMain():await()` so cards calling `cbs("...")` get a string.
       cbsMain: async (value: unknown): Promise<string> => {
         const text = toStr(value);
-        const resolver = opts.resolveTemplate ?? getDispatchContext()?.resolveTemplate;
+        // Closure-captured resolver. Late-reading the dispatch context here
+        // would route cbs() through whichever user's setDispatchContext won
+        // the race, leaking their data into this runtime's Lua.
+        const resolver = capturedResolveTemplate;
         if (resolver) {
           try {
             return await resolver(text);
@@ -1002,6 +1003,11 @@ export async function makeRisuTriggerRuntime(
 
   async function flush(): Promise<void> {
     const flog = _logFlush.info;
+    // Persist on dirty=true even when frame is inherited: Risu's two-stage
+    // cycle (parent fires runTrigger, child writes, parent returns without
+    // writing itself) would lose child-only writes if we gated, since
+    // parent's own dirty stays false and its flush no-ops. inheritedVarsAls
+    // prevents cross-user mixing at source so no extra gate needed.
     flog(`START dirty=${dirty.value} varsCache_keys=${Object.keys(varsCache).length} binding=${binding} inherited=${isInheritedVarsCache}`);
     if (Object.keys(varsCache).length > 0) {
       const preview = Object.entries(varsCache).slice(0, 10).map(([k,v]) => `${k}=${JSON.stringify(String(v).slice(0, 40))}`).join(' ');

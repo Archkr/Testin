@@ -1,14 +1,14 @@
 // Side-channel for non-serialisable dispatch values (Functions) that can't
-// ride in compiled triggers' JSON-frozen rtOpts. Set before invoking each
-// trigger, cleared via try/finally on return. Single-threaded JS event loop
-// guarantees no races.
+// ride in compiled triggers' JSON-frozen rtOpts.
+
+import { AsyncLocalStorage } from 'node:async_hooks';
 
 export interface DispatchContext {
   chatId?: string;
   rememberOurWrite?: (chatId: string, msgId: string, content: string) => void;
   binding?: string;
   stateChanged?: () => void;
-  /** Aux model routing for Lua's `axLLMMain`. Null → default connection. */
+  /** Aux model routing for Lua's `axLLMMain`. Null = default connection. */
   auxConnectionId?: string | null;
   auxModelOverride?: string | null;
   /** Per-sampler overrides on top of the resolved connection's preset. */
@@ -44,31 +44,28 @@ export interface DispatchContext {
 
 export interface AuxDebugCaptureEvent {
   readonly kind: 'request' | 'response' | 'error';
-  /** Which LLM channel fired this. `aux` = `axLLMMain`/`axLLM`/`LLMMain`,
-   *  `submodel` = V2-effect `runLLM(model='submodel')`. The settings flags
-   *  (`auxDebugCaptureRequest`/`Response`) gate BOTH channels uniformly. */
+  /** `aux` = `axLLMMain`/`axLLM`/`LLMMain`, `submodel` = V2 `runLLM(model='submodel')`. */
   readonly channel: 'aux' | 'submodel';
-  /** Connection actually dispatched against. For `channel: 'aux'` this is
-   *  `settings.auxConnectionId`; for `'submodel'` this is
-   *  `settings.submodelConnectionId` (or aux as fallback). `null` = "use user's default". */
+  /** Connection actually dispatched against. `null` means the user's default. */
   readonly auxConnectionId: string | null;
-  /** Model actually dispatched against (per-channel). `null` = "use connection's own model". */
+  /** Model actually dispatched against. `null` means the connection's own model. */
   readonly auxModelOverride: string | null;
   /** Milliseconds since dispatch start. `null` for `kind:'request'`. */
   readonly elapsedMs: number | null;
-  /** Kind-specific payload: `request` = generate args, `response` = `{content}`, `error` = `{message}`. */
+  /** Kind-specific payload. */
   readonly payload: unknown;
 }
 
-let currentDispatchContext: DispatchContext | null = null;
+// Concurrent dispatches for different users get isolated frames across awaits.
+const dispatchAls = new AsyncLocalStorage<DispatchContext>();
 
-/** Set the per-dispatch context. Clear with try/finally. Returns prior value. */
-export function setDispatchContext(ctx: DispatchContext | null): DispatchContext | null {
-  const prior = currentDispatchContext;
-  currentDispatchContext = ctx;
-  return prior;
+export function withDispatchContext<T>(
+  ctx: DispatchContext,
+  fn: () => Promise<T> | T,
+): Promise<T> | T {
+  return dispatchAls.run(ctx, fn) as Promise<T> | T;
 }
 
 export function getDispatchContext(): DispatchContext | null {
-  return currentDispatchContext;
+  return dispatchAls.getStore() ?? null;
 }

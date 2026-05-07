@@ -1,22 +1,42 @@
-// Pending promises for `request_alert` round-trips. The backend dispatch
-// for `alert_dismissed` calls resolveAlertDismissal; the spindle-host
-// alert() shim awaits via awaitAlertDismissal.
+interface PendingAlert {
+  readonly ownerUserId: string;
+  readonly resolve: () => void;
+}
 
-const pending = new Map<string, () => void>();
+const pending = new Map<string, PendingAlert>();
 
-export function awaitAlertDismissal(requestId: string, timeoutMs = 60_000): Promise<void> {
+export function awaitAlertDismissal(
+  requestId: string,
+  ownerUserId: string,
+  timeoutMs = 60_000,
+): Promise<void> {
   return new Promise((resolve) => {
-    pending.set(requestId, resolve);
+    pending.set(requestId, { ownerUserId, resolve });
     setTimeout(() => {
-      if (pending.delete(requestId)) resolve();
+      const cur = pending.get(requestId);
+      if (cur && cur.ownerUserId === ownerUserId) {
+        pending.delete(requestId);
+        resolve();
+      }
     }, timeoutMs);
   });
 }
 
-export function resolveAlertDismissal(requestId: string): void {
-  const r = pending.get(requestId);
-  if (r) {
-    pending.delete(requestId);
-    r();
+export interface ResolveAlertResult {
+  readonly ok: boolean;
+  readonly reason?: 'unknown_request' | 'ownership_mismatch';
+}
+
+export function resolveAlertDismissal(
+  requestId: string,
+  responderUserId: string | undefined,
+): ResolveAlertResult {
+  const rec = pending.get(requestId);
+  if (!rec) return { ok: false, reason: 'unknown_request' };
+  if (responderUserId === undefined || rec.ownerUserId !== responderUserId) {
+    return { ok: false, reason: 'ownership_mismatch' };
   }
+  pending.delete(requestId);
+  rec.resolve();
+  return { ok: true };
 }

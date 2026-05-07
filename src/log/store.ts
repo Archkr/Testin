@@ -30,6 +30,8 @@ export interface LogEvent {
   level: LogLevel;
   category: string;
   message: string;
+  // `null` for system/boot events with no user attribution.
+  userId?: string | null;
 }
 
 export interface LogState {
@@ -47,24 +49,63 @@ const MAX_BYTES = 5 * 1024 * 1024;
 
 const STATE_STORAGE_KEY = 'lumirealm/log-state.json';
 
+const DEFAULT_STATE: LogState = { enabled: false, includeChatData: false, level: DEFAULT_LOG_LEVEL };
+
+const SYSTEM_KEY: string = '__SYSTEM__';
+
 class LogStore {
   private events: LogEvent[] = [];
   private bytes = 0;
-  private state: LogState = { enabled: false, includeChatData: false, level: DEFAULT_LOG_LEVEL };
+  // SYSTEM_KEY entry is the single-user fallback for the frontend bundle and
+  // for backend boot before any user has connected.
+  private statesByUser = new Map<string, LogState>();
 
-  isEnabled(): boolean { return this.state.enabled; }
-  shouldRedact(): boolean { return !this.state.includeChatData; }
-  getLevel(): LogThreshold { return this.state.level; }
-
-  shouldEmit(level: LogLevel): boolean {
-    if (!this.state.enabled) return false;
-    return meetsThreshold(level, this.state.level);
+  private keyOf(userId: string | null | undefined): string {
+    return typeof userId === 'string' && userId.length > 0 ? userId : SYSTEM_KEY;
   }
 
-  push(level: LogLevel, category: string, message: string): void {
-    if (!this.shouldEmit(level)) return;
-    const text = this.shouldRedact() ? redact(message) : message;
-    const ev: LogEvent = { ts: Date.now(), level, category, message: text };
+  private stateFor(userId: string | null | undefined): LogState {
+    return this.statesByUser.get(this.keyOf(userId)) ?? DEFAULT_STATE;
+  }
+
+  isEnabled(userId?: string | null): boolean {
+    return this.stateFor(userId).enabled;
+  }
+  shouldRedact(userId?: string | null): boolean {
+    return !this.stateFor(userId).includeChatData;
+  }
+  getLevel(userId?: string | null): LogThreshold {
+    return this.stateFor(userId).level;
+  }
+
+  // `null` userId is system-tagged (boot, sweep timers), visible to every
+  // user via snapshot, so emit if ANY user is enabled. `undefined` falls back the same way.
+  shouldEmit(level: LogLevel, userId?: string | null): boolean {
+    if (userId !== undefined && userId !== null) {
+      const s = this.stateFor(userId);
+      return s.enabled && meetsThreshold(level, s.level);
+    }
+    for (const s of this.statesByUser.values()) {
+      if (s.enabled && meetsThreshold(level, s.level)) return true;
+    }
+    return false;
+  }
+
+  push(level: LogLevel, category: string, message: string, userId?: string | null): void {
+    if (!this.shouldEmit(level, userId)) return;
+    let redactNow: boolean;
+    if (userId !== undefined) {
+      redactNow = !this.stateFor(userId).includeChatData;
+    } else {
+      // Conservative: redact if ANY observing user redacts.
+      redactNow = false;
+      for (const s of this.statesByUser.values()) {
+        if (s.enabled && !s.includeChatData) { redactNow = true; break; }
+      }
+    }
+    const text = redactNow ? redact(message) : message;
+    const tagged: string | null = typeof userId === 'string' && userId.length > 0 ? userId : null;
+    const ev: LogEvent = { ts: Date.now(), level, category, message: text, userId: tagged };
     const size = approxBytes(ev);
     this.events.push(ev);
     this.bytes += size;
@@ -74,29 +115,53 @@ class LogStore {
     }
   }
 
-  snapshot(): { events: readonly LogEvent[] } {
-    return { events: this.events.slice() };
+  snapshot(userId?: string | null): { events: readonly LogEvent[] } {
+    if (userId === undefined) return { events: this.events.slice() };
+    const target = typeof userId === 'string' && userId.length > 0 ? userId : null;
+    return { events: this.events.filter((e) => e.userId === target || e.userId === null) };
   }
 
-  clear(): void {
-    this.events = [];
-    this.bytes = 0;
+  clear(userId?: string | null): void {
+    if (userId === undefined) {
+      this.events = [];
+      this.bytes = 0;
+      return;
+    }
+    const target = typeof userId === 'string' && userId.length > 0 ? userId : null;
+    this.events = this.events.filter((e) => e.userId !== target && e.userId !== null);
+    this.bytes = this.events.reduce((a, e) => a + approxBytes(e), 0);
   }
 
-  getState(): LogStateSnapshot {
-    return { ...this.state, eventCount: this.events.length, bufferBytes: this.bytes };
+  getState(userId?: string | null): LogStateSnapshot {
+    const s = this.stateFor(userId);
+    let eventCount = 0;
+    let bufferBytes = 0;
+    if (userId === undefined) {
+      eventCount = this.events.length;
+      bufferBytes = this.bytes;
+    } else {
+      const target = typeof userId === 'string' && userId.length > 0 ? userId : null;
+      for (const e of this.events) {
+        if (e.userId === target || e.userId === null) {
+          eventCount += 1;
+          bufferBytes += approxBytes(e);
+        }
+      }
+    }
+    return { ...s, eventCount, bufferBytes };
   }
 
-  setState(next: Partial<LogState>): LogStateSnapshot {
-    const before = this.state.enabled;
+  setState(next: Partial<LogState>, userId?: string | null): LogStateSnapshot {
+    const key = this.keyOf(userId);
+    const prior = this.statesByUser.get(key) ?? DEFAULT_STATE;
     const merged: LogState = {
-      enabled: next.enabled ?? this.state.enabled,
-      includeChatData: next.includeChatData ?? this.state.includeChatData,
-      level: isLogThreshold(next.level) ? next.level : this.state.level,
+      enabled: next.enabled ?? prior.enabled,
+      includeChatData: next.includeChatData ?? prior.includeChatData,
+      level: isLogThreshold(next.level) ? next.level : prior.level,
     };
-    this.state = merged;
-    if (!this.state.enabled && before) this.clear();
-    return this.getState();
+    this.statesByUser.set(key, merged);
+    if (!merged.enabled && prior.enabled) this.clear(userId);
+    return this.getState(userId);
   }
 }
 
@@ -143,13 +208,13 @@ export async function loadPersistedLogState(storage: StorageGetJson, userId: str
       enabled: got.enabled === true,
       includeChatData: got.includeChatData === true,
       level: isLogThreshold(got.level) ? got.level : DEFAULT_LOG_LEVEL,
-    });
+    }, userId);
   } catch { /* keep defaults */ }
 }
 
 export async function persistLogState(storage: StorageSetJson, userId: string): Promise<void> {
   try {
-    const s = logStore.getState();
+    const s = logStore.getState(userId);
     const payload: PersistedShape = { enabled: s.enabled, includeChatData: s.includeChatData, level: s.level };
     await storage.setJson(STATE_STORAGE_KEY, payload, { userId });
   } catch { /* swallow */ }

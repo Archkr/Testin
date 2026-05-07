@@ -32,6 +32,8 @@ export const GENERATION_ENDED_BINDINGS: readonly RisuBinding[] = [
 export interface ActiveCard {
   readonly card: StoredRisuCard;
   readonly chatId: string;
+  /** Owning user. Cache hits in cross-user requests must reject if mismatched. */
+  readonly ownerUserId: string;
   /** Raw lumirealm character data (carries user_overrides — esp.
    *  `default_variables_overrides` consumed by State → Variables → Default). */
   readonly lumirealm: LumirealmCharacterData;

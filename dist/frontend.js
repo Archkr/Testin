@@ -8816,29 +8816,57 @@ function meetsThreshold(call, threshold) {
   return LEVEL_RANK[call] <= LEVEL_RANK[threshold];
 }
 var MAX_BYTES = 5 * 1024 * 1024;
+var DEFAULT_STATE = { enabled: false, includeChatData: false, level: DEFAULT_LOG_LEVEL };
+var SYSTEM_KEY = "__SYSTEM__";
+
 class LogStore {
   events = [];
   bytes = 0;
-  state = { enabled: false, includeChatData: false, level: DEFAULT_LOG_LEVEL };
-  isEnabled() {
-    return this.state.enabled;
+  statesByUser = new Map;
+  keyOf(userId) {
+    return typeof userId === "string" && userId.length > 0 ? userId : SYSTEM_KEY;
   }
-  shouldRedact() {
-    return !this.state.includeChatData;
+  stateFor(userId) {
+    return this.statesByUser.get(this.keyOf(userId)) ?? DEFAULT_STATE;
   }
-  getLevel() {
-    return this.state.level;
+  isEnabled(userId) {
+    return this.stateFor(userId).enabled;
   }
-  shouldEmit(level) {
-    if (!this.state.enabled)
-      return false;
-    return meetsThreshold(level, this.state.level);
+  shouldRedact(userId) {
+    return !this.stateFor(userId).includeChatData;
   }
-  push(level, category, message) {
-    if (!this.shouldEmit(level))
+  getLevel(userId) {
+    return this.stateFor(userId).level;
+  }
+  shouldEmit(level, userId) {
+    if (userId !== undefined && userId !== null) {
+      const s = this.stateFor(userId);
+      return s.enabled && meetsThreshold(level, s.level);
+    }
+    for (const s of this.statesByUser.values()) {
+      if (s.enabled && meetsThreshold(level, s.level))
+        return true;
+    }
+    return false;
+  }
+  push(level, category, message, userId) {
+    if (!this.shouldEmit(level, userId))
       return;
-    const text = this.shouldRedact() ? redact(message) : message;
-    const ev = { ts: Date.now(), level, category, message: text };
+    let redactNow;
+    if (userId !== undefined) {
+      redactNow = !this.stateFor(userId).includeChatData;
+    } else {
+      redactNow = false;
+      for (const s of this.statesByUser.values()) {
+        if (s.enabled && !s.includeChatData) {
+          redactNow = true;
+          break;
+        }
+      }
+    }
+    const text = redactNow ? redact(message) : message;
+    const tagged = typeof userId === "string" && userId.length > 0 ? userId : null;
+    const ev = { ts: Date.now(), level, category, message: text, userId: tagged };
     const size = approxBytes(ev);
     this.events.push(ev);
     this.bytes += size;
@@ -8848,27 +8876,52 @@ class LogStore {
         this.bytes -= approxBytes(dropped);
     }
   }
-  snapshot() {
-    return { events: this.events.slice() };
+  snapshot(userId) {
+    if (userId === undefined)
+      return { events: this.events.slice() };
+    const target = typeof userId === "string" && userId.length > 0 ? userId : null;
+    return { events: this.events.filter((e) => e.userId === target || e.userId === null) };
   }
-  clear() {
-    this.events = [];
-    this.bytes = 0;
+  clear(userId) {
+    if (userId === undefined) {
+      this.events = [];
+      this.bytes = 0;
+      return;
+    }
+    const target = typeof userId === "string" && userId.length > 0 ? userId : null;
+    this.events = this.events.filter((e) => e.userId !== target && e.userId !== null);
+    this.bytes = this.events.reduce((a, e) => a + approxBytes(e), 0);
   }
-  getState() {
-    return { ...this.state, eventCount: this.events.length, bufferBytes: this.bytes };
+  getState(userId) {
+    const s = this.stateFor(userId);
+    let eventCount = 0;
+    let bufferBytes = 0;
+    if (userId === undefined) {
+      eventCount = this.events.length;
+      bufferBytes = this.bytes;
+    } else {
+      const target = typeof userId === "string" && userId.length > 0 ? userId : null;
+      for (const e of this.events) {
+        if (e.userId === target || e.userId === null) {
+          eventCount += 1;
+          bufferBytes += approxBytes(e);
+        }
+      }
+    }
+    return { ...s, eventCount, bufferBytes };
   }
-  setState(next) {
-    const before = this.state.enabled;
+  setState(next, userId) {
+    const key = this.keyOf(userId);
+    const prior = this.statesByUser.get(key) ?? DEFAULT_STATE;
     const merged = {
-      enabled: next.enabled ?? this.state.enabled,
-      includeChatData: next.includeChatData ?? this.state.includeChatData,
-      level: isLogThreshold(next.level) ? next.level : this.state.level
+      enabled: next.enabled ?? prior.enabled,
+      includeChatData: next.includeChatData ?? prior.includeChatData,
+      level: isLogThreshold(next.level) ? next.level : prior.level
     };
-    this.state = merged;
-    if (!this.state.enabled && before)
-      this.clear();
-    return this.getState();
+    this.statesByUser.set(key, merged);
+    if (!merged.enabled && prior.enabled)
+      this.clear(userId);
+    return this.getState(userId);
   }
 }
 var logStore = new LogStore;

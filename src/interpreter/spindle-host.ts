@@ -126,10 +126,10 @@ export function makeSpindleHost(ctx: SpindleHostCtx): HostApi {
       update: (id: string, patch: Partial<HostPersona>, uid?: string) => Promise<void>;
     };
     toast?: {
-      info: (msg: string, opts?: { title?: string }) => void;
-      success: (msg: string, opts?: { title?: string }) => void;
-      warning: (msg: string, opts?: { title?: string }) => void;
-      error: (msg: string, opts?: { title?: string }) => void;
+      info: (msg: string, opts?: { title?: string; duration?: number; userId?: string }) => void;
+      success: (msg: string, opts?: { title?: string; duration?: number; userId?: string }) => void;
+      warning: (msg: string, opts?: { title?: string; duration?: number; userId?: string }) => void;
+      error: (msg: string, opts?: { title?: string; duration?: number; userId?: string }) => void;
     };
     prompt?: {
       input: (o: { title: string; message?: string; placeholder?: string; defaultValue?: string; multiline?: boolean; userId?: string }) => Promise<{ value: string | null; cancelled: boolean }>;
@@ -190,11 +190,16 @@ export function makeSpindleHost(ctx: SpindleHostCtx): HostApi {
       toast: (msg: string, kind?: 'info' | 'error' | 'warning' | 'success') => {
         const t = anySpindle.toast;
         if (!t) return;
+        if (userId === undefined) {
+          log.warn(`toast: no userId in dispatch ctx, skipping (would broadcast)`);
+          return;
+        }
+        const opts = { userId };
         const k = kind ?? 'info';
-        if (k === 'error') t.error(msg);
-        else if (k === 'warning') t.warning(msg);
-        else if (k === 'success') t.success(msg);
-        else t.info(msg);
+        if (k === 'error') t.error(msg, opts);
+        else if (k === 'warning') t.warning(msg, opts);
+        else if (k === 'success') t.success(msg, opts);
+        else t.info(msg, opts);
       },
       prompt: async (message: string, defaultValue?: string): Promise<string | null> => {
         const p = anySpindle.prompt;
@@ -221,33 +226,36 @@ export function makeSpindleHost(ctx: SpindleHostCtx): HostApi {
           return !!res?.confirmed;
         } catch { return false; }
       },
-      // Risu scriptings.ts alertNormal/alertError. Frontend owns the modal
-      // (just message + OK button). Backend awaits `alert_dismissed`.
+      // Risu alertNormal/alertError port: FE owns the modal, BE awaits
+      // `alert_dismissed`.
       alert: async (message: string, kind?: 'info' | 'error' | 'warning' | 'success'): Promise<void> => {
         const sf = anySpindle.sendToFrontend;
-        if (typeof sf !== 'function') {
-          const t = anySpindle.toast;
-          t?.info?.(message);
+        if (typeof sf !== 'function' || userId === undefined) {
+          if (userId === undefined) log.warn(`alert: no userId in dispatch ctx, skipping (would broadcast)`);
+          else {
+            const t = anySpindle.toast;
+            t?.info?.(message, { userId });
+          }
           return;
         }
         const requestId = (globalThis.crypto?.randomUUID?.() ?? `alert-${Date.now()}-${Math.random()}`);
         const wireKind: 'info' | 'error' = kind === 'error' ? 'error' : 'info';
         try {
           sf({ type: 'request_alert', requestId, message, kind: wireKind }, userId);
-          await awaitAlertDismissal(requestId);
+          await awaitAlertDismissal(requestId, userId);
         } catch { /* swallow */ }
       },
       pick: async (title: string, options: readonly string[]): Promise<string | null> => {
         const sf = anySpindle.sendToFrontend;
-        if (typeof sf !== 'function' || options.length === 0) {
-          log.warn(`pick: no sendToFrontend or empty options (n=${options.length}) — returning null`);
+        if (typeof sf !== 'function' || options.length === 0 || userId === undefined) {
+          log.warn(`pick: no sendToFrontend or empty options (n=${options.length}) or no userId, returning null`);
           return null;
         }
         const requestId = (globalThis.crypto?.randomUUID?.() ?? `pick-${Date.now()}-${Math.random()}`);
         log.info(`pick: requestId=${requestId} title=${JSON.stringify(title.slice(0, 80))} options=${options.length}`);
         try {
           sf({ type: 'request_pick', requestId, title, options }, userId);
-          const v = await awaitPickResolution(requestId);
+          const v = await awaitPickResolution(requestId, userId);
           log.info(`pick: requestId=${requestId} resolved value=${JSON.stringify(v)}`);
           return v;
         } catch (err) {

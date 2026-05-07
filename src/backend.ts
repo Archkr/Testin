@@ -62,7 +62,7 @@ import {
   type CompiledTriggerEntry,
 } from './interpreter/dispatcher.js';
 import { makeSpindleHost } from './interpreter/spindle-host.js';
-import { makeRisuTriggerRuntime, setDispatchContext } from './interpreter/runtime.js';
+import { makeRisuTriggerRuntime, withDispatchContext } from './interpreter/runtime.js';
 import type { RisuBinding } from './interpreter/runtime.js';
 import { importCard, loadCatalog, type SpindleImportApi } from './payload/import.js';
 import { parseDirectLorebook } from './payload/lorebook-direct-import.js';
@@ -142,39 +142,70 @@ import {
 } from './log/store.js';
 import { resolveAlertDismissal } from './interpreter/alert-bridge.js';
 import { resolvePickResolution } from './interpreter/pick-bridge.js';
+import { userIdAls, currentUserId } from './interpreter/runtime/als.js';
 
 const EXTENSION_VERSION = '0.1.0';
+
+// ALS-backed user attribution: each event handler runs its body inside a
+// `userIdAls.run(userId, ...)` frame, so `currentUserId()` returns the firing
+// event's user across awaits without losing it to concurrent peer dispatches.
+// No fallback to module-global `activeUserId`: outside an ALS frame the log
+// entry is system-tagged (null) rather than mis-attributed to the last user.
+function logUid(): string | null {
+  return currentUserId() ?? null;
+}
+
+// Wraps a Spindle event handler so its body executes under the firing user's
+// ALS frame. System events without a userId run unwrapped (currentUserId
+// stays null, so log entries get tagged null = system).
+function userScoped(
+  handler: (raw: unknown, userId: string | undefined) => Promise<void>,
+): (raw: unknown, userId: string | undefined) => Promise<void> {
+  return (raw, userId) =>
+    userId
+      ? userIdAls.run(userId, () => handler(raw, userId))
+      : handler(raw, userId);
+}
+
+// Same idea for Lumi callbacks (macro/MCP/worldInfo) whose ctx already
+// carries userId. When undefined, runs unwrapped (system-tagged).
+function withMaybeUser<T>(
+  userId: string | undefined,
+  fn: () => Promise<T>,
+): Promise<T> {
+  return userId !== undefined ? (userIdAls.run(userId, fn) as Promise<T>) : fn();
+}
 
 const log = {
   error(msg: string): void {
     spindle.log.error(`[lumirealm] ${msg}`);
-    logStore.push('error', 'backend', msg);
+    logStore.push('error', 'backend', msg, logUid());
   },
   warn(msg: string): void {
     if (logStore.shouldEmit('warn')) spindle.log.warn(`[lumirealm] ${msg}`);
-    logStore.push('warn', 'backend', msg);
+    logStore.push('warn', 'backend', msg, logUid());
   },
   info(msg: string): void {
     if (logStore.shouldEmit('info')) spindle.log.info(`[lumirealm] ${msg}`);
-    logStore.push('info', 'backend', msg);
+    logStore.push('info', 'backend', msg, logUid());
   },
   debug(msg: string): void {
     if (logStore.shouldEmit('debug')) spindle.log.info(`[lumirealm] ${msg}`);
-    logStore.push('debug', 'backend', msg);
+    logStore.push('debug', 'backend', msg, logUid());
   },
   trace(msg: string): void {
     if (logStore.shouldEmit('trace')) spindle.log.info(`[lumirealm] ${msg}`);
-    logStore.push('trace', 'backend', msg);
+    logStore.push('trace', 'backend', msg, logUid());
   },
   /** @deprecated Alias for `debug`. */
   verbose(msg: string): void {
     if (logStore.shouldEmit('debug')) spindle.log.info(`[lumirealm] ${msg}`);
-    logStore.push('debug', 'backend', msg);
+    logStore.push('debug', 'backend', msg, logUid());
   },
   /** @deprecated Alias for `info`. */
   always(msg: string): void {
     if (logStore.shouldEmit('info')) spindle.log.info(`[lumirealm] ${msg}`);
-    logStore.push('info', 'backend', msg);
+    logStore.push('info', 'backend', msg, logUid());
   },
 };
 
@@ -184,32 +215,16 @@ log.info(`backend boot: version=${EXTENSION_VERSION}`);
 {
   const proc: { on?: (ev: string, cb: (...a: unknown[]) => void) => void } | undefined =
     (globalThis as { process?: { on?: (ev: string, cb: (...a: unknown[]) => void) => void } }).process;
-  let alertFired = false;
+  // Route to spindle.log only, not logStore: these fire outside any ALS frame
+  // so the message would be tagged null (visible in every user's export). The
+  // operator sees the error via Lumi server logs.
   proc?.on?.('unhandledRejection', (reason: unknown) => {
     const msg = reason instanceof Error ? (reason.stack ?? reason.message) : String(reason);
-    log.error(`unhandledRejection (suppressed, worker stays alive): ${msg.slice(0, 1200)}`);
-    if (!alertFired) {
-      alertFired = true;
-      try {
-        spindle.toast.error(
-          'lumirealm: a background task failed (' + (reason instanceof Error ? reason.message : String(reason)).slice(0, 160) + '). Check Logs for details.',
-          { title: 'lumirealm internal error' },
-        );
-      } catch { /* */ }
-    }
+    try { spindle.log.error(`[lumirealm] unhandledRejection (suppressed): ${msg.slice(0, 1200)}`); } catch { /* */ }
   });
   proc?.on?.('uncaughtException', (err: unknown) => {
     const msg = err instanceof Error ? (err.stack ?? err.message) : String(err);
-    log.error(`uncaughtException (suppressed, worker stays alive): ${msg.slice(0, 1200)}`);
-    if (!alertFired) {
-      alertFired = true;
-      try {
-        spindle.toast.error(
-          'lumirealm: an internal error occurred. Worker is still running. Check Logs for details.',
-          { title: 'lumirealm internal error' },
-        );
-      } catch { /* */ }
-    }
+    try { spindle.log.error(`[lumirealm] uncaughtException (suppressed): ${msg.slice(0, 1200)}`); } catch { /* */ }
   });
 }
 
@@ -289,7 +304,7 @@ const registerMacroInterceptor = (spindle as unknown as {
 }).registerMacroInterceptor;
 
 if (typeof registerMacroInterceptor === 'function') {
-  registerMacroInterceptor(async (ctx) => {
+  registerMacroInterceptor((ctx) => withMaybeUser(ctx.userId, async () => {
     const callId = ++diagInterceptorCall;
     const t0 = Date.now();
     const chatId = typeof ctx.env.chat?.id === 'string' ? (ctx.env.chat.id as string) : null;
@@ -322,6 +337,13 @@ if (typeof registerMacroInterceptor === 'function') {
         `macroInterceptor.exit #${callId} path=no_active_card chat=${chatId} ` +
           `elapsed=${Date.now() - t0}ms ⚠ falling back to Lumi native eval. ` +
           `activeCardByChat keys=[${[...activeCardByChat.keys()].map((k) => k.slice(0, 8)).join(',')}]`,
+      );
+      return;
+    }
+    if (ctx.userId && active.ownerUserId !== ctx.userId) {
+      log.warn(
+        `macroInterceptor.exit #${callId} path=owner_mismatch chat=${chatId} ` +
+          `cached=${active.ownerUserId} ctx=${ctx.userId} elapsed=${Date.now() - t0}ms`,
       );
       return;
     }
@@ -440,7 +462,7 @@ if (typeof registerMacroInterceptor === 'function') {
       const hasLuaTrigger = triggers.some(
         (t) => t.effect?.[0]?.type === 'triggerlua',
       );
-      if (hasLuaTrigger) {
+      if (hasLuaTrigger && ctx.userId !== undefined) {
         const editChain = triggers.map((t, i) => ({
           source: t,
           luaCode: luaScripts[i] ?? '',
@@ -449,7 +471,7 @@ if (typeof registerMacroInterceptor === 'function') {
           const editApi = makeSpindleHost({
             chatId,
             characterId: active.card.character_id,
-            userId: ctx.userId ?? '',
+            userId: ctx.userId,
           });
           const editScriptNS = makeDispatcherScriptNS();
           resolved = await runListenEditChain(
@@ -463,7 +485,7 @@ if (typeof registerMacroInterceptor === 'function') {
             {
               chatId,
               characterId: active.card.character_id,
-              resolveTemplate: (text: string) => resolveReadonly(text, chatId, active.card.character_id, { cbsContext: true }),
+              resolveTemplate: (text: string) => resolveReadonly(text, chatId, active.card.character_id, ctx.userId, { cbsContext: true }),
             },
           );
         } catch (err) {
@@ -512,7 +534,7 @@ if (typeof registerMacroInterceptor === 'function') {
       }
     }
     return resolved;
-  }, 100);
+  }), 100);
   log.info('macroInterceptor: registered at priority=100');
 } else {
   log.warn('macroInterceptor: NOT AVAILABLE on this Lumi build — extension macros will resolve via per-call RPC (slow for iteration-heavy cards, and FRAME-SHIFT UNRELIABLE without preprocessor coherence)');
@@ -537,7 +559,7 @@ if (typeof registerMessageContentProcessor === 'function') {
       `[render-mcp-cache] size=${stats.size} hits=${stats.hits} misses=${stats.misses} ratio=${ratio}%`,
     );
   }
-  registerMessageContentProcessor(async (ctx) => {
+  registerMessageContentProcessor((ctx) => withMaybeUser(ctx.userId, async () => {
     // Gate only on "is this a Risu-imported chat?". Earlier containsCbs gate
     // excluded display-regex rules that lack `{{…}}` markers, causing
     // Lua-emitted sentinels to land raw. Risu's semantic: run the pipeline
@@ -551,7 +573,7 @@ if (typeof registerMessageContentProcessor === 'function') {
     try {
       captureUserId(ctx.userId, 'messageContentProcessor');
       const tA = Date.now();
-      const active = await ensureActiveCardForChat(ctx.chatId, null);
+      const active = await ensureActiveCardForChat(ctx.chatId, null, ctx.userId);
       const tB = Date.now();
       if (!active) {
         log.trace(
@@ -621,7 +643,7 @@ if (typeof registerMessageContentProcessor === 'function') {
               {
                 chatId: ctx.chatId,
                 characterId: active.card.character_id,
-                resolveTemplate: (text: string) => resolveReadonly(text, ctx.chatId, active.card.character_id, { cbsContext: true }),
+                resolveTemplate: (text: string) => resolveReadonly(text, ctx.chatId, active.card.character_id, ctx.userId, { cbsContext: true }),
               },
             );
             chainMs = Date.now() - tChain;
@@ -664,6 +686,7 @@ if (typeof registerMessageContentProcessor === 'function') {
                 enc.text,
                 ctx.chatId,
                 active.card.character_id,
+                ctx.userId,
               );
               transformed = puaDecodeFeMacros(resolved, enc.tokens);
             } catch (err) {
@@ -748,7 +771,7 @@ if (typeof registerMessageContentProcessor === 'function') {
     } finally {
       mcpInFlight--;
     }
-  }, 100);
+  }), 100);
   log.info('messageContentProcessor: registered');
 } else {
   log.info('messageContentProcessor: not available on this Lumi build — falling back to reactive MESSAGE_EDITED resolve');
@@ -787,12 +810,24 @@ if (typeof registerInterceptor === 'function') {
     const ctx = (contextRaw ?? {}) as InterceptorContext;
     const chatId = typeof ctx.chatId === 'string' ? ctx.chatId : null;
     if (!chatId) return messages;
-    const userId = getUserId();
-    if (!userId) return messages;
+    // Lumi's interceptor ctx doesn't expose userId, so attribute via the
+    // chat → owner stamp from activeCardByChat (populated at chat-open).
+    let activeCandidate: ActiveCard | null | undefined = activeCardByChat.get(chatId);
+    let userId: string | undefined = activeCandidate?.ownerUserId;
+    if (!activeCandidate) {
+      // Cold-cache: Lumi fires this only for the user's active chat, so
+      // lastActiveChatByUser holds the mapping for cases that bypass MESSAGE_SENT.
+      for (const [uid, lastChat] of lastActiveChatByUser) {
+        if (lastChat === chatId) { userId = uid; break; }
+      }
+      if (!userId) return messages;
+      activeCandidate = await ensureActiveCardForChat(chatId, null, userId);
+      if (!activeCandidate) return messages;
+    }
+    const active: ActiveCard = activeCandidate;
+    const resolvedUserId = userId!;
 
-    const active = await ensureActiveCardForChat(chatId, null);
-    if (!active) return messages;
-
+    return userIdAls.run(resolvedUserId, async () => {
     let out: LlmMessage[] = messages;
 
     // ─── Tier 3: inject_at slot injection (Risu index.svelte.ts:520-585) ───
@@ -897,7 +932,7 @@ if (typeof registerInterceptor === 'function') {
             {
               chatId,
               characterId: active.card.character_id,
-              resolveTemplate: (text: string) => resolveReadonly(text, chatId, active.card.character_id, { cbsContext: true }),
+              resolveTemplate: (text: string) => resolveReadonly(text, chatId, active.card.character_id, userId, { cbsContext: true }),
             },
           );
           if (mutated !== orig) {
@@ -926,7 +961,7 @@ if (typeof registerInterceptor === 'function') {
         {
           chatId,
           characterId: active.card.character_id,
-          resolveTemplate: (text: string) => resolveReadonly(text, chatId, active.card.character_id, { cbsContext: true }),
+          resolveTemplate: (text: string) => resolveReadonly(text, chatId, active.card.character_id, userId, { cbsContext: true }),
         },
       );
       if (Array.isArray(mutated)) {
@@ -943,6 +978,7 @@ if (typeof registerInterceptor === 'function') {
     }
 
     return out;
+    });
   }, 100);
   log.info('interceptor: registered (editInput + editRequest)');
 } else {
@@ -958,7 +994,7 @@ if (registerWorldInfoInterceptor) {
   // log.always , bypasses the user's runtime-log toggle. The decorator
   // pipeline runs invisibly to the user otherwise.
   log.info(`[decorators] registerWorldInfoInterceptor wired at boot`);
-  registerWorldInfoInterceptor(async (ctx) => {
+  registerWorldInfoInterceptor((ctx) => withMaybeUser(ctx.userId, async () => {
     log.info(
       `[decorators] worldInfoInterceptor ENTER chat=${ctx.chatId} entries=${ctx.entries.length}`,
     );
@@ -1116,7 +1152,7 @@ if (registerWorldInfoInterceptor) {
       result.mutated = outcome.mutated.map((m) => ({ id: m.entryId, content: m.content }));
     }
     return result;
-  }, 100);
+  }), 100);
   log.info('worldInfoInterceptor: registered');
 } else {
   log.info('worldInfoInterceptor: not available on this Lumi build — Tier 2 lorebook decorators will not gate');
@@ -1126,7 +1162,7 @@ const variableState = new VariableStateStore();
 
 const toggleState = new ToggleStateStore();
 
-function scheduleStateChangedRefresh(chatId: string): void {
+function scheduleStateChangedRefresh(chatId: string, userId: string | undefined): void {
   log.info(`scheduleStateChangedRefresh: scheduling for chat=${chatId}`);
   scheduleDebouncedRefresh(
     chatId,
@@ -1142,16 +1178,16 @@ function scheduleStateChangedRefresh(chatId: string): void {
       // Lumi's per-touchedVars displayRegexContentCache, which together
       // re-fetch only the affected bubbles. No bake walk here.
       invalidateRenderMcpForChat(chatId);
-      await refreshBgHtml(active, chatId);
-      await refreshVariables(active, chatId);
+      await refreshBgHtml(active, chatId, userId);
+      await refreshVariables(active, chatId, userId);
       log.info(`scheduleStateChangedRefresh: completed chat=${chatId} elapsed=${Date.now() - t0}ms`);
     },
     (err) => log.error(`scheduleStateChangedRefresh: refresh threw chat=${chatId}: ${errMsg(err)}`),
   );
 }
 
-function makeStateChangedCallback(chatId: string): () => void {
-  return () => scheduleStateChangedRefresh(chatId);
+function makeStateChangedCallback(chatId: string, userId: string | undefined): () => void {
+  return () => scheduleStateChangedRefresh(chatId, userId);
 }
 
 // Per-user settings cache. Defaults to DEFAULT_SETTINGS until first read,
@@ -1198,10 +1234,12 @@ let auxDebugCounter = 0;
 function makeAuxDebugCapture(
   chatId: string | null,
   settings: RisuCompatSettings,
+  userId: string | undefined,
 ): ((event: import('./interpreter/runtime.js').AuxDebugCaptureEvent) => void) | undefined {
   if (!settings.auxDebugCaptureRequest && !settings.auxDebugCaptureResponse) {
     return undefined;
   }
+  if (userId === undefined) return undefined;
   return (event) => {
     const allowReq = settings.auxDebugCaptureRequest && event.kind === 'request';
     const allowRes = settings.auxDebugCaptureResponse && (event.kind === 'response' || event.kind === 'error');
@@ -1218,7 +1256,7 @@ function makeAuxDebugCapture(
         auxModelOverride: event.auxModelOverride,
         elapsedMs: event.elapsedMs,
         payload: event.payload,
-      });
+      }, userId);
     } catch (err) {
       log.warn(`aux_debug_capture send failed: ${errMsg(err)}`);
     }
@@ -1261,15 +1299,17 @@ async function listConnectionsForUser(userId: string): Promise<readonly SafeConn
   }
 }
 
-let activeUserId: string | null = null;
+// Tracks which userIds have already been bootstrapped by `captureUserId`,
+// so the settings preload + orphan-review prompt fire once per session.
+const capturedUserIds = new Set<string>();
 const activeCardByChat = new Map<string, ActiveCard>();
 // Tracks the last chat each user opened so a page-refresh (SETTINGS_UPDATED
 // dedup'd on same value) can repaint bg-html + portal state.
 const lastActiveChatByUser = new Map<string, string>();
+// characterIds are Lumi-wide unique UUIDs, so these maps don't need an
+// ownerUserId stamp. Their entries cache server-side derived data (compiled
+// trigger AsyncFunction bodies, world-book-id snapshots for the cascade).
 const compiledByCharacter = new Map<string, readonly CompiledTriggerEntry[]>();
-
-// Snapshot of world_book_ids at active-card-load time. Lumi has no FK
-// cascade on character delete; without this, world_books orphan on delete.
 const worldBookIdsByCharacter = new Map<string, readonly string[]>();
 
 function journalStorage(): JournalStorage {
@@ -1355,9 +1395,8 @@ async function backfillImageJournalIfMissing(
   characterId: string,
   avatarId: string | null,
   card: { asset_index: Readonly<Record<string, AssetIndexEntry>>; emotion_index: Readonly<Record<string, AssetIndexEntry>> },
+  userId: string,
 ): Promise<void> {
-  const userId = activeUserId;
-  if (!userId) return;
   try {
     const existing = await readImageJournalFile(journalStorage(), userId, characterId);
     if (existing) return;
@@ -1422,10 +1461,10 @@ interface SpindleModalConfirmLike {
   }) => Promise<{ confirmed: boolean }>;
 }
 
-let orphanReviewPromptedThisBoot = false;
+const orphanReviewPromptedFor = new Set<string>();
 async function promptOrphanReviewIfAny(userId: string): Promise<void> {
-  if (orphanReviewPromptedThisBoot) return;
-  orphanReviewPromptedThisBoot = true;
+  if (orphanReviewPromptedFor.has(userId)) return;
+  orphanReviewPromptedFor.add(userId);
   const tStart = Date.now();
   const detected = await detectDeletedWhileOff(userId);
   const charCount = detected.characterIds.length;
@@ -1479,7 +1518,7 @@ async function promptOrphanReviewIfAny(userId: string): Promise<void> {
   // manually via Settings to Cleanup.
   if (result === null) {
     try {
-      spindle.toast.warning(
+      toastFor(userId, 'warning',
         `Found leftover image journals for ${summarySubject}. ` +
           `Open Settings, Cleanup to review orphaned image assets.`,
         { title: 'lumirealm: leftover image entries' },
@@ -1505,7 +1544,7 @@ async function promptOrphanReviewIfAny(userId: string): Promise<void> {
     `orphan-review: confirmed=${result.confirmed} cleared chars=${charCount} modules=${moduleCount}`,
   );
   if (result.confirmed) {
-    send({ type: 'open_settings_cleanup' });
+    send({ type: 'open_settings_cleanup' }, userId);
   }
 }
 
@@ -1725,6 +1764,7 @@ interface PendingImportCompletion {
   hasPendingSvgRaster: boolean;
   characterName: string;
   startedAt: number;
+  ownerUserId: string;
 }
 const pendingImportCompletions = new Map<string, PendingImportCompletion>();
 
@@ -1735,6 +1775,7 @@ let assetUploadsInFlight = 0;
 
 type OperationPhase = 'started' | 'progress' | 'done' | 'error';
 function emitOperationProgress(
+  userId: string,
   operationId: string,
   phase: OperationPhase,
   title: string,
@@ -1750,7 +1791,7 @@ function emitOperationProgress(
     message,
     fraction,
     ...(error !== undefined ? { error } : {}),
-  });
+  }, userId);
 }
 
 async function applySvgRasterIndex(args: {
@@ -1835,7 +1876,7 @@ async function applySvgRasterIndex(args: {
         folder: (r as { folder?: string }).folder ?? '',
         metadata: { ...((r as { metadata?: Record<string, unknown> }).metadata ?? {}) },
       })) as never,
-    });
+    }, userId);
   }
 
   const newSvgImageIds = Object.values(markerToImageId).filter(
@@ -1865,10 +1906,10 @@ async function applySvgRasterIndex(args: {
     );
     for (const chatId of evictedChatIds) {
       try {
-        const reloaded = await ensureActiveCardForChat(chatId, null);
+        const reloaded = await ensureActiveCardForChat(chatId, null, userId);
         if (reloaded) {
           invalidateRenderMcpForChat(chatId);
-          await refreshBgHtml(reloaded, chatId);
+          await refreshBgHtml(reloaded, chatId, userId);
         }
       } catch (err) {
         log.warn(`applySvgRasterIndex: refresh chat=${chatId} threw: ${errMsg(err)}`);
@@ -1896,9 +1937,9 @@ async function maybeFinalizeImport(characterId: string): Promise<void> {
     message: `Imported ${pending.characterName}`,
     fraction: 1,
     characterId,
-  });
+  }, pending.ownerUserId);
   try {
-    pushCards(await listCards());
+    pushCards(await listCards(pending.ownerUserId), pending.ownerUserId);
   } catch (err) {
     log.warn(`import.finalize: pushCards failed — ${errMsg(err)}`);
   }
@@ -1911,6 +1952,7 @@ interface ImportSession {
   readonly totalBytes: number;
   readonly totalChunks: number;
   readonly buffer: (Uint8Array | null)[];
+  readonly ownerUserId: string;
   receivedBytes: number;
   receivedChunks: number;
   startedAt: number;
@@ -1918,6 +1960,24 @@ interface ImportSession {
 }
 const importSessions = new Map<string, ImportSession>();
 const IMPORT_SESSION_TIMEOUT_MS = 5 * 60 * 1000; // 5 min
+
+// Bound FE-supplied counts so a malicious init can't OOM the worker via
+// `new Array(totalChunks).fill(null)`. 4096 × 40KB raw covers any real card.
+const MAX_UPLOAD_CHUNKS = 4096;
+const MAX_UPLOAD_BYTES = 256 * 1024 * 1024; // 256 MB
+
+function validateUploadShape(
+  totalBytes: unknown,
+  totalChunks: unknown,
+): { ok: true } | { ok: false; reason: string } {
+  if (typeof totalBytes !== 'number' || !Number.isInteger(totalBytes) || totalBytes < 0 || totalBytes > MAX_UPLOAD_BYTES) {
+    return { ok: false, reason: `totalBytes out of range (max ${MAX_UPLOAD_BYTES})` };
+  }
+  if (typeof totalChunks !== 'number' || !Number.isInteger(totalChunks) || totalChunks < 1 || totalChunks > MAX_UPLOAD_CHUNKS) {
+    return { ok: false, reason: `totalChunks out of range (max ${MAX_UPLOAD_CHUNKS})` };
+  }
+  return { ok: true };
+}
 
 function sweepStaleSessions(): void {
   const now = Date.now();
@@ -1936,31 +1996,73 @@ if (typeof (sweepTimer as { unref?: () => void }).unref === 'function') {
   (sweepTimer as { unref: () => void }).unref();
 }
 
-function getUserId(): string | undefined {
-  return activeUserId ?? undefined;
-}
-
 function userStorage(): UserStorageLike {
   return spindle.userStorage as unknown as UserStorageLike;
 }
 
-function send(msg: BackendToFrontend): void {
-  spindle.sendToFrontend(msg);
+function send(msg: BackendToFrontend, userId: string | undefined): void {
+  // Refuse broadcast on undefined: operator-scoped sendToFrontend without a
+  // userId fans out to every connected user, leaking a single user's reply.
+  if (userId === undefined) {
+    log.error(`send: refusing to broadcast type=${msg.type} (no userId)`);
+    return;
+  }
+  spindle.sendToFrontend(msg, userId);
 }
 
-const pendingConsents = new Map<string, (confirmed: boolean) => void>();
-let consentChain: Promise<unknown> = Promise.resolve();
+function toastFor(
+  userId: string | undefined,
+  kind: 'success' | 'warning' | 'error' | 'info',
+  message: string,
+  options?: { title?: string; duration?: number },
+): void {
+  const t = spindle.toast as unknown as
+    | Record<typeof kind, (m: string, o: { title?: string; duration?: number; userId?: string }) => void>
+    | undefined;
+  if (!t) return;
+  if (userId === undefined) {
+    log.warn(`toastFor(broadcast): no userId for kind=${kind}, fanning out to all users`);
+    t[kind](message, options ?? {});
+    return;
+  }
+  t[kind](message, { ...(options ?? {}), userId });
+}
+
+interface PendingConsent {
+  readonly ownerUserId: string;
+  readonly resolver: (confirmed: boolean) => void;
+}
+const pendingConsents = new Map<string, PendingConsent>();
+// Per-user serialization: user A's consent prompt must not block user B's.
+const consentChainByUser = new Map<string, Promise<unknown>>();
+// Self-heal window for stuck FE: a disconnected client never replies, so
+// without this the consent chain for that user blocks every later prompt.
+const CONSENT_TIMEOUT_MS = 5 * 60_000;
+
 function requestConsent(opts: {
   title: string;
   message: string;
   confirmLabel: string;
   cancelLabel: string;
-}): Promise<{ confirmed: boolean }> {
+}, userId: string): Promise<{ confirmed: boolean }> {
   const run = (): Promise<{ confirmed: boolean }> =>
     new Promise((resolve) => {
       const requestId = crypto.randomUUID();
-      pendingConsents.set(requestId, (confirmed) => {
-        resolve({ confirmed });
+      const timeoutHandle = setTimeout(() => {
+        if (!pendingConsents.has(requestId)) return;
+        pendingConsents.delete(requestId);
+        log.warn(`requestConsent: timed out requestId=${requestId} userId=${userId} (auto-decline)`);
+        resolve({ confirmed: false });
+      }, CONSENT_TIMEOUT_MS);
+      if (typeof (timeoutHandle as { unref?: () => void }).unref === 'function') {
+        (timeoutHandle as { unref: () => void }).unref();
+      }
+      pendingConsents.set(requestId, {
+        ownerUserId: userId,
+        resolver: (confirmed) => {
+          clearTimeout(timeoutHandle);
+          resolve({ confirmed });
+        },
       });
       send({
         type: 'consent_prompt',
@@ -1969,22 +2071,23 @@ function requestConsent(opts: {
         message: opts.message,
         confirmLabel: opts.confirmLabel,
         cancelLabel: opts.cancelLabel,
-      });
-      log.info(`requestConsent: dispatched requestId=${requestId} title="${opts.title}"`);
+      }, userId);
+      log.info(`requestConsent: dispatched requestId=${requestId} userId=${userId} title="${opts.title}"`);
     });
-  const result = consentChain.then(run, run);
-  consentChain = result.catch(() => undefined);
+  const prior = consentChainByUser.get(userId) ?? Promise.resolve();
+  const result = prior.then(run, run);
+  consentChainByUser.set(userId, result.catch(() => undefined));
   return result;
 }
 
-let logStateLoaded = false;
+const logStateLoadedFor = new Set<string>();
 async function ensureLogStateLoaded(userId: string): Promise<void> {
-  if (logStateLoaded) return;
+  if (logStateLoadedFor.has(userId)) return;
   await loadPersistedLogState(userStorage(), userId);
-  logStateLoaded = true;
+  logStateLoadedFor.add(userId);
 }
-function sendLogState(): void {
-  const s: LogStateSnapshot = logStore.getState();
+function sendLogState(userId: string | undefined): void {
+  const s: LogStateSnapshot = logStore.getState(userId);
   send({
     type: 'log_state_pushed',
     enabled: s.enabled,
@@ -1992,12 +2095,11 @@ function sendLogState(): void {
     level: s.level,
     eventCount: s.eventCount,
     bufferBytes: s.bufferBytes,
-  });
+  }, userId);
 }
 
 
-async function listCards(): Promise<readonly CardSummary[]> {
-  const userId = getUserId();
+async function listCards(userId: string | undefined): Promise<readonly CardSummary[]> {
   const t0 = Date.now();
   log.info(`listCards: start userId=${userId ?? '<none>'}`);
   if (userId === undefined) {
@@ -2019,17 +2121,17 @@ async function listCards(): Promise<readonly CardSummary[]> {
   return summaries;
 }
 
-function pushCards(cards: readonly CardSummary[]): void {
-  send({ type: 'cards_updated', cards });
+function pushCards(cards: readonly CardSummary[], userId: string | undefined): void {
+  send({ type: 'cards_updated', cards }, userId);
 }
 
 async function importCardFromBytes(
   bytesB64: string,
   fileName: string,
+  userId: string,
 ): Promise<void> {
   const tStart = Date.now();
-  const userId = getUserId();
-  log.info(`importCardFromBytes: start file=${fileName} b64-bytes=${bytesB64.length} (~${Math.round(bytesB64.length * 0.75)}B decoded) userId=${userId ?? '<none>'}`);
+  log.info(`importCardFromBytes: start file=${fileName} b64-bytes=${bytesB64.length} (~${Math.round(bytesB64.length * 0.75)}B decoded) userId=${userId}`);
 
   const hasSetAvatar = typeof (spindle.characters as { setAvatar?: unknown }).setAvatar === 'function';
   if (!spindle.images?.upload) {
@@ -2097,7 +2199,7 @@ async function importCardFromBytes(
       upload: (input, uid) =>
         spindleImagesApi.upload(input, uid).then((img) => ({ id: img.id })),
     },
-    requestConsent,
+    requestConsent: (opts) => requestConsent(opts, userId),
   };
   if (!spindle.world_books) log.warn(`spindle.world_books unavailable — lorebook entries will be skipped`);
 
@@ -2117,7 +2219,7 @@ async function importCardFromBytes(
           phase: phase as 'decoding' | 'translating' | 'awaiting_consent' | 'creating_character' | 'uploading_assets' | 'saving_payload' | 'done' | 'error',
           message,
           fraction,
-        });
+        }, userId);
       },
     });
     log.info(
@@ -2136,11 +2238,9 @@ async function importCardFromBytes(
       worldBookIdsByCharacter.set(result.characterId, merged);
     }
 
-    if (userId) {
-      await refreshRisuAssetMap(result.characterId, userId).catch((err) => {
-        log.warn(`importCardFromBytes: refreshRisuAssetMap threw char=${result.characterId}: ${errMsg(err)}`);
-      });
-    }
+    await refreshRisuAssetMap(result.characterId, userId).catch((err) => {
+      log.warn(`importCardFromBytes: refreshRisuAssetMap threw char=${result.characterId}: ${errMsg(err)}`);
+    });
 
     const scriptsToInstall = result.pendingRegexScripts;
     const byTarget = new Map<string, number>();
@@ -2155,7 +2255,7 @@ async function importCardFromBytes(
       characterId: result.characterId,
       characterName: result.characterName,
       scripts: scriptsToInstall,
-    });
+    }, userId);
 
     const hasPendingSvgRaster = result.pendingSvgRasters.length > 0;
     if (hasPendingSvgRaster) {
@@ -2176,7 +2276,7 @@ async function importCardFromBytes(
             width: t.width,
             height: t.height,
           })),
-      });
+      }, userId);
     }
 
     if (hasPendingSvgRaster) {
@@ -2184,6 +2284,7 @@ async function importCardFromBytes(
         hasPendingSvgRaster,
         characterName: result.characterName,
         startedAt: Date.now(),
+        ownerUserId: userId,
       });
       log.info(
         `importCardFromBytes: deferring phase=done for char=${result.characterId} ` +
@@ -2197,12 +2298,12 @@ async function importCardFromBytes(
         message: `Imported ${result.characterName}`,
         fraction: 1,
         characterId: result.characterId,
-      });
-      pushCards(await listCards());
+      }, userId);
+      pushCards(await listCards(userId), userId);
     }
     for (const warning of result.warnings) {
       log.warn(`import warning surfaced: ${warning}`);
-      spindle.toast.warning(warning, { title: 'lumirealm' });
+      toastFor(userId, 'warning', warning, { title: 'lumirealm' });
     }
     log.info(`importCardFromBytes: done file=${fileName} total-elapsed=${Date.now() - tStart}ms`);
   } catch (err) {
@@ -2215,7 +2316,7 @@ async function importCardFromBytes(
         message: `Import cancelled — low-level access declined`,
         fraction: null,
         error: message,
-      });
+      }, userId);
       return;
     }
     log.error(`import failed after ${Date.now() - tStart}ms: ${message}`);
@@ -2225,7 +2326,7 @@ async function importCardFromBytes(
       message: `Import of ${fileName} failed`,
       fraction: null,
       error: message,
-    });
+    }, userId);
   } finally {
     assetUploadsInFlight--;
   }
@@ -2233,11 +2334,16 @@ async function importCardFromBytes(
 
 async function deleteCardByChar(
   characterId: string,
+  userId: string | undefined,
   mode: 'soft' | 'cascade' = 'cascade',
 ): Promise<void> {
+  // userId may be a mode-string from a stale caller (TS doesn't catch when both args are string).
+  // Reject obvious mismatches to surface that bug at runtime instead of silently mis-routing.
+  if (userId === 'soft' || userId === 'cascade') {
+    throw new Error(`deleteCardByChar: userId="${userId}" looks like a mode value; caller likely passed args in old order`);
+  }
   log.info(`deleteCardByChar: start characterId=${characterId} mode=${mode}`);
   if (mode === 'soft') {
-    const userId = getUserId();
     if (userId !== undefined) {
       const ok = await clearLumirealm(charactersApi(), characterId, userId);
       log.info(`deleteCardByChar: clearLumirealm ok=${ok}`);
@@ -2245,24 +2351,29 @@ async function deleteCardByChar(
       log.warn(`deleteCardByChar: soft remove skipped — userId not yet captured for char=${characterId}`);
     }
   }
-  // Invalidate any cached active-card entries that pointed at this character.
+  // Invalidate cached active-card entries owned by the same user only, so
+  // user B's delete cannot wipe user A's cache. Skip when userId unknown.
   let evictedChats = 0;
-  for (const [chatId, active] of activeCardByChat) {
-    if (active.card.character_id === characterId) {
-      activeCardByChat.delete(chatId);
-      clearActiveAssetIndexes(chatId);
-      clearActiveCharacterImage(chatId);
-      variableState.clearChat(chatId);
-      toggleState.clearChat(chatId);
-      evictedChats += 1;
+  if (userId !== undefined) {
+    for (const [chatId, active] of activeCardByChat) {
+      if (active.card.character_id === characterId && active.ownerUserId === userId) {
+        activeCardByChat.delete(chatId);
+        clearActiveAssetIndexes(chatId);
+        clearActiveCharacterImage(chatId);
+        variableState.clearChat(chatId);
+        toggleState.clearChat(chatId);
+        evictedChats += 1;
+      }
     }
   }
+  // characterIds are Lumi-wide unique UUIDs, so the compiled-trigger cache
+  // is safe to evict from any context (no cross-user collision possible).
   const compiledEvicted = compiledByCharacter.delete(characterId);
   log.info(`deleteCardByChar: evicted activeCard entries=${evictedChats} compiled=${compiledEvicted}`);
   // CHARACTER_DELETED fires before the row is removed; filter defensively.
-  const fresh = await listCards();
+  const fresh = await listCards(userId);
   const filtered = fresh.filter((c) => c.character_id !== characterId);
-  pushCards(filtered);
+  pushCards(filtered, userId);
 }
 
 // spindle.on(event, handler) survives syncTriggers() reloads and receives
@@ -2292,17 +2403,21 @@ function charactersApi(): SpindleCharactersApi {
 async function ensureActiveCardForChat(
   chatId: string,
   characterId: string | null,
+  userId: string | undefined,
 ): Promise<ActiveCard | null> {
   const tEnter = Date.now();
-  const cached = activeCardByChat.get(chatId);
-  if (cached) {
-    log.debug(`ensureActiveCardForChat: cache hit chatId=${chatId} characterId=${cached.card.character_id}`);
-    return cached;
-  }
-  const userId = getUserId();
   if (userId === undefined) {
     log.info(`ensureActiveCardForChat: userId not yet captured for chatId=${chatId} — will retry on next event`);
     return null;
+  }
+  const cached = activeCardByChat.get(chatId);
+  if (cached) {
+    if (cached.ownerUserId !== userId) {
+      log.warn(`ensureActiveCardForChat: cache-hit owner mismatch chatId=${chatId} cachedOwner=${cached.ownerUserId} requester=${userId} — refusing`);
+      return null;
+    }
+    log.debug(`ensureActiveCardForChat: cache hit chatId=${chatId} characterId=${cached.card.character_id}`);
+    return cached;
   }
   let tChatsGet = 0;
   if (!characterId) {
@@ -2342,12 +2457,12 @@ async function ensureActiveCardForChat(
   if (!check.ok) {
     const err = new RisuCompatVersionError(check.missing, EXTENSION_VERSION);
     log.error(err.message);
-    spindle.toast.error(err.message, { title: 'lumirealm' });
+    toastFor(userId, 'error', err.message, { title: 'lumirealm' });
     return null;
   }
   if (check.degraded.length > 0) {
     log.warn(`ensureActiveCardForChat: degraded features=[${check.degraded.join(', ')}]`);
-    spindle.toast.warning(
+    toastFor(userId, 'warning',
       `Card uses degraded features: ${check.degraded.join(', ')}.`,
       { title: 'lumirealm' },
     );
@@ -2379,7 +2494,7 @@ async function ensureActiveCardForChat(
       : '') +
     ` chats_get=${tChatsGet}ms readLumi=${tReadLumi}ms validate=${tValidate}ms modules=${tModules}ms build=${tBuild}ms`,
   );
-  const active: ActiveCard = { card, chatId, lumirealm: fetched.data };
+  const active: ActiveCard = { card, chatId, ownerUserId: userId, lumirealm: fetched.data };
   activeCardByChat.set(chatId, active);
   const allWbIds = (fetched.character.world_book_ids ?? []).filter(
     (id): id is string => typeof id === 'string' && id.length > 0,
@@ -2390,7 +2505,7 @@ async function ensureActiveCardForChat(
   );
   const characterOwnedWbIds = allWbIds.filter((id) => !moduleWbIdSet.has(id));
   worldBookIdsByCharacter.set(characterId, characterOwnedWbIds);
-  void backfillImageJournalIfMissing(characterId, fetched.character.image_id ?? null, card);
+  void backfillImageJournalIfMissing(characterId, fetched.character.image_id ?? null, card, userId);
   setActiveAssetIndexes(chatId, {
     assets: card.asset_index,
     emotions: card.emotion_index,
@@ -2455,7 +2570,7 @@ async function runCharacterMigration(
         characterId: charId,
         characterName: charName,
         scripts: scripts.map((s) => ({ ...s, metadata: { ...(s.metadata ?? {}) } })),
-      });
+      }, userId);
     },
     reinstallAttachedModules: async (charId) => {
       const ids = envelope.user_overrides.attached_module_ids ?? [];
@@ -2464,7 +2579,7 @@ async function runCharacterMigration(
         try {
           const env = await readModuleEnvelope(moduleStorage(), userId, moduleId);
           if (!env) continue;
-          await dispatchModuleArtifactInstall(charId, env);
+          await dispatchModuleArtifactInstall(charId, env, userId);
           count++;
         } catch (err) {
           log.warn(
@@ -2491,7 +2606,7 @@ async function runCharacterMigration(
           width: t.width,
           height: t.height,
         })),
-      });
+      }, userId);
     },
     writeEnvelope: async (charId, data, uid) => {
       await writeLumirealm(charactersApi(), charId, data, uid);
@@ -2502,8 +2617,8 @@ async function runCharacterMigration(
     deps,
   );
   if (result.kind === 'migrated') {
-    invalidateActiveForCharacter(characterId);
-    spindle.toast.success(
+    invalidateActiveForCharacter(characterId, userId);
+    toastFor(userId, 'success',
       `Updated ${characterName} for the latest LumiRealm fixes.`,
       { title: 'lumirealm' },
     );
@@ -2514,7 +2629,7 @@ async function runCharacterMigration(
       type: 'notify_legacy_card_needs_reimport',
       characterId,
       characterName,
-    });
+    }, userId);
   } else if (result.kind === 'failed') {
     log.error(
       `migration failed char=${characterId}: ${result.error} (will retry next boot)`,
@@ -2569,6 +2684,7 @@ async function runBinding(
   active: ActiveCard,
   chatId: string,
   binding: RisuBinding,
+  userId: string | undefined,
 ): Promise<void> {
   const characterId = active.card.character_id;
   const tBind = Date.now();
@@ -2592,13 +2708,13 @@ async function runBinding(
     return;
   }
   log.info(`runBinding: start binding=${binding} chatId=${chatId} characterId=${characterId} triggers=${compiled.length}`);
-  const api = makeSpindleHost({ chatId, characterId, userId: getUserId() });
+  const api = makeSpindleHost({ chatId, characterId, userId });
   const scriptNS = makeDispatcherScriptNS();
   registerManualTriggers(scriptNS, compiled, api);
-  const stateChanged = makeStateChangedCallback(chatId);
-  const settings = getCachedSettingsSync(getUserId());
-  const auxDebugCapture = makeAuxDebugCapture(chatId, settings);
-  const prior = setDispatchContext({
+  const stateChanged = makeStateChangedCallback(chatId, userId);
+  const settings = getCachedSettingsSync(userId);
+  const auxDebugCapture = makeAuxDebugCapture(chatId, settings, userId);
+  await withDispatchContext({
     chatId,
     rememberOurWrite,
     binding,
@@ -2610,9 +2726,8 @@ async function runBinding(
     submodelModelOverride: settings.submodelModelOverride,
     submodelSamplers: settings.submodelSamplers,
     ...(auxDebugCapture ? { auxDebugCapture } : {}),
-    resolveTemplate: (text: string) => resolveReadonly(text, chatId, characterId, { cbsContext: true }),
-  });
-  try {
+    resolveTemplate: (text: string) => resolveReadonly(text, chatId, characterId, userId, { cbsContext: true }),
+  }, async () => {
     await dispatchBinding(
       {
         compiledTriggers: compiled,
@@ -2625,12 +2740,10 @@ async function runBinding(
       (err, name) => {
         const msg = err instanceof Error ? err.message : String(err);
         log.error(`trigger "${name}" failed on ${binding}: ${msg}`);
-        spindle.toast.error(`lumirealm: ${name} — ${msg}`, { title: 'lumirealm trigger error' });
+        toastFor(userId, 'error', `lumirealm: ${name} — ${msg}`, { title: 'lumirealm trigger error' });
       },
     );
-  } finally {
-    setDispatchContext(prior);
-  }
+  });
 
   // listenEdit('editOutput') + at-actions(editoutput) run after `output`
   // binding dispatch. Risu: scripts.ts+. listenEdit runs first; if the
@@ -2676,7 +2789,7 @@ async function runBinding(
                 {
                   chatId,
                   characterId,
-                  resolveTemplate: (text: string) => resolveReadonly(text, chatId, characterId, { cbsContext: true }),
+                  resolveTemplate: (text: string) => resolveReadonly(text, chatId, characterId, userId, { cbsContext: true }),
                 },
               );
             } catch (err) {
@@ -2719,9 +2832,10 @@ async function runBinding(
 async function dispatchManualTrigger(
   chatId: string,
   triggerName: string,
-  triggerId?: string,
+  triggerId: string | undefined,
+  userId: string | undefined,
 ): Promise<void> {
-  const active = await ensureActiveCardForChat(chatId, null);
+  const active = await ensureActiveCardForChat(chatId, null, userId);
   if (!active) {
     log.warn(`dispatchManualTrigger: no active card for chatId=${chatId} — skip`);
     return;
@@ -2758,7 +2872,7 @@ async function dispatchManualTrigger(
     `dispatchManualTrigger: name="${triggerName}" lua=${luaTriggers.length} ` +
       `commentMatched=${commentMatchedTriggers.length} chatId=${chatId}`,
   );
-  const api = makeSpindleHost({ chatId, characterId, userId: getUserId() });
+  const api = makeSpindleHost({ chatId, characterId, userId });
   const scriptNS = makeDispatcherScriptNS();
   const effectiveTriggerId = triggerId ?? String(Math.random()).slice(2, 10);
   const t0 = Date.now();
@@ -2768,14 +2882,14 @@ async function dispatchManualTrigger(
     const luaCode = String(firstEffect.code ?? '');
     if (luaCode.length === 0) continue;
     try {
-      const settings = getCachedSettingsSync(getUserId());
-      const auxDebugCapture = makeAuxDebugCapture(chatId, settings);
+      const settings = getCachedSettingsSync(userId);
+      const auxDebugCapture = makeAuxDebugCapture(chatId, settings, userId);
       const runtime = await makeRisuTriggerRuntime(api, { characterId }, scriptNS, {
         characterId,
         binding: 'manual',
         chatId,
         rememberOurWrite,
-        stateChanged: makeStateChangedCallback(chatId),
+        stateChanged: makeStateChangedCallback(chatId, userId),
         auxConnectionId: settings.auxConnectionId,
         auxModelOverride: settings.auxModelOverride,
         auxSamplers: settings.auxSamplers,
@@ -2783,7 +2897,7 @@ async function dispatchManualTrigger(
         submodelModelOverride: settings.submodelModelOverride,
         submodelSamplers: settings.submodelSamplers,
         ...(auxDebugCapture ? { auxDebugCapture } : {}),
-        resolveTemplate: (text: string) => resolveReadonly(text, chatId, characterId, { cbsContext: true }),
+        resolveTemplate: (text: string) => resolveReadonly(text, chatId, characterId, userId, { cbsContext: true }),
       });
       // Risu: triggers.ts sets mode=buttonName; scriptings.ts
       // calls the Lua global by that name. Falls back to onButtonClick.
@@ -2807,10 +2921,10 @@ async function dispatchManualTrigger(
     try {
       const compiled = prepareTriggers(active.card.risuPayload, characterId);
       registerManualTriggers(scriptNS, compiled, api);
-      const settings = getCachedSettingsSync(getUserId());
-      const auxDebugCapture = makeAuxDebugCapture(chatId, settings);
-      const stateChanged = makeStateChangedCallback(chatId);
-      const prior = setDispatchContext({
+      const settings = getCachedSettingsSync(userId);
+      const auxDebugCapture = makeAuxDebugCapture(chatId, settings, userId);
+      const stateChanged = makeStateChangedCallback(chatId, userId);
+      await withDispatchContext({
         chatId,
         rememberOurWrite,
         binding: 'manual',
@@ -2822,9 +2936,8 @@ async function dispatchManualTrigger(
         submodelModelOverride: settings.submodelModelOverride,
         submodelSamplers: settings.submodelSamplers,
         ...(auxDebugCapture ? { auxDebugCapture } : {}),
-        resolveTemplate: (text: string) => resolveReadonly(text, chatId, characterId, { cbsContext: true }),
-      });
-      try {
+        resolveTemplate: (text: string) => resolveReadonly(text, chatId, characterId, userId, { cbsContext: true }),
+      }, async () => {
         const fired = await dispatchByManualName(
           {
             compiledTriggers: compiled,
@@ -2837,13 +2950,11 @@ async function dispatchManualTrigger(
           (err, name) => {
             const msg = err instanceof Error ? err.message : String(err);
             log.error(`dispatchManualTrigger: comment-matched trigger "${name}" threw: ${msg}`);
-            spindle.toast.error(`lumirealm: ${name} — ${msg}`, { title: 'lumirealm trigger error' });
+            toastFor(userId, 'error', `lumirealm: ${name} — ${msg}`, { title: 'lumirealm trigger error' });
           },
         );
         log.info(`dispatchManualTrigger: comment-matched dispatch fired=${fired}/${commentMatchedTriggers.length}`);
-      } finally {
-        setDispatchContext(prior);
-      }
+      });
     } catch (err) {
       log.error(`dispatchManualTrigger: comment-matched dispatch threw: ${errMsg(err)}`);
     }
@@ -2853,8 +2964,8 @@ async function dispatchManualTrigger(
   // State may have mutated → invalidate render-MCP cache so visible bubbles
   // re-resolve with fresh var state on the next cv-bumped re-fetch.
   invalidateRenderMcpForChat(chatId);
-  await refreshBgHtml(active, chatId);
-  await refreshVariables(active, chatId);
+  await refreshBgHtml(active, chatId, userId);
+  await refreshVariables(active, chatId, userId);
 }
 
 // Risu's runLuaButtonTrigger: iterates every triggerlua, runs onButtonClick(id, btn).
@@ -2862,9 +2973,10 @@ async function dispatchManualTrigger(
 async function dispatchButtonClick(
   chatId: string,
   btn: string,
-  btnId?: string,
+  btnId: string | undefined,
+  userId: string | undefined,
 ): Promise<void> {
-  const active = await ensureActiveCardForChat(chatId, null);
+  const active = await ensureActiveCardForChat(chatId, null, userId);
   if (!active) {
     log.warn(`dispatchButtonClick: no active card for chatId=${chatId} — skip`);
     return;
@@ -2888,7 +3000,7 @@ async function dispatchButtonClick(
   log.info(
     `dispatchButtonClick: btn="${btn}" btnId=${btnId ?? '<none>'} lua=${luaTriggers.length} chatId=${chatId}`,
   );
-  const api = makeSpindleHost({ chatId, characterId, userId: getUserId() });
+  const api = makeSpindleHost({ chatId, characterId, userId });
   const scriptNS = makeDispatcherScriptNS();
   const effectiveId = btnId ?? String(Math.random()).slice(2, 10);
   const t0 = Date.now();
@@ -2898,14 +3010,14 @@ async function dispatchButtonClick(
     const luaCode = String(firstEffect.code ?? '');
     if (luaCode.length === 0) continue;
     try {
-      const settings = getCachedSettingsSync(getUserId());
-      const auxDebugCapture = makeAuxDebugCapture(chatId, settings);
+      const settings = getCachedSettingsSync(userId);
+      const auxDebugCapture = makeAuxDebugCapture(chatId, settings, userId);
       const runtime = await makeRisuTriggerRuntime(api, { characterId }, scriptNS, {
         characterId,
         binding: 'manual',
         chatId,
         rememberOurWrite,
-        stateChanged: makeStateChangedCallback(chatId),
+        stateChanged: makeStateChangedCallback(chatId, userId),
         auxConnectionId: settings.auxConnectionId,
         auxModelOverride: settings.auxModelOverride,
         auxSamplers: settings.auxSamplers,
@@ -2913,7 +3025,7 @@ async function dispatchButtonClick(
         submodelModelOverride: settings.submodelModelOverride,
         submodelSamplers: settings.submodelSamplers,
         ...(auxDebugCapture ? { auxDebugCapture } : {}),
-        resolveTemplate: (text: string) => resolveReadonly(text, chatId, characterId, { cbsContext: true }),
+        resolveTemplate: (text: string) => resolveReadonly(text, chatId, characterId, userId, { cbsContext: true }),
       });
       log.info(
         `dispatchButtonClick: invoking onButtonClick args=[${effectiveId}, ${btn}] chatId=${chatId}`,
@@ -2929,16 +3041,16 @@ async function dispatchButtonClick(
   }
   log.info(`dispatchButtonClick: done btn="${btn}" elapsed=${Date.now() - t0}ms`);
   invalidateRenderMcpForChat(chatId);
-  await refreshBgHtml(active, chatId);
-  await refreshVariables(active, chatId);
+  await refreshBgHtml(active, chatId, userId);
+  await refreshVariables(active, chatId, userId);
 }
 
 async function refreshVariables(
   active: ActiveCard,
   chatId: string,
+  userId: string | undefined,
   opts?: { force?: boolean },
 ): Promise<void> {
-  const userId = getUserId();
   if (userId === undefined) {
     log.debug(`variables.refresh: skip chat=${chatId} — userId not yet captured`);
     return;
@@ -2977,7 +3089,7 @@ async function refreshVariables(
       defaultsCardSide: cardSide,
       characterId: active.card.character_id,
       ts: result.entry.ts,
-    });
+    }, userId);
     const counts =
       `local=${Object.keys(scopes.local).length} ` +
       `global=${Object.keys(scopes.global).length} ` +
@@ -2997,16 +3109,13 @@ async function writeLocalVariable(
   chatId: string,
   key: string,
   value: string | null,
+  userId: string,
 ): Promise<{ ok: boolean; reason?: string }> {
-  const userId = getUserId();
-  if (userId === undefined) {
-    return { ok: false, reason: 'userId not yet captured (open a chat first)' };
-  }
   const trimmedKey = key.trim();
   if (trimmedKey.length === 0) {
     return { ok: false, reason: 'variable name cannot be empty' };
   }
-  const active = await ensureActiveCardForChat(chatId, null);
+  const active = await ensureActiveCardForChat(chatId, null, userId);
   if (!active) {
     return { ok: false, reason: 'not a Risu-imported chat' };
   }
@@ -3048,8 +3157,8 @@ async function writeLocalVariable(
   }
 
   invalidateRenderMcpForChat(chatId);
-  await refreshBgHtml(active, chatId);
-  await refreshVariables(active, chatId, { force: true });
+  await refreshBgHtml(active, chatId, userId);
+  await refreshVariables(active, chatId, userId, { force: true });
 
   log.info(
     `variables.write: chat=${chatId} key=${trimmedKey} ` +
@@ -3137,9 +3246,9 @@ async function loadToggleDsl(
 async function refreshToggleDefinitions(
   active: ActiveCard,
   chatId: string,
+  userId: string | undefined,
   opts?: { force?: boolean },
 ): Promise<void> {
-  const userId = getUserId();
   if (userId === undefined) {
     log.debug(`toggles.refresh: skip chat=${chatId} — userId not yet captured`);
     return;
@@ -3158,7 +3267,7 @@ async function refreshToggleDefinitions(
       toggles: result.entry.toggles,
       attribution: result.entry.attribution,
       ts: result.entry.ts,
-    });
+    }, userId);
     log.info(
       `toggles.refresh: pushed chat=${chatId} seq=${result.entry.seq} ` +
         `count=${wire.length} keys=${extractToggleKeys(flatToggles).length} forced=${!!opts?.force}`,
@@ -3172,16 +3281,13 @@ async function writeToggleValue(
   chatId: string,
   key: string,
   value: string | null,
+  userId: string,
 ): Promise<{ ok: boolean; reason?: string }> {
-  const userId = getUserId();
-  if (userId === undefined) {
-    return { ok: false, reason: 'userId not yet captured (open a chat first)' };
-  }
   const trimmedKey = key.trim();
   if (trimmedKey.length === 0) {
     return { ok: false, reason: 'toggle key cannot be empty' };
   }
-  const active = await ensureActiveCardForChat(chatId, null);
+  const active = await ensureActiveCardForChat(chatId, null, userId);
   if (!active) {
     return { ok: false, reason: 'not a Risu-imported chat' };
   }
@@ -3223,8 +3329,8 @@ async function writeToggleValue(
   }
 
   invalidateRenderMcpForChat(chatId);
-  await refreshBgHtml(active, chatId);
-  await refreshVariables(active, chatId, { force: true });
+  await refreshBgHtml(active, chatId, userId);
+  await refreshVariables(active, chatId, userId, { force: true });
 
   log.info(
     `toggles.write: chat=${chatId} key=${storeKey} ` +
@@ -3269,6 +3375,7 @@ async function extractCrossRuleStyleParts(
   atActions: readonly unknown[] | undefined,
   chatId: string,
   characterId: string,
+  userId: string | undefined,
 ): Promise<readonly string[]> {
   const candidates: string[] = [];
   if (rules) {
@@ -3294,7 +3401,7 @@ async function extractCrossRuleStyleParts(
   const joined = candidates.join(SEP);
   let resolved: string;
   try {
-    resolved = await resolveReadonly(joined, chatId, characterId);
+    resolved = await resolveReadonly(joined, chatId, characterId, userId);
   } catch (err) {
     log.warn(
       `extractCrossRuleStyleParts: resolve failed (${errMsg(err)}). ` +
@@ -3355,7 +3462,7 @@ function extractStyleBlocksTopLevelFallback(template: string): string[] {
 // fix. Skip when the resolved output matches the prior send.
 const lastSentBgHtmlByChat = new Map<string, string>();
 
-async function refreshBgHtml(active: ActiveCard, chatId: string): Promise<void> {
+async function refreshBgHtml(active: ActiveCard, chatId: string, userId: string | undefined): Promise<void> {
   const bgRaw = active.card.risuPayload.background_html;
   const moduleBg = active.card.risuPayload.module_background_embedding ?? '';
   const bgCombined = (bgRaw ?? '') + (moduleBg.length > 0 ? '\n' + moduleBg : '');
@@ -3372,13 +3479,14 @@ async function refreshBgHtml(active: ActiveCard, chatId: string): Promise<void> 
   try {
     const [bgOut, csOut] = await Promise.all([
       bgCombined.length > 0
-        ? resolveReadonly(bgCombined, chatId, characterId)
+        ? resolveReadonly(bgCombined, chatId, characterId, userId)
         : Promise.resolve(''),
       extractCrossRuleStyleParts(
         active.card.regex_scripts,
         active.card.risuPayload.at_actions,
         chatId,
         characterId,
+        userId,
       ),
     ]);
     resolvedBg = bgOut;
@@ -3393,7 +3501,7 @@ async function refreshBgHtml(active: ActiveCard, chatId: string): Promise<void> 
   if (resolvedBg.length === 0 && crossRuleStyles.length === 0) {
     log.debug(`refreshBgHtml: no bg_html and no cross-rule styles — sending clear_bg_html`);
     try {
-      spindle.sendToFrontend({ type: 'clear_bg_html', chatId });
+      send({ type: 'clear_bg_html', chatId }, userId);
     } catch (err) {
       log.warn(`refreshBgHtml: clear send failed: ${(err as Error).message}`);
     }
@@ -3419,12 +3527,12 @@ async function refreshBgHtml(active: ActiveCard, chatId: string): Promise<void> 
   }
   lastSentBgHtmlByChat.set(chatId, sig);
   try {
-    spindle.sendToFrontend({
+    send({
       type: 'render_bg_html',
       chatId,
       bgHtml: resolvedBg,
       ...(crossRuleStyles.length > 0 ? { crossRuleStyles } : {}),
-    } as never);
+    } as never, userId);
     log.debug(`refreshBgHtml: sendToFrontend render_bg_html OK chatId=${chatId}`);
   } catch (err) {
     log.warn(`refreshBgHtml: send failed: ${(err as Error).message}`);
@@ -3443,9 +3551,9 @@ async function resolveReadonly(
   template: string,
   chatId: string,
   characterId: string,
+  userId: string | undefined,
   opts?: { cbsContext?: boolean },
 ): Promise<string> {
-  const userId = getUserId();
   const cbsContext = opts?.cbsContext === true;
   const t0 = Date.now();
   log.debug(
@@ -3635,27 +3743,24 @@ function dumpPayload(raw: unknown): string {
 // Capture userId from every event callback so operator-scoped Spindle calls
 // succeed before any frontend message arrives.
 function captureUserId(userId: string | undefined, where: string): void {
-  if (userId && activeUserId !== userId) {
-    activeUserId = userId;
-    log.info(`captureUserId: set from ${where} userId=${userId}`);
-    void getSettingsForUser(userId).catch((err) => {
-      log.warn(`captureUserId: settings preload failed for user=${userId}: ${errMsg(err)}`);
+  if (!userId || capturedUserIds.has(userId)) return;
+  capturedUserIds.add(userId);
+  log.info(`captureUserId: bootstrap from ${where} userId=${userId}`);
+  void getSettingsForUser(userId).catch((err) => {
+    log.warn(`captureUserId: settings preload failed for user=${userId}: ${errMsg(err)}`);
+  });
+  // Deferred so orphan-review doesn't compete with chat-open work.
+  setTimeout(() => {
+    void promptOrphanReviewIfAny(userId).catch((err) => {
+      log.warn(`captureUserId: orphan-review prompt failed: ${errMsg(err)}`);
     });
-    // No auto-cleanup. If a card or module was deleted while the extension
-    // wasn't running, an orphan-review prompt is offered instead, deferred so
-    // it doesn't compete with chat-open work.
-    setTimeout(() => {
-      void promptOrphanReviewIfAny(userId).catch((err) => {
-        log.warn(`captureUserId: orphan-review prompt failed: ${errMsg(err)}`);
-      });
-    }, 3000);
-  }
+  }, 3000);
 }
 
 // Decoupled from bg-html paint so empty-bg cards activate.
-function sendSetActiveChat(activeChatId: string | null): void {
+function sendSetActiveChat(activeChatId: string | null, userId: string | undefined): void {
   try {
-    spindle.sendToFrontend({ type: 'set_active_chat', chatId: activeChatId });
+    send({ type: 'set_active_chat', chatId: activeChatId }, userId);
   } catch (err) {
     log.warn(`sendSetActiveChat: ${(err as Error).message}`);
   }
@@ -3664,7 +3769,7 @@ function sendSetActiveChat(activeChatId: string | null): void {
 // SETTINGS_UPDATED key='activeChatId' fires on chat navigation. Warms the
 // active-card cache and renders bg-html. Does NOT fire `start` binding (Risu
 // fires `start` only inside sendChat, not on chat open).
-spindle.on('SETTINGS_UPDATED', async (raw, userId) => {
+spindle.on('SETTINGS_UPDATED', userScoped(async (raw, userId) => {
   captureUserId(userId, 'SETTINGS_UPDATED');
   const p = raw as { key?: string; value?: unknown; keys?: string[] };
   if (p.key !== 'activeChatId') return;
@@ -3679,13 +3784,13 @@ spindle.on('SETTINGS_UPDATED', async (raw, userId) => {
   // When chatId clears (ChatView unmount), fire clear_bg_html for the last
   // mounted chat so fixed-positioned bg widgets don't bleed onto other pages.
   if (!chatId) {
-    sendSetActiveChat(null);
+    sendSetActiveChat(null, userId);
     const lastChat = userId ? lastActiveChatByUser.get(userId) : undefined;
     if (lastChat) {
       log.info(
         `SETTINGS_UPDATED activeChatId cleared, dismounting bg-host for last chat=${lastChat}`,
       );
-      try { spindle.sendToFrontend({ type: 'clear_bg_html', chatId: lastChat }); }
+      try { send({ type: 'clear_bg_html', chatId: lastChat }, userId); }
       catch (err) { log.warn(`SETTINGS_UPDATED clear_bg_html: ${(err as Error).message}`); }
       if (userId) lastActiveChatByUser.delete(userId);
     } else {
@@ -3701,21 +3806,21 @@ spindle.on('SETTINGS_UPDATED', async (raw, userId) => {
   } catch (err) {
     log.warn(`SETTINGS_UPDATED activeChatId: chats.get failed — ${(err as Error).message}`);
   }
-  const active = await ensureActiveCardForChat(chatId, characterId ?? null);
+  const active = await ensureActiveCardForChat(chatId, characterId ?? null, userId);
   log.info(`SETTINGS_UPDATED activeChatId: active=${active ? `characterId=${active.card.character_id} hasBgHtml=${!!active.card.risuPayload.background_html} triggers=${active.card.risuPayload.triggers?.length ?? 0}` : '<none>'}`);
   // Activation precedes paint: lifter clearAll fires on this edge.
-  sendSetActiveChat(active ? chatId : null);
+  sendSetActiveChat(active ? chatId : null, userId);
   if (!active) {
-    try { spindle.sendToFrontend({ type: 'clear_bg_html', chatId }); } catch { /* */ }
+    try { send({ type: 'clear_bg_html', chatId }, userId); } catch { /* */ }
     return;
   }
   invalidateRenderMcpForChat(chatId);
-  await refreshBgHtml(active, chatId);
-  await refreshVariables(active, chatId, { force: true });
+  await refreshBgHtml(active, chatId, userId);
+  await refreshVariables(active, chatId, userId, { force: true });
   // Force toggle definitions on chat open; toggle values travel via the variables push above.
-  await refreshToggleDefinitions(active, chatId, { force: true });
+  await refreshToggleDefinitions(active, chatId, userId, { force: true });
   log.info(`SETTINGS_UPDATED activeChatId: ALL DONE chatId=${chatId}`);
-});
+}));
 
 const chatChangedDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const chatChangedCoalescedCount = new Map<string, number>();
@@ -3765,6 +3870,7 @@ function scheduleChatChangedRefresh(
   chatId: string,
   characterId: string | null,
   changedFields: readonly string[] | undefined,
+  userId: string | undefined,
 ): void {
   chatChangedCoalescedCount.set(chatId, (chatChangedCoalescedCount.get(chatId) ?? 0) + 1);
 
@@ -3789,7 +3895,7 @@ function scheduleChatChangedRefresh(
     chatChangedCoalescedFields.delete(chatId);
     const requiresRefresh = changedFieldsRequireRefresh(accumulatedFields);
     try {
-      const active = await ensureActiveCardForChat(chatId, characterId);
+      const active = await ensureActiveCardForChat(chatId, characterId, userId);
       const fieldsSummary = accumulatedFields === 'unknown'
         ? 'unknown'
         : (accumulatedFields.size === 0 ? 'empty' : `[${[...accumulatedFields].slice(0, 6).join(',')}${accumulatedFields.size > 6 ? `,+${accumulatedFields.size - 6}` : ''}]`);
@@ -3799,13 +3905,13 @@ function scheduleChatChangedRefresh(
           `active=${active ? `char=${active.card.character_id}` : '<none>'}`,
       );
       if (!active) {
-        try { spindle.sendToFrontend({ type: 'clear_bg_html', chatId }); }
+        try { send({ type: 'clear_bg_html', chatId }, userId); }
         catch (err) { log.warn(`CHAT_CHANGED clear_bg_html: ${(err as Error).message}`); }
         return;
       }
       if (!requiresRefresh) return;
-      await refreshBgHtml(active, chatId);
-      await refreshVariables(active, chatId, { force: true });
+      await refreshBgHtml(active, chatId, userId);
+      await refreshVariables(active, chatId, userId, { force: true });
     } catch (err) {
       log.error(`scheduleChatChangedRefresh: chat=${chatId} threw: ${errMsg(err)}`);
     }
@@ -3816,7 +3922,7 @@ function scheduleChatChangedRefresh(
   chatChangedDebounceTimers.set(chatId, timer);
 }
 
-spindle.on('CHAT_CHANGED', async (raw, userId) => {
+spindle.on('CHAT_CHANGED', userScoped(async (raw, userId) => {
   captureUserId(userId, 'CHAT_CHANGED');
   const { chatId, characterId } = extractIds(raw);
   if (!chatId) { log.warn('CHAT_CHANGED: missing chatId , aborting'); return; }
@@ -3849,26 +3955,26 @@ spindle.on('CHAT_CHANGED', async (raw, userId) => {
       `ownWrite=${wasOwn} fields=${fieldsPreview} requiresRefresh=${requiresRefresh}`,
   );
   if (wasOwn) {
-    await ensureActiveCardForChat(chatId, characterId);
+    await ensureActiveCardForChat(chatId, characterId, userId);
     return;
   }
-  scheduleChatChangedRefresh(chatId, characterId, changedFields);
-});
+  scheduleChatChangedRefresh(chatId, characterId, changedFields, userId);
+}));
 
 // MESSAGE_SENT: editInput is wired via registerInterceptor.
 // Body resolution happens at render time (post-unbake), so we don't need to
 // re-bake here — just refresh the variables snapshot for the drawer in case
 // the new message references vars that the user wants to inspect.
-spindle.on('MESSAGE_SENT', async (raw, userId) => {
+spindle.on('MESSAGE_SENT', userScoped(async (raw, userId) => {
   captureUserId(userId, 'MESSAGE_SENT');
   const { chatId, characterId } = extractIds(raw);
   log.info(`event MESSAGE_SENT chatId=${chatId ?? '?'} characterId=${characterId ?? '?'} payload=${dumpPayload(raw)}`);
   if (!chatId) return;
   invalidateListenEditPreload(chatId);
-  const active = await ensureActiveCardForChat(chatId, characterId);
+  const active = await ensureActiveCardForChat(chatId, characterId, userId);
   if (!active) { log.info(`MESSAGE_SENT: no active card , skip`); return; }
-  await refreshVariables(active, chatId);
-});
+  await refreshVariables(active, chatId, userId);
+}));
 
 const generationsInFlight = new Map<string, number>();
 function isGenerationInFlight(chatId: string): boolean {
@@ -3898,7 +4004,7 @@ function markGenerationEnd(chatId: string): boolean {
   return false;
 }
 
-spindle.on('GENERATION_STARTED', async (raw, userId) => {
+spindle.on('GENERATION_STARTED', userScoped(async (raw, userId) => {
   captureUserId(userId, 'GENERATION_STARTED');
   const { chatId, characterId } = extractIds(raw);
   log.info(`event GENERATION_STARTED chatId=${chatId ?? '?'} characterId=${characterId ?? '?'} payload=${dumpPayload(raw)}`);
@@ -3910,20 +4016,20 @@ spindle.on('GENERATION_STARTED', async (raw, userId) => {
     // shadow-DOM-text states; our sig flips → drop+re-clone cycle →
     // user sees 20Hz flicker. Pausing sweeps eliminates the cycle;
     // post-stream we resume with one clean lift.
-    send({ type: 'generation_state', chatId, active: true });
+    send({ type: 'generation_state', chatId, active: true }, userId);
   }
-  const active = await ensureActiveCardForChat(chatId, characterId);
+  const active = await ensureActiveCardForChat(chatId, characterId, userId);
   if (!active) return;
   log.info(`GENERATION_STARTED: → runBinding(start)`);
-  await runBinding(active, chatId, 'start');
+  await runBinding(active, chatId, 'start', userId);
   log.info(`GENERATION_STARTED: → runBinding(request)`);
-  await runBinding(active, chatId, 'request');
+  await runBinding(active, chatId, 'request', userId);
   invalidateRenderMcpForChat(chatId);
-  await refreshBgHtml(active, chatId);
-  await refreshVariables(active, chatId);
-});
+  await refreshBgHtml(active, chatId, userId);
+  await refreshVariables(active, chatId, userId);
+}));
 
-spindle.on('GENERATION_ENDED', async (raw, userId) => {
+spindle.on('GENERATION_ENDED', userScoped(async (raw, userId) => {
   captureUserId(userId, 'GENERATION_ENDED');
   const { chatId, characterId } = extractIds(raw);
   log.info(`event GENERATION_ENDED chatId=${chatId ?? '?'} characterId=${characterId ?? '?'} payload=${dumpPayload(raw)}`);
@@ -3932,17 +4038,17 @@ spindle.on('GENERATION_ENDED', async (raw, userId) => {
   if (wentIdle) {
     // N→0 transition. Resume frontend sweeps; one final sweep will
     // lift the post-stream panel state cleanly.
-    send({ type: 'generation_state', chatId, active: false });
+    send({ type: 'generation_state', chatId, active: false }, userId);
   }
-  const active = await ensureActiveCardForChat(chatId, characterId);
+  const active = await ensureActiveCardForChat(chatId, characterId, userId);
   if (!active) return;
   for (const binding of GENERATION_ENDED_BINDINGS) {
-    await runBinding(active, chatId, binding);
+    await runBinding(active, chatId, binding, userId);
   }
   invalidateRenderMcpForChat(chatId);
-  await refreshBgHtml(active, chatId);
-  await refreshVariables(active, chatId);
-});
+  await refreshBgHtml(active, chatId, userId);
+  await refreshVariables(active, chatId, userId);
+}));
 
 // User-clicked the abort button (or generation otherwise stopped via
 // AbortController). Lumi emits GENERATION_STOPPED in this path INSTEAD OF
@@ -3952,30 +4058,30 @@ spindle.on('GENERATION_ENDED', async (raw, userId) => {
 // post-stream sweep that would stash the stale source panel never runs.
 // The handoff at handoff-2026-05-04-streaming-flicker.md §11.5 ("Observation A")
 // pins this as the load-bearing missing piece.
-spindle.on('GENERATION_STOPPED', async (raw, userId) => {
+spindle.on('GENERATION_STOPPED', userScoped(async (raw, userId) => {
   captureUserId(userId, 'GENERATION_STOPPED');
   const { chatId, characterId } = extractIds(raw);
   log.info(`event GENERATION_STOPPED chatId=${chatId ?? '?'} characterId=${characterId ?? '?'} payload=${dumpPayload(raw)}`);
   if (!chatId) return;
   const wentIdle = markGenerationEnd(chatId);
   if (wentIdle) {
-    send({ type: 'generation_state', chatId, active: false });
+    send({ type: 'generation_state', chatId, active: false }, userId);
   }
   // No trigger bindings fire on stop (Risu's `output`/`display` bindings
   // are inside its sendChat, which we already mirror via GENERATION_ENDED
   // for the success path; abort = no LLM output, no triggers to fire).
-  const active = await ensureActiveCardForChat(chatId, characterId);
+  const active = await ensureActiveCardForChat(chatId, characterId, userId);
   if (!active) return;
   invalidateRenderMcpForChat(chatId);
-  await refreshBgHtml(active, chatId);
-  await refreshVariables(active, chatId);
-});
+  await refreshBgHtml(active, chatId, userId);
+  await refreshVariables(active, chatId, userId);
+}));
 
 // MESSAGE_SWIPED  - fires when user swipes to an alternate greeting/response
 // (chats.service.ts). The new swipe's content lands in chat_messages.content
 // raw; the render-MCP cache for this msgId is invalidated so the next render
 // resolves with fresh state. No bake walk (post-unbake).
-spindle.on('MESSAGE_SWIPED', async (raw, userId) => {
+spindle.on('MESSAGE_SWIPED', userScoped(async (raw, userId) => {
   captureUserId(userId, 'MESSAGE_SWIPED');
   const p = raw as {
     chatId?: string;
@@ -3988,14 +4094,14 @@ spindle.on('MESSAGE_SWIPED', async (raw, userId) => {
   if (!chatId || !msgId) return;
   invalidateListenEditPreload(chatId);
   invalidateRenderMcpForMessage(chatId, msgId);
-  const active = await ensureActiveCardForChat(chatId, null);
+  const active = await ensureActiveCardForChat(chatId, null, userId);
   if (!active) return;
-  await refreshBgHtml(active, chatId);
-  await refreshVariables(active, chatId);
+  await refreshBgHtml(active, chatId, userId);
+  await refreshVariables(active, chatId, userId);
   // No output/display bindings here. Risu's output trigger fires inside
   // sendChat (index.svelte.ts,1679), not on the swipe primitive.
   // For fresh regenerate, GENERATION_ENDED is the correct fire point.
-});
+}));
 
 // Payload shape (chats.service.ts): `{ chatId, message }`.
 // spindle_metadata is stored under extra.spindle_metadata (worker-host.ts).
@@ -4018,7 +4124,7 @@ function readEditedBy(payload: MessageEditedPayload): string | null {
   return null;
 }
 
-spindle.on('MESSAGE_EDITED', async (raw, userId) => {
+spindle.on('MESSAGE_EDITED', userScoped(async (raw, userId) => {
   captureUserId(userId, 'MESSAGE_EDITED');
   const p = raw as MessageEditedPayload;
   const chatId = p.chatId ?? p.message?.chat_id ?? null;
@@ -4039,10 +4145,10 @@ spindle.on('MESSAGE_EDITED', async (raw, userId) => {
   // External edit (user typed, streaming finalize, etc.). Storage is raw
   // post-unbake; render-MCP cache is already invalidated above so the next
   // render resolves with fresh state. No bake walk.
-});
+}));
 
 // MESSAGE_DELETED: refresh portals against the smaller message list.
-spindle.on('MESSAGE_DELETED', async (raw, userId) => {
+spindle.on('MESSAGE_DELETED', userScoped(async (raw, userId) => {
   captureUserId(userId, 'MESSAGE_DELETED');
   const p = raw as { chatId?: string; messageId?: string; message?: { id?: string; chat_id?: string } };
   const chatId = p.chatId ?? p.message?.chat_id ?? null;
@@ -4051,14 +4157,14 @@ spindle.on('MESSAGE_DELETED', async (raw, userId) => {
   if (!chatId) return;
   invalidateListenEditPreload(chatId);
   if (msgId) invalidateRenderMcpForMessage(chatId, msgId);
-  const active = await ensureActiveCardForChat(chatId, null);
+  const active = await ensureActiveCardForChat(chatId, null, userId);
   if (!active) return;
   // No output/display bindings: Risu has no binding-firing analogue for deletes.
-  await refreshBgHtml(active, chatId);
-  await refreshVariables(active, chatId);
-});
+  await refreshBgHtml(active, chatId, userId);
+  await refreshVariables(active, chatId, userId);
+}));
 
-spindle.on('CHAT_DELETED', async (raw, userId) => {
+spindle.on('CHAT_DELETED', userScoped(async (raw, userId) => {
   captureUserId(userId, 'CHAT_DELETED');
   const p = raw as { id?: string; chatId?: string };
   const chatId = p.chatId ?? p.id ?? null;
@@ -4074,9 +4180,9 @@ spindle.on('CHAT_DELETED', async (raw, userId) => {
   clearVarOverlay(chatId);
   variableState.clearChat(chatId);
   toggleState.clearChat(chatId);
-});
+}));
 
-spindle.on('CHARACTER_DELETED', async (raw, uid) => {
+spindle.on('CHARACTER_DELETED', userScoped(async (raw, uid) => {
   captureUserId(uid, 'CHARACTER_DELETED');
   const characterId =
     (raw as { id?: string }).id
@@ -4087,14 +4193,14 @@ spindle.on('CHARACTER_DELETED', async (raw, uid) => {
   compiledByCharacter.delete(characterId);
   const cachedWorldBookIds = worldBookIdsByCharacter.get(characterId) ?? [];
   worldBookIdsByCharacter.delete(characterId);
-  await deleteCardByChar(characterId, 'cascade');
+  await deleteCardByChar(characterId, uid, 'cascade');
 
   // Re-evaluate: deleted char may be the active one.
   if (uid) {
     const lastChat = lastActiveChatByUser.get(uid);
     if (lastChat) {
-      const stillActive = await ensureActiveCardForChat(lastChat, null).catch(() => null);
-      if (!stillActive) sendSetActiveChat(null);
+      const stillActive = await ensureActiveCardForChat(lastChat, null, uid).catch(() => null);
+      if (!stillActive) sendSetActiveChat(null, uid);
     }
   }
 
@@ -4182,11 +4288,11 @@ spindle.on('CHARACTER_DELETED', async (raw, uid) => {
     type: 'cleanup_character_artifacts',
     characterId,
     worldBookIds: cachedWorldBookIds,
-  });
-});
+  }, uid);
+}));
 
 // CHARACTER_CREATED: refresh drawer. Covers duplication and external imports.
-spindle.on('CHARACTER_CREATED', async (raw, userId) => {
+spindle.on('CHARACTER_CREATED', userScoped(async (raw, userId) => {
   captureUserId(userId, 'CHARACTER_CREATED');
   const characterId =
     (raw as { id?: string }).id
@@ -4194,15 +4300,15 @@ spindle.on('CHARACTER_CREATED', async (raw, userId) => {
     ?? null;
   log.info(`event CHARACTER_CREATED characterId=${characterId ?? '?'}`);
   try {
-    pushCards(await listCards());
+    pushCards(await listCards(userId), userId);
   } catch (err) {
     log.warn(`CHARACTER_CREATED: pushCards failed — ${errMsg(err)}`);
   }
-});
+}));
 
 // CHARACTER_EDITED: own writes are tracked via expectCharacterEdit() and skipped.
 // External writes invalidate caches and refresh the drawer.
-spindle.on('CHARACTER_EDITED', async (raw, userId) => {
+spindle.on('CHARACTER_EDITED', userScoped(async (raw, userId) => {
   captureUserId(userId, 'CHARACTER_EDITED');
   const characterId =
     (raw as { id?: string }).id
@@ -4217,17 +4323,17 @@ spindle.on('CHARACTER_EDITED', async (raw, userId) => {
   if (wasOwn) {
     return;
   }
-  invalidateActiveForCharacter(characterId);
+  invalidateActiveForCharacter(characterId, userId);
   try {
-    pushCards(await listCards());
+    pushCards(await listCards(userId), userId);
   } catch (err) {
     log.warn(`CHARACTER_EDITED: pushCards failed — ${errMsg(err)}`);
   }
-});
+}));
 
 // CHARACTER_DUPLICATED: Lumi currently emits CHARACTER_CREATED for duplicates.
 // This subscription is defensive in case Lumi adds a distinct event later.
-spindle.on('CHARACTER_DUPLICATED', async (raw, userId) => {
+spindle.on('CHARACTER_DUPLICATED', userScoped(async (raw, userId) => {
   captureUserId(userId, 'CHARACTER_DUPLICATED');
   const characterId =
     (raw as { id?: string }).id
@@ -4235,11 +4341,11 @@ spindle.on('CHARACTER_DUPLICATED', async (raw, userId) => {
     ?? null;
   log.info(`event CHARACTER_DUPLICATED characterId=${characterId ?? '?'} (Lumi 0.4.31+ emits CHARACTER_CREATED instead; this handler is defensive)`);
   try {
-    pushCards(await listCards());
+    pushCards(await listCards(userId), userId);
   } catch (err) {
     log.warn(`CHARACTER_DUPLICATED: pushCards failed — ${errMsg(err)}`);
   }
-});
+}));
 
 import { decodeRisum } from './core/risum/index.js';
 import { risuModuleSchema } from './core/schemas/module.js';
@@ -4287,6 +4393,7 @@ interface ModuleUploadSession {
   readonly totalBytes: number;
   readonly totalChunks: number;
   readonly buffer: (Uint8Array | null)[];
+  readonly ownerUserId: string;
   receivedBytes: number;
   receivedChunks: number;
   startedAt: number;
@@ -4350,7 +4457,7 @@ async function processModuleUpload(
           `Decline to refuse the upload — the module will not be added to your library.`,
         confirmLabel: 'Grant access',
         cancelLabel: 'Decline',
-      });
+      }, userId);
       confirmed = !!res?.confirmed;
     } catch (err) {
       log.warn(
@@ -4459,7 +4566,7 @@ async function processModuleUpload(
             phase: 'uploading_assets',
             message: `Uploading module assets for ${moduleNameForProgress} (${processed}/${totalCount})…`,
             fraction: frac,
-          });
+          }, userId);
         }
       }
     };
@@ -4585,7 +4692,7 @@ async function pushModules(userId: string): Promise<void> {
   }));
   const byId = new Map(wire.map((w) => [w.id, w]));
   const attached = await buildAttachedByCharacter(userId, byId);
-  send({ type: 'modules_pushed', modules: wire, attached_by_character: attached });
+  send({ type: 'modules_pushed', modules: wire, attached_by_character: attached }, userId);
 }
 
 async function pushAttachedForCharacter(
@@ -4598,7 +4705,7 @@ async function pushAttachedForCharacter(
       type: 'attached_modules_pushed',
       characterId,
       attached: [],
-    });
+    }, userId);
     return;
   }
   const ids = fetched.data.user_overrides.attached_module_ids ?? [];
@@ -4608,7 +4715,7 @@ async function pushAttachedForCharacter(
     const e = byId.get(id);
     return e ? { id, name: e.name } : { id, name: '(missing — module deleted from library)' };
   });
-  send({ type: 'attached_modules_pushed', characterId, attached: list });
+  send({ type: 'attached_modules_pushed', characterId, attached: list }, userId);
 }
 
 async function attachModuleToCharacter(
@@ -4640,8 +4747,8 @@ async function attachModuleToCharacter(
       log.warn(`attachModuleToCharacter: addWorldBookToCharacter failed char=${characterId} module=${moduleId}: ${errMsg(err)}`);
     });
   }
-  invalidateActiveForCharacter(characterId);
-  await dispatchModuleArtifactInstall(characterId, env);
+  invalidateActiveForCharacter(characterId, userId);
+  await dispatchModuleArtifactInstall(characterId, env, userId);
   await refreshRisuAssetMap(characterId, userId);
   return { ok: true };
 }
@@ -4680,7 +4787,7 @@ async function detachModuleFromCharacter(
     };
   });
   if (!updated) return { ok: false, reason: 'character is not a lumirealm card' };
-  invalidateActiveForCharacter(characterId);
+  invalidateActiveForCharacter(characterId, userId);
   if (wbId) {
     await removeWorldBookFromCharacter(characterId, wbId, userId).catch((err) => {
       log.warn(`detachModuleFromCharacter: removeWorldBookFromCharacter failed char=${characterId}: ${errMsg(err)}`);
@@ -4696,7 +4803,7 @@ async function detachModuleFromCharacter(
     }
   }
   if (regexIds.length > 0) {
-    send({ type: 'uninstall_module_artifacts', characterId, moduleId, worldBookId: null, regexScriptIds: regexIds });
+    send({ type: 'uninstall_module_artifacts', characterId, moduleId, worldBookId: null, regexScriptIds: regexIds }, userId);
   }
   await refreshRisuAssetMap(characterId, userId);
   return { ok: true };
@@ -4776,7 +4883,7 @@ async function handleImportLorebook(
       written: 0,
       dropped: parsed.dropped,
       reason: 'unrecognized lorebook format (expected Risu native or CCSv3)',
-    });
+    }, userId);
     return;
   }
   if (parsed.entries.length === 0) {
@@ -4787,7 +4894,7 @@ async function handleImportLorebook(
       written: 0,
       dropped: parsed.dropped,
       reason: 'no entries found in lorebook file',
-    });
+    }, userId);
     return;
   }
 
@@ -4809,7 +4916,7 @@ async function handleImportLorebook(
         written: 0,
         dropped: parsed.dropped,
         reason: `world_book create failed: ${errMsg(err)}`,
-      });
+      }, userId);
       return;
     }
   } else {
@@ -4823,7 +4930,7 @@ async function handleImportLorebook(
         written: 0,
         dropped: 0,
         reason: 'not a lumirealm character',
-      });
+      }, userId);
       return;
     }
     const existing = fetched.character.world_book_ids ?? [];
@@ -4852,7 +4959,7 @@ async function handleImportLorebook(
           written: 0,
           dropped: parsed.dropped,
           reason: `world_book create failed: ${errMsg(err)}`,
-        });
+        }, userId);
         return;
       }
     }
@@ -4924,7 +5031,7 @@ async function handleImportLorebook(
     ...(written === 0 && entryWriteFailures > 0
       ? { reason: 'all entry writes failed; see log for details' }
       : {}),
-  });
+  }, userId);
 }
 
 function buildModuleWorldBookEntryInput(raw: unknown, moduleId: string): Record<string, unknown> | null {
@@ -5085,6 +5192,7 @@ async function removeWorldBookFromCharacter(
 async function dispatchModuleArtifactInstall(
   characterId: string,
   env: ModuleEnvelope,
+  userId: string | undefined,
 ): Promise<void> {
   const m = env.module as {
     name?: unknown;
@@ -5118,7 +5226,7 @@ async function dispatchModuleArtifactInstall(
     worldBookName: `Module: ${moduleName}`,
     lorebookEntries,
     regexScripts,
-  });
+  }, userId);
 }
 
 function cryptoUuidLocal(): string {
@@ -5127,19 +5235,22 @@ function cryptoUuidLocal(): string {
   return `mod-rx-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-function invalidateActiveForCharacter(characterId: string): void {
+function invalidateActiveForCharacter(characterId: string, userId: string | undefined): void {
+  // Only evict entries owned by the same user, so user B's invalidation can't
+  // wipe user A's cache. Without a userId we can't attribute, so skip.
+  if (userId === undefined) {
+    log.warn(`invalidateActiveForCharacter: skipped char=${characterId} (no userId)`);
+    return;
+  }
   let evicted = 0;
   const evictedChats: string[] = [];
   for (const [chatId, active] of activeCardByChat) {
-    if (active.card.character_id === characterId) {
+    if (active.card.character_id === characterId && active.ownerUserId === userId) {
       activeCardByChat.delete(chatId);
       clearActiveAssetIndexes(chatId);
       clearActiveCharacterImage(chatId);
       variableState.clearChat(chatId);
       toggleState.clearChat(chatId);
-      // Card content may have changed (re-import, module attach/detach,
-      // bg-html edit). Drop the bg-html send-memo so the next refreshBgHtml
-      // is allowed to ship even if the resolved bytes happen to match.
       lastSentBgHtmlByChat.delete(chatId);
       evictedChats.push(chatId);
       evicted += 1;
@@ -5149,10 +5260,10 @@ function invalidateActiveForCharacter(characterId: string): void {
   log.info(`invalidateActiveForCharacter: char=${characterId} evictedChats=${evicted}`);
   for (const chatId of evictedChats) {
     void (async () => {
-      const reactivated = await ensureActiveCardForChat(chatId, null);
+      const reactivated = await ensureActiveCardForChat(chatId, null, userId);
       if (reactivated) {
-        await refreshToggleDefinitions(reactivated, chatId, { force: true });
-        await refreshBgHtml(reactivated, chatId);
+        await refreshToggleDefinitions(reactivated, chatId, userId, { force: true });
+        await refreshBgHtml(reactivated, chatId, userId);
       }
     })();
   }
@@ -5205,10 +5316,10 @@ async function refreshAttachedModule(
       moduleId: env.id,
       worldBookId: wbId,
       regexScriptIds: regexIds,
-    });
+    }, userId);
   }
-  await dispatchModuleArtifactInstall(characterId, env);
-  invalidateActiveForCharacter(characterId);
+  await dispatchModuleArtifactInstall(characterId, env, userId);
+  invalidateActiveForCharacter(characterId, userId);
   await refreshRisuAssetMap(characterId, userId);
 }
 
@@ -5248,7 +5359,7 @@ async function detachModuleFromAllCharacters(
         },
       };
     });
-    invalidateActiveForCharacter(e.character.id);
+    invalidateActiveForCharacter(e.character.id, userId);
     if (wbId) {
       await removeWorldBookFromCharacter(e.character.id, wbId, userId).catch((err) => {
         log.warn(`detachModuleFromAllCharacters: removeWorldBookFromCharacter failed char=${e.character.id}: ${errMsg(err)}`);
@@ -5261,7 +5372,7 @@ async function detachModuleFromAllCharacters(
         moduleId,
         worldBookId: null,
         regexScriptIds: regexIds,
-      });
+      }, userId);
     }
     touched.push(e.character.id);
   }
@@ -5564,57 +5675,68 @@ async function loadAttachedModulesForRuntime(
 
 
 const realmHandle: RealmBackendHandle = setupRealmBackend({
-  send: (msg: RealmBackendToFrontend) => send(msg),
+  send: (msg: RealmBackendToFrontend, userId: string | undefined) => send(msg, userId),
   log: {
     info: (m: string) => log.info(m),
     warn: (m: string) => log.warn(m),
     error: (m: string) => log.error(m),
   },
-  importCardFromBytes: (bytesB64: string, fileName: string) =>
-    importCardFromBytes(bytesB64, fileName),
+  importCardFromBytes: (bytesB64: string, fileName: string, userId: string) =>
+    importCardFromBytes(bytesB64, fileName, userId),
 });
 
-spindle.onFrontendMessage(async (raw, userId) => {
+spindle.onFrontendMessage(userScoped(async (raw, userId) => {
   captureUserId(userId, 'frontend-message');
   const msg = raw as FrontendToBackend;
   log.trace(`frontend msg type=${msg.type} userId=${userId ?? '<none>'}`);
+  // Operator-scoped extension contract: every FE WS arrives with a real userId
+  // from BetterAuth. An undefined userId means the message bypassed auth and
+  // any reply we send would broadcast to all connected users.
+  if (!userId) {
+    log.warn(`frontend msg type=${msg.type} dropped: no userId`);
+    return;
+  }
   try {
     if (isRealmFrontendMessage(msg)) {
-      await realmHandle.handle(msg);
+      await realmHandle.handle(msg, userId);
       return;
     }
     switch (msg.type) {
       case 'get_cards': {
-        // get_cards is the FE's first message after mount/reload. Browser
-        // refresh nukes FE state but the worker process keeps running, so
-        // any per-chat memos that gated work on "FE already has this" are
-        // stale at this point , drop them so the rehydrate path resends.
-        // (The bg-html dedup is the load-bearing one: without this clear,
-        // refreshBgHtml on browser-refresh skips the send and the FE never
-        // gets the chat-scope CSS at all.)
-        const memoCount = lastSentBgHtmlByChat.size;
-        lastSentBgHtmlByChat.clear();
-        if (memoCount > 0) {
-          log.info(`get_cards: cleared ${memoCount} bg-html send memo(s) for FE remount`);
+        // FE remount needs the rehydrate path to resend bg-html. Drop only
+        // memos for chats owned by THIS user so a peer's chats keep their
+        // dedup state and avoid an 89KB CSS re-parse + shadow re-adopt.
+        let cleared = 0;
+        for (const [chatId, _] of lastSentBgHtmlByChat) {
+          const active = activeCardByChat.get(chatId);
+          if (active && active.ownerUserId === userId) {
+            lastSentBgHtmlByChat.delete(chatId);
+            cleared++;
+          }
         }
-        pushCards(await listCards());
-        const lastChat = userId ? lastActiveChatByUser.get(userId) : undefined;
+        const lastChatHint = lastActiveChatByUser.get(userId);
+        if (lastChatHint && lastSentBgHtmlByChat.delete(lastChatHint)) cleared++;
+        if (cleared > 0) {
+          log.info(`get_cards: cleared ${cleared} bg-html send memo(s) for FE remount`);
+        }
+        pushCards(await listCards(userId), userId);
+        const lastChat = lastActiveChatByUser.get(userId);
         if (lastChat) {
           log.info(`get_cards: re-painting bg+scope-css for lastChat=${lastChat} userId=${userId}`);
           try {
-            const active = await ensureActiveCardForChat(lastChat, null);
+            const active = await ensureActiveCardForChat(lastChat, null, userId);
             // FE remount lost activeRisuChatId; reaffirm before paint.
-            sendSetActiveChat(active ? lastChat : null);
+            sendSetActiveChat(active ? lastChat : null, userId);
             if (active) {
               invalidateRenderMcpForChat(lastChat);
-              await refreshBgHtml(active, lastChat);
-              await refreshVariables(active, lastChat, { force: true });
+              await refreshBgHtml(active, lastChat, userId);
+              await refreshVariables(active, lastChat, userId, { force: true });
             }
           } catch (err) {
             log.warn(`get_cards: rehydrate failed chat=${lastChat}: ${errMsg(err)}`);
           }
         } else {
-          sendSetActiveChat(null);
+          sendSetActiveChat(null, userId);
         }
         break;
       }
@@ -5623,7 +5745,23 @@ spindle.onFrontendMessage(async (raw, userId) => {
           `import_card_init: sessionId=${msg.sessionId} file=${msg.fileName} ` +
             `totalBytes=${msg.totalBytes} totalChunks=${msg.totalChunks}`,
         );
-        if (importSessions.has(msg.sessionId)) {
+        if (!userId) {
+          send({ type: 'error', message: 'import_card_init: no userId' }, userId);
+          break;
+        }
+        const shape = validateUploadShape(msg.totalBytes, msg.totalChunks);
+        if (!shape.ok) {
+          log.warn(`import_card_init: rejected sessionId=${msg.sessionId} userId=${userId}: ${shape.reason}`);
+          send({ type: 'error', message: `import_card_init: ${shape.reason}` }, userId);
+          break;
+        }
+        const existing = importSessions.get(msg.sessionId);
+        if (existing) {
+          if (existing.ownerUserId !== userId) {
+            log.warn(`import_card_init: sessionId=${msg.sessionId} owned by ${existing.ownerUserId}, rejecting cross-user reuse from ${userId}`);
+            send({ type: 'error', message: `Session id collision; pick a fresh id` }, userId);
+            break;
+          }
           log.warn(`import_card_init: replacing existing session ${msg.sessionId}`);
         }
         importSessions.set(msg.sessionId, {
@@ -5631,19 +5769,25 @@ spindle.onFrontendMessage(async (raw, userId) => {
           totalBytes: msg.totalBytes,
           totalChunks: msg.totalChunks,
           buffer: new Array(msg.totalChunks).fill(null),
+          ownerUserId: userId,
           receivedBytes: 0,
           receivedChunks: 0,
           startedAt: Date.now(),
           lastActivity: Date.now(),
         });
-        send({ type: 'import_upload_ack', sessionId: msg.sessionId, seq: -1, receivedBytes: 0 });
+        send({ type: 'import_upload_ack', sessionId: msg.sessionId, seq: -1, receivedBytes: 0 }, userId);
         break;
       }
       case 'import_card_chunk': {
         const session = importSessions.get(msg.sessionId);
         if (!session) {
           log.warn(`import_card_chunk: unknown sessionId=${msg.sessionId} seq=${msg.seq} — dropping`);
-          send({ type: 'error', message: `Unknown upload session ${msg.sessionId}. Re-import the card.` });
+          send({ type: 'error', message: `Unknown upload session ${msg.sessionId}. Re-import the card.` }, userId);
+          break;
+        }
+        if (session.ownerUserId !== userId) {
+          log.warn(`import_card_chunk: ownership mismatch sessionId=${msg.sessionId} owner=${session.ownerUserId} sender=${userId ?? '<none>'}`);
+          send({ type: 'error', message: `Unknown upload session ${msg.sessionId}. Re-import the card.` }, userId);
           break;
         }
         if (msg.seq < 0 || msg.seq >= session.totalChunks) {
@@ -5663,14 +5807,19 @@ spindle.onFrontendMessage(async (raw, userId) => {
           sessionId: msg.sessionId,
           seq: msg.seq,
           receivedBytes: session.receivedBytes,
-        });
+        }, userId);
         break;
       }
       case 'import_card_commit': {
         const session = importSessions.get(msg.sessionId);
         if (!session) {
           log.warn(`import_card_commit: unknown sessionId=${msg.sessionId}`);
-          send({ type: 'error', message: `Unknown upload session ${msg.sessionId}. Re-import the card.` });
+          send({ type: 'error', message: `Unknown upload session ${msg.sessionId}. Re-import the card.` }, userId);
+          break;
+        }
+        if (session.ownerUserId !== userId) {
+          log.warn(`import_card_commit: ownership mismatch sessionId=${msg.sessionId} owner=${session.ownerUserId} sender=${userId ?? '<none>'}`);
+          send({ type: 'error', message: `Unknown upload session ${msg.sessionId}. Re-import the card.` }, userId);
           break;
         }
         log.info(
@@ -5691,7 +5840,7 @@ spindle.onFrontendMessage(async (raw, userId) => {
             message: `Upload incomplete: ${missing.length} of ${session.totalChunks} chunks missing`,
             fraction: null,
             error: `Missing chunks: ${missingList}`,
-          });
+          }, userId);
           break;
         }
         if (session.receivedBytes !== session.totalBytes) {
@@ -5706,20 +5855,39 @@ spindle.onFrontendMessage(async (raw, userId) => {
         }
         const fileName = session.fileName;
         importSessions.delete(msg.sessionId);
-        send({ type: 'import_upload_ack', sessionId: msg.sessionId, seq: -2, receivedBytes: session.receivedBytes });
+        send({ type: 'import_upload_ack', sessionId: msg.sessionId, seq: -2, receivedBytes: session.receivedBytes }, userId);
         log.info(`import_card_commit: assembled ${assembled.byteLength} bytes, running importCard`);
         const bytesB64 = Buffer.from(assembled).toString('base64');
-        await realmHandle.importAnyFormat(bytesB64, fileName);
+        await realmHandle.importAnyFormat(bytesB64, fileName, session.ownerUserId);
         break;
       }
       case 'import_card_abort': {
+        const session = importSessions.get(msg.sessionId);
+        if (session && session.ownerUserId !== userId) {
+          log.warn(`import_card_abort: ownership mismatch sessionId=${msg.sessionId} owner=${session.ownerUserId} sender=${userId ?? '<none>'} — ignoring`);
+          break;
+        }
         const existed = importSessions.delete(msg.sessionId);
         log.info(`import_card_abort: sessionId=${msg.sessionId} existed=${existed} reason=${msg.reason ?? '<none>'}`);
         break;
       }
       case 'register_svg_raster_index': {
         if (!userId) {
-          send({ type: 'error', message: 'register_svg_raster_index: no userId' });
+          send({ type: 'error', message: 'register_svg_raster_index: no userId' }, userId);
+          break;
+        }
+        // Require an in-flight import: late replays add no value (the FE
+        // only sends this in response to our `rasterize_svgs` push) and let
+        // a user rewrite their own regex_scripts SVG markers post-import.
+        const pendingForSvgCheck = pendingImportCompletions.get(msg.characterId);
+        if (!pendingForSvgCheck) {
+          log.warn(`register_svg_raster_index: no pending import char=${msg.characterId} sender=${userId} — rejecting (late replay or fabrication)`);
+          send({ type: 'error', message: 'register_svg_raster_index: no pending import' }, userId);
+          break;
+        }
+        if (pendingForSvgCheck.ownerUserId !== userId) {
+          log.warn(`register_svg_raster_index: ownership mismatch char=${msg.characterId} owner=${pendingForSvgCheck.ownerUserId} sender=${userId}`);
+          send({ type: 'error', message: 'register_svg_raster_index: ownership mismatch' }, userId);
           break;
         }
         const total = Object.keys(msg.imageIdByMarker).length;
@@ -5735,87 +5903,92 @@ spindle.onFrontendMessage(async (raw, userId) => {
           imageIdByMarker: msg.imageIdByMarker,
           userId,
         });
-        const pendingForSvg = pendingImportCompletions.get(msg.characterId);
-        if (pendingForSvg) {
-          pendingForSvg.hasPendingSvgRaster = false;
-          log.info(
-            `register_svg_raster_index: cleared svg-pending flag char=${msg.characterId}`,
-          );
-          await maybeFinalizeImport(msg.characterId);
-        } else {
-          log.info(
-            `register_svg_raster_index: no tracker entry for char=${msg.characterId} — direct push`,
-          );
-          pushCards(await listCards());
-        }
+        pendingForSvgCheck.hasPendingSvgRaster = false;
+        log.info(`register_svg_raster_index: cleared svg-pending flag char=${msg.characterId}`);
+        await maybeFinalizeImport(msg.characterId);
         break;
       }
       case 'delete_card': {
+        if (!userId) break;
         const opId = `delete-card-${msg.characterId}-${Date.now()}`;
         let cardName = msg.characterId.slice(0, 8);
         try {
-          if (userId) {
-            const c = await spindle.characters.get(msg.characterId, userId);
-            if (c?.name) cardName = c.name;
-          }
+          const c = await spindle.characters.get(msg.characterId, userId);
+          if (c?.name) cardName = c.name;
         } catch { /* fall through with id-based label */ }
         const opTitle = `Removing card "${cardName}" from LumiRealm`;
-        emitOperationProgress(opId, 'started', opTitle, 'Clearing extension data…', null);
+        emitOperationProgress(userId, opId, 'started', opTitle, 'Clearing extension data…', null);
         try {
-          await deleteCardByChar(msg.characterId, 'soft');
-          emitOperationProgress(opId, 'done', opTitle, 'Removed', 1);
+          await deleteCardByChar(msg.characterId, userId, 'soft');
+          emitOperationProgress(userId, opId, 'done', opTitle, 'Removed', 1);
         } catch (err) {
           log.warn(`delete_card: threw char=${msg.characterId}: ${errMsg(err)}`);
-          emitOperationProgress(opId, 'error', opTitle, '', null, errMsg(err));
+          emitOperationProgress(userId, opId, 'error', opTitle, '', null, errMsg(err));
         }
         break;
       }
       case 'consent_response': {
-        const resolver = pendingConsents.get(msg.requestId);
-        if (resolver) {
-          pendingConsents.delete(msg.requestId);
-          log.info(`consent_response: requestId=${msg.requestId} confirmed=${msg.confirmed}`);
-          resolver(msg.confirmed);
-        } else {
+        const pending = pendingConsents.get(msg.requestId);
+        if (!pending) {
           log.warn(`consent_response: no pending request for requestId=${msg.requestId}`);
+          send({ type: 'error', message: `consent: unknown request` }, userId);
+          break;
         }
+        if (pending.ownerUserId !== userId) {
+          log.warn(`consent_response: ownership mismatch requestId=${msg.requestId} owner=${pending.ownerUserId} responder=${userId ?? '<none>'}`);
+          send({ type: 'error', message: `consent: unknown request` }, userId);
+          break;
+        }
+        pendingConsents.delete(msg.requestId);
+        log.info(`consent_response: requestId=${msg.requestId} confirmed=${msg.confirmed}`);
+        pending.resolver(msg.confirmed);
         break;
       }
       case 'manual_trigger': {
         log.info(`manual_trigger: triggerName=${msg.triggerName} triggerId=${msg.triggerId ?? '<none>'} chatId=${msg.chatId}`);
-        await dispatchManualTrigger(msg.chatId, msg.triggerName, msg.triggerId);
+        if (!userId) {
+          log.warn(`manual_trigger: no userId, dropping`);
+          break;
+        }
+        await dispatchManualTrigger(msg.chatId, msg.triggerName, msg.triggerId, userId);
         break;
       }
       case 'manual_button_click': {
         log.info(`manual_button_click: btn=${msg.btn} btnId=${msg.btnId ?? '<none>'} chatId=${msg.chatId}`);
-        await dispatchButtonClick(msg.chatId, msg.btn, msg.btnId);
+        if (!userId) {
+          log.warn(`manual_button_click: no userId, dropping`);
+          break;
+        }
+        await dispatchButtonClick(msg.chatId, msg.btn, msg.btnId, userId);
         break;
       }
       case 'set_variable': {
+        if (!userId) break;
         if (msg.scope !== 'local') {
-          send({ type: 'error', message: `Only local scope is editable from the Variables tab (got: ${msg.scope})` });
+          send({ type: 'error', message: `Only local scope is editable from the Variables tab (got: ${msg.scope})` }, userId);
           break;
         }
-        const result = await writeLocalVariable(msg.chatId, msg.key, msg.value);
+        const result = await writeLocalVariable(msg.chatId, msg.key, msg.value, userId);
         if (!result.ok) {
-          send({ type: 'error', message: `Set ${msg.key}: ${result.reason ?? 'failed'}` });
+          send({ type: 'error', message: `Set ${msg.key}: ${result.reason ?? 'failed'}` }, userId);
         }
         break;
       }
       case 'delete_variable': {
+        if (!userId) break;
         if (msg.scope !== 'local') {
-          send({ type: 'error', message: `Only local scope is editable from the Variables tab (got: ${msg.scope})` });
+          send({ type: 'error', message: `Only local scope is editable from the Variables tab (got: ${msg.scope})` }, userId);
           break;
         }
-        const result = await writeLocalVariable(msg.chatId, msg.key, null);
+        const result = await writeLocalVariable(msg.chatId, msg.key, null, userId);
         if (!result.ok) {
-          send({ type: 'error', message: `Delete ${msg.key}: ${result.reason ?? 'failed'}` });
+          send({ type: 'error', message: `Delete ${msg.key}: ${result.reason ?? 'failed'}` }, userId);
         }
         break;
       }
       case 'request_settings': {
         if (!userId) {
-          send({ type: 'error', message: 'request_settings: no userId' });
+          send({ type: 'error', message: 'request_settings: no userId' }, userId);
           break;
         }
         const settings = await getSettingsForUser(userId);
@@ -5833,12 +6006,12 @@ spindle.onFrontendMessage(async (raw, userId) => {
             auxDebugCaptureResponse: settings.auxDebugCaptureResponse,
             legacyMediaFindings: settings.legacyMediaFindings,
           },
-        });
+        }, userId);
         break;
       }
       case 'update_settings': {
         if (!userId) {
-          send({ type: 'error', message: 'update_settings: no userId' });
+          send({ type: 'error', message: 'update_settings: no userId' }, userId);
           break;
         }
         const patch = normalizeSettingsPatch(msg.patch);
@@ -5857,12 +6030,12 @@ spindle.onFrontendMessage(async (raw, userId) => {
             auxDebugCaptureResponse: merged.auxDebugCaptureResponse,
             legacyMediaFindings: merged.legacyMediaFindings,
           },
-        });
+        }, userId);
         break;
       }
       case 'request_connections_list': {
         if (!userId) {
-          send({ type: 'error', message: 'request_connections_list: no userId' });
+          send({ type: 'error', message: 'request_connections_list: no userId' }, userId);
           break;
         }
         const connections = await listConnectionsForUser(userId);
@@ -5870,13 +6043,14 @@ spindle.onFrontendMessage(async (raw, userId) => {
         send({
           type: 'connections_list_pushed',
           connections,
-        });
+        }, userId);
         break;
       }
       case 'request_variables_snapshot': {
-        const active = await ensureActiveCardForChat(msg.chatId, null);
+        if (!userId) break;
+        const active = await ensureActiveCardForChat(msg.chatId, null, userId);
         if (active) {
-          await refreshVariables(active, msg.chatId, { force: true });
+          await refreshVariables(active, msg.chatId, userId, { force: true });
         } else {
           send({
             type: 'set_variables',
@@ -5885,14 +6059,15 @@ spindle.onFrontendMessage(async (raw, userId) => {
             scopes: { local: {}, global: {}, chat: {} },
             defaults: {},
             ts: Date.now(),
-          });
+          }, userId);
         }
         break;
       }
       case 'request_toggle_definitions': {
-        const active = await ensureActiveCardForChat(msg.chatId, null);
+        if (!userId) break;
+        const active = await ensureActiveCardForChat(msg.chatId, null, userId);
         if (active) {
-          await refreshToggleDefinitions(active, msg.chatId, { force: true });
+          await refreshToggleDefinitions(active, msg.chatId, userId, { force: true });
         } else {
           send({
             type: 'set_toggle_definitions',
@@ -5901,32 +6076,46 @@ spindle.onFrontendMessage(async (raw, userId) => {
             toggles: [],
             attribution: {},
             ts: Date.now(),
-          });
+          }, userId);
         }
         break;
       }
       case 'set_toggle': {
-        const result = await writeToggleValue(msg.chatId, msg.key, msg.value);
+        if (!userId) break;
+        const result = await writeToggleValue(msg.chatId, msg.key, msg.value, userId);
         if (!result.ok) {
           log.warn(`set_toggle failed: ${result.reason ?? 'unknown'}`);
-          send({ type: 'error', message: `set toggle failed: ${result.reason ?? 'unknown'}` });
+          send({ type: 'error', message: `set toggle failed: ${result.reason ?? 'unknown'}` }, userId);
         }
         break;
       }
       case 'upload_module_init': {
         if (!userId) {
-          send({ type: 'error', message: 'upload_module_init: no userId' });
+          send({ type: 'error', message: 'upload_module_init: no userId' }, userId);
           break;
         }
         log.info(
           `upload_module_init: sessionId=${msg.sessionId} file=${msg.fileName} ` +
             `totalBytes=${msg.totalBytes} totalChunks=${msg.totalChunks}`,
         );
+        const shape = validateUploadShape(msg.totalBytes, msg.totalChunks);
+        if (!shape.ok) {
+          log.warn(`upload_module_init: rejected sessionId=${msg.sessionId} userId=${userId}: ${shape.reason}`);
+          send({ type: 'error', message: `upload_module_init: ${shape.reason}` }, userId);
+          break;
+        }
+        const existingMod = moduleUploadSessions.get(msg.sessionId);
+        if (existingMod && existingMod.ownerUserId !== userId) {
+          log.warn(`upload_module_init: sessionId=${msg.sessionId} owned by ${existingMod.ownerUserId}, rejecting cross-user reuse from ${userId}`);
+          send({ type: 'error', message: `Session id collision; pick a fresh id` }, userId);
+          break;
+        }
         moduleUploadSessions.set(msg.sessionId, {
           fileName: msg.fileName,
           totalBytes: msg.totalBytes,
           totalChunks: msg.totalChunks,
           buffer: new Array(msg.totalChunks).fill(null),
+          ownerUserId: userId,
           receivedBytes: 0,
           receivedChunks: 0,
           startedAt: Date.now(),
@@ -5937,13 +6126,18 @@ spindle.onFrontendMessage(async (raw, userId) => {
           sessionId: msg.sessionId,
           seq: -1,
           receivedBytes: 0,
-        });
+        }, userId);
         break;
       }
       case 'upload_module_chunk': {
         const session = moduleUploadSessions.get(msg.sessionId);
         if (!session) {
-          send({ type: 'error', message: `upload_module_chunk: unknown sessionId ${msg.sessionId}` });
+          send({ type: 'error', message: `upload_module_chunk: unknown sessionId ${msg.sessionId}` }, userId);
+          break;
+        }
+        if (session.ownerUserId !== userId) {
+          log.warn(`upload_module_chunk: ownership mismatch sessionId=${msg.sessionId} owner=${session.ownerUserId} sender=${userId ?? '<none>'}`);
+          send({ type: 'error', message: `upload_module_chunk: unknown sessionId ${msg.sessionId}` }, userId);
           break;
         }
         if (msg.seq < 0 || msg.seq >= session.totalChunks) break;
@@ -5959,17 +6153,22 @@ spindle.onFrontendMessage(async (raw, userId) => {
           sessionId: msg.sessionId,
           seq: msg.seq,
           receivedBytes: session.receivedBytes,
-        });
+        }, userId);
         break;
       }
       case 'upload_module_commit': {
         const session = moduleUploadSessions.get(msg.sessionId);
         if (!session) {
-          send({ type: 'error', message: `upload_module_commit: unknown sessionId ${msg.sessionId}` });
+          send({ type: 'error', message: `upload_module_commit: unknown sessionId ${msg.sessionId}` }, userId);
           break;
         }
         if (!userId) {
-          send({ type: 'error', message: 'upload_module_commit: no userId' });
+          send({ type: 'error', message: 'upload_module_commit: no userId' }, userId);
+          break;
+        }
+        if (session.ownerUserId !== userId) {
+          log.warn(`upload_module_commit: ownership mismatch sessionId=${msg.sessionId} owner=${session.ownerUserId} sender=${userId}`);
+          send({ type: 'error', message: `upload_module_commit: unknown sessionId ${msg.sessionId}` }, userId);
           break;
         }
         if (session.receivedChunks !== session.totalChunks) {
@@ -5980,7 +6179,7 @@ spindle.onFrontendMessage(async (raw, userId) => {
           send({
             type: 'error',
             message: `upload_module_commit: missing ${missing.length} chunk(s) [${missing.slice(0, 5).join(',')}…]`,
-          });
+          }, userId);
           moduleUploadSessions.delete(msg.sessionId);
           break;
         }
@@ -6005,13 +6204,13 @@ spindle.onFrontendMessage(async (raw, userId) => {
           sessionId: msg.sessionId,
           seq: -2,
           receivedBytes: session.receivedBytes,
-        });
+        }, userId);
         send({
           type: 'import_progress',
           phase: 'translating',
           message: `Translating ${fileName}…`,
           fraction: 0.3,
-        });
+        }, userId);
         try {
           const { envelope: env } = await processModuleUpload(
             combined,
@@ -6026,7 +6225,7 @@ spindle.onFrontendMessage(async (raw, userId) => {
             phase: 'saving_payload',
             message: `Saved ${moduleName}`,
             fraction: 0.95,
-          });
+          }, userId);
           const attachedBefore = await charactersAttachedTo(env.id, userId);
           await pushModules(userId);
           if (attachedBefore.length > 0) {
@@ -6043,7 +6242,7 @@ spindle.onFrontendMessage(async (raw, userId) => {
             phase: 'done',
             message: `Imported ${moduleName}`,
             fraction: 1,
-          });
+          }, userId);
         } catch (err) {
           send({
             type: 'import_progress',
@@ -6051,15 +6250,20 @@ spindle.onFrontendMessage(async (raw, userId) => {
             message: 'Module upload failed',
             fraction: null,
             error: errMsg(err),
-          });
+          }, userId);
           send({
             type: 'error',
             message: `Module decode/save failed: ${errMsg(err)}`,
-          });
+          }, userId);
         }
         break;
       }
       case 'upload_module_abort': {
+        const session = moduleUploadSessions.get(msg.sessionId);
+        if (session && session.ownerUserId !== userId) {
+          log.warn(`upload_module_abort: ownership mismatch sessionId=${msg.sessionId} owner=${session.ownerUserId} sender=${userId ?? '<none>'} — ignoring`);
+          break;
+        }
         const existed = moduleUploadSessions.delete(msg.sessionId);
         log.info(
           `upload_module_abort: sessionId=${msg.sessionId} existed=${existed} reason=${msg.reason ?? '<none>'}`,
@@ -6068,7 +6272,7 @@ spindle.onFrontendMessage(async (raw, userId) => {
       }
       case 'request_modules': {
         if (!userId) {
-          send({ type: 'error', message: 'request_modules: no userId' });
+          send({ type: 'error', message: 'request_modules: no userId' }, userId);
           break;
         }
         await pushModules(userId);
@@ -6076,14 +6280,14 @@ spindle.onFrontendMessage(async (raw, userId) => {
       }
       case 'delete_module': {
         if (!userId) {
-          send({ type: 'error', message: 'delete_module: no userId' });
+          send({ type: 'error', message: 'delete_module: no userId' }, userId);
           break;
         }
         const envelopeForDelete = await readModuleEnvelope(moduleStorage(), userId, msg.moduleId);
         const moduleName = envelopeForDelete?.module?.name || msg.moduleId.slice(0, 8);
         const opId = `delete-module-${msg.moduleId}-${Date.now()}`;
         const opTitle = `Deleting module "${moduleName}"`;
-        emitOperationProgress(opId, 'started', opTitle, 'Detaching from characters…', null);
+        emitOperationProgress(userId, opId, 'started', opTitle, 'Detaching from characters…', null);
         try {
           const sharedWbId = envelopeForDelete?.installed_world_book_id ?? null;
           // Capture the journal's image-id list now, before the envelope is
@@ -6096,7 +6300,7 @@ spindle.onFrontendMessage(async (raw, userId) => {
           const touched = await detachModuleFromAllCharacters(msg.moduleId, userId);
           if (sharedWbId) {
             emitOperationProgress(
-              opId, 'progress', opTitle,
+              userId, opId, 'progress', opTitle,
               `Removing shared world book…`,
               0.3,
             );
@@ -6108,7 +6312,7 @@ spindle.onFrontendMessage(async (raw, userId) => {
             }
           }
 
-          emitOperationProgress(opId, 'progress', opTitle, 'Removing module envelope…', 0.45);
+          emitOperationProgress(userId, opId, 'progress', opTitle, 'Removing module envelope…', 0.45);
           await deleteModuleFromStore(moduleStorage(), userId, msg.moduleId);
 
           // Cross-reference safety: with the envelope removed, build the live
@@ -6117,7 +6321,7 @@ spindle.onFrontendMessage(async (raw, userId) => {
           let imageDeleteStats = { deleted: 0, absent: 0, failed: 0, skipped: 0 };
           if (journalImageIds.length > 0) {
             emitOperationProgress(
-              opId, 'progress', opTitle,
+              userId, opId, 'progress', opTitle,
               `Checking ${journalImageIds.length} asset${journalImageIds.length === 1 ? '' : 's'} against live references…`,
               0.55,
             );
@@ -6140,7 +6344,7 @@ spindle.onFrontendMessage(async (raw, userId) => {
             }
             if (safeIds.length > 0) {
               emitOperationProgress(
-                opId, 'progress', opTitle,
+                userId, opId, 'progress', opTitle,
                 `Deleting 0 of ${safeIds.length} asset${safeIds.length === 1 ? '' : 's'}…`,
                 0.6,
               );
@@ -6150,7 +6354,7 @@ spindle.onFrontendMessage(async (raw, userId) => {
                   // Map processed/total into the 0.6..0.95 progress band.
                   const frac = total > 0 ? 0.6 + (processed / total) * 0.35 : 0.6;
                   emitOperationProgress(
-                    opId, 'progress', opTitle,
+                    userId, opId, 'progress', opTitle,
                     `Deleting ${processed} of ${total} asset${total === 1 ? '' : 's'}…`,
                     frac,
                   );
@@ -6182,17 +6386,17 @@ spindle.onFrontendMessage(async (raw, userId) => {
             : imageDeleteStats.skipped > 0
               ? `, ${imageDeleteStats.deleted} asset${imageDeleteStats.deleted === 1 ? '' : 's'} deleted (${imageDeleteStats.skipped} kept, still referenced)`
               : `, ${imageDeleteStats.deleted} asset${imageDeleteStats.deleted === 1 ? '' : 's'} deleted`;
-          emitOperationProgress(opId, 'done', opTitle, `${detachLine}${assetLine}`, 1);
+          emitOperationProgress(userId, opId, 'done', opTitle, `${detachLine}${assetLine}`, 1);
         } catch (err) {
           log.warn(`delete_module: threw module=${msg.moduleId}: ${errMsg(err)}`);
-          emitOperationProgress(opId, 'error', opTitle, '', null, errMsg(err));
-          send({ type: 'error', message: `Module delete failed: ${errMsg(err)}` });
+          emitOperationProgress(userId, opId, 'error', opTitle, '', null, errMsg(err));
+          send({ type: 'error', message: `Module delete failed: ${errMsg(err)}` }, userId);
         }
         break;
       }
       case 'attach_module': {
         if (!userId) {
-          send({ type: 'error', message: 'attach_module: no userId' });
+          send({ type: 'error', message: 'attach_module: no userId' }, userId);
           break;
         }
         const result = await attachModuleToCharacter(
@@ -6201,7 +6405,7 @@ spindle.onFrontendMessage(async (raw, userId) => {
           userId,
         );
         if (!result.ok) {
-          send({ type: 'error', message: `attach_module: ${result.reason ?? 'failed'}` });
+          send({ type: 'error', message: `attach_module: ${result.reason ?? 'failed'}` }, userId);
           break;
         }
         await pushAttachedForCharacter(msg.characterId, userId);
@@ -6210,7 +6414,7 @@ spindle.onFrontendMessage(async (raw, userId) => {
       }
       case 'detach_module': {
         if (!userId) {
-          send({ type: 'error', message: 'detach_module: no userId' });
+          send({ type: 'error', message: 'detach_module: no userId' }, userId);
           break;
         }
         const result = await detachModuleFromCharacter(
@@ -6219,7 +6423,7 @@ spindle.onFrontendMessage(async (raw, userId) => {
           userId,
         );
         if (!result.ok) {
-          send({ type: 'error', message: `detach_module: ${result.reason ?? 'failed'}` });
+          send({ type: 'error', message: `detach_module: ${result.reason ?? 'failed'}` }, userId);
           break;
         }
         await pushAttachedForCharacter(msg.characterId, userId);
@@ -6236,7 +6440,7 @@ spindle.onFrontendMessage(async (raw, userId) => {
         // / regex are written into Lumi's own tables and don't pass
         // through synthesize, so this invalidation is defensive).
         if (!userId) {
-          send({ type: 'error', message: 'module_artifacts_installed: no userId' });
+          send({ type: 'error', message: 'module_artifacts_installed: no userId' }, userId);
           break;
         }
         await updateLumirealm(charactersApi(), msg.characterId, userId, (cur) => {
@@ -6261,7 +6465,7 @@ spindle.onFrontendMessage(async (raw, userId) => {
             worldBookIdsByCharacter.set(msg.characterId, [...existing, msg.worldBookId]);
           }
         }
-        invalidateActiveForCharacter(msg.characterId);
+        invalidateActiveForCharacter(msg.characterId, userId);
         log.info(
           `module_artifacts_installed: char=${msg.characterId} module=${msg.moduleId} ` +
             `worldBookId=${msg.worldBookId ?? 'null'} regex=${msg.regexScriptIds.length}`,
@@ -6279,26 +6483,26 @@ spindle.onFrontendMessage(async (raw, userId) => {
       case 'rename_asset':
       case 'delete_asset': {
         if (!userId) {
-          send({ type: 'error', message: `${msg.type}: no userId` });
+          send({ type: 'error', message: `${msg.type}: no userId` }, userId);
           break;
         }
         const result = await mutateAssetIndex(msg, userId);
         if (!result.ok) {
-          send({ type: 'error', message: `${msg.type}: ${result.reason ?? 'failed'}` });
+          send({ type: 'error', message: `${msg.type}: ${result.reason ?? 'failed'}` }, userId);
           break;
         }
         try {
           const data = msg.source.kind === 'character'
             ? await assembleCharacterViewerData(msg.source.characterId, userId)
             : await assembleModuleViewerData(msg.source.moduleId, userId);
-          if (data) send({ type: 'viewer_data_pushed', data });
+          if (data) send({ type: 'viewer_data_pushed', data }, userId);
         } catch (err) {
           log.warn(`${msg.type}: viewer re-push failed: ${errMsg(err)}`);
         }
         if (msg.source.kind === 'module') {
           const attached = await charactersAttachedTo(msg.source.moduleId, userId);
           for (const charId of attached) {
-            invalidateActiveForCharacter(charId);
+            invalidateActiveForCharacter(charId, userId);
             await refreshRisuAssetMap(charId, userId).catch((err) => {
               log.warn(`${msg.type}: refreshRisuAssetMap failed char=${charId}: ${errMsg(err)}`);
             });
@@ -6309,7 +6513,7 @@ spindle.onFrontendMessage(async (raw, userId) => {
             );
           }
         } else {
-          invalidateActiveForCharacter(msg.source.characterId);
+          invalidateActiveForCharacter(msg.source.characterId, userId);
           await refreshRisuAssetMap(msg.source.characterId, userId).catch((err) => {
             log.warn(`${msg.type}: refreshRisuAssetMap failed char=${msg.source.kind === 'character' ? msg.source.characterId : '?'}: ${errMsg(err)}`);
           });
@@ -6319,7 +6523,7 @@ spindle.onFrontendMessage(async (raw, userId) => {
       case 'set_default_variable':
       case 'delete_default_variable': {
         if (!userId) {
-          send({ type: 'error', message: `${msg.type}: no userId` });
+          send({ type: 'error', message: `${msg.type}: no userId` }, userId);
           break;
         }
         const updated = await updateLumirealm(charactersApi(), msg.characterId, userId, (cur) => {
@@ -6343,19 +6547,19 @@ spindle.onFrontendMessage(async (raw, userId) => {
           };
         });
         if (!updated) {
-          send({ type: 'error', message: `${msg.type}: not a lumirealm character` });
+          send({ type: 'error', message: `${msg.type}: not a lumirealm character` }, userId);
           break;
         }
         try {
           const data = await assembleCharacterViewerData(msg.characterId, userId);
-          if (data) send({ type: 'viewer_data_pushed', data });
+          if (data) send({ type: 'viewer_data_pushed', data }, userId);
         } catch (err) {
           log.warn(`${msg.type}: viewer re-push failed: ${errMsg(err)}`);
         }
         // Defaults feed buildSyntheticStoredCard's mergedDefaults; invalidate
         // active card so the next chat-tick re-synthesises with the new
         // override applied.
-        invalidateActiveForCharacter(msg.characterId);
+        invalidateActiveForCharacter(msg.characterId, userId);
         log.info(
           `${msg.type}: char=${msg.characterId} name=${msg.name}` +
             (msg.type === 'set_default_variable'
@@ -6366,7 +6570,7 @@ spindle.onFrontendMessage(async (raw, userId) => {
       }
       case 'import_lorebook': {
         if (!userId) {
-          send({ type: 'error', message: 'import_lorebook: no userId' });
+          send({ type: 'error', message: 'import_lorebook: no userId' }, userId);
           break;
         }
         await handleImportLorebook(msg, userId);
@@ -6374,33 +6578,33 @@ spindle.onFrontendMessage(async (raw, userId) => {
       }
       case 'set_trigger_lua': {
         if (!userId) {
-          send({ type: 'error', message: 'set_trigger_lua: no userId' });
+          send({ type: 'error', message: 'set_trigger_lua: no userId' }, userId);
           break;
         }
         const result = await mutateTriggerLua(msg, userId);
         if (!result.ok) {
-          send({ type: 'error', message: `set_trigger_lua: ${result.reason ?? 'failed'}` });
+          send({ type: 'error', message: `set_trigger_lua: ${result.reason ?? 'failed'}` }, userId);
           break;
         }
         try {
           const data = msg.source.kind === 'character'
             ? await assembleCharacterViewerData(msg.source.characterId, userId)
             : await assembleModuleViewerData(msg.source.moduleId, userId);
-          if (data) send({ type: 'viewer_data_pushed', data });
+          if (data) send({ type: 'viewer_data_pushed', data }, userId);
         } catch (err) {
           log.warn(`set_trigger_lua: viewer re-push failed: ${errMsg(err)}`);
         }
         if (msg.source.kind === 'module') {
           const attached = await charactersAttachedTo(msg.source.moduleId, userId);
-          for (const charId of attached) invalidateActiveForCharacter(charId);
+          for (const charId of attached) invalidateActiveForCharacter(charId, userId);
         } else {
-          invalidateActiveForCharacter(msg.source.characterId);
+          invalidateActiveForCharacter(msg.source.characterId, userId);
         }
         break;
       }
       case 'set_background_html': {
         if (!userId) {
-          send({ type: 'error', message: 'set_background_html: no userId' });
+          send({ type: 'error', message: 'set_background_html: no userId' }, userId);
           break;
         }
         const characterId = msg.characterId;
@@ -6410,13 +6614,13 @@ spindle.onFrontendMessage(async (raw, userId) => {
           payload: { ...cur.payload, background_html: html },
         }));
         if (!updated) {
-          send({ type: 'error', message: 'set_background_html: character is not a lumirealm card' });
+          send({ type: 'error', message: 'set_background_html: character is not a lumirealm card' }, userId);
           break;
         }
-        invalidateActiveForCharacter(characterId);
+        invalidateActiveForCharacter(characterId, userId);
         try {
           const data = await assembleCharacterViewerData(characterId, userId);
-          if (data) send({ type: 'viewer_data_pushed', data });
+          if (data) send({ type: 'viewer_data_pushed', data }, userId);
         } catch (err) {
           log.warn(`set_background_html: viewer re-push failed: ${errMsg(err)}`);
         }
@@ -6424,22 +6628,22 @@ spindle.onFrontendMessage(async (raw, userId) => {
       }
       case 'request_viewer_data': {
         if (!userId) {
-          send({ type: 'error', message: 'request_viewer_data: no userId' });
+          send({ type: 'error', message: 'request_viewer_data: no userId' }, userId);
           break;
         }
         try {
           const data = msg.source.kind === 'character'
             ? await assembleCharacterViewerData(msg.source.characterId, userId)
             : await assembleModuleViewerData(msg.source.moduleId, userId);
-          if (data) send({ type: 'viewer_data_pushed', data });
+          if (data) send({ type: 'viewer_data_pushed', data }, userId);
           else send({
             type: 'error',
             message: msg.source.kind === 'character'
               ? `Viewer: character ${msg.source.characterId} is not a lumirealm card.`
               : `Viewer: module ${msg.source.moduleId} not found in library.`,
-          });
+          }, userId);
         } catch (err) {
-          send({ type: 'error', message: `Viewer assembly failed: ${errMsg(err)}` });
+          send({ type: 'error', message: `Viewer assembly failed: ${errMsg(err)}` }, userId);
         }
         break;
       }
@@ -6454,37 +6658,40 @@ spindle.onFrontendMessage(async (raw, userId) => {
       }
       case 'log_request_state': {
         if (userId) await ensureLogStateLoaded(userId);
-        sendLogState();
+        sendLogState(userId);
         break;
       }
       case 'log_set_state': {
+        if (!userId) break;
         const next: Partial<LogState> = {
           enabled: !!msg.enabled,
           includeChatData: !!msg.includeChatData,
         };
         if (isLogThreshold(msg.level)) next.level = msg.level;
-        logStore.setState(next);
-        if (userId) await persistLogState(userStorage(), userId);
-        sendLogState();
+        logStore.setState(next, userId);
+        await persistLogState(userStorage(), userId);
+        sendLogState(userId);
         break;
       }
       case 'log_request_export': {
-        const snap = logStore.snapshot();
+        if (!userId) break;
+        const snap = logStore.snapshot(userId);
         send({
           type: 'log_export_pushed',
           events: snap.events,
           session: {
             extensionVersion: EXTENSION_VERSION,
-            userId: userId ?? null,
-            activeChatId: lastActiveChatByUser.get(userId ?? '') ?? null,
+            userId,
+            activeChatId: lastActiveChatByUser.get(userId) ?? null,
             activeCharacterId: null,
           },
-        });
+        }, userId);
         break;
       }
       case 'log_clear': {
-        logStore.clear();
-        sendLogState();
+        if (!userId) break;
+        logStore.clear(userId);
+        sendLogState(userId);
         break;
       }
       case 'request_orphan_scan': {
@@ -6498,7 +6705,7 @@ spindle.onFrontendMessage(async (raw, userId) => {
               elapsedMs: 0, totalOrphans: 0, truncated: false,
             },
             error: 'No active user. Open a Lumi session and try again.',
-          });
+          }, userId);
           break;
         }
         if (assetUploadsInFlight > 0) {
@@ -6511,10 +6718,10 @@ spindle.onFrontendMessage(async (raw, userId) => {
               elapsedMs: 0, totalOrphans: 0, truncated: false,
             },
             error: 'An import or module upload is in progress. Wait for it to finish, then scan again.',
-          });
+          }, userId);
           break;
         }
-        send({ type: 'orphan_scan_started' });
+        send({ type: 'orphan_scan_started' }, userId);
         try {
           const report = await scanOrphanedImages(userId);
           log.info(
@@ -6531,7 +6738,7 @@ spindle.onFrontendMessage(async (raw, userId) => {
             type: 'orphan_scan_result',
             orphans: report.orphans,
             summary: report.summary,
-          });
+          }, userId);
         } catch (err) {
           log.warn(`orphan-scan: failed: ${errMsg(err)}`);
           send({
@@ -6543,7 +6750,7 @@ spindle.onFrontendMessage(async (raw, userId) => {
               elapsedMs: 0, totalOrphans: 0, truncated: false,
             },
             error: errMsg(err),
-          });
+          }, userId);
         }
         break;
       }
@@ -6555,7 +6762,7 @@ spindle.onFrontendMessage(async (raw, userId) => {
             requested, deleted: 0, absent: 0, failed: 0, skipped: 0,
             skippedIds: [],
             error: 'No active user.',
-          });
+          }, userId);
           break;
         }
         if (assetUploadsInFlight > 0) {
@@ -6564,7 +6771,7 @@ spindle.onFrontendMessage(async (raw, userId) => {
             requested, deleted: 0, absent: 0, failed: 0, skipped: 0,
             skippedIds: [],
             error: 'An import or module upload is in progress. Wait for it to finish before deleting.',
-          });
+          }, userId);
           break;
         }
         if (requested === 0) {
@@ -6572,12 +6779,12 @@ spindle.onFrontendMessage(async (raw, userId) => {
             type: 'orphan_delete_result',
             requested: 0, deleted: 0, absent: 0, failed: 0, skipped: 0,
             skippedIds: [],
-          });
+          }, userId);
           break;
         }
         const opId = `delete-orphans-${Date.now()}`;
         const opTitle = `Deleting ${requested} orphan asset${requested === 1 ? '' : 's'}`;
-        emitOperationProgress(opId, 'started', opTitle, 'Verifying live references…', null);
+        emitOperationProgress(userId, opId, 'started', opTitle, 'Verifying live references…', null);
         try {
           // Re-verify against the live set immediately before deletion. An
           // import or asset-add finishing between scan and delete would have
@@ -6600,13 +6807,13 @@ spindle.onFrontendMessage(async (raw, userId) => {
           }
           if (safeIds.length === 0) {
             emitOperationProgress(
-              opId, 'done', opTitle,
+              userId, opId, 'done', opTitle,
               `Nothing to delete (${skippedIds.length} skipped — became live)`,
               1,
             );
           } else {
             emitOperationProgress(
-              opId, 'progress', opTitle,
+              userId, opId, 'progress', opTitle,
               `Deleting 0 of ${safeIds.length}…`,
               0,
             );
@@ -6616,7 +6823,7 @@ spindle.onFrontendMessage(async (raw, userId) => {
                 safeIds, userId, 'orphan-cleanup',
                 (processed, total) => {
                   emitOperationProgress(
-                    opId, 'progress', opTitle,
+                    userId, opId, 'progress', opTitle,
                     `Deleting ${processed} of ${total}…`,
                     total > 0 ? processed / total : null,
                   );
@@ -6634,7 +6841,7 @@ spindle.onFrontendMessage(async (raw, userId) => {
                 ? ` (${stats.absent} already gone)`
                 : '';
             emitOperationProgress(
-              opId, 'done', opTitle,
+              userId, opId, 'done', opTitle,
               `Deleted ${stats.deleted} of ${safeIds.length}${tail}`,
               1,
             );
@@ -6647,32 +6854,40 @@ spindle.onFrontendMessage(async (raw, userId) => {
             failed: stats.failed,
             skipped: skippedIds.length,
             skippedIds,
-          });
+          }, userId);
         } catch (err) {
           log.warn(`orphan-cleanup: threw: ${errMsg(err)}`);
-          emitOperationProgress(opId, 'error', opTitle, '', null, errMsg(err));
+          emitOperationProgress(userId, opId, 'error', opTitle, '', null, errMsg(err));
           send({
             type: 'orphan_delete_result',
             requested, deleted: 0, absent: 0, failed: requested, skipped: 0,
             skippedIds: [],
             error: errMsg(err),
-          });
+          }, userId);
         }
         break;
       }
       case 'alert_dismissed': {
-        resolveAlertDismissal(msg.requestId);
+        const r = resolveAlertDismissal(msg.requestId, userId);
+        if (!r.ok) {
+          log.warn(`alert_dismissed: ${r.reason} requestId=${msg.requestId} responder=${userId ?? '<none>'}`);
+          send({ type: 'error', message: `alert: ${r.reason ?? 'failed'}` }, userId);
+        }
         break;
       }
       case 'pick_resolved': {
-        resolvePickResolution(msg.requestId, msg.value);
+        const r = resolvePickResolution(msg.requestId, userId, msg.value);
+        if (!r.ok) {
+          log.warn(`pick_resolved: ${r.reason} requestId=${msg.requestId} responder=${userId ?? '<none>'}`);
+          send({ type: 'error', message: `pick: ${r.reason ?? 'failed'}` }, userId);
+        }
         break;
       }
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     log.error(`Frontend message handler error (type=${(msg as { type?: string }).type ?? '?'}): ${message}`);
-    send({ type: 'error', message });
+    send({ type: 'error', message }, userId);
   }
-});
+}));
 
