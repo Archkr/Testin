@@ -311,6 +311,12 @@ export function createSidebar(opts: CreateSidebarOptions): SidebarHandle {
   activateSubTab(activeSubTab);
 
   function handleBackendMessage(msg: BackendToFrontend): void {
+    if (msg.type === 'open_settings_cleanup') {
+      // Open the drawer panel + focus the LumiRealm tab in case the user
+      // closed it after dismissing an earlier prompt.
+      try { tab.activate(); } catch (err) { log.warn('sidebar: tab.activate threw', err); }
+      if (activeSubTab !== 'settings') activateSubTab('settings');
+    }
     for (const handle of panels.values()) {
       try {
         handle.handleBackendMessage(msg);

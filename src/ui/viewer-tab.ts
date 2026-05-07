@@ -11,6 +11,7 @@ import type {
   ViewerTriggerEntry,
 } from '../types/messages.js';
 import type { FrontendLog } from './drawer.js';
+import { createVirtualGrid } from './virtual-grid.js';
 
 // Viewer for both characters and standalone .risum modules.
 // Mounts into a host element provided by ui/sidebar.ts.
@@ -498,125 +499,39 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
       // Search input still wired below.
     }
 
-    // Windowed virtualization. Mounts only the visible row range (+ overscan)
-    // plus the inline-edited tile if any. Scroll/resize trigger re-renders.
-    const scrollHost = document.createElement('div');
-    scrollHost.className = 'lrv-asset-virt-host';
-    const inner = document.createElement('div');
-    inner.className = 'lrv-asset-virt-inner';
-    scrollHost.appendChild(inner);
-    if (filtered.length > 0) det.appendChild(scrollHost);
-
-    let columns = 1;
-    let tileW = ASSET_TILE_MIN_W;
-    let containerW = ASSET_TILE_MIN_W;
-    const tileNodes = new Map<number, HTMLElement>();
-
-    function recomputeLayout(): void {
-      containerW = scrollHost.clientWidth || ASSET_TILE_MIN_W;
-      columns = Math.max(1, Math.floor(containerW / ASSET_TILE_MIN_W));
-      tileW = containerW / columns;
-      const rows = Math.ceil(filtered.length / columns);
-      inner.style.height = `${rows * ASSET_TILE_H}px`;
-    }
-
-    function placeTile(node: HTMLElement, idx: number): void {
-      const row = Math.floor(idx / columns);
-      const col = idx % columns;
-      node.style.position = 'absolute';
-      node.style.top = `${row * ASSET_TILE_H}px`;
-      node.style.left = `${col * tileW}px`;
-      node.style.width = `${tileW}px`;
-      node.style.height = `${ASSET_TILE_H}px`;
-    }
-
-    function renderWindow(): void {
-      if (filtered.length === 0) return;
-      const top = scrollHost.scrollTop;
-      const bottom = top + (scrollHost.clientHeight || 1);
-      const totalRows = Math.ceil(filtered.length / columns);
-      const startRow = Math.max(0, Math.floor(top / ASSET_TILE_H) - ASSET_OVERSCAN_ROWS);
-      const endRow = Math.min(totalRows, Math.ceil(bottom / ASSET_TILE_H) + ASSET_OVERSCAN_ROWS);
-      const startIdx = startRow * columns;
-      const endIdx = Math.min(filtered.length, endRow * columns);
-
-      const wanted = new Set<number>();
-      for (let i = startIdx; i < endIdx; i++) wanted.add(i);
-      // Pin the inline-edit tile in the DOM regardless of scroll position so
-      // the user's input doesn't lose focus when they accidentally scroll.
-      if (renamingAssetName !== null) {
+    const grid = createVirtualGrid<ViewerAssetEntry>({
+      hostClassName: 'lrv-asset-virt-host',
+      innerClassName: 'lrv-asset-virt-inner',
+      rowHeight: ASSET_TILE_H,
+      minTileWidth: ASSET_TILE_MIN_W,
+      overscanRows: ASSET_OVERSCAN_ROWS,
+      getItems: () => filtered,
+      renderItem: (a) => renderAssetTile(a),
+      pinnedIndices: () => {
+        if (renamingAssetName === null) return [];
         const idx = filtered.findIndex((a) => a.name === renamingAssetName);
-        if (idx >= 0) wanted.add(idx);
-      }
-
-      for (const [i, node] of tileNodes) {
-        if (!wanted.has(i)) {
-          node.remove();
-          tileNodes.delete(i);
-        }
-      }
-      for (const i of wanted) {
-        if (tileNodes.has(i)) {
-          // Reposition in case columns/tileW changed.
-          placeTile(tileNodes.get(i)!, i);
-          continue;
-        }
-        const a = filtered[i];
-        if (!a) continue;
-        const tile = renderAssetTile(a);
-        placeTile(tile, i);
-        inner.appendChild(tile);
-        tileNodes.set(i, tile);
-      }
-    }
-
-    function rerenderAll(): void {
-      inner.replaceChildren();
-      tileNodes.clear();
-      recomputeLayout();
-      renderWindow();
-    }
-
-    let scrollPending = false;
-    scrollHost.addEventListener('scroll', () => {
-      if (scrollPending) return;
-      scrollPending = true;
-      requestAnimationFrame(() => {
-        scrollPending = false;
-        renderWindow();
-      });
+        return idx >= 0 ? [idx] : [];
+      },
     });
-
-    if (typeof ResizeObserver !== 'undefined') {
-      let firstObservation = true;
-      const ro = new ResizeObserver(() => {
-        const prevColumns = columns;
-        const prevTileW = tileW;
-        recomputeLayout();
-        if (firstObservation || columns !== prevColumns || Math.abs(tileW - prevTileW) > 0.5) {
-          rerenderAll();
-          firstObservation = false;
-        } else {
-          renderWindow();
-        }
-      });
-      ro.observe(scrollHost);
-    } else {
-      // Fallback: layout once on next frame after mount.
-      requestAnimationFrame(() => {
-        recomputeLayout();
-        renderWindow();
-      });
-    }
+    if (filtered.length > 0) det.appendChild(grid.host);
 
     // Search wiring , debounce + full re-render of the subtab so the new
-    // filter is consumed by the re-mounted virtualized grid.
+    // filter is consumed by the re-mounted virtualized grid. The re-render
+    // destroys this input element, so restore focus + caret on the replacement.
     let searchTimer: number | undefined;
     search.addEventListener('input', () => {
       if (searchTimer !== undefined) window.clearTimeout(searchTimer);
       searchTimer = window.setTimeout(() => {
+        const caret = search.selectionStart;
         assetSearchTerm = search.value;
         render();
+        const fresh = root.querySelector<HTMLInputElement>('.lrv-asset-search');
+        if (fresh) {
+          fresh.focus();
+          if (caret !== null) {
+            try { fresh.setSelectionRange(caret, caret); } catch { /* */ }
+          }
+        }
       }, 80);
     });
 

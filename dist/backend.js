@@ -24783,19 +24783,6 @@ async function appendImageIdsToJournal(storage, userId, characterId, newIds) {
     updated_at: Date.now()
   });
 }
-async function markJournalPendingDelete(storage, userId, characterId) {
-  const existing = await readImageJournalFile(storage, userId, characterId);
-  if (!existing)
-    return [];
-  if (existing.status === "pending_delete")
-    return existing.imageIds;
-  await writeJournalFile(storage, userId, {
-    ...existing,
-    status: "pending_delete",
-    updated_at: Date.now()
-  });
-  return existing.imageIds;
-}
 async function clearImageJournal(storage, userId, characterId) {
   try {
     await storage.delete(journalPath(characterId), userId);
@@ -24858,19 +24845,6 @@ async function appendModuleImageIdsToJournal(storage, userId, moduleId, newIds) 
     updated_at: Date.now()
   });
 }
-async function markModuleJournalPendingDelete(storage, userId, moduleId) {
-  const existing = await readModuleImageJournalFile(storage, userId, moduleId);
-  if (!existing)
-    return [];
-  if (existing.status === "pending_delete")
-    return existing.imageIds;
-  await writeJournalFile2(storage, userId, {
-    ...existing,
-    status: "pending_delete",
-    updated_at: Date.now()
-  });
-  return existing.imageIds;
-}
 async function clearModuleImageJournal(storage, userId, moduleId) {
   try {
     await storage.delete(journalPath2(moduleId), userId);
@@ -24890,6 +24864,95 @@ async function listModuleImageJournalIds(storage, userId) {
     out.push(name.replace(/\.json$/i, ""));
   }
   return out;
+}
+
+// src/state/orphan-detect.ts
+var IMAGE_URL_RE = /\/api\/v1\/images\/([A-Za-z0-9_\-]+)/g;
+function extractImageUrlIds(text) {
+  if (typeof text !== "string" || text.length === 0)
+    return [];
+  const out = [];
+  IMAGE_URL_RE.lastIndex = 0;
+  let m;
+  while ((m = IMAGE_URL_RE.exec(text)) !== null) {
+    if (m[1] && m[1].length > 0)
+      out.push(m[1]);
+  }
+  return out;
+}
+async function buildLiveImageIdSet(deps) {
+  const liveIds = new Set;
+  let liveCharacterRefs = 0;
+  let liveModuleRefs = 0;
+  let liveJournalRefs = 0;
+  const addId = (id, bumpKind) => {
+    if (typeof id !== "string" || id.length === 0)
+      return;
+    if (liveIds.has(id))
+      return;
+    liveIds.add(id);
+    if (bumpKind === "char")
+      liveCharacterRefs++;
+    else if (bumpKind === "module")
+      liveModuleRefs++;
+    else
+      liveJournalRefs++;
+  };
+  const characters = await deps.listLumirealmCharacters();
+  for (const c of characters) {
+    addId(c.image_id, "char");
+    for (const entry of Object.values(c.asset_index ?? {})) {
+      for (const id of entry.imageIds ?? [])
+        addId(id, "char");
+    }
+    for (const entry of Object.values(c.emotion_index ?? {})) {
+      for (const id of entry.imageIds ?? [])
+        addId(id, "char");
+    }
+    for (const replace of c.regex_replace_strings ?? []) {
+      for (const id of extractImageUrlIds(replace))
+        addId(id, "char");
+    }
+    for (const id of extractImageUrlIds(c.background_html))
+      addId(id, "char");
+  }
+  const modules = await deps.listModules();
+  for (const m of modules) {
+    for (const id of m.asset_imageIds)
+      addId(id, "module");
+  }
+  const skippedJournalCharacters = [];
+  const skippedJournalModules = [];
+  const charJournals = await deps.listActiveCharacterJournals();
+  for (const j of charJournals) {
+    const exists = await deps.characterExists(j.characterId);
+    if (!exists) {
+      skippedJournalCharacters.push(j.characterId);
+      continue;
+    }
+    for (const id of j.imageIds)
+      addId(id, "journal");
+  }
+  const moduleJournals = await deps.listActiveModuleJournals();
+  for (const j of moduleJournals) {
+    const exists = await deps.moduleExists(j.moduleId);
+    if (!exists) {
+      skippedJournalModules.push(j.moduleId);
+      continue;
+    }
+    for (const id of j.imageIds)
+      addId(id, "journal");
+  }
+  return {
+    liveIds,
+    liveCharacterRefs,
+    liveModuleRefs,
+    liveJournalRefs,
+    charactersScanned: characters.length,
+    modulesScanned: modules.length,
+    skippedJournalCharacters,
+    skippedJournalModules
+  };
 }
 
 // src/interpreter/dispatch.ts
@@ -28748,7 +28811,7 @@ async function importCard(args) {
       const [path, data] = entry;
       const filename = path.split("/").pop() ?? "asset.bin";
       try {
-        const result = await args.spindle.images.upload({ data, mime_type: guessMimeType(path), filename }, args.userId);
+        const result = await args.spindle.images.upload({ data, mime_type: guessMimeType(path), filename, owner_character_id: characterId }, args.userId);
         if (typeof result?.id !== "string" || result.id.length === 0) {
           throw new Error("upload returned without an image id");
         }
@@ -31927,7 +31990,7 @@ function journalStorage() {
 function spindleImagesDelete() {
   return spindle.images?.delete ? spindle.images.delete.bind(spindle.images) : null;
 }
-async function deleteImageIds(imageIds, userId, context2) {
+async function deleteImageIds(imageIds, userId, context2, onProgress) {
   let deleted = 0;
   let absent = 0;
   let failed = 0;
@@ -31937,15 +32000,20 @@ async function deleteImageIds(imageIds, userId, context2) {
     return { deleted, absent, failed: imageIds.length };
   }
   let nextIndex = 0;
-  const concurrency = Math.min(6, imageIds.length);
+  let processed = 0;
+  const total = imageIds.length;
+  const concurrency = Math.min(6, total);
+  const progressEvery = Math.max(10, Math.floor(total / 100));
   const worker = async () => {
     while (true) {
       const i = nextIndex++;
-      if (i >= imageIds.length)
+      if (i >= total)
         break;
       const id = imageIds[i];
-      if (!id)
+      if (!id) {
+        processed++;
         continue;
+      }
       try {
         const ok = await del(id, userId);
         if (ok)
@@ -31956,6 +32024,14 @@ async function deleteImageIds(imageIds, userId, context2) {
         failed++;
         log7.warn(`${context2}: image delete threw id=${id}: ${errMsg(err)}`);
       }
+      processed++;
+      if (onProgress && (processed % progressEvery === 0 || processed === total)) {
+        try {
+          onProgress(processed, total);
+        } catch (err) {
+          log7.warn(`${context2}: onProgress threw: ${errMsg(err)}`);
+        }
+      }
     }
   };
   const workers = [];
@@ -31963,17 +32039,6 @@ async function deleteImageIds(imageIds, userId, context2) {
     workers.push(worker());
   await Promise.all(workers);
   return { deleted, absent, failed };
-}
-async function runImageCleanupForCharacter(characterId, userId) {
-  const ids = await markJournalPendingDelete(journalStorage(), userId, characterId);
-  if (ids.length === 0) {
-    await clearImageJournal(journalStorage(), userId, characterId);
-    return;
-  }
-  const tStart = Date.now();
-  const stats = await deleteImageIds(ids, userId, `image-cleanup char=${characterId}`);
-  log7.info(`image-cleanup: char=${characterId} deleted=${stats.deleted} absent=${stats.absent} ` + `failed=${stats.failed} total=${ids.length} elapsed=${Date.now() - tStart}ms`);
-  await clearImageJournal(journalStorage(), userId, characterId);
 }
 function collectStoredCardImageIds(avatarId, card) {
   const ids = [];
@@ -32008,85 +32073,286 @@ async function backfillImageJournalIfMissing(characterId, avatarId, card) {
     log7.warn(`image-journal: backfill failed char=${characterId}: ${errMsg(err)}`);
   }
 }
-var imageOrphanReaperRan = false;
-async function runImageOrphanReaper(userId) {
-  if (imageOrphanReaperRan)
-    return;
-  imageOrphanReaperRan = true;
-  const tStart = Date.now();
+async function detectDeletedWhileOff(userId) {
+  const characterIds = [];
+  const moduleIds = [];
   try {
-    const journalIds = await listImageJournalCharacterIds(journalStorage(), userId);
-    let resumed = 0;
-    let orphaned = 0;
-    for (const characterId of journalIds) {
+    const charJournalIds = await listImageJournalCharacterIds(journalStorage(), userId);
+    for (const characterId of charJournalIds) {
       const file = await readImageJournalFile(journalStorage(), userId, characterId);
       if (!file)
         continue;
-      if (file.status === "pending_delete") {
-        log7.info(`image-journal reaper: resuming pending_delete char=${characterId} ids=${file.imageIds.length}`);
-        await runImageCleanupForCharacter(characterId, userId);
-        resumed++;
-        continue;
-      }
       let character2 = null;
       try {
         character2 = await spindle.characters.get(characterId, userId);
       } catch (err) {
-        log7.warn(`image-journal reaper: characters.get(${characterId}) threw: ${errMsg(err)}`);
+        log7.warn(`detectDeletedWhileOff: characters.get(${characterId}) threw: ${errMsg(err)}`);
         continue;
       }
-      if (character2 !== null)
-        continue;
-      log7.info(`image-journal reaper: orphan char=${characterId} ids=${file.imageIds.length} (character row missing)`);
-      await runImageCleanupForCharacter(characterId, userId);
-      orphaned++;
+      if (character2 === null)
+        characterIds.push(characterId);
     }
-    log7.info(`image-journal reaper: done resumed=${resumed} orphans=${orphaned} ` + `total=${journalIds.length} elapsed=${Date.now() - tStart}ms`);
   } catch (err) {
-    log7.warn(`image-journal reaper: failed: ${errMsg(err)}`);
+    log7.warn(`detectDeletedWhileOff: char-journal walk failed: ${errMsg(err)}`);
   }
-  await runModuleImageOrphanReaper(userId);
-}
-async function runModuleImageCleanup(moduleId, userId) {
-  const ids = await markModuleJournalPendingDelete(journalStorage(), userId, moduleId);
-  if (ids.length === 0) {
-    await clearModuleImageJournal(journalStorage(), userId, moduleId);
-    return;
-  }
-  const tStart = Date.now();
-  const stats = await deleteImageIds(ids, userId, `module-image-cleanup module=${moduleId}`);
-  log7.info(`module-image-cleanup: module=${moduleId} deleted=${stats.deleted} absent=${stats.absent} ` + `failed=${stats.failed} total=${ids.length} elapsed=${Date.now() - tStart}ms`);
-  await clearModuleImageJournal(journalStorage(), userId, moduleId);
-}
-async function runModuleImageOrphanReaper(userId) {
-  const tStart = Date.now();
   try {
-    const journalIds = await listModuleImageJournalIds(journalStorage(), userId);
-    let resumed = 0;
-    let orphaned = 0;
-    for (const moduleId of journalIds) {
+    const moduleJournalIds = await listModuleImageJournalIds(journalStorage(), userId);
+    for (const moduleId of moduleJournalIds) {
       const file = await readModuleImageJournalFile(journalStorage(), userId, moduleId);
       if (!file)
         continue;
-      if (file.status === "pending_delete") {
-        log7.info(`module-image-journal reaper: resuming pending_delete module=${moduleId} ids=${file.imageIds.length}`);
-        await runModuleImageCleanup(moduleId, userId);
-        resumed++;
-        continue;
-      }
       const env = await readEnvelope(moduleStorage(), userId, moduleId);
-      if (env !== null)
-        continue;
-      log7.info(`module-image-journal reaper: orphan module=${moduleId} ids=${file.imageIds.length} (envelope missing)`);
-      await runModuleImageCleanup(moduleId, userId);
-      orphaned++;
+      if (env === null)
+        moduleIds.push(moduleId);
     }
-    log7.info(`module-image-journal reaper: done resumed=${resumed} orphans=${orphaned} ` + `total=${journalIds.length} elapsed=${Date.now() - tStart}ms`);
   } catch (err) {
-    log7.warn(`module-image-journal reaper: failed: ${errMsg(err)}`);
+    log7.warn(`detectDeletedWhileOff: module-journal walk failed: ${errMsg(err)}`);
+  }
+  return { characterIds, moduleIds };
+}
+var orphanReviewPromptedThisBoot = false;
+async function promptOrphanReviewIfAny(userId) {
+  if (orphanReviewPromptedThisBoot)
+    return;
+  orphanReviewPromptedThisBoot = true;
+  const tStart = Date.now();
+  const detected = await detectDeletedWhileOff(userId);
+  const charCount = detected.characterIds.length;
+  const moduleCount = detected.moduleIds.length;
+  if (charCount + moduleCount === 0) {
+    log7.info(`orphan-review: nothing detected elapsed=${Date.now() - tStart}ms`);
+    return;
+  }
+  const charPreview = detected.characterIds.slice(0, 8).join(",");
+  const charPreviewSuffix = detected.characterIds.length > 8 ? `\u2026(+${detected.characterIds.length - 8})` : "";
+  const modulePreview = detected.moduleIds.slice(0, 8).join(",");
+  const modulePreviewSuffix = detected.moduleIds.length > 8 ? `\u2026(+${detected.moduleIds.length - 8})` : "";
+  log7.info(`orphan-review: detected chars=${charCount} modules=${moduleCount} ` + `elapsed=${Date.now() - tStart}ms ` + `charIds=[${charPreview}${charPreviewSuffix}] ` + `moduleIds=[${modulePreview}${modulePreviewSuffix}]`);
+  const parts = [];
+  if (charCount > 0)
+    parts.push(`${charCount} character${charCount === 1 ? "" : "s"}`);
+  if (moduleCount > 0)
+    parts.push(`${moduleCount} module${moduleCount === 1 ? "" : "s"}`);
+  const summarySubject = parts.join(" and ");
+  const message = `Found leftover image journals for ${summarySubject} whose Lumi entries ` + `are gone. This includes anything deleted while LumiRealm wasn't running ` + `and incomplete cleanups from earlier sessions. Open Cleanup to review ` + `the actual image assets?`;
+  const modalApi = spindle.modal;
+  let result = null;
+  if (modalApi?.confirm) {
+    log7.info(`orphan-review: opening confirm modal`);
+    try {
+      result = await modalApi.confirm({
+        title: "Leftover RisuAI image entries detected",
+        message,
+        variant: "info",
+        confirmLabel: "Review",
+        cancelLabel: "Dismiss",
+        userId
+      });
+    } catch (err) {
+      log7.warn(`orphan-review: modal.confirm threw: ${errMsg(err)}`);
+    }
+  } else {
+    log7.warn(`orphan-review: spindle.modal.confirm unavailable, falling back to toast`);
+  }
+  if (result === null) {
+    try {
+      spindle.toast.warning(`Found leftover image journals for ${summarySubject}. ` + `Open Settings, Cleanup to review orphaned image assets.`, { title: "lumirealm: leftover image entries" });
+    } catch (err) {
+      log7.warn(`orphan-review: toast fallback threw: ${errMsg(err)}`);
+    }
+    result = { confirmed: false };
+  }
+  for (const characterId of detected.characterIds) {
+    await clearImageJournal(journalStorage(), userId, characterId).catch((err) => {
+      log7.warn(`orphan-review: clearImageJournal threw char=${characterId}: ${errMsg(err)}`);
+    });
+  }
+  for (const moduleId of detected.moduleIds) {
+    await clearModuleImageJournal(journalStorage(), userId, moduleId).catch((err) => {
+      log7.warn(`orphan-review: clearModuleImageJournal threw module=${moduleId}: ${errMsg(err)}`);
+    });
+  }
+  log7.info(`orphan-review: confirmed=${result.confirmed} cleared chars=${charCount} modules=${moduleCount}`);
+  if (result.confirmed) {
+    send({ type: "open_settings_cleanup" });
   }
 }
+function buildOrphanDetectDeps(userId) {
+  return {
+    listLumirealmCharacters: async () => {
+      const entries = await listLumirealmCharacters(charactersApi(), userId, {
+        paginate: true
+      });
+      return entries.map(({ character: character2, data }) => ({
+        id: character2.id,
+        image_id: character2.image_id ?? null,
+        asset_index: data.asset_index,
+        emotion_index: data.emotion_index,
+        regex_replace_strings: data.regex_scripts.map((r) => r.replace_string),
+        background_html: data.payload?.background_html ?? null
+      }));
+    },
+    listModules: async () => {
+      const summaries = await listModules(moduleStorage(), userId);
+      const out = [];
+      for (const summary of summaries) {
+        const env = await readEnvelope(moduleStorage(), userId, summary.id);
+        if (!env)
+          continue;
+        const ids = [];
+        for (const ref of Object.values(env.asset_index ?? {})) {
+          if (typeof ref.imageId === "string" && ref.imageId.length > 0) {
+            ids.push(ref.imageId);
+          }
+        }
+        out.push({ id: summary.id, asset_imageIds: ids });
+      }
+      return out;
+    },
+    listActiveCharacterJournals: async () => {
+      const ids = await listImageJournalCharacterIds(journalStorage(), userId);
+      const out = [];
+      for (const id of ids) {
+        const f = await readImageJournalFile(journalStorage(), userId, id);
+        if (f && f.status === "active")
+          out.push(f);
+      }
+      return out;
+    },
+    listActiveModuleJournals: async () => {
+      const ids = await listModuleImageJournalIds(journalStorage(), userId);
+      const out = [];
+      for (const id of ids) {
+        const f = await readModuleImageJournalFile(journalStorage(), userId, id);
+        if (f && f.status === "active")
+          out.push(f);
+      }
+      return out;
+    },
+    characterExists: async (id) => {
+      try {
+        const c = await spindle.characters.get(id, userId);
+        return c !== null;
+      } catch (err) {
+        log7.warn(`orphan-detect: characters.get(${id}) threw: ${errMsg(err)}`);
+        return false;
+      }
+    },
+    moduleExists: async (id) => {
+      try {
+        const env = await readEnvelope(moduleStorage(), userId, id);
+        return env !== null;
+      } catch {
+        return false;
+      }
+    }
+  };
+}
+function buildOrphanDetectDepsExcluding(userId, excludeCharacterId) {
+  const base = buildOrphanDetectDeps(userId);
+  return {
+    ...base,
+    listLumirealmCharacters: async () => {
+      const all = await base.listLumirealmCharacters();
+      return all.filter((c) => c.id !== excludeCharacterId);
+    },
+    characterExists: async (id) => {
+      if (id === excludeCharacterId)
+        return false;
+      return base.characterExists(id);
+    }
+  };
+}
+async function scanOrphanedImages(userId) {
+  const tStart = Date.now();
+  const imagesApi = spindle.images;
+  if (!imagesApi?.list) {
+    throw new Error("spindle.images.list unavailable, Lumi update required for orphan scan.");
+  }
+  const live = await buildLiveImageIdSet(buildOrphanDetectDeps(userId));
+  const PAGE_SIZE = 200;
+  const ownedById = new Map;
+  let offset = 0;
+  let pages = 0;
+  while (true) {
+    const page = await imagesApi.list({
+      onlyOwned: true,
+      limit: PAGE_SIZE,
+      offset,
+      userId
+    });
+    pages++;
+    if (!page || !Array.isArray(page.data)) {
+      log7.warn(`scanOrphanedImages: list returned bad shape pages=${pages}, stopping`);
+      break;
+    }
+    if (page.data.length === 0)
+      break;
+    let added = 0;
+    for (const img of page.data) {
+      if (!img || typeof img.id !== "string" || img.id.length === 0)
+        continue;
+      if (!ownedById.has(img.id)) {
+        ownedById.set(img.id, img);
+        added++;
+      }
+    }
+    if (added === 0) {
+      log7.warn(`scanOrphanedImages: page added 0 new IDs at offset=${offset} pages=${pages}, ` + `stopping (likely host returned dup-only page or ignored offset)`);
+      break;
+    }
+    offset += page.data.length;
+    if (typeof page.total === "number" && offset >= page.total)
+      break;
+  }
+  const orphans = [];
+  for (const img of ownedById.values()) {
+    if (live.liveIds.has(img.id))
+      continue;
+    orphans.push({
+      id: img.id,
+      filename: typeof img.original_filename === "string" ? img.original_filename : "",
+      mime: typeof img.mime_type === "string" ? img.mime_type : "",
+      width: typeof img.width === "number" ? img.width : null,
+      height: typeof img.height === "number" ? img.height : null,
+      url: typeof img.url === "string" ? img.url : "",
+      ownerCharacterId: typeof img.owner_character_id === "string" && img.owner_character_id.length > 0 ? img.owner_character_id : null,
+      createdAt: typeof img.created_at === "number" ? img.created_at : 0
+    });
+  }
+  orphans.sort((a, b) => b.createdAt - a.createdAt);
+  const MAX_RETURNED = 1e4;
+  const totalOrphans = orphans.length;
+  const truncated = totalOrphans > MAX_RETURNED;
+  const shown = truncated ? orphans.slice(0, MAX_RETURNED) : orphans;
+  return {
+    orphans: shown,
+    summary: {
+      scannedTotal: ownedById.size,
+      liveCharacterRefs: live.liveCharacterRefs,
+      liveModuleRefs: live.liveModuleRefs,
+      liveJournalRefs: live.liveJournalRefs,
+      charactersScanned: live.charactersScanned,
+      modulesScanned: live.modulesScanned,
+      elapsedMs: Date.now() - tStart,
+      totalOrphans,
+      truncated
+    }
+  };
+}
 var pendingImportCompletions = new Map;
+var assetUploadsInFlight = 0;
+function emitOperationProgress(operationId, phase, title, message, fraction, error) {
+  send({
+    type: "operation_progress",
+    operationId,
+    phase,
+    title,
+    message,
+    fraction,
+    ...error !== undefined ? { error } : {}
+  });
+}
 async function applySvgRasterIndex(args) {
   const { characterId, imageIdByMarker, userId } = args;
   const markerToImageId = {};
@@ -32357,6 +32623,7 @@ async function importCardFromBytes(bytesB64, fileName) {
   };
   if (!spindle.world_books)
     log7.warn(`spindle.world_books unavailable \u2014 lorebook entries will be skipped`);
+  assetUploadsInFlight++;
   try {
     const result = await importCard({
       bytesB64,
@@ -32462,6 +32729,8 @@ async function importCardFromBytes(bytesB64, fileName) {
       fraction: null,
       error: message
     });
+  } finally {
+    assetUploadsInFlight--;
   }
 }
 async function deleteCardByChar(characterId, mode = "cascade") {
@@ -33474,9 +33743,11 @@ function captureUserId(userId, where) {
     getSettingsForUser(userId).catch((err) => {
       log7.warn(`captureUserId: settings preload failed for user=${userId}: ${errMsg(err)}`);
     });
-    runImageOrphanReaper(userId).catch((err) => {
-      log7.warn(`captureUserId: image orphan reaper failed for user=${userId}: ${errMsg(err)}`);
-    });
+    setTimeout(() => {
+      promptOrphanReviewIfAny(userId).catch((err) => {
+        log7.warn(`captureUserId: orphan-review prompt failed: ${errMsg(err)}`);
+      });
+    }, 3000);
   }
 }
 function sendSetActiveChat(activeChatId) {
@@ -33811,9 +34082,54 @@ spindle.on("CHARACTER_DELETED", async (raw, uid) => {
     }
   }
   if (uid) {
-    await runImageCleanupForCharacter(characterId, uid).catch((err) => {
-      log7.warn(`CHARACTER_DELETED: image cleanup threw char=${characterId}: ${errMsg(err)}`);
-    });
+    const opId = `delete-char-${characterId}-${Date.now()}`;
+    const opTitle = `Cleaning up deleted character`;
+    emitOperationProgress(uid, opId, "started", opTitle, "Reading image journal\u2026", null);
+    try {
+      const journalFile = await readImageJournalFile(journalStorage(), uid, characterId);
+      const journalImageIds = journalFile?.imageIds ?? [];
+      let imageStats = { deleted: 0, absent: 0, failed: 0, skipped: 0 };
+      if (journalImageIds.length === 0) {
+        log7.info(`CHARACTER_DELETED: no journal for char=${characterId}, nothing to clean`);
+      } else {
+        emitOperationProgress(uid, opId, "progress", opTitle, `Checking ${journalImageIds.length} asset${journalImageIds.length === 1 ? "" : "s"} against live references\u2026`, 0.3);
+        const live = await buildLiveImageIdSet(buildOrphanDetectDepsExcluding(uid, characterId));
+        const safeIds = [];
+        let skipped = 0;
+        for (const id of journalImageIds) {
+          if (typeof id !== "string" || id.length === 0)
+            continue;
+          if (live.liveIds.has(id)) {
+            skipped++;
+            continue;
+          }
+          safeIds.push(id);
+        }
+        if (skipped > 0) {
+          log7.info(`CHARACTER_DELETED: ${skipped}/${journalImageIds.length} asset(s) shielded by other live refs (likely a Lumi-side duplicate), deleting only ${safeIds.length} character-owned asset(s)`);
+        }
+        if (safeIds.length > 0) {
+          emitOperationProgress(uid, opId, "progress", opTitle, `Deleting 0 of ${safeIds.length} asset${safeIds.length === 1 ? "" : "s"}\u2026`, 0.4);
+          const stats = await deleteImageIds(safeIds, uid, `CHARACTER_DELETED(${characterId})`, (processed, total) => {
+            const frac = total > 0 ? 0.4 + processed / total * 0.55 : 0.4;
+            emitOperationProgress(uid, opId, "progress", opTitle, `Deleting ${processed} of ${total} asset${total === 1 ? "" : "s"}\u2026`, frac);
+          });
+          imageStats = { ...stats, skipped };
+        } else {
+          imageStats = { deleted: 0, absent: 0, failed: 0, skipped };
+        }
+      }
+      await clearImageJournal(journalStorage(), uid, characterId).catch((err) => {
+        log7.warn(`CHARACTER_DELETED: clearImageJournal threw char=${characterId}: ${errMsg(err)}`);
+      });
+      log7.info(`CHARACTER_DELETED cleanup: char=${characterId} imageDelete=deleted:${imageStats.deleted} absent:${imageStats.absent} failed:${imageStats.failed} skipped:${imageStats.skipped}`);
+      const summaryLine = journalImageIds.length === 0 ? "No image assets to clean" : imageStats.skipped > 0 ? `${imageStats.deleted} asset${imageStats.deleted === 1 ? "" : "s"} deleted (${imageStats.skipped} kept, still referenced)` : `${imageStats.deleted} asset${imageStats.deleted === 1 ? "" : "s"} deleted`;
+      emitOperationProgress(uid, opId, "done", opTitle, summaryLine, 1);
+    } catch (err) {
+      log7.warn(`CHARACTER_DELETED cleanup threw char=${characterId}: ${errMsg(err)}`);
+      emitOperationProgress(uid, opId, "error", opTitle, "", null, errMsg(err));
+      await clearImageJournal(journalStorage(), uid, characterId).catch(() => {});
+    }
   }
   send({
     type: "cleanup_character_artifacts",
@@ -33865,155 +34181,161 @@ function moduleStorage() {
   return spindle.userStorage;
 }
 async function processModuleUpload(bytes, fileName, userId) {
-  const t0 = Date.now();
-  log7.info(`processModuleUpload: file=${fileName} bytes=${bytes.byteLength} userId=${userId}`);
-  const decoded = decodeRisum(bytes);
-  const parsed = risuModuleSchema.safeParse(decoded.module);
-  if (!parsed.success) {
-    throw new Error(`decoded module failed schema validation \u2014 ${parsed.error.issues.slice(0, 3).map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`);
-  }
-  const moduleBody = parsed.data;
-  if (typeof moduleBody.id !== "string" || moduleBody.id.length === 0) {
-    throw new Error("module is missing an `id` \u2014 cannot store");
-  }
-  const previousEnvelope = await readEnvelope(moduleStorage(), userId, moduleBody.id);
-  if (moduleBody.lowLevelAccess === true) {
-    log7.info(`processModuleUpload: lowLevelAccess=true for module=${moduleBody.id} name="${moduleBody.name ?? "<unnamed>"}" \u2014 prompting consent`);
-    let confirmed = false;
-    try {
-      const res = await requestConsent({
-        title: `Module "${moduleBody.name ?? moduleBody.id}" requests low-level access`,
-        message: `This module declares low-level access: its triggers can call runLLM, runImgGen, request, and other privileged APIs that consume tokens, hit external services, and read your chat state.
+  assetUploadsInFlight++;
+  try {
+    const t0 = Date.now();
+    log7.info(`processModuleUpload: file=${fileName} bytes=${bytes.byteLength} userId=${userId}`);
+    const decoded = decodeRisum(bytes);
+    const parsed = risuModuleSchema.safeParse(decoded.module);
+    if (!parsed.success) {
+      throw new Error(`decoded module failed schema validation \u2014 ${parsed.error.issues.slice(0, 3).map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`);
+    }
+    const moduleBody = parsed.data;
+    if (typeof moduleBody.id !== "string" || moduleBody.id.length === 0) {
+      throw new Error("module is missing an `id` cannot store");
+    }
+    const sourceModuleId = moduleBody.id;
+    moduleBody.id = crypto.randomUUID();
+    log7.info(`processModuleUpload: assigned fresh id=${moduleBody.id} (source id was ${sourceModuleId})`);
+    if (moduleBody.lowLevelAccess === true) {
+      log7.info(`processModuleUpload: lowLevelAccess=true for module=${moduleBody.id} name="${moduleBody.name ?? "<unnamed>"}" \u2014 prompting consent`);
+      let confirmed = false;
+      try {
+        const res = await requestConsent({
+          title: `Module "${moduleBody.name ?? moduleBody.id}" requests low-level access`,
+          message: `This module declares low-level access: its triggers can call runLLM, runImgGen, request, and other privileged APIs that consume tokens, hit external services, and read your chat state.
 
 Only accept if you trust the source of this module.
 
 ` + `Decline to refuse the upload \u2014 the module will not be added to your library.`,
-        confirmLabel: "Grant access",
-        cancelLabel: "Decline"
-      });
-      confirmed = !!res?.confirmed;
-    } catch (err) {
-      log7.warn(`processModuleUpload: consent prompt threw: ${err.message} \u2014 treating as decline`);
-      confirmed = false;
+          confirmLabel: "Grant access",
+          cancelLabel: "Decline"
+        });
+        confirmed = !!res?.confirmed;
+      } catch (err) {
+        log7.warn(`processModuleUpload: consent prompt threw: ${err.message} \u2014 treating as decline`);
+        confirmed = false;
+      }
+      if (!confirmed) {
+        log7.info(`processModuleUpload: consent declined for module=${moduleBody.id} \u2014 aborting upload`);
+        throw new Error(`Module "${moduleBody.name ?? moduleBody.id}" requires low-level access; consent declined.`);
+      }
+      log7.info(`processModuleUpload: low-level access consent granted for module=${moduleBody.id}`);
     }
-    if (!confirmed) {
-      log7.info(`processModuleUpload: consent declined for module=${moduleBody.id} \u2014 aborting upload`);
-      throw new Error(`Module "${moduleBody.name ?? moduleBody.id}" requires low-level access; consent declined.`);
+    if (!spindle.images?.upload) {
+      throw new Error("spindle.images.upload is unavailable \u2014 Lumi 0.9.6+ required.");
     }
-    log7.info(`processModuleUpload: low-level access consent granted for module=${moduleBody.id}`);
-  }
-  if (!spindle.images?.upload) {
-    throw new Error("spindle.images.upload is unavailable \u2014 Lumi 0.9.6+ required.");
-  }
-  const spindleImagesApi = spindle.images;
-  const moduleAssetIndex = {};
-  let assetUploadFailures = 0;
-  if (decoded.assets.length > 0) {
-    const moduleAssets = moduleBody.assets ?? [];
-    const pending3 = pairModuleAssetsForUpload(moduleAssets, decoded.assets, () => "", guessMimeType);
-    if (pending3.length < decoded.assets.length) {
-      log7.warn(`processModuleUpload: ${decoded.assets.length - pending3.length} asset(s) ` + `couldn't be paired with a module.assets[] name \u2014 dropped. ` + `(decoded.assets index out of bounds vs module.assets list.)`);
-    }
-    log7.info(`processModuleUpload: uploading ${pending3.length} asset(s) via spindle.images.upload (module=${moduleBody.id})`);
-    const tUpload = Date.now();
-    const uploadConcurrency = 6;
-    const totalCount = pending3.length;
-    const progressEvery = Math.max(1, Math.min(25, Math.floor(totalCount / 20) || 1));
-    const PROGRESS_BASE = 0.35;
-    const PROGRESS_END = 0.92;
-    let processed = 0;
-    let nextIndex = 0;
-    const moduleNameForProgress = typeof moduleBody.name === "string" && moduleBody.name.length > 0 ? moduleBody.name : moduleBody.id;
-    const journalBuffer = [];
-    let journalChain = Promise.resolve();
-    const flushModuleJournal = () => {
-      if (journalBuffer.length === 0)
-        return;
-      const ids = journalBuffer.splice(0);
-      journalChain = journalChain.then(async () => {
-        try {
-          await appendModuleImageIdsToJournal(journalStorage(), userId, moduleBody.id, ids);
-        } catch (err) {
-          journalBuffer.unshift(...ids);
-          log7.warn(`processModuleUpload: journal flush failed module=${moduleBody.id}: ${errMsg(err)}`);
-        }
-      });
-    };
-    const uploadWorker = async () => {
-      while (true) {
-        const i = nextIndex++;
-        if (i >= pending3.length)
-          break;
-        const meta = pending3[i];
-        const bytes2 = decoded.assets[i];
-        if (!meta || !bytes2)
-          continue;
-        const fileName2 = meta.path;
-        try {
-          const result = await spindleImagesApi.upload({ data: bytes2, mime_type: meta.mimeType, filename: fileName2 }, userId);
-          if (typeof result?.id !== "string" || result.id.length === 0) {
-            throw new Error("upload returned without an image id");
+    const spindleImagesApi = spindle.images;
+    const moduleAssetIndex = {};
+    let assetUploadFailures = 0;
+    if (decoded.assets.length > 0) {
+      const moduleAssets = moduleBody.assets ?? [];
+      const pending3 = pairModuleAssetsForUpload(moduleAssets, decoded.assets, () => "", guessMimeType);
+      if (pending3.length < decoded.assets.length) {
+        log7.warn(`processModuleUpload: ${decoded.assets.length - pending3.length} asset(s) ` + `couldn't be paired with a module.assets[] name \u2014 dropped. ` + `(decoded.assets index out of bounds vs module.assets list.)`);
+      }
+      log7.info(`processModuleUpload: uploading ${pending3.length} asset(s) via spindle.images.upload (module=${moduleBody.id})`);
+      const tUpload = Date.now();
+      const uploadConcurrency = 6;
+      const totalCount = pending3.length;
+      const progressEvery = Math.max(1, Math.min(25, Math.floor(totalCount / 20) || 1));
+      const PROGRESS_BASE = 0.35;
+      const PROGRESS_END = 0.92;
+      let processed = 0;
+      let nextIndex = 0;
+      const moduleNameForProgress = typeof moduleBody.name === "string" && moduleBody.name.length > 0 ? moduleBody.name : moduleBody.id;
+      const journalBuffer = [];
+      let journalChain = Promise.resolve();
+      const flushModuleJournal = () => {
+        if (journalBuffer.length === 0)
+          return;
+        const ids = journalBuffer.splice(0);
+        journalChain = journalChain.then(async () => {
+          try {
+            await appendModuleImageIdsToJournal(journalStorage(), userId, moduleBody.id, ids);
+          } catch (err) {
+            journalBuffer.unshift(...ids);
+            log7.warn(`processModuleUpload: journal flush failed module=${moduleBody.id}: ${errMsg(err)}`);
           }
-          const lastDot = fileName2.lastIndexOf(".");
-          const ext = lastDot > 0 ? fileName2.slice(lastDot + 1).toLowerCase() : undefined;
-          moduleAssetIndex[fileName2] = ext !== undefined ? { imageId: result.id, ext } : { imageId: result.id };
-          journalBuffer.push(result.id);
-        } catch (err) {
-          assetUploadFailures += 1;
-          const errMessage2 = err instanceof Error ? err.message : String(err);
-          log7.warn(`processModuleUpload: upload failed name=${fileName2}: ${errMessage2}`);
+        });
+      };
+      const uploadWorker = async () => {
+        while (true) {
+          const i = nextIndex++;
+          if (i >= pending3.length)
+            break;
+          const meta = pending3[i];
+          const bytes2 = decoded.assets[i];
+          if (!meta || !bytes2)
+            continue;
+          const fileName2 = meta.path;
+          try {
+            const result = await spindleImagesApi.upload({ data: bytes2, mime_type: meta.mimeType, filename: fileName2 }, userId);
+            if (typeof result?.id !== "string" || result.id.length === 0) {
+              throw new Error("upload returned without an image id");
+            }
+            const lastDot = fileName2.lastIndexOf(".");
+            const ext = lastDot > 0 ? fileName2.slice(lastDot + 1).toLowerCase() : undefined;
+            moduleAssetIndex[fileName2] = ext !== undefined ? { imageId: result.id, ext } : { imageId: result.id };
+            journalBuffer.push(result.id);
+          } catch (err) {
+            assetUploadFailures += 1;
+            const errMessage2 = err instanceof Error ? err.message : String(err);
+            log7.warn(`processModuleUpload: upload failed name=${fileName2}: ${errMessage2}`);
+          }
+          processed += 1;
+          if (processed % progressEvery === 0 || processed === totalCount) {
+            flushModuleJournal();
+            const frac = totalCount === 0 ? PROGRESS_END : PROGRESS_BASE + (PROGRESS_END - PROGRESS_BASE) * (processed / totalCount);
+            send({
+              type: "import_progress",
+              phase: "uploading_assets",
+              message: `Uploading module assets for ${moduleNameForProgress} (${processed}/${totalCount})\u2026`,
+              fraction: frac
+            });
+          }
         }
-        processed += 1;
-        if (processed % progressEvery === 0 || processed === totalCount) {
-          flushModuleJournal();
-          const frac = totalCount === 0 ? PROGRESS_END : PROGRESS_BASE + (PROGRESS_END - PROGRESS_BASE) * (processed / totalCount);
-          send({
-            type: "import_progress",
-            phase: "uploading_assets",
-            message: `Uploading module assets for ${moduleNameForProgress} (${processed}/${totalCount})\u2026`,
-            fraction: frac
-          });
+      };
+      if (pending3.length > 0) {
+        const workers = [];
+        for (let w = 0;w < Math.min(uploadConcurrency, pending3.length); w++) {
+          workers.push(uploadWorker());
         }
+        await Promise.all(workers);
       }
-    };
-    if (pending3.length > 0) {
-      const workers = [];
-      for (let w = 0;w < Math.min(uploadConcurrency, pending3.length); w++) {
-        workers.push(uploadWorker());
-      }
-      await Promise.all(workers);
+      flushModuleJournal();
+      await journalChain;
+      log7.info(`processModuleUpload: uploaded ${Object.keys(moduleAssetIndex).length}/${pending3.length} failed=${assetUploadFailures} elapsed=${Date.now() - tUpload}ms`);
     }
-    flushModuleJournal();
-    await journalChain;
-    log7.info(`processModuleUpload: uploaded ${Object.keys(moduleAssetIndex).length}/${pending3.length} failed=${assetUploadFailures} elapsed=${Date.now() - tUpload}ms`);
+    const baseEnvelope = {
+      schema_version: MODULE_SCHEMA_VERSION,
+      id: moduleBody.id,
+      filename: fileName,
+      uploaded_at: Date.now(),
+      module: moduleBody,
+      asset_index: moduleAssetIndex,
+      translator_schema_version: CURRENT_TRANSLATOR_SCHEMA_VERSION
+    };
+    const wbId = await syncModuleWorldBook(baseEnvelope, userId).catch((err) => {
+      log7.warn(`processModuleUpload: syncModuleWorldBook failed module=${moduleBody.id}: ${errMsg(err)}`);
+      return null;
+    });
+    const envelope = {
+      schema_version: baseEnvelope.schema_version,
+      id: baseEnvelope.id,
+      filename: baseEnvelope.filename,
+      uploaded_at: baseEnvelope.uploaded_at,
+      module: baseEnvelope.module,
+      asset_index: baseEnvelope.asset_index,
+      ...baseEnvelope.translator_schema_version !== undefined ? { translator_schema_version: baseEnvelope.translator_schema_version } : {},
+      ...wbId ? { installed_world_book_id: wbId } : {}
+    };
+    await writeEnvelope(moduleStorage(), userId, envelope);
+    log7.info(`processModuleUpload: ok id=${envelope.id} name=${moduleBody.name} lore=${(moduleBody.lorebook ?? []).length} regex=${(moduleBody.regex ?? []).length} triggers=${(moduleBody.trigger ?? []).length} assets=${decoded.assets.length} assetUploadFailures=${assetUploadFailures} wb=${envelope.installed_world_book_id ?? "-"} elapsed=${Date.now() - t0}ms`);
+    return { envelope };
+  } finally {
+    assetUploadsInFlight--;
   }
-  const baseEnvelope = {
-    schema_version: MODULE_SCHEMA_VERSION,
-    id: moduleBody.id,
-    filename: fileName,
-    uploaded_at: Date.now(),
-    module: moduleBody,
-    asset_index: moduleAssetIndex,
-    translator_schema_version: CURRENT_TRANSLATOR_SCHEMA_VERSION,
-    ...previousEnvelope?.installed_world_book_id ? { installed_world_book_id: previousEnvelope.installed_world_book_id } : {}
-  };
-  const wbId = await syncModuleWorldBook(baseEnvelope, userId).catch((err) => {
-    log7.warn(`processModuleUpload: syncModuleWorldBook failed module=${moduleBody.id}: ${errMsg(err)}`);
-    return previousEnvelope?.installed_world_book_id ?? null;
-  });
-  const envelope = {
-    schema_version: baseEnvelope.schema_version,
-    id: baseEnvelope.id,
-    filename: baseEnvelope.filename,
-    uploaded_at: baseEnvelope.uploaded_at,
-    module: baseEnvelope.module,
-    asset_index: baseEnvelope.asset_index,
-    ...baseEnvelope.translator_schema_version !== undefined ? { translator_schema_version: baseEnvelope.translator_schema_version } : {},
-    ...wbId ? { installed_world_book_id: wbId } : {}
-  };
-  await writeEnvelope(moduleStorage(), userId, envelope);
-  log7.info(`processModuleUpload: ok id=${envelope.id} name=${moduleBody.name} lore=${(moduleBody.lorebook ?? []).length} regex=${(moduleBody.regex ?? []).length} triggers=${(moduleBody.trigger ?? []).length} assets=${decoded.assets.length} assetUploadFailures=${assetUploadFailures} wb=${envelope.installed_world_book_id ?? "-"} elapsed=${Date.now() - t0}ms`);
-  return { envelope };
 }
 async function buildAttachedByCharacter(userId, libraryById) {
   const out = {};
@@ -34863,7 +35185,7 @@ var realmHandle = setupRealmBackend({
   importCardFromBytes: (bytesB64, fileName) => importCardFromBytes(bytesB64, fileName)
 });
 spindle.onFrontendMessage(async (raw, userId) => {
-  activeUserId = userId;
+  captureUserId(userId, "frontend-message");
   const msg = raw;
   log7.trace(`frontend msg type=${msg.type} userId=${userId ?? "<none>"}`);
   try {
@@ -35019,7 +35341,24 @@ spindle.onFrontendMessage(async (raw, userId) => {
         break;
       }
       case "delete_card": {
-        await deleteCardByChar(msg.characterId, "soft");
+        const opId = `delete-card-${msg.characterId}-${Date.now()}`;
+        let cardName = msg.characterId.slice(0, 8);
+        try {
+          if (userId) {
+            const c = await spindle.characters.get(msg.characterId, userId);
+            if (c?.name)
+              cardName = c.name;
+          }
+        } catch {}
+        const opTitle = `Removing card "${cardName}" from LumiRealm`;
+        emitOperationProgress(opId, "started", opTitle, "Clearing extension data\u2026", null);
+        try {
+          await deleteCardByChar(msg.characterId, "soft");
+          emitOperationProgress(opId, "done", opTitle, "Removed", 1);
+        } catch (err) {
+          log7.warn(`delete_card: threw char=${msg.characterId}: ${errMsg(err)}`);
+          emitOperationProgress(opId, "error", opTitle, "", null, errMsg(err));
+        }
         break;
       }
       case "consent_response": {
@@ -35318,24 +35657,70 @@ spindle.onFrontendMessage(async (raw, userId) => {
           break;
         }
         const envelopeForDelete = await readEnvelope(moduleStorage(), userId, msg.moduleId);
-        const sharedWbId = envelopeForDelete?.installed_world_book_id ?? null;
-        const touched = await detachModuleFromAllCharacters(msg.moduleId, userId);
-        if (sharedWbId) {
-          try {
-            await spindle.world_books.delete(sharedWbId, userId);
-            log7.info(`delete_module: deleted shared world_book wb=${sharedWbId} module=${msg.moduleId}`);
-          } catch (err) {
-            log7.warn(`delete_module: shared world_book delete failed wb=${sharedWbId}: ${errMsg(err)}`);
+        const moduleName = envelopeForDelete?.module?.name || msg.moduleId.slice(0, 8);
+        const opId = `delete-module-${msg.moduleId}-${Date.now()}`;
+        const opTitle = `Deleting module "${moduleName}"`;
+        emitOperationProgress(opId, "started", opTitle, "Detaching from characters\u2026", null);
+        try {
+          const sharedWbId = envelopeForDelete?.installed_world_book_id ?? null;
+          const journalFile = await readModuleImageJournalFile(journalStorage(), userId, msg.moduleId);
+          const journalImageIds = journalFile?.imageIds ?? [];
+          const touched = await detachModuleFromAllCharacters(msg.moduleId, userId);
+          if (sharedWbId) {
+            emitOperationProgress(opId, "progress", opTitle, `Removing shared world book\u2026`, 0.3);
+            try {
+              await spindle.world_books.delete(sharedWbId, userId);
+              log7.info(`delete_module: deleted shared world_book wb=${sharedWbId} module=${msg.moduleId}`);
+            } catch (err) {
+              log7.warn(`delete_module: shared world_book delete failed wb=${sharedWbId}: ${errMsg(err)}`);
+            }
           }
-        }
-        await runModuleImageCleanup(msg.moduleId, userId).catch((err) => {
-          log7.warn(`delete_module: image cleanup threw module=${msg.moduleId}: ${errMsg(err)}`);
-        });
-        await deleteModule(moduleStorage(), userId, msg.moduleId);
-        log7.info(`delete_module: id=${msg.moduleId} detachedFromChars=${touched.length}`);
-        await pushModules(userId);
-        for (const charId of touched) {
-          await pushAttachedForCharacter(charId, userId);
+          emitOperationProgress(opId, "progress", opTitle, "Removing module envelope\u2026", 0.45);
+          await deleteModule(moduleStorage(), userId, msg.moduleId);
+          let imageDeleteStats = { deleted: 0, absent: 0, failed: 0, skipped: 0 };
+          if (journalImageIds.length > 0) {
+            emitOperationProgress(opId, "progress", opTitle, `Checking ${journalImageIds.length} asset${journalImageIds.length === 1 ? "" : "s"} against live references\u2026`, 0.55);
+            const live = await buildLiveImageIdSet(buildOrphanDetectDeps(userId));
+            const safeIds = [];
+            let skipped = 0;
+            for (const id of journalImageIds) {
+              if (typeof id !== "string" || id.length === 0)
+                continue;
+              if (live.liveIds.has(id)) {
+                skipped++;
+                continue;
+              }
+              safeIds.push(id);
+            }
+            if (skipped > 0) {
+              log7.info(`delete_module: ${skipped}/${journalImageIds.length} asset(s) shielded by other live refs, deleting only ${safeIds.length} module-owned asset(s)`);
+            }
+            if (safeIds.length > 0) {
+              emitOperationProgress(opId, "progress", opTitle, `Deleting 0 of ${safeIds.length} asset${safeIds.length === 1 ? "" : "s"}\u2026`, 0.6);
+              const stats = await deleteImageIds(safeIds, userId, `delete_module(${msg.moduleId})`, (processed, total) => {
+                const frac = total > 0 ? 0.6 + processed / total * 0.35 : 0.6;
+                emitOperationProgress(opId, "progress", opTitle, `Deleting ${processed} of ${total} asset${total === 1 ? "" : "s"}\u2026`, frac);
+              });
+              imageDeleteStats = { ...stats, skipped };
+            } else {
+              imageDeleteStats = { deleted: 0, absent: 0, failed: 0, skipped };
+            }
+          }
+          await clearModuleImageJournal(journalStorage(), userId, msg.moduleId).catch((err) => {
+            log7.warn(`delete_module: clearModuleImageJournal threw module=${msg.moduleId}: ${errMsg(err)}`);
+          });
+          log7.info(`delete_module: id=${msg.moduleId} detachedFromChars=${touched.length} imageDelete=deleted:${imageDeleteStats.deleted} absent:${imageDeleteStats.absent} failed:${imageDeleteStats.failed} skipped:${imageDeleteStats.skipped}`);
+          await pushModules(userId);
+          for (const charId of touched) {
+            await pushAttachedForCharacter(charId, userId);
+          }
+          const detachLine = `Detached from ${touched.length} character${touched.length === 1 ? "" : "s"}`;
+          const assetLine = journalImageIds.length === 0 ? "" : imageDeleteStats.skipped > 0 ? `, ${imageDeleteStats.deleted} asset${imageDeleteStats.deleted === 1 ? "" : "s"} deleted (${imageDeleteStats.skipped} kept, still referenced)` : `, ${imageDeleteStats.deleted} asset${imageDeleteStats.deleted === 1 ? "" : "s"} deleted`;
+          emitOperationProgress(opId, "done", opTitle, `${detachLine}${assetLine}`, 1);
+        } catch (err) {
+          log7.warn(`delete_module: threw module=${msg.moduleId}: ${errMsg(err)}`);
+          emitOperationProgress(opId, "error", opTitle, "", null, errMsg(err));
+          send({ type: "error", message: `Module delete failed: ${errMsg(err)}` });
         }
         break;
       }
@@ -35609,6 +35994,172 @@ spindle.onFrontendMessage(async (raw, userId) => {
       case "log_clear": {
         logStore.clear();
         sendLogState();
+        break;
+      }
+      case "request_orphan_scan": {
+        if (!userId) {
+          send({
+            type: "orphan_scan_result",
+            orphans: [],
+            summary: {
+              scannedTotal: 0,
+              liveCharacterRefs: 0,
+              liveModuleRefs: 0,
+              liveJournalRefs: 0,
+              charactersScanned: 0,
+              modulesScanned: 0,
+              elapsedMs: 0,
+              totalOrphans: 0,
+              truncated: false
+            },
+            error: "No active user. Open a Lumi session and try again."
+          });
+          break;
+        }
+        if (assetUploadsInFlight > 0) {
+          send({
+            type: "orphan_scan_result",
+            orphans: [],
+            summary: {
+              scannedTotal: 0,
+              liveCharacterRefs: 0,
+              liveModuleRefs: 0,
+              liveJournalRefs: 0,
+              charactersScanned: 0,
+              modulesScanned: 0,
+              elapsedMs: 0,
+              totalOrphans: 0,
+              truncated: false
+            },
+            error: "An import or module upload is in progress. Wait for it to finish, then scan again."
+          });
+          break;
+        }
+        send({ type: "orphan_scan_started" });
+        try {
+          const report = await scanOrphanedImages(userId);
+          log7.info(`orphan-scan: owned=${report.summary.scannedTotal} live(char=${report.summary.liveCharacterRefs} module=${report.summary.liveModuleRefs} journal=${report.summary.liveJournalRefs}) chars=${report.summary.charactersScanned} modules=${report.summary.modulesScanned} orphans=${report.summary.totalOrphans}${report.summary.truncated ? `(shown=${report.orphans.length})` : ""} elapsed=${report.summary.elapsedMs}ms`);
+          send({
+            type: "orphan_scan_result",
+            orphans: report.orphans,
+            summary: report.summary
+          });
+        } catch (err) {
+          log7.warn(`orphan-scan: failed: ${errMsg(err)}`);
+          send({
+            type: "orphan_scan_result",
+            orphans: [],
+            summary: {
+              scannedTotal: 0,
+              liveCharacterRefs: 0,
+              liveModuleRefs: 0,
+              liveJournalRefs: 0,
+              charactersScanned: 0,
+              modulesScanned: 0,
+              elapsedMs: 0,
+              totalOrphans: 0,
+              truncated: false
+            },
+            error: errMsg(err)
+          });
+        }
+        break;
+      }
+      case "delete_orphan_assets": {
+        const requested = msg.imageIds.length;
+        if (!userId) {
+          send({
+            type: "orphan_delete_result",
+            requested,
+            deleted: 0,
+            absent: 0,
+            failed: 0,
+            skipped: 0,
+            skippedIds: [],
+            error: "No active user."
+          });
+          break;
+        }
+        if (assetUploadsInFlight > 0) {
+          send({
+            type: "orphan_delete_result",
+            requested,
+            deleted: 0,
+            absent: 0,
+            failed: 0,
+            skipped: 0,
+            skippedIds: [],
+            error: "An import or module upload is in progress. Wait for it to finish before deleting."
+          });
+          break;
+        }
+        if (requested === 0) {
+          send({
+            type: "orphan_delete_result",
+            requested: 0,
+            deleted: 0,
+            absent: 0,
+            failed: 0,
+            skipped: 0,
+            skippedIds: []
+          });
+          break;
+        }
+        const opId = `delete-orphans-${Date.now()}`;
+        const opTitle = `Deleting ${requested} orphan asset${requested === 1 ? "" : "s"}`;
+        emitOperationProgress(opId, "started", opTitle, "Verifying live references\u2026", null);
+        try {
+          const live = await buildLiveImageIdSet(buildOrphanDetectDeps(userId));
+          const safeIds = [];
+          const skippedIds = [];
+          for (const id of msg.imageIds) {
+            if (typeof id !== "string" || id.length === 0)
+              continue;
+            if (live.liveIds.has(id)) {
+              skippedIds.push(id);
+              continue;
+            }
+            safeIds.push(id);
+          }
+          if (skippedIds.length > 0) {
+            log7.warn(`orphan-cleanup: ${skippedIds.length} ID(s) became live between scan and delete, skipping`);
+          }
+          if (safeIds.length === 0) {
+            emitOperationProgress(opId, "done", opTitle, `Nothing to delete (${skippedIds.length} skipped \u2014 became live)`, 1);
+          } else {
+            emitOperationProgress(opId, "progress", opTitle, `Deleting 0 of ${safeIds.length}\u2026`, 0);
+          }
+          const stats = safeIds.length > 0 ? await deleteImageIds(safeIds, userId, "orphan-cleanup", (processed, total) => {
+            emitOperationProgress(opId, "progress", opTitle, `Deleting ${processed} of ${total}\u2026`, total > 0 ? processed / total : null);
+          }) : { deleted: 0, absent: 0, failed: 0 };
+          log7.info(`orphan-cleanup: requested=${requested} deleted=${stats.deleted} absent=${stats.absent} failed=${stats.failed} skipped=${skippedIds.length}`);
+          if (safeIds.length > 0) {
+            const tail = stats.failed > 0 ? ` (${stats.failed} failed)` : stats.absent > 0 ? ` (${stats.absent} already gone)` : "";
+            emitOperationProgress(opId, "done", opTitle, `Deleted ${stats.deleted} of ${safeIds.length}${tail}`, 1);
+          }
+          send({
+            type: "orphan_delete_result",
+            requested,
+            deleted: stats.deleted,
+            absent: stats.absent,
+            failed: stats.failed,
+            skipped: skippedIds.length,
+            skippedIds
+          });
+        } catch (err) {
+          log7.warn(`orphan-cleanup: threw: ${errMsg(err)}`);
+          emitOperationProgress(opId, "error", opTitle, "", null, errMsg(err));
+          send({
+            type: "orphan_delete_result",
+            requested,
+            deleted: 0,
+            absent: 0,
+            failed: requested,
+            skipped: 0,
+            skippedIds: [],
+            error: errMsg(err)
+          });
+        }
         break;
       }
       case "alert_dismissed": {

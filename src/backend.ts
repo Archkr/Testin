@@ -1,6 +1,6 @@
 declare const spindle: import('lumiverse-spindle-types').SpindleAPI;
 
-import type { FrontendToBackend, BackendToFrontend, CardSummary } from './types/messages.js';
+import type { FrontendToBackend, BackendToFrontend, CardSummary, OrphanAssetEntry } from './types/messages.js';
 import { errMsg } from './util/coerce.js';
 import {
   setupRealmBackend,
@@ -35,7 +35,6 @@ import {
   appendImageIdsToJournal,
   clearImageJournal,
   listImageJournalCharacterIds,
-  markJournalPendingDelete,
   readImageJournalFile,
   type JournalStorage,
 } from './state/image-journal.js';
@@ -43,9 +42,12 @@ import {
   appendModuleImageIdsToJournal,
   clearModuleImageJournal,
   listModuleImageJournalIds,
-  markModuleJournalPendingDelete,
   readModuleImageJournalFile,
 } from './state/module-image-journal.js';
+import {
+  buildLiveImageIdSet,
+  type OrphanDetectDeps,
+} from './state/orphan-detect.js';
 import {
   eventToBinding,
   GENERATION_ENDED_BINDINGS,
@@ -1282,6 +1284,7 @@ async function deleteImageIds(
   imageIds: readonly string[],
   userId: string,
   context: string,
+  onProgress?: (processed: number, total: number) => void,
 ): Promise<{ deleted: number; absent: number; failed: number }> {
   let deleted = 0;
   let absent = 0;
@@ -1292,19 +1295,34 @@ async function deleteImageIds(
     return { deleted, absent, failed: imageIds.length };
   }
   let nextIndex = 0;
-  const concurrency = Math.min(6, imageIds.length);
+  let processed = 0;
+  const total = imageIds.length;
+  const concurrency = Math.min(6, total);
+  // Throttle progress emission so 10k-image deletes don't spam WS at 6Hz.
+  const progressEvery = Math.max(10, Math.floor(total / 100));
   const worker = async (): Promise<void> => {
     while (true) {
       const i = nextIndex++;
-      if (i >= imageIds.length) break;
+      if (i >= total) break;
       const id = imageIds[i];
-      if (!id) continue;
+      if (!id) {
+        processed++;
+        continue;
+      }
       try {
         const ok = await del(id, userId);
         if (ok) deleted++; else absent++;
       } catch (err) {
         failed++;
         log.warn(`${context}: image delete threw id=${id}: ${errMsg(err)}`);
+      }
+      processed++;
+      if (onProgress && (processed % progressEvery === 0 || processed === total)) {
+        try {
+          onProgress(processed, total);
+        } catch (err) {
+          log.warn(`${context}: onProgress threw: ${errMsg(err)}`);
+        }
       }
     }
   };
@@ -1314,23 +1332,6 @@ async function deleteImageIds(
   return { deleted, absent, failed };
 }
 
-async function runImageCleanupForCharacter(
-  characterId: string,
-  userId: string,
-): Promise<void> {
-  const ids = await markJournalPendingDelete(journalStorage(), userId, characterId);
-  if (ids.length === 0) {
-    await clearImageJournal(journalStorage(), userId, characterId);
-    return;
-  }
-  const tStart = Date.now();
-  const stats = await deleteImageIds(ids, userId, `image-cleanup char=${characterId}`);
-  log.info(
-    `image-cleanup: char=${characterId} deleted=${stats.deleted} absent=${stats.absent} ` +
-      `failed=${stats.failed} total=${ids.length} elapsed=${Date.now() - tStart}ms`,
-  );
-  await clearImageJournal(journalStorage(), userId, characterId);
-}
 
 function collectStoredCardImageIds(
   avatarId: string | null,
@@ -1371,89 +1372,353 @@ async function backfillImageJournalIfMissing(
   }
 }
 
-let imageOrphanReaperRan = false;
-async function runImageOrphanReaper(userId: string): Promise<void> {
-  if (imageOrphanReaperRan) return;
-  imageOrphanReaperRan = true;
-  const tStart = Date.now();
+// Boot-time detector: a journal whose owning character or module is gone is
+// evidence of a deletion that happened while the extension wasn't running.
+async function detectDeletedWhileOff(userId: string): Promise<{
+  readonly characterIds: readonly string[];
+  readonly moduleIds: readonly string[];
+}> {
+  const characterIds: string[] = [];
+  const moduleIds: string[] = [];
   try {
-    const journalIds = await listImageJournalCharacterIds(journalStorage(), userId);
-    let resumed = 0;
-    let orphaned = 0;
-    for (const characterId of journalIds) {
+    const charJournalIds = await listImageJournalCharacterIds(journalStorage(), userId);
+    for (const characterId of charJournalIds) {
       const file = await readImageJournalFile(journalStorage(), userId, characterId);
       if (!file) continue;
-      if (file.status === 'pending_delete') {
-        log.info(`image-journal reaper: resuming pending_delete char=${characterId} ids=${file.imageIds.length}`);
-        await runImageCleanupForCharacter(characterId, userId);
-        resumed++;
-        continue;
-      }
       let character: unknown = null;
       try {
         character = await spindle.characters.get(characterId, userId);
       } catch (err) {
-        log.warn(`image-journal reaper: characters.get(${characterId}) threw: ${errMsg(err)}`);
+        log.warn(`detectDeletedWhileOff: characters.get(${characterId}) threw: ${errMsg(err)}`);
         continue;
       }
-      if (character !== null) continue;
-      log.info(`image-journal reaper: orphan char=${characterId} ids=${file.imageIds.length} (character row missing)`);
-      await runImageCleanupForCharacter(characterId, userId);
-      orphaned++;
+      if (character === null) characterIds.push(characterId);
     }
-    log.info(
-      `image-journal reaper: done resumed=${resumed} orphans=${orphaned} ` +
-        `total=${journalIds.length} elapsed=${Date.now() - tStart}ms`,
-    );
   } catch (err) {
-    log.warn(`image-journal reaper: failed: ${errMsg(err)}`);
+    log.warn(`detectDeletedWhileOff: char-journal walk failed: ${errMsg(err)}`);
   }
-  await runModuleImageOrphanReaper(userId);
-}
-
-async function runModuleImageCleanup(moduleId: string, userId: string): Promise<void> {
-  const ids = await markModuleJournalPendingDelete(journalStorage(), userId, moduleId);
-  if (ids.length === 0) {
-    await clearModuleImageJournal(journalStorage(), userId, moduleId);
-    return;
-  }
-  const tStart = Date.now();
-  const stats = await deleteImageIds(ids, userId, `module-image-cleanup module=${moduleId}`);
-  log.info(
-    `module-image-cleanup: module=${moduleId} deleted=${stats.deleted} absent=${stats.absent} ` +
-      `failed=${stats.failed} total=${ids.length} elapsed=${Date.now() - tStart}ms`,
-  );
-  await clearModuleImageJournal(journalStorage(), userId, moduleId);
-}
-
-async function runModuleImageOrphanReaper(userId: string): Promise<void> {
-  const tStart = Date.now();
   try {
-    const journalIds = await listModuleImageJournalIds(journalStorage(), userId);
-    let resumed = 0;
-    let orphaned = 0;
-    for (const moduleId of journalIds) {
+    const moduleJournalIds = await listModuleImageJournalIds(journalStorage(), userId);
+    for (const moduleId of moduleJournalIds) {
       const file = await readModuleImageJournalFile(journalStorage(), userId, moduleId);
       if (!file) continue;
-      if (file.status === 'pending_delete') {
-        log.info(`module-image-journal reaper: resuming pending_delete module=${moduleId} ids=${file.imageIds.length}`);
-        await runModuleImageCleanup(moduleId, userId);
-        resumed++;
-        continue;
-      }
       const env = await readModuleEnvelope(moduleStorage(), userId, moduleId);
-      if (env !== null) continue;
-      log.info(`module-image-journal reaper: orphan module=${moduleId} ids=${file.imageIds.length} (envelope missing)`);
-      await runModuleImageCleanup(moduleId, userId);
-      orphaned++;
+      if (env === null) moduleIds.push(moduleId);
     }
-    log.info(
-      `module-image-journal reaper: done resumed=${resumed} orphans=${orphaned} ` +
-        `total=${journalIds.length} elapsed=${Date.now() - tStart}ms`,
-    );
   } catch (err) {
-    log.warn(`module-image-journal reaper: failed: ${errMsg(err)}`);
+    log.warn(`detectDeletedWhileOff: module-journal walk failed: ${errMsg(err)}`);
   }
+  return { characterIds, moduleIds };
+}
+
+interface SpindleModalConfirmLike {
+  readonly confirm?: (options: {
+    title: string;
+    message: string;
+    variant?: 'info' | 'warning' | 'danger' | 'success';
+    confirmLabel?: string;
+    cancelLabel?: string;
+    userId?: string;
+  }) => Promise<{ confirmed: boolean }>;
+}
+
+let orphanReviewPromptedThisBoot = false;
+async function promptOrphanReviewIfAny(userId: string): Promise<void> {
+  if (orphanReviewPromptedThisBoot) return;
+  orphanReviewPromptedThisBoot = true;
+  const tStart = Date.now();
+  const detected = await detectDeletedWhileOff(userId);
+  const charCount = detected.characterIds.length;
+  const moduleCount = detected.moduleIds.length;
+  if (charCount + moduleCount === 0) {
+    log.info(`orphan-review: nothing detected elapsed=${Date.now() - tStart}ms`);
+    return;
+  }
+  // Surface the actual IDs at info level so the user can verify what's
+  // flagged. Truncate long lists to keep the line readable.
+  const charPreview = detected.characterIds.slice(0, 8).join(',');
+  const charPreviewSuffix = detected.characterIds.length > 8 ? `…(+${detected.characterIds.length - 8})` : '';
+  const modulePreview = detected.moduleIds.slice(0, 8).join(',');
+  const modulePreviewSuffix = detected.moduleIds.length > 8 ? `…(+${detected.moduleIds.length - 8})` : '';
+  log.info(
+    `orphan-review: detected chars=${charCount} modules=${moduleCount} ` +
+      `elapsed=${Date.now() - tStart}ms ` +
+      `charIds=[${charPreview}${charPreviewSuffix}] ` +
+      `moduleIds=[${modulePreview}${modulePreviewSuffix}]`,
+  );
+  const parts: string[] = [];
+  if (charCount > 0) parts.push(`${charCount} character${charCount === 1 ? '' : 's'}`);
+  if (moduleCount > 0) parts.push(`${moduleCount} module${moduleCount === 1 ? '' : 's'}`);
+  const summarySubject = parts.join(' and ');
+  const message =
+    `Found leftover image journals for ${summarySubject} whose Lumi entries ` +
+    `are gone. This includes anything deleted while LumiRealm wasn't running ` +
+    `and incomplete cleanups from earlier sessions. Open Cleanup to review ` +
+    `the actual image assets?`;
+  const modalApi = (spindle as unknown as { modal?: SpindleModalConfirmLike }).modal;
+  let result: { confirmed: boolean } | null = null;
+  if (modalApi?.confirm) {
+    log.info(`orphan-review: opening confirm modal`);
+    try {
+      result = await modalApi.confirm({
+        title: 'Leftover RisuAI image entries detected',
+        message,
+        variant: 'info',
+        confirmLabel: 'Review',
+        cancelLabel: 'Dismiss',
+        userId,
+      });
+    } catch (err) {
+      log.warn(`orphan-review: modal.confirm threw: ${errMsg(err)}`);
+    }
+  } else {
+    log.warn(`orphan-review: spindle.modal.confirm unavailable, falling back to toast`);
+  }
+  // Toast fallback when the modal API is unavailable or threw. The user still
+  // sees something, the journal still gets cleared, and they can scan
+  // manually via Settings to Cleanup.
+  if (result === null) {
+    try {
+      spindle.toast.warning(
+        `Found leftover image journals for ${summarySubject}. ` +
+          `Open Settings, Cleanup to review orphaned image assets.`,
+        { title: 'lumirealm: leftover image entries' },
+      );
+    } catch (err) {
+      log.warn(`orphan-review: toast fallback threw: ${errMsg(err)}`);
+    }
+    result = { confirmed: false };
+  }
+  // Drop the journals either way so the same set never re-prompts. Orphan
+  // images themselves stay in Lumi storage and remain findable via Cleanup.
+  for (const characterId of detected.characterIds) {
+    await clearImageJournal(journalStorage(), userId, characterId).catch((err) => {
+      log.warn(`orphan-review: clearImageJournal threw char=${characterId}: ${errMsg(err)}`);
+    });
+  }
+  for (const moduleId of detected.moduleIds) {
+    await clearModuleImageJournal(journalStorage(), userId, moduleId).catch((err) => {
+      log.warn(`orphan-review: clearModuleImageJournal threw module=${moduleId}: ${errMsg(err)}`);
+    });
+  }
+  log.info(
+    `orphan-review: confirmed=${result.confirmed} cleared chars=${charCount} modules=${moduleCount}`,
+  );
+  if (result.confirmed) {
+    send({ type: 'open_settings_cleanup' });
+  }
+}
+
+interface SpindleImageDTOLike {
+  readonly id: string;
+  readonly original_filename?: string;
+  readonly mime_type?: string;
+  readonly width?: number | null;
+  readonly height?: number | null;
+  readonly url?: string;
+  readonly owner_character_id?: string | null;
+  readonly created_at?: number;
+}
+
+interface SpindleImagesListLike {
+  readonly list?: (
+    options: { onlyOwned?: boolean; limit?: number; offset?: number; userId?: string },
+  ) => Promise<{ data: readonly SpindleImageDTOLike[]; total: number }>;
+}
+
+interface OrphanScanReport {
+  readonly orphans: readonly OrphanAssetEntry[];
+  readonly summary: {
+    readonly scannedTotal: number;
+    readonly liveCharacterRefs: number;
+    readonly liveModuleRefs: number;
+    readonly liveJournalRefs: number;
+    readonly charactersScanned: number;
+    readonly modulesScanned: number;
+    readonly elapsedMs: number;
+    readonly totalOrphans: number;
+    readonly truncated: boolean;
+  };
+}
+
+function buildOrphanDetectDeps(userId: string): OrphanDetectDeps {
+  return {
+    listLumirealmCharacters: async () => {
+      const entries = await listLumirealmCharacters(charactersApi(), userId, {
+        paginate: true,
+      });
+      return entries.map(({ character, data }) => ({
+        id: character.id,
+        image_id: character.image_id ?? null,
+        asset_index: data.asset_index,
+        emotion_index: data.emotion_index,
+        regex_replace_strings: data.regex_scripts.map((r) => r.replace_string),
+        background_html: data.payload?.background_html ?? null,
+      }));
+    },
+    listModules: async () => {
+      const summaries = await listModuleStore(moduleStorage(), userId);
+      const out: Array<{ id: string; asset_imageIds: readonly string[] }> = [];
+      for (const summary of summaries) {
+        const env = await readModuleEnvelope(moduleStorage(), userId, summary.id);
+        if (!env) continue;
+        const ids: string[] = [];
+        for (const ref of Object.values(env.asset_index ?? {})) {
+          if (typeof ref.imageId === 'string' && ref.imageId.length > 0) {
+            ids.push(ref.imageId);
+          }
+        }
+        out.push({ id: summary.id, asset_imageIds: ids });
+      }
+      return out;
+    },
+    listActiveCharacterJournals: async () => {
+      const ids = await listImageJournalCharacterIds(journalStorage(), userId);
+      const out: Array<NonNullable<Awaited<ReturnType<typeof readImageJournalFile>>>> = [];
+      for (const id of ids) {
+        const f = await readImageJournalFile(journalStorage(), userId, id);
+        if (f && f.status === 'active') out.push(f);
+      }
+      return out;
+    },
+    listActiveModuleJournals: async () => {
+      const ids = await listModuleImageJournalIds(journalStorage(), userId);
+      const out: Array<NonNullable<Awaited<ReturnType<typeof readModuleImageJournalFile>>>> = [];
+      for (const id of ids) {
+        const f = await readModuleImageJournalFile(journalStorage(), userId, id);
+        if (f && f.status === 'active') out.push(f);
+      }
+      return out;
+    },
+    characterExists: async (id) => {
+      try {
+        const c = await spindle.characters.get(id, userId);
+        return c !== null;
+      } catch (err) {
+        log.warn(`orphan-detect: characters.get(${id}) threw: ${errMsg(err)}`);
+        return false;
+      }
+    },
+    moduleExists: async (id) => {
+      try {
+        const env = await readModuleEnvelope(moduleStorage(), userId, id);
+        return env !== null;
+      } catch {
+        return false;
+      }
+    },
+  };
+}
+
+// Wraps buildOrphanDetectDeps to treat one character ID as already-removed.
+// Used by CHARACTER_DELETED, where Lumi fires the event BEFORE the row is
+// removed and our list calls would otherwise still see the doomed character.
+function buildOrphanDetectDepsExcluding(
+  userId: string,
+  excludeCharacterId: string,
+): OrphanDetectDeps {
+  const base = buildOrphanDetectDeps(userId);
+  return {
+    ...base,
+    listLumirealmCharacters: async () => {
+      const all = await base.listLumirealmCharacters();
+      return all.filter((c) => c.id !== excludeCharacterId);
+    },
+    characterExists: async (id) => {
+      if (id === excludeCharacterId) return false;
+      return base.characterExists(id);
+    },
+  };
+}
+
+async function scanOrphanedImages(userId: string): Promise<OrphanScanReport> {
+  const tStart = Date.now();
+  const imagesApi = (spindle as unknown as { images?: SpindleImagesListLike }).images;
+  if (!imagesApi?.list) {
+    throw new Error('spindle.images.list unavailable, Lumi update required for orphan scan.');
+  }
+
+  const live = await buildLiveImageIdSet(buildOrphanDetectDeps(userId));
+
+  // Lumi clamps each page to 200 server-side, so requesting more is pointless.
+  // Stops on empty page, offset >= total, or zero-new-IDs (runaway-loop guard
+  // for hosts that ignore offset).
+  const PAGE_SIZE = 200;
+  const ownedById = new Map<string, SpindleImageDTOLike>();
+  let offset = 0;
+  let pages = 0;
+  while (true) {
+    const page = await imagesApi.list({
+      onlyOwned: true,
+      limit: PAGE_SIZE,
+      offset,
+      userId,
+    });
+    pages++;
+    if (!page || !Array.isArray(page.data)) {
+      log.warn(`scanOrphanedImages: list returned bad shape pages=${pages}, stopping`);
+      break;
+    }
+    if (page.data.length === 0) break;
+    let added = 0;
+    for (const img of page.data) {
+      if (!img || typeof img.id !== 'string' || img.id.length === 0) continue;
+      if (!ownedById.has(img.id)) {
+        ownedById.set(img.id, img);
+        added++;
+      }
+    }
+    if (added === 0) {
+      log.warn(
+        `scanOrphanedImages: page added 0 new IDs at offset=${offset} pages=${pages}, ` +
+          `stopping (likely host returned dup-only page or ignored offset)`,
+      );
+      break;
+    }
+    offset += page.data.length;
+    if (typeof page.total === 'number' && offset >= page.total) break;
+  }
+
+  const orphans: OrphanAssetEntry[] = [];
+  for (const img of ownedById.values()) {
+    if (live.liveIds.has(img.id)) continue;
+    orphans.push({
+      id: img.id,
+      filename: typeof img.original_filename === 'string' ? img.original_filename : '',
+      mime: typeof img.mime_type === 'string' ? img.mime_type : '',
+      width: typeof img.width === 'number' ? img.width : null,
+      height: typeof img.height === 'number' ? img.height : null,
+      url: typeof img.url === 'string' ? img.url : '',
+      ownerCharacterId: typeof img.owner_character_id === 'string' && img.owner_character_id.length > 0
+        ? img.owner_character_id
+        : null,
+      createdAt: typeof img.created_at === 'number' ? img.created_at : 0,
+    });
+  }
+
+  orphans.sort((a, b) => b.createdAt - a.createdAt);
+
+  // 16MB WS frame cap on Lumi (Bun.serve default), ~150 bytes JSON per orphan.
+  // Cap at 10k so half-million-image libraries (DLC packs) don't overflow.
+  const MAX_RETURNED = 10_000;
+  const totalOrphans = orphans.length;
+  const truncated = totalOrphans > MAX_RETURNED;
+  const shown = truncated ? orphans.slice(0, MAX_RETURNED) : orphans;
+
+  return {
+    orphans: shown,
+    summary: {
+      scannedTotal: ownedById.size,
+      liveCharacterRefs: live.liveCharacterRefs,
+      liveModuleRefs: live.liveModuleRefs,
+      liveJournalRefs: live.liveJournalRefs,
+      charactersScanned: live.charactersScanned,
+      modulesScanned: live.modulesScanned,
+      elapsedMs: Date.now() - tStart,
+      totalOrphans,
+      truncated,
+    },
+  };
 }
 
 interface PendingImportCompletion {
@@ -1462,6 +1727,31 @@ interface PendingImportCompletion {
   startedAt: number;
 }
 const pendingImportCompletions = new Map<string, PendingImportCompletion>();
+
+// Tracks asset-upload-bearing operations (card import, module upload). Cleanup
+// scan refuses to run while non-zero so an in-flight upload's not-yet-journaled
+// IDs cannot be deleted as orphans.
+let assetUploadsInFlight = 0;
+
+type OperationPhase = 'started' | 'progress' | 'done' | 'error';
+function emitOperationProgress(
+  operationId: string,
+  phase: OperationPhase,
+  title: string,
+  message: string,
+  fraction: number | null,
+  error?: string,
+): void {
+  send({
+    type: 'operation_progress',
+    operationId,
+    phase,
+    title,
+    message,
+    fraction,
+    ...(error !== undefined ? { error } : {}),
+  });
+}
 
 async function applySvgRasterIndex(args: {
   characterId: string;
@@ -1811,6 +2101,7 @@ async function importCardFromBytes(
   };
   if (!spindle.world_books) log.warn(`spindle.world_books unavailable — lorebook entries will be skipped`);
 
+  assetUploadsInFlight++;
   try {
     const result = await importCard({
       bytesB64,
@@ -1935,6 +2226,8 @@ async function importCardFromBytes(
       fraction: null,
       error: message,
     });
+  } finally {
+    assetUploadsInFlight--;
   }
 }
 
@@ -3348,9 +3641,14 @@ function captureUserId(userId: string | undefined, where: string): void {
     void getSettingsForUser(userId).catch((err) => {
       log.warn(`captureUserId: settings preload failed for user=${userId}: ${errMsg(err)}`);
     });
-    void runImageOrphanReaper(userId).catch((err) => {
-      log.warn(`captureUserId: image orphan reaper failed for user=${userId}: ${errMsg(err)}`);
-    });
+    // No auto-cleanup. If a card or module was deleted while the extension
+    // wasn't running, an orphan-review prompt is offered instead, deferred so
+    // it doesn't compete with chat-open work.
+    setTimeout(() => {
+      void promptOrphanReviewIfAny(userId).catch((err) => {
+        log.warn(`captureUserId: orphan-review prompt failed: ${errMsg(err)}`);
+      });
+    }, 3000);
   }
 }
 
@@ -3801,9 +4099,83 @@ spindle.on('CHARACTER_DELETED', async (raw, uid) => {
   }
 
   if (uid) {
-    await runImageCleanupForCharacter(characterId, uid).catch((err) => {
-      log.warn(`CHARACTER_DELETED: image cleanup threw char=${characterId}: ${errMsg(err)}`);
-    });
+    const opId = `delete-char-${characterId}-${Date.now()}`;
+    const opTitle = `Cleaning up deleted character`;
+    emitOperationProgress(uid, opId, 'started', opTitle, 'Reading image journal…', null);
+    try {
+      const journalFile = await readImageJournalFile(journalStorage(), uid, characterId);
+      const journalImageIds = journalFile?.imageIds ?? [];
+      let imageStats = { deleted: 0, absent: 0, failed: 0, skipped: 0 };
+      if (journalImageIds.length === 0) {
+        log.info(`CHARACTER_DELETED: no journal for char=${characterId}, nothing to clean`);
+      } else {
+        emitOperationProgress(
+          uid, opId, 'progress', opTitle,
+          `Checking ${journalImageIds.length} asset${journalImageIds.length === 1 ? '' : 's'} against live references…`,
+          0.3,
+        );
+        // Lumi fires CHARACTER_DELETED BEFORE the row is removed, so the
+        // doomed character still passes through listLumirealmCharacters.
+        // Exclude it explicitly so its asset_index doesn't shield its own IDs.
+        const live = await buildLiveImageIdSet(buildOrphanDetectDepsExcluding(uid, characterId));
+        const safeIds: string[] = [];
+        let skipped = 0;
+        for (const id of journalImageIds) {
+          if (typeof id !== 'string' || id.length === 0) continue;
+          if (live.liveIds.has(id)) {
+            skipped++;
+            continue;
+          }
+          safeIds.push(id);
+        }
+        if (skipped > 0) {
+          log.info(
+            `CHARACTER_DELETED: ${skipped}/${journalImageIds.length} asset(s) shielded by other live refs ` +
+              `(likely a Lumi-side duplicate), deleting only ${safeIds.length} character-owned asset(s)`,
+          );
+        }
+        if (safeIds.length > 0) {
+          emitOperationProgress(
+            uid, opId, 'progress', opTitle,
+            `Deleting 0 of ${safeIds.length} asset${safeIds.length === 1 ? '' : 's'}…`,
+            0.4,
+          );
+          const stats = await deleteImageIds(
+            safeIds, uid, `CHARACTER_DELETED(${characterId})`,
+            (processed, total) => {
+              const frac = total > 0 ? 0.4 + (processed / total) * 0.55 : 0.4;
+              emitOperationProgress(
+                uid, opId, 'progress', opTitle,
+                `Deleting ${processed} of ${total} asset${total === 1 ? '' : 's'}…`,
+                frac,
+              );
+            },
+          );
+          imageStats = { ...stats, skipped };
+        } else {
+          imageStats = { deleted: 0, absent: 0, failed: 0, skipped };
+        }
+      }
+      await clearImageJournal(journalStorage(), uid, characterId).catch((err) => {
+        log.warn(`CHARACTER_DELETED: clearImageJournal threw char=${characterId}: ${errMsg(err)}`);
+      });
+      log.info(
+        `CHARACTER_DELETED cleanup: char=${characterId} ` +
+          `imageDelete=deleted:${imageStats.deleted} absent:${imageStats.absent} ` +
+          `failed:${imageStats.failed} skipped:${imageStats.skipped}`,
+      );
+      const summaryLine = journalImageIds.length === 0
+        ? 'No image assets to clean'
+        : imageStats.skipped > 0
+          ? `${imageStats.deleted} asset${imageStats.deleted === 1 ? '' : 's'} deleted (${imageStats.skipped} kept, still referenced)`
+          : `${imageStats.deleted} asset${imageStats.deleted === 1 ? '' : 's'} deleted`;
+      emitOperationProgress(uid, opId, 'done', opTitle, summaryLine, 1);
+    } catch (err) {
+      log.warn(`CHARACTER_DELETED cleanup threw char=${characterId}: ${errMsg(err)}`);
+      emitOperationProgress(uid, opId, 'error', opTitle, '', null, errMsg(err));
+      // Best-effort journal clear so the boot detector doesn't keep flagging.
+      await clearImageJournal(journalStorage(), uid, characterId).catch(() => { /* */ });
+    }
   }
 
   send({
@@ -3931,6 +4303,8 @@ async function processModuleUpload(
   fileName: string,
   userId: string,
 ): Promise<{ envelope: ModuleEnvelope }> {
+  assetUploadsInFlight++;
+  try {
   const t0 = Date.now();
   log.info(
     `processModuleUpload: file=${fileName} bytes=${bytes.byteLength} userId=${userId}`,
@@ -3947,9 +4321,16 @@ async function processModuleUpload(
   }
   const moduleBody = parsed.data;
   if (typeof moduleBody.id !== 'string' || moduleBody.id.length === 0) {
-    throw new Error('module is missing an `id` — cannot store');
+    throw new Error('module is missing an `id` cannot store');
   }
-  const previousEnvelope = await readModuleEnvelope(moduleStorage(), userId, moduleBody.id);
+  // Risu parity: every upload of a module gets a fresh UUID, so two uploads
+  // of the same .risum produce two independent entries.
+  const sourceModuleId = moduleBody.id;
+  moduleBody.id = crypto.randomUUID();
+  log.info(
+    `processModuleUpload: assigned fresh id=${moduleBody.id} ` +
+      `(source id was ${sourceModuleId})`,
+  );
 
   // Risu modules.ts: prompt consent for lowLevelAccess modules.
   if (moduleBody.lowLevelAccess === true) {
@@ -4105,13 +4486,10 @@ async function processModuleUpload(
     module: moduleBody,
     asset_index: moduleAssetIndex,
     translator_schema_version: CURRENT_TRANSLATOR_SCHEMA_VERSION,
-    ...(previousEnvelope?.installed_world_book_id
-      ? { installed_world_book_id: previousEnvelope.installed_world_book_id }
-      : {}),
   };
   const wbId = await syncModuleWorldBook(baseEnvelope, userId).catch((err) => {
     log.warn(`processModuleUpload: syncModuleWorldBook failed module=${moduleBody.id}: ${errMsg(err)}`);
-    return previousEnvelope?.installed_world_book_id ?? null;
+    return null;
   });
   const envelope: ModuleEnvelope = {
     schema_version: baseEnvelope.schema_version,
@@ -4137,6 +4515,9 @@ async function processModuleUpload(
       `elapsed=${Date.now() - t0}ms`,
   );
   return { envelope };
+  } finally {
+    assetUploadsInFlight--;
+  }
 }
 
 
@@ -5194,7 +5575,7 @@ const realmHandle: RealmBackendHandle = setupRealmBackend({
 });
 
 spindle.onFrontendMessage(async (raw, userId) => {
-  activeUserId = userId;
+  captureUserId(userId, 'frontend-message');
   const msg = raw as FrontendToBackend;
   log.trace(`frontend msg type=${msg.type} userId=${userId ?? '<none>'}`);
   try {
@@ -5370,7 +5751,23 @@ spindle.onFrontendMessage(async (raw, userId) => {
         break;
       }
       case 'delete_card': {
-        await deleteCardByChar(msg.characterId, 'soft');
+        const opId = `delete-card-${msg.characterId}-${Date.now()}`;
+        let cardName = msg.characterId.slice(0, 8);
+        try {
+          if (userId) {
+            const c = await spindle.characters.get(msg.characterId, userId);
+            if (c?.name) cardName = c.name;
+          }
+        } catch { /* fall through with id-based label */ }
+        const opTitle = `Removing card "${cardName}" from LumiRealm`;
+        emitOperationProgress(opId, 'started', opTitle, 'Clearing extension data…', null);
+        try {
+          await deleteCardByChar(msg.characterId, 'soft');
+          emitOperationProgress(opId, 'done', opTitle, 'Removed', 1);
+        } catch (err) {
+          log.warn(`delete_card: threw char=${msg.characterId}: ${errMsg(err)}`);
+          emitOperationProgress(opId, 'error', opTitle, '', null, errMsg(err));
+        }
         break;
       }
       case 'consent_response': {
@@ -5683,26 +6080,113 @@ spindle.onFrontendMessage(async (raw, userId) => {
           break;
         }
         const envelopeForDelete = await readModuleEnvelope(moduleStorage(), userId, msg.moduleId);
-        const sharedWbId = envelopeForDelete?.installed_world_book_id ?? null;
-        const touched = await detachModuleFromAllCharacters(msg.moduleId, userId);
-        if (sharedWbId) {
-          try {
-            await spindle.world_books.delete(sharedWbId, userId);
-            log.info(`delete_module: deleted shared world_book wb=${sharedWbId} module=${msg.moduleId}`);
-          } catch (err) {
-            log.warn(`delete_module: shared world_book delete failed wb=${sharedWbId}: ${errMsg(err)}`);
+        const moduleName = envelopeForDelete?.module?.name || msg.moduleId.slice(0, 8);
+        const opId = `delete-module-${msg.moduleId}-${Date.now()}`;
+        const opTitle = `Deleting module "${moduleName}"`;
+        emitOperationProgress(opId, 'started', opTitle, 'Detaching from characters…', null);
+        try {
+          const sharedWbId = envelopeForDelete?.installed_world_book_id ?? null;
+          // Capture the journal's image-id list now, before the envelope is
+          // gone. We use the journal (not envelope.asset_index) because re-uploads
+          // append to the journal, so the journal is the superset of every ID
+          // we ever uploaded for this module.
+          const journalFile = await readModuleImageJournalFile(journalStorage(), userId, msg.moduleId);
+          const journalImageIds = journalFile?.imageIds ?? [];
+
+          const touched = await detachModuleFromAllCharacters(msg.moduleId, userId);
+          if (sharedWbId) {
+            emitOperationProgress(
+              opId, 'progress', opTitle,
+              `Removing shared world book…`,
+              0.3,
+            );
+            try {
+              await spindle.world_books.delete(sharedWbId, userId);
+              log.info(`delete_module: deleted shared world_book wb=${sharedWbId} module=${msg.moduleId}`);
+            } catch (err) {
+              log.warn(`delete_module: shared world_book delete failed wb=${sharedWbId}: ${errMsg(err)}`);
+            }
           }
-        }
-        await runModuleImageCleanup(msg.moduleId, userId).catch((err) => {
-          log.warn(`delete_module: image cleanup threw module=${msg.moduleId}: ${errMsg(err)}`);
-        });
-        await deleteModuleFromStore(moduleStorage(), userId, msg.moduleId);
-        log.info(
-          `delete_module: id=${msg.moduleId} detachedFromChars=${touched.length}`,
-        );
-        await pushModules(userId);
-        for (const charId of touched) {
-          await pushAttachedForCharacter(charId, userId);
+
+          emitOperationProgress(opId, 'progress', opTitle, 'Removing module envelope…', 0.45);
+          await deleteModuleFromStore(moduleStorage(), userId, msg.moduleId);
+
+          // Cross-reference safety: with the envelope removed, build the live
+          // set and only delete journal IDs that no other character/module
+          // references. Same primitive as the manual Cleanup tab.
+          let imageDeleteStats = { deleted: 0, absent: 0, failed: 0, skipped: 0 };
+          if (journalImageIds.length > 0) {
+            emitOperationProgress(
+              opId, 'progress', opTitle,
+              `Checking ${journalImageIds.length} asset${journalImageIds.length === 1 ? '' : 's'} against live references…`,
+              0.55,
+            );
+            const live = await buildLiveImageIdSet(buildOrphanDetectDeps(userId));
+            const safeIds: string[] = [];
+            let skipped = 0;
+            for (const id of journalImageIds) {
+              if (typeof id !== 'string' || id.length === 0) continue;
+              if (live.liveIds.has(id)) {
+                skipped++;
+                continue;
+              }
+              safeIds.push(id);
+            }
+            if (skipped > 0) {
+              log.info(
+                `delete_module: ${skipped}/${journalImageIds.length} asset(s) shielded by other live refs, ` +
+                  `deleting only ${safeIds.length} module-owned asset(s)`,
+              );
+            }
+            if (safeIds.length > 0) {
+              emitOperationProgress(
+                opId, 'progress', opTitle,
+                `Deleting 0 of ${safeIds.length} asset${safeIds.length === 1 ? '' : 's'}…`,
+                0.6,
+              );
+              const stats = await deleteImageIds(
+                safeIds, userId, `delete_module(${msg.moduleId})`,
+                (processed, total) => {
+                  // Map processed/total into the 0.6..0.95 progress band.
+                  const frac = total > 0 ? 0.6 + (processed / total) * 0.35 : 0.6;
+                  emitOperationProgress(
+                    opId, 'progress', opTitle,
+                    `Deleting ${processed} of ${total} asset${total === 1 ? '' : 's'}…`,
+                    frac,
+                  );
+                },
+              );
+              imageDeleteStats = { ...stats, skipped };
+            } else {
+              imageDeleteStats = { deleted: 0, absent: 0, failed: 0, skipped };
+            }
+          }
+
+          await clearModuleImageJournal(journalStorage(), userId, msg.moduleId).catch((err) => {
+            log.warn(`delete_module: clearModuleImageJournal threw module=${msg.moduleId}: ${errMsg(err)}`);
+          });
+
+          log.info(
+            `delete_module: id=${msg.moduleId} detachedFromChars=${touched.length} ` +
+              `imageDelete=deleted:${imageDeleteStats.deleted} ` +
+              `absent:${imageDeleteStats.absent} failed:${imageDeleteStats.failed} ` +
+              `skipped:${imageDeleteStats.skipped}`,
+          );
+          await pushModules(userId);
+          for (const charId of touched) {
+            await pushAttachedForCharacter(charId, userId);
+          }
+          const detachLine = `Detached from ${touched.length} character${touched.length === 1 ? '' : 's'}`;
+          const assetLine = journalImageIds.length === 0
+            ? ''
+            : imageDeleteStats.skipped > 0
+              ? `, ${imageDeleteStats.deleted} asset${imageDeleteStats.deleted === 1 ? '' : 's'} deleted (${imageDeleteStats.skipped} kept, still referenced)`
+              : `, ${imageDeleteStats.deleted} asset${imageDeleteStats.deleted === 1 ? '' : 's'} deleted`;
+          emitOperationProgress(opId, 'done', opTitle, `${detachLine}${assetLine}`, 1);
+        } catch (err) {
+          log.warn(`delete_module: threw module=${msg.moduleId}: ${errMsg(err)}`);
+          emitOperationProgress(opId, 'error', opTitle, '', null, errMsg(err));
+          send({ type: 'error', message: `Module delete failed: ${errMsg(err)}` });
         }
         break;
       }
@@ -6001,6 +6485,179 @@ spindle.onFrontendMessage(async (raw, userId) => {
       case 'log_clear': {
         logStore.clear();
         sendLogState();
+        break;
+      }
+      case 'request_orphan_scan': {
+        if (!userId) {
+          send({
+            type: 'orphan_scan_result',
+            orphans: [],
+            summary: {
+              scannedTotal: 0, liveCharacterRefs: 0, liveModuleRefs: 0,
+              liveJournalRefs: 0, charactersScanned: 0, modulesScanned: 0,
+              elapsedMs: 0, totalOrphans: 0, truncated: false,
+            },
+            error: 'No active user. Open a Lumi session and try again.',
+          });
+          break;
+        }
+        if (assetUploadsInFlight > 0) {
+          send({
+            type: 'orphan_scan_result',
+            orphans: [],
+            summary: {
+              scannedTotal: 0, liveCharacterRefs: 0, liveModuleRefs: 0,
+              liveJournalRefs: 0, charactersScanned: 0, modulesScanned: 0,
+              elapsedMs: 0, totalOrphans: 0, truncated: false,
+            },
+            error: 'An import or module upload is in progress. Wait for it to finish, then scan again.',
+          });
+          break;
+        }
+        send({ type: 'orphan_scan_started' });
+        try {
+          const report = await scanOrphanedImages(userId);
+          log.info(
+            `orphan-scan: owned=${report.summary.scannedTotal} ` +
+              `live(char=${report.summary.liveCharacterRefs} ` +
+              `module=${report.summary.liveModuleRefs} ` +
+              `journal=${report.summary.liveJournalRefs}) ` +
+              `chars=${report.summary.charactersScanned} ` +
+              `modules=${report.summary.modulesScanned} ` +
+              `orphans=${report.summary.totalOrphans}${report.summary.truncated ? `(shown=${report.orphans.length})` : ''} ` +
+              `elapsed=${report.summary.elapsedMs}ms`,
+          );
+          send({
+            type: 'orphan_scan_result',
+            orphans: report.orphans,
+            summary: report.summary,
+          });
+        } catch (err) {
+          log.warn(`orphan-scan: failed: ${errMsg(err)}`);
+          send({
+            type: 'orphan_scan_result',
+            orphans: [],
+            summary: {
+              scannedTotal: 0, liveCharacterRefs: 0, liveModuleRefs: 0,
+              liveJournalRefs: 0, charactersScanned: 0, modulesScanned: 0,
+              elapsedMs: 0, totalOrphans: 0, truncated: false,
+            },
+            error: errMsg(err),
+          });
+        }
+        break;
+      }
+      case 'delete_orphan_assets': {
+        const requested = msg.imageIds.length;
+        if (!userId) {
+          send({
+            type: 'orphan_delete_result',
+            requested, deleted: 0, absent: 0, failed: 0, skipped: 0,
+            skippedIds: [],
+            error: 'No active user.',
+          });
+          break;
+        }
+        if (assetUploadsInFlight > 0) {
+          send({
+            type: 'orphan_delete_result',
+            requested, deleted: 0, absent: 0, failed: 0, skipped: 0,
+            skippedIds: [],
+            error: 'An import or module upload is in progress. Wait for it to finish before deleting.',
+          });
+          break;
+        }
+        if (requested === 0) {
+          send({
+            type: 'orphan_delete_result',
+            requested: 0, deleted: 0, absent: 0, failed: 0, skipped: 0,
+            skippedIds: [],
+          });
+          break;
+        }
+        const opId = `delete-orphans-${Date.now()}`;
+        const opTitle = `Deleting ${requested} orphan asset${requested === 1 ? '' : 's'}`;
+        emitOperationProgress(opId, 'started', opTitle, 'Verifying live references…', null);
+        try {
+          // Re-verify against the live set immediately before deletion. An
+          // import or asset-add finishing between scan and delete would have
+          // committed new IDs to live storage, those must not be deleted.
+          const live = await buildLiveImageIdSet(buildOrphanDetectDeps(userId));
+          const safeIds: string[] = [];
+          const skippedIds: string[] = [];
+          for (const id of msg.imageIds) {
+            if (typeof id !== 'string' || id.length === 0) continue;
+            if (live.liveIds.has(id)) {
+              skippedIds.push(id);
+              continue;
+            }
+            safeIds.push(id);
+          }
+          if (skippedIds.length > 0) {
+            log.warn(
+              `orphan-cleanup: ${skippedIds.length} ID(s) became live between scan and delete, skipping`,
+            );
+          }
+          if (safeIds.length === 0) {
+            emitOperationProgress(
+              opId, 'done', opTitle,
+              `Nothing to delete (${skippedIds.length} skipped — became live)`,
+              1,
+            );
+          } else {
+            emitOperationProgress(
+              opId, 'progress', opTitle,
+              `Deleting 0 of ${safeIds.length}…`,
+              0,
+            );
+          }
+          const stats = safeIds.length > 0
+            ? await deleteImageIds(
+                safeIds, userId, 'orphan-cleanup',
+                (processed, total) => {
+                  emitOperationProgress(
+                    opId, 'progress', opTitle,
+                    `Deleting ${processed} of ${total}…`,
+                    total > 0 ? processed / total : null,
+                  );
+                },
+              )
+            : { deleted: 0, absent: 0, failed: 0 };
+          log.info(
+            `orphan-cleanup: requested=${requested} deleted=${stats.deleted} ` +
+              `absent=${stats.absent} failed=${stats.failed} skipped=${skippedIds.length}`,
+          );
+          if (safeIds.length > 0) {
+            const tail = stats.failed > 0
+              ? ` (${stats.failed} failed)`
+              : stats.absent > 0
+                ? ` (${stats.absent} already gone)`
+                : '';
+            emitOperationProgress(
+              opId, 'done', opTitle,
+              `Deleted ${stats.deleted} of ${safeIds.length}${tail}`,
+              1,
+            );
+          }
+          send({
+            type: 'orphan_delete_result',
+            requested,
+            deleted: stats.deleted,
+            absent: stats.absent,
+            failed: stats.failed,
+            skipped: skippedIds.length,
+            skippedIds,
+          });
+        } catch (err) {
+          log.warn(`orphan-cleanup: threw: ${errMsg(err)}`);
+          emitOperationProgress(opId, 'error', opTitle, '', null, errMsg(err));
+          send({
+            type: 'orphan_delete_result',
+            requested, deleted: 0, absent: 0, failed: requested, skipped: 0,
+            skippedIds: [],
+            error: errMsg(err),
+          });
+        }
         break;
       }
       case 'alert_dismissed': {

@@ -1027,6 +1027,87 @@ var styles_default = `.risu-compat-drawer {\r
   line-height: 1.4;\r
 }\r
 \r
+.risu-settings-drawer .rs-cleanup-summary {\r
+  margin: 8px 0 6px;\r
+  font-size: 12px;\r
+  color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.65));\r
+}\r
+.risu-settings-drawer .rs-cleanup-list {\r
+  max-height: 60vh;\r
+  overflow-y: auto;\r
+  padding: 4px;\r
+  background: rgba(0, 0, 0, 0.18);\r
+  border: 1px solid var(--lumiverse-border, rgba(255, 255, 255, 0.06));\r
+  border-radius: 4px;\r
+}\r
+.risu-settings-drawer .rs-cleanup-list-inner {\r
+  position: relative;\r
+}\r
+.risu-settings-drawer .rs-cleanup-row {\r
+  display: grid;\r
+  grid-template-columns: 24px 64px 1fr;\r
+  gap: 10px;\r
+  align-items: center;\r
+  padding: 6px 8px;\r
+  background: rgba(255, 255, 255, 0.02);\r
+  border: 1px solid var(--lumiverse-border, rgba(255, 255, 255, 0.06));\r
+  border-radius: 4px;\r
+  cursor: pointer;\r
+}\r
+.risu-settings-drawer .rs-cleanup-row:hover {\r
+  background: rgba(255, 255, 255, 0.04);\r
+}\r
+.risu-settings-drawer .rs-cleanup-check {\r
+  margin: 0;\r
+}\r
+.risu-settings-drawer .rs-cleanup-thumb {\r
+  width: 64px;\r
+  height: 64px;\r
+  display: flex;\r
+  align-items: center;\r
+  justify-content: center;\r
+  background: rgba(0, 0, 0, 0.3);\r
+  border-radius: 3px;\r
+  overflow: hidden;\r
+}\r
+.risu-settings-drawer .rs-cleanup-thumb img {\r
+  width: 100%;\r
+  height: 100%;\r
+  object-fit: cover;\r
+}\r
+.risu-settings-drawer .rs-cleanup-thumb-placeholder {\r
+  font-size: 10px;\r
+  color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.5));\r
+  text-align: center;\r
+  padding: 4px;\r
+  word-break: break-all;\r
+}\r
+.risu-settings-drawer .rs-cleanup-meta {\r
+  display: flex;\r
+  flex-direction: column;\r
+  gap: 2px;\r
+  min-width: 0;\r
+}\r
+.risu-settings-drawer .rs-cleanup-name {\r
+  font-size: 12px;\r
+  color: var(--lumiverse-text, inherit);\r
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;\r
+  white-space: nowrap;\r
+  overflow: hidden;\r
+  text-overflow: ellipsis;\r
+}\r
+.risu-settings-drawer .rs-cleanup-sub,\r
+.risu-settings-drawer .rs-cleanup-id {\r
+  font-size: 11px;\r
+  color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.55));\r
+  white-space: nowrap;\r
+  overflow: hidden;\r
+  text-overflow: ellipsis;\r
+}\r
+.risu-settings-drawer .rs-cleanup-id {\r
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;\r
+}\r
+\r
 /* ─── Aux-model debug capture panel (floating) ─────────────────────── */\r
 /* A bottom-right floating panel listing recent aux-model calls.\r
    Hidden when no captures and the user hasn't pinned it open. Each\r
@@ -2215,7 +2296,8 @@ var styles_default = `.risu-compat-drawer {\r
 }\r
 .lr-viewer-drawer .lrv-asset-media {\r
   width: 100%;\r
-  height: 96px;\r
+  flex: 1 1 auto;\r
+  min-height: 0;\r
   object-fit: cover;\r
   background: rgba(255, 255, 255, 0.04);\r
   border-radius: 3px;\r
@@ -4308,6 +4390,155 @@ function makeCheckboxRow(opts) {
   return { row, input };
 }
 
+// src/ui/virtual-grid.ts
+function createVirtualGrid(opts) {
+  const host = document.createElement("div");
+  if (opts.hostClassName)
+    host.className = opts.hostClassName;
+  const inner = document.createElement("div");
+  if (opts.innerClassName)
+    inner.className = opts.innerClassName;
+  inner.style.position = "relative";
+  host.appendChild(inner);
+  const tileNodes = new Map;
+  const state = { columns: 1, tileW: 0 };
+  const overscan = opts.overscanRows ?? 2;
+  const rowH = opts.rowHeight;
+  function recomputeLayout() {
+    const items = opts.getItems();
+    const containerW = host.clientWidth || opts.minTileWidth || 1;
+    const minW = opts.minTileWidth ?? Number.POSITIVE_INFINITY;
+    state.columns = Math.max(1, Number.isFinite(minW) ? Math.floor(containerW / minW) : 1);
+    state.tileW = containerW / state.columns;
+    const rows = Math.ceil(items.length / state.columns);
+    inner.style.height = `${rows * rowH}px`;
+  }
+  function placeTile(node, index) {
+    const row = Math.floor(index / state.columns);
+    const col = index % state.columns;
+    node.style.position = "absolute";
+    node.style.top = `${row * rowH}px`;
+    node.style.left = `${col * state.tileW}px`;
+    node.style.width = `${state.tileW}px`;
+    node.style.height = `${rowH}px`;
+    node.style.boxSizing = "border-box";
+  }
+  function renderWindow() {
+    const items = opts.getItems();
+    if (items.length === 0) {
+      for (const [, node] of tileNodes)
+        node.remove();
+      tileNodes.clear();
+      return;
+    }
+    const top = host.scrollTop;
+    const bottom = top + (host.clientHeight || 1);
+    const totalRows = Math.ceil(items.length / state.columns);
+    const startRow = Math.max(0, Math.floor(top / rowH) - overscan);
+    const endRow = Math.min(totalRows, Math.ceil(bottom / rowH) + overscan);
+    const startIdx = startRow * state.columns;
+    const endIdx = Math.min(items.length, endRow * state.columns);
+    const wanted = new Set;
+    for (let i = startIdx;i < endIdx; i++)
+      wanted.add(i);
+    if (opts.pinnedIndices) {
+      for (const i of opts.pinnedIndices()) {
+        if (i >= 0 && i < items.length)
+          wanted.add(i);
+      }
+    }
+    for (const [i, node] of tileNodes) {
+      if (!wanted.has(i)) {
+        node.remove();
+        tileNodes.delete(i);
+      }
+    }
+    for (const i of wanted) {
+      const existing = tileNodes.get(i);
+      if (existing) {
+        placeTile(existing, i);
+        continue;
+      }
+      const item = items[i];
+      if (item === undefined)
+        continue;
+      const tile = opts.renderItem(item, i);
+      placeTile(tile, i);
+      inner.appendChild(tile);
+      tileNodes.set(i, tile);
+    }
+  }
+  function rerenderAll() {
+    inner.replaceChildren();
+    tileNodes.clear();
+    recomputeLayout();
+    renderWindow();
+  }
+  let destroyed = false;
+  let scrollPending = false;
+  let scrollRaf = null;
+  const onScroll = () => {
+    if (scrollPending)
+      return;
+    scrollPending = true;
+    scrollRaf = requestAnimationFrame(() => {
+      scrollPending = false;
+      scrollRaf = null;
+      if (destroyed)
+        return;
+      renderWindow();
+    });
+  };
+  host.addEventListener("scroll", onScroll);
+  let ro = null;
+  let initialRaf = null;
+  if (typeof ResizeObserver !== "undefined") {
+    let firstObservation = true;
+    ro = new ResizeObserver(() => {
+      if (destroyed)
+        return;
+      const prevColumns = state.columns;
+      const prevTileW = state.tileW;
+      recomputeLayout();
+      if (firstObservation || state.columns !== prevColumns || Math.abs(state.tileW - prevTileW) > 0.5) {
+        rerenderAll();
+        firstObservation = false;
+      } else {
+        renderWindow();
+      }
+    });
+    ro.observe(host);
+  } else {
+    initialRaf = requestAnimationFrame(() => {
+      initialRaf = null;
+      if (destroyed)
+        return;
+      recomputeLayout();
+      renderWindow();
+    });
+  }
+  function invalidate() {
+    recomputeLayout();
+    renderWindow();
+  }
+  function refresh() {
+    rerenderAll();
+  }
+  function destroy() {
+    destroyed = true;
+    if (initialRaf !== null)
+      cancelAnimationFrame(initialRaf);
+    if (scrollRaf !== null)
+      cancelAnimationFrame(scrollRaf);
+    host.removeEventListener("scroll", onScroll);
+    if (ro)
+      ro.disconnect();
+    inner.replaceChildren();
+    tileNodes.clear();
+  }
+  return { host, inner, invalidate, refresh, destroy };
+}
+
 // src/ui/settings-tab.ts
 var SAMPLER_DEFS = [
   { key: "temperature", label: "Temperature", type: "float", min: 0, max: 2, step: 0.01, defaultHint: 1 },
@@ -4332,9 +4563,10 @@ function mountSettingsPanel(opts) {
   status.className = "rs-status";
   root.appendChild(status);
   const SUB_TABS2 = [
-    { id: "aux", label: "Auxiliary", title: "Aux model — used by Lua's axLLMMain / axLLM calls." },
-    { id: "sub", label: "Sub", title: "Submodel — used by V2 runLLM(model='submodel'). Falls back to Aux when empty." },
-    { id: "debug", label: "Debug", title: "Capture toggles, parity toggles, and diagnostic logs." }
+    { id: "aux", label: "Auxiliary", title: "Aux model, used by Lua's axLLMMain / axLLM calls." },
+    { id: "sub", label: "Sub", title: "Submodel, used by V2 runLLM(model='submodel'). Falls back to Aux when empty." },
+    { id: "debug", label: "Debug", title: "Capture toggles, parity toggles, and diagnostic logs." },
+    { id: "cleanup", label: "Cleanup", title: "Find and delete orphaned image assets that no live character or module references." }
   ];
   const subnav = document.createElement("div");
   subnav.className = "lr-subtabs";
@@ -4568,11 +4800,190 @@ function mountSettingsPanel(opts) {
   logsHost.appendChild(logsMount);
   debugBody.appendChild(logsHost);
   const logsHandle = mountLogsPanel({ root: logsMount, sendToBackend, log });
+  const cleanupBody = document.createElement("section");
+  cleanupBody.className = "lr-settings-tab-body";
+  const cleanupIntro = document.createElement("p");
+  cleanupIntro.className = "lr-settings-intro";
+  cleanupIntro.textContent = "Find image assets owned by LumiRealm that no live character or module references. Orphans typically come from deleting a card while the extension was off, or from interrupted imports.";
+  cleanupBody.appendChild(cleanupIntro);
+  const cleanupActions = document.createElement("div");
+  cleanupActions.className = "rs-row rs-row-buttons";
+  const scanBtn = document.createElement("button");
+  scanBtn.type = "button";
+  scanBtn.className = "lrm-btn lrm-btn-primary";
+  scanBtn.textContent = "Scan for orphans";
+  scanBtn.title = "Cross-checks every image we own against live characters, modules, and active journals.";
+  cleanupActions.appendChild(scanBtn);
+  const deleteBtn = document.createElement("button");
+  deleteBtn.type = "button";
+  deleteBtn.className = "lrm-btn lrm-btn-danger";
+  deleteBtn.textContent = "Delete selected (0)";
+  deleteBtn.disabled = true;
+  cleanupActions.appendChild(deleteBtn);
+  const selectAllBtn = document.createElement("button");
+  selectAllBtn.type = "button";
+  selectAllBtn.className = "lrm-btn";
+  selectAllBtn.textContent = "Select all";
+  selectAllBtn.disabled = true;
+  cleanupActions.appendChild(selectAllBtn);
+  const selectNoneBtn = document.createElement("button");
+  selectNoneBtn.type = "button";
+  selectNoneBtn.className = "lrm-btn";
+  selectNoneBtn.textContent = "Select none";
+  selectNoneBtn.disabled = true;
+  cleanupActions.appendChild(selectNoneBtn);
+  cleanupBody.appendChild(cleanupActions);
+  const cleanupSummary = document.createElement("div");
+  cleanupSummary.className = "rs-cleanup-summary";
+  cleanupSummary.textContent = "No scan run yet.";
+  cleanupBody.appendChild(cleanupSummary);
+  let cleanupOrphans = [];
+  const cleanupSelected = new Set;
+  let cleanupScanning = false;
+  let cleanupDeleting = false;
+  const CLEANUP_ROW_H = 80;
+  let cleanupGrid = null;
+  function refreshCleanupActionState() {
+    const sel = cleanupSelected.size;
+    deleteBtn.textContent = `Delete selected (${sel})`;
+    deleteBtn.disabled = sel === 0 || cleanupDeleting || cleanupScanning;
+    selectAllBtn.disabled = cleanupOrphans.length === 0 || cleanupScanning || cleanupDeleting;
+    selectNoneBtn.disabled = sel === 0 || cleanupScanning || cleanupDeleting;
+    scanBtn.disabled = cleanupScanning || cleanupDeleting;
+    scanBtn.textContent = cleanupScanning ? "Scanning…" : "Scan for orphans";
+  }
+  function renderCleanupRow(o) {
+    const row = document.createElement("label");
+    row.className = "rs-cleanup-row";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.className = "rs-cleanup-check";
+    cb.checked = cleanupSelected.has(o.id);
+    cb.addEventListener("change", () => {
+      if (cb.checked)
+        cleanupSelected.add(o.id);
+      else
+        cleanupSelected.delete(o.id);
+      refreshCleanupActionState();
+    });
+    row.appendChild(cb);
+    const thumb = document.createElement("div");
+    thumb.className = "rs-cleanup-thumb";
+    if (o.url && (o.mime.startsWith("image/") || o.mime === "")) {
+      const img = document.createElement("img");
+      img.src = o.url;
+      img.alt = o.filename || o.id;
+      img.loading = "lazy";
+      thumb.appendChild(img);
+    } else {
+      const ph = document.createElement("span");
+      ph.className = "rs-cleanup-thumb-placeholder";
+      ph.textContent = o.mime || "?";
+      thumb.appendChild(ph);
+    }
+    row.appendChild(thumb);
+    const meta = document.createElement("div");
+    meta.className = "rs-cleanup-meta";
+    const name = document.createElement("div");
+    name.className = "rs-cleanup-name";
+    name.textContent = o.filename || "(no filename)";
+    name.title = o.filename;
+    meta.appendChild(name);
+    const sub = document.createElement("div");
+    sub.className = "rs-cleanup-sub";
+    const subParts = [];
+    if (o.mime)
+      subParts.push(o.mime);
+    if (typeof o.width === "number" && typeof o.height === "number") {
+      subParts.push(`${o.width}x${o.height}`);
+    }
+    if (o.createdAt > 0) {
+      const ts = new Date(o.createdAt);
+      subParts.push(ts.toLocaleString());
+    }
+    sub.textContent = subParts.join(" · ");
+    meta.appendChild(sub);
+    const idLine = document.createElement("div");
+    idLine.className = "rs-cleanup-id";
+    const ownerHint = o.ownerCharacterId ? `was tagged for character ${o.ownerCharacterId.slice(0, 8)}…` : "no owner tag";
+    idLine.textContent = `${o.id.slice(0, 8)}… · ${ownerHint}`;
+    idLine.title = `${o.id}${o.ownerCharacterId ? `
+owner: ${o.ownerCharacterId}` : ""}`;
+    meta.appendChild(idLine);
+    row.appendChild(meta);
+    return row;
+  }
+  function ensureCleanupGrid() {
+    if (cleanupGrid)
+      return cleanupGrid;
+    cleanupGrid = createVirtualGrid({
+      hostClassName: "rs-cleanup-list",
+      innerClassName: "rs-cleanup-list-inner",
+      rowHeight: CLEANUP_ROW_H,
+      overscanRows: 3,
+      getItems: () => cleanupOrphans,
+      renderItem: renderCleanupRow
+    });
+    cleanupBody.appendChild(cleanupGrid.host);
+    return cleanupGrid;
+  }
+  function renderCleanupList() {
+    const grid = ensureCleanupGrid();
+    grid.refresh();
+  }
+  function renderCleanupSummary(extra) {
+    if (cleanupOrphans.length === 0) {
+      cleanupSummary.textContent = extra ?? "No orphans found.";
+      return;
+    }
+    const head = `${cleanupOrphans.length} orphan${cleanupOrphans.length === 1 ? "" : "s"} found.`;
+    cleanupSummary.textContent = extra ? `${head} ${extra}` : head;
+  }
+  scanBtn.addEventListener("click", () => {
+    if (cleanupScanning)
+      return;
+    log.info("settings-tab: orphan scan requested");
+    cleanupScanning = true;
+    cleanupOrphans = [];
+    cleanupSelected.clear();
+    cleanupSummary.textContent = "Scanning…";
+    if (cleanupGrid)
+      cleanupGrid.invalidate();
+    refreshCleanupActionState();
+    sendToBackend({ type: "request_orphan_scan" });
+  });
+  selectAllBtn.addEventListener("click", () => {
+    for (const o of cleanupOrphans)
+      cleanupSelected.add(o.id);
+    renderCleanupList();
+    refreshCleanupActionState();
+  });
+  selectNoneBtn.addEventListener("click", () => {
+    cleanupSelected.clear();
+    renderCleanupList();
+    refreshCleanupActionState();
+  });
+  deleteBtn.addEventListener("click", () => {
+    if (cleanupSelected.size === 0 || cleanupDeleting)
+      return;
+    const count = cleanupSelected.size;
+    if (!confirm(`Delete ${count} orphan asset${count === 1 ? "" : "s"}? This cannot be undone.`))
+      return;
+    log.info(`settings-tab: orphan delete count=${count}`);
+    cleanupDeleting = true;
+    cleanupSummary.textContent = `Deleting ${count} asset${count === 1 ? "" : "s"}…`;
+    refreshCleanupActionState();
+    sendToBackend({
+      type: "delete_orphan_assets",
+      imageIds: Array.from(cleanupSelected)
+    });
+  });
   const panelsHost = document.createElement("div");
   panelsHost.className = "lr-subtab-panels";
   panelsHost.appendChild(auxBody);
   panelsHost.appendChild(subBody);
   panelsHost.appendChild(debugBody);
+  panelsHost.appendChild(cleanupBody);
   root.appendChild(panelsHost);
   function activateSubTab(id) {
     activeSubTab = id;
@@ -4584,6 +4995,7 @@ function mountSettingsPanel(opts) {
     auxBody.hidden = id !== "aux";
     subBody.hidden = id !== "sub";
     debugBody.hidden = id !== "debug";
+    cleanupBody.hidden = id !== "cleanup";
   }
   activateSubTab(activeSubTab);
   function renderConnectionSelect() {
@@ -5001,6 +5413,79 @@ function mountSettingsPanel(opts) {
       render();
       return;
     }
+    if (msg.type === "open_settings_cleanup") {
+      activateSubTab("cleanup");
+      if (!cleanupScanning && !cleanupDeleting) {
+        log.info("settings-tab: open_settings_cleanup, auto-firing scan");
+        cleanupScanning = true;
+        cleanupOrphans = [];
+        cleanupSelected.clear();
+        cleanupSummary.textContent = "Scanning…";
+        if (cleanupGrid)
+          cleanupGrid.invalidate();
+        refreshCleanupActionState();
+        sendToBackend({ type: "request_orphan_scan" });
+      }
+      return;
+    }
+    if (msg.type === "orphan_scan_started") {
+      cleanupScanning = true;
+      refreshCleanupActionState();
+      return;
+    }
+    if (msg.type === "orphan_scan_result") {
+      cleanupScanning = false;
+      cleanupOrphans = msg.orphans;
+      cleanupSelected.clear();
+      if (msg.error) {
+        cleanupSummary.textContent = `Scan failed: ${msg.error}`;
+      } else {
+        const s = msg.summary;
+        const liveTotal = s.liveCharacterRefs + s.liveModuleRefs + s.liveJournalRefs;
+        const tail = `Scanned ${s.scannedTotal} owned image${s.scannedTotal === 1 ? "" : "s"} ` + `against ${liveTotal} live ref${liveTotal === 1 ? "" : "s"} ` + `(${s.charactersScanned} char${s.charactersScanned === 1 ? "" : "s"}, ` + `${s.modulesScanned} module${s.modulesScanned === 1 ? "" : "s"}) ` + `in ${s.elapsedMs}ms.`;
+        const trunc = s.truncated ? ` Showing the newest ${msg.orphans.length} of ${s.totalOrphans}, delete this batch and re-scan to see the rest.` : "";
+        renderCleanupSummary(tail + trunc);
+      }
+      renderCleanupList();
+      refreshCleanupActionState();
+      log.info(`settings-tab: orphan_scan_result orphans=${msg.orphans.length} ` + `total=${msg.summary.totalOrphans} truncated=${msg.summary.truncated} ` + `error=${msg.error ?? "<none>"}`);
+      return;
+    }
+    if (msg.type === "orphan_delete_result") {
+      cleanupDeleting = false;
+      let removedCount = 0;
+      if (!msg.error) {
+        const skippedSet = new Set(msg.skippedIds);
+        const remaining = [];
+        for (const o of cleanupOrphans) {
+          if (cleanupSelected.has(o.id) && !skippedSet.has(o.id)) {
+            removedCount++;
+            continue;
+          }
+          remaining.push(o);
+        }
+        cleanupOrphans = remaining;
+      }
+      cleanupSelected.clear();
+      const parts = [];
+      parts.push(`Requested ${msg.requested}`);
+      parts.push(`deleted ${msg.deleted}`);
+      if (msg.absent > 0)
+        parts.push(`absent ${msg.absent}`);
+      if (msg.failed > 0)
+        parts.push(`failed ${msg.failed}`);
+      if (msg.skipped > 0)
+        parts.push(`skipped ${msg.skipped} (became live)`);
+      if (msg.error) {
+        cleanupSummary.textContent = `Delete failed: ${msg.error} (${parts.join(", ")}).`;
+      } else {
+        renderCleanupSummary(`${parts.join(", ")}.`);
+      }
+      renderCleanupList();
+      refreshCleanupActionState();
+      log.info(`settings-tab: orphan_delete_result removed=${removedCount} ` + `failed=${msg.failed} skipped=${msg.skipped} error=${msg.error ?? "<none>"}`);
+      return;
+    }
     try {
       logsHandle.handleBackendMessage(msg);
     } catch (err) {
@@ -5015,6 +5500,9 @@ function mountSettingsPanel(opts) {
       log.info("settings-panel: destroy");
       try {
         logsHandle.destroy();
+      } catch {}
+      try {
+        cleanupGrid?.destroy();
       } catch {}
       try {
         root.replaceChildren();
@@ -6132,114 +6620,40 @@ function mountViewerPanel(opts) {
       empty.textContent = `No matches for "${assetSearchTerm}".`;
       det.appendChild(empty);
     }
-    const scrollHost = document.createElement("div");
-    scrollHost.className = "lrv-asset-virt-host";
-    const inner = document.createElement("div");
-    inner.className = "lrv-asset-virt-inner";
-    scrollHost.appendChild(inner);
-    if (filtered.length > 0)
-      det.appendChild(scrollHost);
-    let columns = 1;
-    let tileW = ASSET_TILE_MIN_W;
-    let containerW = ASSET_TILE_MIN_W;
-    const tileNodes = new Map;
-    function recomputeLayout() {
-      containerW = scrollHost.clientWidth || ASSET_TILE_MIN_W;
-      columns = Math.max(1, Math.floor(containerW / ASSET_TILE_MIN_W));
-      tileW = containerW / columns;
-      const rows = Math.ceil(filtered.length / columns);
-      inner.style.height = `${rows * ASSET_TILE_H}px`;
-    }
-    function placeTile(node, idx) {
-      const row = Math.floor(idx / columns);
-      const col = idx % columns;
-      node.style.position = "absolute";
-      node.style.top = `${row * ASSET_TILE_H}px`;
-      node.style.left = `${col * tileW}px`;
-      node.style.width = `${tileW}px`;
-      node.style.height = `${ASSET_TILE_H}px`;
-    }
-    function renderWindow() {
-      if (filtered.length === 0)
-        return;
-      const top = scrollHost.scrollTop;
-      const bottom = top + (scrollHost.clientHeight || 1);
-      const totalRows = Math.ceil(filtered.length / columns);
-      const startRow = Math.max(0, Math.floor(top / ASSET_TILE_H) - ASSET_OVERSCAN_ROWS);
-      const endRow = Math.min(totalRows, Math.ceil(bottom / ASSET_TILE_H) + ASSET_OVERSCAN_ROWS);
-      const startIdx = startRow * columns;
-      const endIdx = Math.min(filtered.length, endRow * columns);
-      const wanted = new Set;
-      for (let i = startIdx;i < endIdx; i++)
-        wanted.add(i);
-      if (renamingAssetName !== null) {
+    const grid = createVirtualGrid({
+      hostClassName: "lrv-asset-virt-host",
+      innerClassName: "lrv-asset-virt-inner",
+      rowHeight: ASSET_TILE_H,
+      minTileWidth: ASSET_TILE_MIN_W,
+      overscanRows: ASSET_OVERSCAN_ROWS,
+      getItems: () => filtered,
+      renderItem: (a) => renderAssetTile(a),
+      pinnedIndices: () => {
+        if (renamingAssetName === null)
+          return [];
         const idx = filtered.findIndex((a) => a.name === renamingAssetName);
-        if (idx >= 0)
-          wanted.add(idx);
+        return idx >= 0 ? [idx] : [];
       }
-      for (const [i, node] of tileNodes) {
-        if (!wanted.has(i)) {
-          node.remove();
-          tileNodes.delete(i);
-        }
-      }
-      for (const i of wanted) {
-        if (tileNodes.has(i)) {
-          placeTile(tileNodes.get(i), i);
-          continue;
-        }
-        const a = filtered[i];
-        if (!a)
-          continue;
-        const tile = renderAssetTile(a);
-        placeTile(tile, i);
-        inner.appendChild(tile);
-        tileNodes.set(i, tile);
-      }
-    }
-    function rerenderAll() {
-      inner.replaceChildren();
-      tileNodes.clear();
-      recomputeLayout();
-      renderWindow();
-    }
-    let scrollPending = false;
-    scrollHost.addEventListener("scroll", () => {
-      if (scrollPending)
-        return;
-      scrollPending = true;
-      requestAnimationFrame(() => {
-        scrollPending = false;
-        renderWindow();
-      });
     });
-    if (typeof ResizeObserver !== "undefined") {
-      let firstObservation = true;
-      const ro = new ResizeObserver(() => {
-        const prevColumns = columns;
-        const prevTileW = tileW;
-        recomputeLayout();
-        if (firstObservation || columns !== prevColumns || Math.abs(tileW - prevTileW) > 0.5) {
-          rerenderAll();
-          firstObservation = false;
-        } else {
-          renderWindow();
-        }
-      });
-      ro.observe(scrollHost);
-    } else {
-      requestAnimationFrame(() => {
-        recomputeLayout();
-        renderWindow();
-      });
-    }
+    if (filtered.length > 0)
+      det.appendChild(grid.host);
     let searchTimer;
     search.addEventListener("input", () => {
       if (searchTimer !== undefined)
         window.clearTimeout(searchTimer);
       searchTimer = window.setTimeout(() => {
+        const caret = search.selectionStart;
         assetSearchTerm = search.value;
         render();
+        const fresh = root.querySelector(".lrv-asset-search");
+        if (fresh) {
+          fresh.focus();
+          if (caret !== null) {
+            try {
+              fresh.setSelectionRange(caret, caret);
+            } catch {}
+          }
+        }
       }, 80);
     });
     return det;
@@ -7489,6 +7903,15 @@ function createSidebar(opts) {
   ensurePanelMounted("import");
   activateSubTab(activeSubTab);
   function handleBackendMessage(msg) {
+    if (msg.type === "open_settings_cleanup") {
+      try {
+        tab.activate();
+      } catch (err) {
+        log.warn("sidebar: tab.activate threw", err);
+      }
+      if (activeSubTab !== "settings")
+        activateSubTab("settings");
+    }
     for (const handle of panels.values()) {
       try {
         handle.handleBackendMessage(msg);
@@ -9811,6 +10234,48 @@ function setupImportOverlay(log, sendToBackend) {
       setIndeterminate();
     }
   }
+  let activeOperationId = null;
+  function applyOperationProgress(msg) {
+    activeOperationId = msg.operationId;
+    if (hideTimer) {
+      clearTimeout(hideTimer);
+      hideTimer = undefined;
+    }
+    if (msg.phase === "started" || !visible) {
+      visible = true;
+      lastPhase = "";
+      progressOuter.classList.remove("lr-import-progress-error");
+      consentEl.hidden = true;
+      dismissBtn.hidden = true;
+      cancelBtn.hidden = true;
+      pendingCancel = null;
+      overlay.hidden = false;
+    }
+    titleEl.textContent = msg.title;
+    if (msg.phase === "error") {
+      progressOuter.classList.add("lr-import-progress-error");
+      phaseEl.textContent = "Error";
+      messageEl.textContent = msg.error || msg.message || "Operation failed";
+      setFraction(1);
+      dismissBtn.hidden = false;
+      return;
+    }
+    if (msg.phase === "done") {
+      progressOuter.classList.remove("lr-import-progress-error");
+      phaseEl.textContent = "Done";
+      messageEl.textContent = msg.message || "";
+      setFraction(1);
+      scheduleHide();
+      return;
+    }
+    phaseEl.textContent = msg.phase === "started" ? "Starting" : "Working";
+    messageEl.textContent = msg.message || "";
+    if (typeof msg.fraction === "number") {
+      setFraction(msg.fraction);
+    } else {
+      setIndeterminate();
+    }
+  }
   function showConsent(prompt) {
     if (!visible)
       showOverlay(label || "character");
@@ -9889,6 +10354,10 @@ function setupImportOverlay(log, sendToBackend) {
       }
       case "consent_prompt": {
         showConsent(msg);
+        break;
+      }
+      case "operation_progress": {
+        applyOperationProgress(msg);
         break;
       }
       case "rasterize_svgs": {

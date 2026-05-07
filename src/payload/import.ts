@@ -144,7 +144,13 @@ export interface SpindleImportApi {
   }): Promise<{ confirmed: boolean }>;
   images: {
     upload(
-      input: { data: Uint8Array; mime_type?: string; filename?: string },
+      input: {
+        data: Uint8Array;
+        mime_type?: string;
+        filename?: string;
+        owner_character_id?: string;
+        owner_chat_id?: string;
+      },
       userId?: string,
     ): Promise<{ id: string }>;
   };
@@ -457,7 +463,7 @@ export async function importCard(args: ImportCardArgs): Promise<ImportResult> {
       const filename = path.split('/').pop() ?? 'asset.bin';
       try {
         const result = await args.spindle.images.upload(
-          { data, mime_type: guessMimeType(path), filename },
+          { data, mime_type: guessMimeType(path), filename, owner_character_id: characterId },
           args.userId,
         );
         if (typeof result?.id !== 'string' || result.id.length === 0) {

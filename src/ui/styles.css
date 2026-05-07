@@ -1026,6 +1026,87 @@
   line-height: 1.4;
 }
 
+.risu-settings-drawer .rs-cleanup-summary {
+  margin: 8px 0 6px;
+  font-size: 12px;
+  color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.65));
+}
+.risu-settings-drawer .rs-cleanup-list {
+  max-height: 60vh;
+  overflow-y: auto;
+  padding: 4px;
+  background: rgba(0, 0, 0, 0.18);
+  border: 1px solid var(--lumiverse-border, rgba(255, 255, 255, 0.06));
+  border-radius: 4px;
+}
+.risu-settings-drawer .rs-cleanup-list-inner {
+  position: relative;
+}
+.risu-settings-drawer .rs-cleanup-row {
+  display: grid;
+  grid-template-columns: 24px 64px 1fr;
+  gap: 10px;
+  align-items: center;
+  padding: 6px 8px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--lumiverse-border, rgba(255, 255, 255, 0.06));
+  border-radius: 4px;
+  cursor: pointer;
+}
+.risu-settings-drawer .rs-cleanup-row:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+.risu-settings-drawer .rs-cleanup-check {
+  margin: 0;
+}
+.risu-settings-drawer .rs-cleanup-thumb {
+  width: 64px;
+  height: 64px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.risu-settings-drawer .rs-cleanup-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.risu-settings-drawer .rs-cleanup-thumb-placeholder {
+  font-size: 10px;
+  color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.5));
+  text-align: center;
+  padding: 4px;
+  word-break: break-all;
+}
+.risu-settings-drawer .rs-cleanup-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.risu-settings-drawer .rs-cleanup-name {
+  font-size: 12px;
+  color: var(--lumiverse-text, inherit);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.risu-settings-drawer .rs-cleanup-sub,
+.risu-settings-drawer .rs-cleanup-id {
+  font-size: 11px;
+  color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.55));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.risu-settings-drawer .rs-cleanup-id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
 /* ─── Aux-model debug capture panel (floating) ─────────────────────── */
 /* A bottom-right floating panel listing recent aux-model calls.
    Hidden when no captures and the user hasn't pinned it open. Each
@@ -2214,7 +2295,8 @@
 }
 .lr-viewer-drawer .lrv-asset-media {
   width: 100%;
-  height: 96px;
+  flex: 1 1 auto;
+  min-height: 0;
   object-fit: cover;
   background: rgba(255, 255, 255, 0.04);
   border-radius: 3px;

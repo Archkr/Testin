@@ -33,6 +33,21 @@ export interface ImportProgress {
   readonly fraction: number | null;
 }
 
+/** A Lumiverse image we own that no live character or module references.
+ *  Cleanup tab shows these for opt-in deletion. */
+export interface OrphanAssetEntry {
+  readonly id: string;
+  readonly filename: string;
+  readonly mime: string;
+  readonly width: number | null;
+  readonly height: number | null;
+  /** Authenticated relative URL for thumbnail rendering. */
+  readonly url: string;
+  /** Tagged at upload time when known (post 0.4.x). `null` for pre-tag uploads. */
+  readonly ownerCharacterId: string | null;
+  readonly createdAt: number;
+}
+
 export interface PendingRegexScriptMsg {
   readonly name: string;
   readonly script_id: string;
@@ -317,6 +332,8 @@ export type FrontendToBackend =
       /** markerN (string-keyed for JSON portability) → Lumi image_id (or null on failure). */
       imageIdByMarker: Readonly<Record<string, string | null>>;
     }
+  | { type: 'request_orphan_scan' }
+  | { type: 'delete_orphan_assets'; imageIds: readonly string[] }
   | { type: 'log_request_state' }
   | {
       type: 'log_set_state';
@@ -578,6 +595,55 @@ export type BackendToFrontend =
         readonly width: number;
         readonly height: number;
       }[];
+    }
+  | { type: 'open_settings_cleanup' }
+  | {
+      /** Loading-bar overlay for non-import operations (deletes, cleanup).
+       *  Same UI shape as `import_progress`, just a different lifecycle. */
+      type: 'operation_progress';
+      operationId: string;
+      phase: 'started' | 'progress' | 'done' | 'error';
+      title: string;
+      message: string;
+      /** 0..1 fraction or null for indeterminate. */
+      fraction: number | null;
+      error?: string;
+    }
+  | { type: 'orphan_scan_started' }
+  | {
+      type: 'orphan_scan_result';
+      /** First N orphans (newest first) when total exceeds the per-frame cap.
+       *  Full count is `summary.totalOrphans`. */
+      orphans: readonly OrphanAssetEntry[];
+      summary: {
+        readonly scannedTotal: number;
+        readonly liveCharacterRefs: number;
+        readonly liveModuleRefs: number;
+        readonly liveJournalRefs: number;
+        readonly charactersScanned: number;
+        readonly modulesScanned: number;
+        readonly elapsedMs: number;
+        /** Total orphan count (may exceed `orphans.length` when truncated). */
+        readonly totalOrphans: number;
+        /** True when `orphans.length < totalOrphans`. UI should advise the
+         *  user to delete the shown batch then re-scan to see the rest. */
+        readonly truncated: boolean;
+      };
+      error?: string;
+    }
+  | {
+      type: 'orphan_delete_result';
+      requested: number;
+      deleted: number;
+      absent: number;
+      failed: number;
+      /** IDs that became live (referenced by a live character/module/journal)
+       *  between scan and delete. Skipped to protect mid-import uploads. */
+      skipped: number;
+      /** Subset of `requested` that the BE skipped, so the FE keeps these in
+       *  the orphan list. Empty when `skipped === 0`. */
+      skippedIds: readonly string[];
+      error?: string;
     }
   | {
       type: 'log_state_pushed';

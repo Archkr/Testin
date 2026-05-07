@@ -1,9 +1,11 @@
 import type {
   BackendToFrontend,
   FrontendToBackend,
+  OrphanAssetEntry,
 } from '../types/messages.js';
 import type { FrontendLog } from './drawer.js';
 import { mountLogsPanel } from './logs-tab.js';
+import { createVirtualGrid, type VirtualGridHandle } from './virtual-grid.js';
 
 // Settings UI for aux/submodel LLM connections.
 // Every change is sent as update_settings; state is reflected back via settings_pushed.
@@ -127,12 +129,13 @@ export function mountSettingsPanel(
   status.className = 'rs-status';
   root.appendChild(status);
 
-  // Subtab nav (Auxiliary / Sub / Debug).
-  type SettingsSubTabId = 'aux' | 'sub' | 'debug';
+  // Subtab nav (Auxiliary / Sub / Debug / Cleanup).
+  type SettingsSubTabId = 'aux' | 'sub' | 'debug' | 'cleanup';
   const SUB_TABS: ReadonlyArray<{ id: SettingsSubTabId; label: string; title: string }> = [
-    { id: 'aux',   label: 'Auxiliary', title: "Aux model — used by Lua's axLLMMain / axLLM calls." },
-    { id: 'sub',   label: 'Sub',       title: "Submodel — used by V2 runLLM(model='submodel'). Falls back to Aux when empty." },
-    { id: 'debug', label: 'Debug',     title: 'Capture toggles, parity toggles, and diagnostic logs.' },
+    { id: 'aux',     label: 'Auxiliary', title: "Aux model, used by Lua's axLLMMain / axLLM calls." },
+    { id: 'sub',     label: 'Sub',       title: "Submodel, used by V2 runLLM(model='submodel'). Falls back to Aux when empty." },
+    { id: 'debug',   label: 'Debug',     title: 'Capture toggles, parity toggles, and diagnostic logs.' },
+    { id: 'cleanup', label: 'Cleanup',   title: 'Find and delete orphaned image assets that no live character or module references.' },
   ];
   const subnav = document.createElement('div');
   subnav.className = 'lr-subtabs';
@@ -391,12 +394,203 @@ export function mountSettingsPanel(
   debugBody.appendChild(logsHost);
   const logsHandle = mountLogsPanel({ root: logsMount, sendToBackend, log });
 
+  // ---------- Cleanup subtab body ------------------------------------------
+  const cleanupBody = document.createElement('section');
+  cleanupBody.className = 'lr-settings-tab-body';
+
+  const cleanupIntro = document.createElement('p');
+  cleanupIntro.className = 'lr-settings-intro';
+  cleanupIntro.textContent =
+    'Find image assets owned by LumiRealm that no live character or module references. Orphans typically come from deleting a card while the extension was off, or from interrupted imports.';
+  cleanupBody.appendChild(cleanupIntro);
+
+  const cleanupActions = document.createElement('div');
+  cleanupActions.className = 'rs-row rs-row-buttons';
+  const scanBtn = document.createElement('button');
+  scanBtn.type = 'button';
+  scanBtn.className = 'lrm-btn lrm-btn-primary';
+  scanBtn.textContent = 'Scan for orphans';
+  scanBtn.title = 'Cross-checks every image we own against live characters, modules, and active journals.';
+  cleanupActions.appendChild(scanBtn);
+  const deleteBtn = document.createElement('button');
+  deleteBtn.type = 'button';
+  deleteBtn.className = 'lrm-btn lrm-btn-danger';
+  deleteBtn.textContent = 'Delete selected (0)';
+  deleteBtn.disabled = true;
+  cleanupActions.appendChild(deleteBtn);
+  const selectAllBtn = document.createElement('button');
+  selectAllBtn.type = 'button';
+  selectAllBtn.className = 'lrm-btn';
+  selectAllBtn.textContent = 'Select all';
+  selectAllBtn.disabled = true;
+  cleanupActions.appendChild(selectAllBtn);
+  const selectNoneBtn = document.createElement('button');
+  selectNoneBtn.type = 'button';
+  selectNoneBtn.className = 'lrm-btn';
+  selectNoneBtn.textContent = 'Select none';
+  selectNoneBtn.disabled = true;
+  cleanupActions.appendChild(selectNoneBtn);
+  cleanupBody.appendChild(cleanupActions);
+
+  const cleanupSummary = document.createElement('div');
+  cleanupSummary.className = 'rs-cleanup-summary';
+  cleanupSummary.textContent = 'No scan run yet.';
+  cleanupBody.appendChild(cleanupSummary);
+
+  let cleanupOrphans: readonly OrphanAssetEntry[] = [];
+  const cleanupSelected = new Set<string>();
+  let cleanupScanning = false;
+  let cleanupDeleting = false;
+
+  const CLEANUP_ROW_H = 80;
+  let cleanupGrid: VirtualGridHandle | null = null;
+
+  function refreshCleanupActionState(): void {
+    const sel = cleanupSelected.size;
+    deleteBtn.textContent = `Delete selected (${sel})`;
+    deleteBtn.disabled = sel === 0 || cleanupDeleting || cleanupScanning;
+    selectAllBtn.disabled = cleanupOrphans.length === 0 || cleanupScanning || cleanupDeleting;
+    selectNoneBtn.disabled = sel === 0 || cleanupScanning || cleanupDeleting;
+    scanBtn.disabled = cleanupScanning || cleanupDeleting;
+    scanBtn.textContent = cleanupScanning ? 'Scanning…' : 'Scan for orphans';
+  }
+
+  function renderCleanupRow(o: OrphanAssetEntry): HTMLElement {
+    const row = document.createElement('label');
+    row.className = 'rs-cleanup-row';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.className = 'rs-cleanup-check';
+    cb.checked = cleanupSelected.has(o.id);
+    cb.addEventListener('change', () => {
+      if (cb.checked) cleanupSelected.add(o.id);
+      else cleanupSelected.delete(o.id);
+      refreshCleanupActionState();
+    });
+    row.appendChild(cb);
+
+    const thumb = document.createElement('div');
+    thumb.className = 'rs-cleanup-thumb';
+    if (o.url && (o.mime.startsWith('image/') || o.mime === '')) {
+      const img = document.createElement('img');
+      img.src = o.url;
+      img.alt = o.filename || o.id;
+      img.loading = 'lazy';
+      thumb.appendChild(img);
+    } else {
+      const ph = document.createElement('span');
+      ph.className = 'rs-cleanup-thumb-placeholder';
+      ph.textContent = o.mime || '?';
+      thumb.appendChild(ph);
+    }
+    row.appendChild(thumb);
+
+    const meta = document.createElement('div');
+    meta.className = 'rs-cleanup-meta';
+    const name = document.createElement('div');
+    name.className = 'rs-cleanup-name';
+    name.textContent = o.filename || '(no filename)';
+    name.title = o.filename;
+    meta.appendChild(name);
+    const sub = document.createElement('div');
+    sub.className = 'rs-cleanup-sub';
+    const subParts: string[] = [];
+    if (o.mime) subParts.push(o.mime);
+    if (typeof o.width === 'number' && typeof o.height === 'number') {
+      subParts.push(`${o.width}x${o.height}`);
+    }
+    if (o.createdAt > 0) {
+      const ts = new Date(o.createdAt);
+      subParts.push(ts.toLocaleString());
+    }
+    sub.textContent = subParts.join(' · ');
+    meta.appendChild(sub);
+    const idLine = document.createElement('div');
+    idLine.className = 'rs-cleanup-id';
+    const ownerHint = o.ownerCharacterId
+      ? `was tagged for character ${o.ownerCharacterId.slice(0, 8)}…`
+      : 'no owner tag';
+    idLine.textContent = `${o.id.slice(0, 8)}… · ${ownerHint}`;
+    idLine.title = `${o.id}${o.ownerCharacterId ? `\nowner: ${o.ownerCharacterId}` : ''}`;
+    meta.appendChild(idLine);
+    row.appendChild(meta);
+
+    return row;
+  }
+
+  function ensureCleanupGrid(): VirtualGridHandle {
+    if (cleanupGrid) return cleanupGrid;
+    cleanupGrid = createVirtualGrid<OrphanAssetEntry>({
+      hostClassName: 'rs-cleanup-list',
+      innerClassName: 'rs-cleanup-list-inner',
+      rowHeight: CLEANUP_ROW_H,
+      overscanRows: 3,
+      getItems: () => cleanupOrphans,
+      renderItem: renderCleanupRow,
+    });
+    cleanupBody.appendChild(cleanupGrid.host);
+    return cleanupGrid;
+  }
+
+  function renderCleanupList(): void {
+    const grid = ensureCleanupGrid();
+    grid.refresh();
+  }
+
+  function renderCleanupSummary(extra?: string): void {
+    if (cleanupOrphans.length === 0) {
+      cleanupSummary.textContent = extra ?? 'No orphans found.';
+      return;
+    }
+    const head = `${cleanupOrphans.length} orphan${cleanupOrphans.length === 1 ? '' : 's'} found.`;
+    cleanupSummary.textContent = extra ? `${head} ${extra}` : head;
+  }
+
+  scanBtn.addEventListener('click', () => {
+    if (cleanupScanning) return;
+    log.info('settings-tab: orphan scan requested');
+    cleanupScanning = true;
+    cleanupOrphans = [];
+    cleanupSelected.clear();
+    cleanupSummary.textContent = 'Scanning…';
+    if (cleanupGrid) cleanupGrid.invalidate();
+    refreshCleanupActionState();
+    sendToBackend({ type: 'request_orphan_scan' });
+  });
+
+  selectAllBtn.addEventListener('click', () => {
+    for (const o of cleanupOrphans) cleanupSelected.add(o.id);
+    renderCleanupList();
+    refreshCleanupActionState();
+  });
+  selectNoneBtn.addEventListener('click', () => {
+    cleanupSelected.clear();
+    renderCleanupList();
+    refreshCleanupActionState();
+  });
+  deleteBtn.addEventListener('click', () => {
+    if (cleanupSelected.size === 0 || cleanupDeleting) return;
+    const count = cleanupSelected.size;
+    if (!confirm(
+      `Delete ${count} orphan asset${count === 1 ? '' : 's'}? This cannot be undone.`,
+    )) return;
+    log.info(`settings-tab: orphan delete count=${count}`);
+    cleanupDeleting = true;
+    cleanupSummary.textContent = `Deleting ${count} asset${count === 1 ? '' : 's'}…`;
+    refreshCleanupActionState();
+    sendToBackend({
+      type: 'delete_orphan_assets',
+      imageIds: Array.from(cleanupSelected),
+    });
+  });
+
   // ---------- Subtab activation -------------------------------------------
   const panelsHost = document.createElement('div');
   panelsHost.className = 'lr-subtab-panels';
   panelsHost.appendChild(auxBody);
   panelsHost.appendChild(subBody);
   panelsHost.appendChild(debugBody);
+  panelsHost.appendChild(cleanupBody);
   root.appendChild(panelsHost);
 
   function activateSubTab(id: SettingsSubTabId): void {
@@ -409,6 +603,7 @@ export function mountSettingsPanel(
     auxBody.hidden = id !== 'aux';
     subBody.hidden = id !== 'sub';
     debugBody.hidden = id !== 'debug';
+    cleanupBody.hidden = id !== 'cleanup';
   }
   activateSubTab(activeSubTab);
 
@@ -852,6 +1047,89 @@ export function mountSettingsPanel(
       render();
       return;
     }
+    if (msg.type === 'open_settings_cleanup') {
+      activateSubTab('cleanup');
+      if (!cleanupScanning && !cleanupDeleting) {
+        log.info('settings-tab: open_settings_cleanup, auto-firing scan');
+        cleanupScanning = true;
+        cleanupOrphans = [];
+        cleanupSelected.clear();
+        cleanupSummary.textContent = 'Scanning…';
+        if (cleanupGrid) cleanupGrid.invalidate();
+        refreshCleanupActionState();
+        sendToBackend({ type: 'request_orphan_scan' });
+      }
+      return;
+    }
+    if (msg.type === 'orphan_scan_started') {
+      cleanupScanning = true;
+      refreshCleanupActionState();
+      return;
+    }
+    if (msg.type === 'orphan_scan_result') {
+      cleanupScanning = false;
+      cleanupOrphans = msg.orphans;
+      cleanupSelected.clear();
+      if (msg.error) {
+        cleanupSummary.textContent = `Scan failed: ${msg.error}`;
+      } else {
+        const s = msg.summary;
+        const liveTotal = s.liveCharacterRefs + s.liveModuleRefs + s.liveJournalRefs;
+        const tail =
+          `Scanned ${s.scannedTotal} owned image${s.scannedTotal === 1 ? '' : 's'} ` +
+          `against ${liveTotal} live ref${liveTotal === 1 ? '' : 's'} ` +
+          `(${s.charactersScanned} char${s.charactersScanned === 1 ? '' : 's'}, ` +
+          `${s.modulesScanned} module${s.modulesScanned === 1 ? '' : 's'}) ` +
+          `in ${s.elapsedMs}ms.`;
+        const trunc = s.truncated
+          ? ` Showing the newest ${msg.orphans.length} of ${s.totalOrphans}, delete this batch and re-scan to see the rest.`
+          : '';
+        renderCleanupSummary(tail + trunc);
+      }
+      renderCleanupList();
+      refreshCleanupActionState();
+      log.info(
+        `settings-tab: orphan_scan_result orphans=${msg.orphans.length} ` +
+          `total=${msg.summary.totalOrphans} truncated=${msg.summary.truncated} ` +
+          `error=${msg.error ?? '<none>'}`,
+      );
+      return;
+    }
+    if (msg.type === 'orphan_delete_result') {
+      cleanupDeleting = false;
+      let removedCount = 0;
+      if (!msg.error) {
+        const skippedSet = new Set(msg.skippedIds);
+        const remaining: OrphanAssetEntry[] = [];
+        for (const o of cleanupOrphans) {
+          if (cleanupSelected.has(o.id) && !skippedSet.has(o.id)) {
+            removedCount++;
+            continue;
+          }
+          remaining.push(o);
+        }
+        cleanupOrphans = remaining;
+      }
+      cleanupSelected.clear();
+      const parts: string[] = [];
+      parts.push(`Requested ${msg.requested}`);
+      parts.push(`deleted ${msg.deleted}`);
+      if (msg.absent > 0) parts.push(`absent ${msg.absent}`);
+      if (msg.failed > 0) parts.push(`failed ${msg.failed}`);
+      if (msg.skipped > 0) parts.push(`skipped ${msg.skipped} (became live)`);
+      if (msg.error) {
+        cleanupSummary.textContent = `Delete failed: ${msg.error} (${parts.join(', ')}).`;
+      } else {
+        renderCleanupSummary(`${parts.join(', ')}.`);
+      }
+      renderCleanupList();
+      refreshCleanupActionState();
+      log.info(
+        `settings-tab: orphan_delete_result removed=${removedCount} ` +
+          `failed=${msg.failed} skipped=${msg.skipped} error=${msg.error ?? '<none>'}`,
+      );
+      return;
+    }
     // Forward to the inline logs panel (Debug subtab).
     try { logsHandle.handleBackendMessage(msg); } catch (err) { log.warn('settings-tab: logs panel handler threw:', err); }
   }
@@ -864,6 +1142,7 @@ export function mountSettingsPanel(
     destroy(): void {
       log.info('settings-panel: destroy');
       try { logsHandle.destroy(); } catch { /* */ }
+      try { cleanupGrid?.destroy(); } catch { /* */ }
       try { root.replaceChildren(); } catch { /* */ }
     },
   };

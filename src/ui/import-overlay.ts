@@ -199,6 +199,53 @@ export function setupImportOverlay(
     }
   }
 
+  // Generic operation driver for non-import flows (deletes, cleanup). Reuses
+  // the same modal so the user gets identical visual feedback.
+  let activeOperationId: string | null = null;
+  function applyOperationProgress(
+    msg: Extract<BackendToFrontend, { type: 'operation_progress' }>,
+  ): void {
+    activeOperationId = msg.operationId;
+    if (hideTimer) {
+      clearTimeout(hideTimer);
+      hideTimer = undefined;
+    }
+    if (msg.phase === 'started' || !visible) {
+      visible = true;
+      lastPhase = '';
+      progressOuter.classList.remove('lr-import-progress-error');
+      consentEl.hidden = true;
+      dismissBtn.hidden = true;
+      cancelBtn.hidden = true;
+      pendingCancel = null;
+      overlay.hidden = false;
+    }
+    titleEl.textContent = msg.title;
+    if (msg.phase === 'error') {
+      progressOuter.classList.add('lr-import-progress-error');
+      phaseEl.textContent = 'Error';
+      messageEl.textContent = msg.error || msg.message || 'Operation failed';
+      setFraction(1);
+      dismissBtn.hidden = false;
+      return;
+    }
+    if (msg.phase === 'done') {
+      progressOuter.classList.remove('lr-import-progress-error');
+      phaseEl.textContent = 'Done';
+      messageEl.textContent = msg.message || '';
+      setFraction(1);
+      scheduleHide();
+      return;
+    }
+    phaseEl.textContent = msg.phase === 'started' ? 'Starting' : 'Working';
+    messageEl.textContent = msg.message || '';
+    if (typeof msg.fraction === 'number') {
+      setFraction(msg.fraction);
+    } else {
+      setIndeterminate();
+    }
+  }
+
   function showConsent(prompt: Extract<BackendToFrontend, { type: 'consent_prompt' }>): void {
     if (!visible) showOverlay(label || 'character');
     pendingConsentRequestId = prompt.requestId;
@@ -282,6 +329,10 @@ export function setupImportOverlay(
       }
       case 'consent_prompt': {
         showConsent(msg);
+        break;
+      }
+      case 'operation_progress': {
+        applyOperationProgress(msg);
         break;
       }
       case 'rasterize_svgs': {
