@@ -21337,6 +21337,12 @@ function unprefixHtmlClasses(html) {
     return html;
   return html.replace(/\bclass\s*=\s*(["'])([\s\S]*?)\1/g, (_match, quote, value) => `class=${quote}${unprefixHtmlClassValue(value)}${quote}`);
 }
+var HTML_ENTITY_NORMALIZE_RE = /&(nbsp|amp|lt|gt|quot|apos|copy|reg|trade)(?![\w;])/g;
+function normalizeIncompleteHtmlEntities(text) {
+  if (!text || text.length === 0)
+    return text;
+  return text.replace(HTML_ENTITY_NORMALIZE_RE, "&$1;");
+}
 var NESTING_AT_RULES = new Set([
   "media",
   "supports",
@@ -21470,6 +21476,7 @@ function mapRegex(scripts, opts) {
     baseReplace = normalizeReplaceStringForSanitizer(baseReplace);
     if (effectivePhase.target === "display" && baseReplace.length > 0) {
       baseReplace = unprefixHtmlClasses(baseReplace);
+      baseReplace = normalizeIncompleteHtmlEntities(baseReplace);
     }
     const baseHasMacros = baseReplace.indexOf("{{") >= 0 || findHasCbs;
     const hasCaptureRefs = /\$(?:\d+|&|`|'|<[^>]+>)/.test(baseReplace);
@@ -30585,6 +30592,7 @@ function projectModuleRegexEntries(moduleId, moduleName, characterId, raw, idGen
     const { placement, target, disabled } = riskCustomScriptTypeToLumi(ruleType);
     if (target === "display" && replaceString2.length > 0) {
       replaceString2 = unprefixHtmlClasses(replaceString2);
+      replaceString2 = normalizeIncompleteHtmlEntities(replaceString2);
     }
     let flags = typeof eo["flag"] === "string" ? eo["flag"] : "";
     flags = flags.replace(/[^dgimsuvy]/g, "");

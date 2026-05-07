@@ -54,6 +54,15 @@ export function unprefixHtmlClasses(html: string): string {
   );
 }
 
+// Risu's DOMPurify normalizes incomplete entities like `&nbsp` (no semi).
+// Lumi's marked-first pipeline rejects them and escapes the `&`.
+const HTML_ENTITY_NORMALIZE_RE = /&(nbsp|amp|lt|gt|quot|apos|copy|reg|trade)(?![\w;])/g;
+
+export function normalizeIncompleteHtmlEntities(text: string): string {
+  if (!text || text.length === 0) return text;
+  return text.replace(HTML_ENTITY_NORMALIZE_RE, "&$1;");
+}
+
 export interface CssRewriteOpts {
   /** Ancestor scope prepended to every rewritten selector (Risu uses `.chattext `). */
   readonly scopePrefix?: string;

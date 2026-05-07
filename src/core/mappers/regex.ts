@@ -11,7 +11,7 @@ import { wrapIslandMergeIfNeeded, wrapForIslandTriggerIfNeeded } from "./island-
 import { newUuid, nowMs } from "./util.js";
 import { normalizeReplaceStringForSanitizer } from "../../util/sanitizer-doc-shape.js";
 import { applyIframePolicy } from "./iframe-policy.js";
-import { unprefixHtmlClasses } from "../../bghtml/rewriter.js";
+import { unprefixHtmlClasses, normalizeIncompleteHtmlEntities } from "../../bghtml/rewriter.js";
 
 
 // Risu scripts.ts+
@@ -188,6 +188,7 @@ export function mapRegex(
     baseReplace = normalizeReplaceStringForSanitizer(baseReplace);
     if (effectivePhase.target === "display" && baseReplace.length > 0) {
       baseReplace = unprefixHtmlClasses(baseReplace);
+      baseReplace = normalizeIncompleteHtmlEntities(baseReplace);
     }
 
     const baseHasMacros = baseReplace.indexOf("{{") >= 0 || findHasCbs;
