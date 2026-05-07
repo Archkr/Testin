@@ -33,6 +33,27 @@ export function rewriteHtmlClasses(html: string): string {
   );
 }
 
+// Symmetric to unprefixCssClassSelectors, atomic per-attribute. The
+// quote-balanced regex skips fragmented class attrs across rule boundaries,
+// CBS-resolved tokens stay because they don't literal-start with `x-risu-`.
+function unprefixHtmlClassValue(value: string): string {
+  if (!value) return value;
+  const PREFIX = "x-risu-";
+  return value
+    .split(/(\s+)/)
+    .map((seg) => (seg.startsWith(PREFIX) ? seg.slice(PREFIX.length) : seg))
+    .join("");
+}
+
+export function unprefixHtmlClasses(html: string): string {
+  if (!html || html.length === 0) return html;
+  return html.replace(
+    /\bclass\s*=\s*(["'])([\s\S]*?)\1/g,
+    (_match, quote: string, value: string) =>
+      `class=${quote}${unprefixHtmlClassValue(value)}${quote}`,
+  );
+}
+
 export interface CssRewriteOpts {
   /** Ancestor scope prepended to every rewritten selector (Risu uses `.chattext `). */
   readonly scopePrefix?: string;

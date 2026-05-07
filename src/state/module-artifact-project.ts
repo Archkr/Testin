@@ -5,6 +5,7 @@ import type {
   ModuleLorebookEntry,
   PendingRegexScriptMsg,
 } from '../types/messages.js';
+import { unprefixHtmlClasses } from '../bghtml/rewriter.js';
 
 export function projectModuleLorebookEntries(
   moduleId: string,
@@ -79,10 +80,13 @@ export function projectModuleRegexEntries(
     if (!e || typeof e !== 'object') continue;
     const eo = e as Record<string, unknown>;
     const findRegex = typeof eo['in'] === 'string' ? eo['in'] : '';
-    const replaceString = typeof eo['out'] === 'string' ? eo['out'] : '';
+    let replaceString = typeof eo['out'] === 'string' ? eo['out'] : '';
     if (findRegex.length === 0) continue;
     const ruleType = typeof eo['type'] === 'string' ? eo['type'] : 'editdisplay';
     const { placement, target, disabled } = riskCustomScriptTypeToLumi(ruleType);
+    if (target === 'display' && replaceString.length > 0) {
+      replaceString = unprefixHtmlClasses(replaceString);
+    }
     let flags = typeof eo['flag'] === 'string' ? eo['flag'] : '';
     flags = flags.replace(/[^dgimsuvy]/g, '');
     flags = [...new Set(flags.split(''))].join('');
