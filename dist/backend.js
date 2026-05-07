@@ -32588,8 +32588,8 @@ async function maybeFinalizeImport(characterId) {
 }
 var importSessions = new Map;
 var IMPORT_SESSION_TIMEOUT_MS = 300000;
-var MAX_UPLOAD_CHUNKS = 4096;
-var MAX_UPLOAD_BYTES = 268435456;
+var MAX_UPLOAD_CHUNKS = 250000;
+var MAX_UPLOAD_BYTES = 8589934592;
 function validateUploadShape(totalBytes, totalChunks) {
   if (typeof totalBytes !== "number" || !Number.isInteger(totalBytes) || totalBytes < 0 || totalBytes > MAX_UPLOAD_BYTES) {
     return { ok: false, reason: `totalBytes out of range (max ${MAX_UPLOAD_BYTES})` };
@@ -35381,7 +35381,7 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
         const shape = validateUploadShape(msg.totalBytes, msg.totalChunks);
         if (!shape.ok) {
           log7.warn(`import_card_init: rejected sessionId=${msg.sessionId} userId=${userId}: ${shape.reason}`);
-          send({ type: "error", message: `import_card_init: ${shape.reason}` }, userId);
+          send({ type: "error", message: `import_card_init: ${shape.reason}`, sessionId: msg.sessionId }, userId);
           break;
         }
         const existing = importSessions.get(msg.sessionId);
@@ -35726,7 +35726,7 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
         const shape = validateUploadShape(msg.totalBytes, msg.totalChunks);
         if (!shape.ok) {
           log7.warn(`upload_module_init: rejected sessionId=${msg.sessionId} userId=${userId}: ${shape.reason}`);
-          send({ type: "error", message: `upload_module_init: ${shape.reason}` }, userId);
+          send({ type: "error", message: `upload_module_init: ${shape.reason}`, sessionId: msg.sessionId }, userId);
           break;
         }
         const existingMod = moduleUploadSessions.get(msg.sessionId);

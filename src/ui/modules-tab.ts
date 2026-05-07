@@ -694,6 +694,9 @@ export function mountModulesPanel(opts: MountModulesPanelOptions): ModulesPanelH
         }
         break;
       case 'error':
+        if (activeUpload && msg.sessionId === activeUpload.sessionId) {
+          rejectAllPending(activeUpload, new Error(msg.message));
+        }
         if (lastError === null) {
           lastError = msg.message;
           setStatus(lastError, true);

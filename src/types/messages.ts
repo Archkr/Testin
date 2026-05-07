@@ -578,7 +578,7 @@ export type BackendToFrontend =
       /** ms-since-epoch when assembled. */
       ts: number;
     }
-  | { type: 'error'; message: string }
+  | { type: 'error'; message: string; sessionId?: string }
   // Sent at import time when the translated card has non-templated inline SVGs to rasterize.
   // FE canvas-rasterizes each (with theme-color injection for `theme-reactive` ones),
   // POSTs each PNG to `/api/v1/images`, and replies with `register_svg_raster_index`.

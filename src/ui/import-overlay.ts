@@ -343,6 +343,10 @@ export function setupImportOverlay(
         }
         break;
       }
+      case 'error': {
+        if (visible && lastPhase !== 'done') applyProgress('error', msg.message, null);
+        break;
+      }
     }
   }
 

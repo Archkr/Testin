@@ -3531,6 +3531,9 @@ function mountCardsPanel(opts) {
         break;
       case "error":
         log.error(`drawer.error: ${msg.message}`);
+        if (activeUpload && msg.sessionId === activeUpload.sessionId) {
+          rejectAllPending(activeUpload, new Error(msg.message));
+        }
         state.progress = {
           phase: "error",
           message: msg.message,
@@ -6112,6 +6115,9 @@ filename: ${m.filename}`;
         }
         break;
       case "error":
+        if (activeUpload && msg.sessionId === activeUpload.sessionId) {
+          rejectAllPending(activeUpload, new Error(msg.message));
+        }
         if (lastError === null) {
           lastError = msg.message;
           setStatus(lastError, true);
@@ -10419,6 +10425,11 @@ function setupImportOverlay(log, sendToBackend) {
           messageEl.textContent = `Rasterizing ${msg.svgs.length} SVG${msg.svgs.length === 1 ? "" : "s"}…`;
           setIndeterminate();
         }
+        break;
+      }
+      case "error": {
+        if (visible && lastPhase !== "done")
+          applyProgress("error", msg.message, null);
         break;
       }
     }

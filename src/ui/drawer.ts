@@ -733,6 +733,9 @@ export function mountCardsPanel(opts: MountCardsPanelOptions): DrawerHandle {
         break;
       case 'error':
         log.error(`drawer.error: ${msg.message}`);
+        if (activeUpload && msg.sessionId === activeUpload.sessionId) {
+          rejectAllPending(activeUpload, new Error(msg.message));
+        }
         state.progress = {
           phase: 'error',
           message: msg.message,

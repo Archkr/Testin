@@ -1962,9 +1962,9 @@ const importSessions = new Map<string, ImportSession>();
 const IMPORT_SESSION_TIMEOUT_MS = 5 * 60 * 1000; // 5 min
 
 // Bound FE-supplied counts so a malicious init can't OOM the worker via
-// `new Array(totalChunks).fill(null)`. 4096 × 40KB raw covers any real card.
-const MAX_UPLOAD_CHUNKS = 4096;
-const MAX_UPLOAD_BYTES = 256 * 1024 * 1024; // 256 MB
+// `new Array(totalChunks).fill(null)`. 250k slots is ~2MB of Array storage.
+const MAX_UPLOAD_CHUNKS = 250_000;
+const MAX_UPLOAD_BYTES = 8 * 1024 * 1024 * 1024; // 8 GB
 
 function validateUploadShape(
   totalBytes: unknown,
@@ -5685,10 +5685,17 @@ const realmHandle: RealmBackendHandle = setupRealmBackend({
     importCardFromBytes(bytesB64, fileName, userId),
 });
 
+const HIGH_VOLUME_FRONTEND_MSG_TYPES: ReadonlySet<string> = new Set([
+  'import_card_chunk',
+  'upload_module_chunk',
+]);
+
 spindle.onFrontendMessage(userScoped(async (raw, userId) => {
   captureUserId(userId, 'frontend-message');
   const msg = raw as FrontendToBackend;
-  log.trace(`frontend msg type=${msg.type} userId=${userId ?? '<none>'}`);
+  if (!HIGH_VOLUME_FRONTEND_MSG_TYPES.has(msg.type)) {
+    log.trace(`frontend msg type=${msg.type} userId=${userId ?? '<none>'}`);
+  }
   // Operator-scoped extension contract: every FE WS arrives with a real userId
   // from BetterAuth. An undefined userId means the message bypassed auth and
   // any reply we send would broadcast to all connected users.
@@ -5752,7 +5759,7 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
         const shape = validateUploadShape(msg.totalBytes, msg.totalChunks);
         if (!shape.ok) {
           log.warn(`import_card_init: rejected sessionId=${msg.sessionId} userId=${userId}: ${shape.reason}`);
-          send({ type: 'error', message: `import_card_init: ${shape.reason}` }, userId);
+          send({ type: 'error', message: `import_card_init: ${shape.reason}`, sessionId: msg.sessionId }, userId);
           break;
         }
         const existing = importSessions.get(msg.sessionId);
@@ -6101,7 +6108,7 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
         const shape = validateUploadShape(msg.totalBytes, msg.totalChunks);
         if (!shape.ok) {
           log.warn(`upload_module_init: rejected sessionId=${msg.sessionId} userId=${userId}: ${shape.reason}`);
-          send({ type: 'error', message: `upload_module_init: ${shape.reason}` }, userId);
+          send({ type: 'error', message: `upload_module_init: ${shape.reason}`, sessionId: msg.sessionId }, userId);
           break;
         }
         const existingMod = moduleUploadSessions.get(msg.sessionId);
