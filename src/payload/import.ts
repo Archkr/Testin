@@ -153,6 +153,16 @@ export interface SpindleImportApi {
       },
       userId?: string,
     ): Promise<{ id: string }>;
+    uploadMany?(
+      items: ReadonlyArray<{
+        data: Uint8Array;
+        mime_type?: string;
+        filename?: string;
+        owner_character_id?: string;
+        owner_chat_id?: string;
+      }>,
+      options?: { userId?: string; concurrency?: number },
+    ): Promise<Array<{ id?: string; error?: string }>>;
   };
 }
 
@@ -441,58 +451,113 @@ export async function importCard(args: ImportCardArgs): Promise<ImportResult> {
   const totalAssetCount = assetEntries.length;
   let totalAssetBytes = 0;
   for (const [, data] of assetEntries) totalAssetBytes += data.byteLength;
-  logInfo(
-    `(5b) uploading ${totalAssetCount} assets totalBytes=${totalAssetBytes} ` +
-      `concurrency=${uploadConcurrency} via spindle.images.upload`,
-  );
 
-  const progressEvery = Math.max(1, Math.min(25, Math.floor(totalAssetCount / 20) || 1));
   const PROGRESS_BASE = 0.55;
   const PROGRESS_END = 0.9;
   let processed = 0;
   let assetUploadFailures = 0;
-  let nextIndex = 0;
 
-  const uploadWorker = async (): Promise<void> => {
-    while (true) {
-      const i = nextIndex++;
-      if (i >= totalAssetCount) break;
-      const entry = assetEntries[i];
-      if (!entry) break;
-      const [path, data] = entry;
-      const filename = path.split('/').pop() ?? 'asset.bin';
+  const uploadMany = args.spindle.images.uploadMany?.bind(args.spindle.images);
+
+  if (typeof uploadMany === 'function' && totalAssetCount > 0) {
+    logInfo(
+      `(5b) uploading ${totalAssetCount} assets totalBytes=${totalAssetBytes} ` +
+        `via spindle.images.uploadMany (batched)`,
+    );
+    const BATCH_MAX_ITEMS = 64;
+    const BATCH_MAX_BYTES = 16 * 1024 * 1024;
+    let i = 0;
+    while (i < totalAssetCount) {
+      const batchItems: Array<{
+        data: Uint8Array;
+        mime_type: string;
+        filename: string;
+        owner_character_id: string;
+      }> = [];
+      const batchPaths: string[] = [];
+      let batchBytes = 0;
+      while (i < totalAssetCount && batchItems.length < BATCH_MAX_ITEMS) {
+        const entry = assetEntries[i];
+        if (!entry) { i += 1; continue; }
+        const [path, data] = entry;
+        if (batchItems.length > 0 && batchBytes + data.byteLength > BATCH_MAX_BYTES) break;
+        batchItems.push({
+          data,
+          mime_type: guessMimeType(path),
+          filename: path.split('/').pop() ?? 'asset.bin',
+          owner_character_id: characterId,
+        });
+        batchPaths.push(path);
+        batchBytes += data.byteLength;
+        i += 1;
+      }
+      let results: Array<{ id?: string; error?: string }> = [];
       try {
-        const result = await args.spindle.images.upload(
-          { data, mime_type: guessMimeType(path), filename, owner_character_id: characterId },
-          args.userId,
+        results = await uploadMany(
+          batchItems,
+          args.userId !== undefined ? { userId: args.userId } : {},
         );
-        if (typeof result?.id !== 'string' || result.id.length === 0) {
-          throw new Error('upload returned without an image id');
-        }
-        pathToImageId[path] = result.id;
-        imageIds.push(result.id);
-        journalBuffer.push(result.id);
       } catch (err) {
-        assetUploadFailures += 1;
         const msg = err instanceof Error ? err.message : String(err);
-        logWarn(`(5b) upload failed path=${path}: ${msg}`);
+        logWarn(`(5b) uploadMany batch failed (${batchItems.length} items): ${msg}`);
+        results = batchItems.map(() => ({ error: msg }));
       }
-      processed += 1;
-      if (processed % progressEvery === 0 || processed === totalAssetCount) {
-        flushJournal();
-        const frac = totalAssetCount === 0
-          ? PROGRESS_END
-          : PROGRESS_BASE + (PROGRESS_END - PROGRESS_BASE) * (processed / totalAssetCount);
-        progress(
-          'uploading_assets',
-          `Uploading assets (${processed}/${totalAssetCount})…`,
-          frac,
-        );
+      for (let k = 0; k < results.length; k++) {
+        const r = results[k]!;
+        const path = batchPaths[k]!;
+        if (typeof r.id === 'string' && r.id.length > 0) {
+          pathToImageId[path] = r.id;
+          imageIds.push(r.id);
+          journalBuffer.push(r.id);
+        } else {
+          assetUploadFailures += 1;
+          logWarn(`(5b) upload failed path=${path}: ${r.error ?? 'unknown error'}`);
+        }
       }
+      processed += batchItems.length;
+      flushJournal();
+      const frac = PROGRESS_BASE + (PROGRESS_END - PROGRESS_BASE) * (processed / totalAssetCount);
+      progress('uploading_assets', `Uploading assets (${processed}/${totalAssetCount})…`, frac);
     }
-  };
-
-  if (totalAssetCount > 0) {
+  } else if (totalAssetCount > 0) {
+    logInfo(
+      `(5b) uploading ${totalAssetCount} assets totalBytes=${totalAssetBytes} ` +
+        `concurrency=${uploadConcurrency} via spindle.images.upload (single, fallback)`,
+    );
+    const progressEvery = Math.max(1, Math.min(25, Math.floor(totalAssetCount / 20) || 1));
+    let nextIndex = 0;
+    const uploadWorker = async (): Promise<void> => {
+      while (true) {
+        const i = nextIndex++;
+        if (i >= totalAssetCount) break;
+        const entry = assetEntries[i];
+        if (!entry) break;
+        const [path, data] = entry;
+        const filename = path.split('/').pop() ?? 'asset.bin';
+        try {
+          const result = await args.spindle.images.upload(
+            { data, mime_type: guessMimeType(path), filename, owner_character_id: characterId },
+            args.userId,
+          );
+          if (typeof result?.id !== 'string' || result.id.length === 0) {
+            throw new Error('upload returned without an image id');
+          }
+          pathToImageId[path] = result.id;
+          imageIds.push(result.id);
+          journalBuffer.push(result.id);
+        } catch (err) {
+          assetUploadFailures += 1;
+          const msg = err instanceof Error ? err.message : String(err);
+          logWarn(`(5b) upload failed path=${path}: ${msg}`);
+        }
+        processed += 1;
+        if (processed % progressEvery === 0 || processed === totalAssetCount) {
+          flushJournal();
+          const frac = PROGRESS_BASE + (PROGRESS_END - PROGRESS_BASE) * (processed / totalAssetCount);
+          progress('uploading_assets', `Uploading assets (${processed}/${totalAssetCount})…`, frac);
+        }
+      }
+    };
     const workers: Promise<void>[] = [];
     for (let w = 0; w < Math.min(uploadConcurrency, totalAssetCount); w++) {
       workers.push(uploadWorker());

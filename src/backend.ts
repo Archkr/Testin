@@ -2238,6 +2238,12 @@ async function importCardFromBytes(
     images: {
       upload: (input, uid) =>
         spindleImagesApi.upload(input, uid).then((img) => ({ id: img.id })),
+      ...(typeof spindleImagesApi.uploadMany === 'function'
+        ? {
+            uploadMany: (items, options) =>
+              spindleImagesApi.uploadMany(items as never, options),
+          }
+        : {}),
     },
     requestConsent: (opts) => requestConsent(opts, userId),
   };
@@ -4903,18 +4909,12 @@ async function processModuleUpload(
       );
     }
 
-    log.info(
-      `processModuleUpload: uploading ${pending.length} asset(s) via spindle.images.upload ` +
-        `(module=${moduleBody.id})`,
-    );
     const tUpload = Date.now();
     const uploadConcurrency = 6;
     const totalCount = pending.length;
-    const progressEvery = Math.max(1, Math.min(25, Math.floor(totalCount / 20) || 1));
     const PROGRESS_BASE = 0.35;
     const PROGRESS_END = 0.92;
     let processed = 0;
-    let nextIndex = 0;
     const moduleNameForProgress = typeof moduleBody.name === 'string' && moduleBody.name.length > 0
       ? moduleBody.name
       : moduleBody.id;
@@ -4932,49 +4932,108 @@ async function processModuleUpload(
         }
       });
     };
-    const uploadWorker = async (): Promise<void> => {
-      while (true) {
-        const i = nextIndex++;
-        if (i >= pending.length) break;
-        const meta = pending[i];
-        const bytes = decoded.assets[i];
-        if (!meta || !bytes) continue;
-        const fileName = meta.path;
-        try {
-          const result = await spindleImagesApi.upload(
-            { data: bytes, mime_type: meta.mimeType, filename: fileName },
-            userId,
-          );
-          if (typeof result?.id !== 'string' || result.id.length === 0) {
-            throw new Error('upload returned without an image id');
-          }
-          const lastDot = fileName.lastIndexOf('.');
-          const ext = lastDot > 0 ? fileName.slice(lastDot + 1).toLowerCase() : undefined;
-          moduleAssetIndex[fileName] = ext !== undefined
-            ? { imageId: result.id, ext }
-            : { imageId: result.id };
-          journalBuffer.push(result.id);
-        } catch (err) {
-          assetUploadFailures += 1;
-          const errMessage = err instanceof Error ? err.message : String(err);
-          log.warn(`processModuleUpload: upload failed name=${fileName}: ${errMessage}`);
-        }
-        processed += 1;
-        if (processed % progressEvery === 0 || processed === totalCount) {
-          flushModuleJournal();
-          const frac = totalCount === 0
-            ? PROGRESS_END
-            : PROGRESS_BASE + (PROGRESS_END - PROGRESS_BASE) * (processed / totalCount);
-          send({
-            type: 'import_progress',
-            phase: 'uploading_assets',
-            message: `Uploading module assets for ${moduleNameForProgress} (${processed}/${totalCount})…`,
-            fraction: frac,
-          }, userId);
-        }
-      }
+    const recordUploaded = (fileName: string, imageId: string): void => {
+      const lastDot = fileName.lastIndexOf('.');
+      const ext = lastDot > 0 ? fileName.slice(lastDot + 1).toLowerCase() : undefined;
+      moduleAssetIndex[fileName] = ext !== undefined
+        ? { imageId, ext }
+        : { imageId };
+      journalBuffer.push(imageId);
     };
-    if (pending.length > 0) {
+    const emitProgress = (): void => {
+      const frac = totalCount === 0
+        ? PROGRESS_END
+        : PROGRESS_BASE + (PROGRESS_END - PROGRESS_BASE) * (processed / totalCount);
+      send({
+        type: 'import_progress',
+        phase: 'uploading_assets',
+        message: `Uploading module assets for ${moduleNameForProgress} (${processed}/${totalCount})…`,
+        fraction: frac,
+      }, userId);
+    };
+
+    const uploadMany = spindleImagesApi.uploadMany?.bind(spindleImagesApi);
+
+    if (typeof uploadMany === 'function' && totalCount > 0) {
+      log.info(
+        `processModuleUpload: uploading ${totalCount} asset(s) via spindle.images.uploadMany ` +
+          `(module=${moduleBody.id}, batched)`,
+      );
+      const BATCH_MAX_ITEMS = 64;
+      const BATCH_MAX_BYTES = 16 * 1024 * 1024;
+      let i = 0;
+      while (i < pending.length) {
+        const batchItems: Array<{ data: Uint8Array; mime_type: string; filename: string }> = [];
+        const batchPaths: string[] = [];
+        let batchBytes = 0;
+        while (i < pending.length && batchItems.length < BATCH_MAX_ITEMS) {
+          const meta = pending[i];
+          const bytes = decoded.assets[i];
+          if (!meta || !bytes) { i += 1; continue; }
+          if (batchItems.length > 0 && batchBytes + bytes.byteLength > BATCH_MAX_BYTES) break;
+          batchItems.push({ data: bytes, mime_type: meta.mimeType, filename: meta.path });
+          batchPaths.push(meta.path);
+          batchBytes += bytes.byteLength;
+          i += 1;
+        }
+        let results: Array<{ id?: string; error?: string }> = [];
+        try {
+          results = await uploadMany(batchItems, { userId });
+        } catch (err) {
+          const msg = errMsg(err);
+          log.warn(`processModuleUpload: uploadMany batch failed (${batchItems.length} items): ${msg}`);
+          results = batchItems.map(() => ({ error: msg }));
+        }
+        for (let k = 0; k < results.length; k++) {
+          const r = results[k]!;
+          const path = batchPaths[k]!;
+          if (typeof r.id === 'string' && r.id.length > 0) {
+            recordUploaded(path, r.id);
+          } else {
+            assetUploadFailures += 1;
+            log.warn(`processModuleUpload: upload failed name=${path}: ${r.error ?? 'unknown error'}`);
+          }
+        }
+        processed += batchItems.length;
+        flushModuleJournal();
+        emitProgress();
+      }
+    } else if (totalCount > 0) {
+      log.info(
+        `processModuleUpload: uploading ${totalCount} asset(s) via spindle.images.upload ` +
+          `(module=${moduleBody.id}, single, fallback)`,
+      );
+      const progressEvery = Math.max(1, Math.min(25, Math.floor(totalCount / 20) || 1));
+      let nextIndex = 0;
+      const uploadWorker = async (): Promise<void> => {
+        while (true) {
+          const i = nextIndex++;
+          if (i >= pending.length) break;
+          const meta = pending[i];
+          const bytes = decoded.assets[i];
+          if (!meta || !bytes) continue;
+          const fileName = meta.path;
+          try {
+            const result = await spindleImagesApi.upload(
+              { data: bytes, mime_type: meta.mimeType, filename: fileName },
+              userId,
+            );
+            if (typeof result?.id !== 'string' || result.id.length === 0) {
+              throw new Error('upload returned without an image id');
+            }
+            recordUploaded(fileName, result.id);
+          } catch (err) {
+            assetUploadFailures += 1;
+            const errMessage = err instanceof Error ? err.message : String(err);
+            log.warn(`processModuleUpload: upload failed name=${fileName}: ${errMessage}`);
+          }
+          processed += 1;
+          if (processed % progressEvery === 0 || processed === totalCount) {
+            flushModuleJournal();
+            emitProgress();
+          }
+        }
+      };
       const workers: Promise<void>[] = [];
       for (let w = 0; w < Math.min(uploadConcurrency, pending.length); w++) {
         workers.push(uploadWorker());
