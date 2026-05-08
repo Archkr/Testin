@@ -15,6 +15,7 @@ import { createVirtualGrid } from './virtual-grid.js';
 import { getTranslateEnabled, subscribeTranslateEnabled } from './translate-toggle.js';
 import {
   translateModuleName,
+  translateCharacterName,
   translateLorebookComment,
   setModuleScopeLang,
   setCharacterScopeLang,
@@ -127,16 +128,21 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
     const prev = selectedSourceKey;
     sourceSelect.replaceChildren();
     const options: SourceOption[] = [];
+    const translate = getTranslateEnabled();
     for (const c of cards) {
       const attached = attachedByCharacter.get(c.character_id) ?? [];
       const suffix = attached.length > 0 ? ` (+${attached.length} module${attached.length === 1 ? '' : 's'})` : '';
+      const display = translate && c.translated_character_name ? c.translated_character_name : (c.character_name ?? '(missing)');
       options.push({
         kind: 'character',
         id: c.character_id,
-        label: `[Character] ${c.character_name ?? '(missing)'}${suffix}`,
+        label: `[Character] ${display}${suffix}`,
       });
+      if (translate && !c.translated_character_name && c.character_name) {
+        setCharacterScopeLang(c.character_id, dominantScriptLang([c.character_name]));
+        void translateCharacterName(c.character_id, c.character_name);
+      }
     }
-    const translate = getTranslateEnabled();
     for (const m of modules) {
       const display = translate && m.translatedName ? m.translatedName : m.name;
       options.push({
@@ -189,7 +195,9 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
     // Find the label from current state.
     if (kind === 'character') {
       const c = cards.find((x) => x.character_id === id);
-      return c ? { kind, id, label: c.character_name ?? id } : { kind, id, label: id };
+      if (!c) return { kind, id, label: id };
+      const display = getTranslateEnabled() && c.translated_character_name ? c.translated_character_name : (c.character_name ?? id);
+      return { kind, id, label: display };
     }
     const m = modules.find((x) => x.id === id);
     return m ? { kind, id, label: m.name } : { kind, id, label: id };
@@ -1041,6 +1049,50 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
     return wrap;
   }
 
+  function findGroupModule(g: ViewerLorebookGroup): ModuleSummary | undefined {
+    if (g.moduleId) {
+      const byId = modules.find((x) => x.id === g.moduleId);
+      if (byId) return byId;
+    }
+    if (g.groupId === 'module') return undefined;
+    return modules.find((x) => {
+      if (!x.name) return false;
+      return g.groupName === x.name
+        || g.groupName === `Module: ${x.name}`
+        || g.groupName.includes(x.name);
+    });
+  }
+
+  function pickLoreGroupDisplay(g: ViewerLorebookGroup): string {
+    if (!getTranslateEnabled()) return g.groupName;
+
+    const m = findGroupModule(g);
+    if (m && m.name) {
+      if (m.translatedName && m.translatedName !== m.name) {
+        return g.groupName.includes(m.name)
+          ? g.groupName.replace(m.name, m.translatedName)
+          : m.translatedName;
+      }
+      void translateModuleName(m.id, m.name);
+      return g.translatedGroupName ?? g.groupName;
+    }
+
+    const src = viewerData?.source;
+    if (src && src.kind === 'character') {
+      const c = cards.find((x) => x.character_id === src.characterId);
+      if (c && c.character_name) {
+        if (c.translated_character_name && c.translated_character_name !== c.character_name) {
+          return g.groupName.includes(c.character_name)
+            ? g.groupName.replace(c.character_name, c.translated_character_name)
+            : c.translated_character_name;
+        }
+        void translateCharacterName(c.character_id, c.character_name);
+      }
+    }
+
+    return g.translatedGroupName ?? g.groupName;
+  }
+
   function renderLorebookSection(groups: readonly ViewerLorebookGroup[]): HTMLElement {
     const det = document.createElement('section');
     det.className = 'lrv-section lrv-lb-section';
@@ -1063,7 +1115,10 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
       grpDet.open = true;
       const grpSum = document.createElement('summary');
       grpSum.className = 'lrv-lb-group-summary';
-      grpSum.textContent = `${g.groupName} (${g.entries.length})`;
+      const display = pickLoreGroupDisplay(g);
+      const isTranslated = display !== g.groupName;
+      grpSum.textContent = `${display} (${g.entries.length})`;
+      if (isTranslated) grpSum.title = g.groupName;
       grpDet.appendChild(grpSum);
       renderLorebookEntriesWithFolders(grpDet, risuEntries);
       if (userAdditions.length > 0) {
@@ -1345,6 +1400,10 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
         cards = msg.cards;
         rebuildSourceSelect();
         render();
+        if (selectedSourceKey !== null) {
+          const o = parseSourceKey(selectedSourceKey);
+          if (o?.kind === 'character') requestForSelection(o);
+        }
         break;
       case 'modules_pushed':
         modules = msg.modules;

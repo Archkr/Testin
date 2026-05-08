@@ -51,6 +51,12 @@ export function buildCharacterViewerData(input: {
   /** Per-source-hash translation map from envelope.translations[lang].lorebook
    *  AND any module-attached envelopes' translations[lang].lorebook merged. */
   translatedCommentBySourceHash?: ReadonlyMap<string, string>;
+  /** Pre-composed translated divider per world_book id. Empty/missing entries
+   *  leave the original groupName visible. */
+  translatedGroupNameByWbId?: ReadonlyMap<string, string>;
+  /** wb-id -> attached module envelope id. Populated for groups whose lore
+   *  comes from an attached module (vs the character's own world_book). */
+  moduleIdByWbId?: ReadonlyMap<string, string>;
 }): ViewerData {
   const triggers: ViewerTriggerEntry[] = [];
   const trArr = input.data.payload.triggers;
@@ -150,7 +156,15 @@ export function buildCharacterViewerData(input: {
       return built;
     });
     sortLorebookEntries(entries);
-    lorebook.push({ groupName: wb.name, groupId: wb.id, entries });
+    const tx = input.translatedGroupNameByWbId?.get(wb.id);
+    const moduleId = input.moduleIdByWbId?.get(wb.id);
+    lorebook.push({
+      groupName: wb.name,
+      ...(tx !== undefined ? { translatedGroupName: tx } : {}),
+      groupId: wb.id,
+      ...(moduleId !== undefined ? { moduleId } : {}),
+      entries,
+    });
   }
 
   return {
@@ -301,8 +315,17 @@ export function buildModuleViewerData(input: {
       });
     }
   }
+  const translatedModuleName = env.translations?.[lang]?.name;
   const lorebook: ViewerLorebookGroup[] = lorebookEntries.length > 0
-    ? [{ groupName: moduleName, groupId: 'module', entries: lorebookEntries }]
+    ? [{
+        groupName: moduleName,
+        ...(translatedModuleName !== undefined && translatedModuleName !== moduleName
+          ? { translatedGroupName: translatedModuleName }
+          : {}),
+        groupId: 'module',
+        moduleId: env.id,
+        entries: lorebookEntries,
+      }]
     : [];
 
   // Modules have no stable Lumi-side ids until attach; synthesize per-index ids.

@@ -2149,13 +2149,18 @@ async function listCards(userId: string | undefined): Promise<readonly CardSumma
   const entries = await listLumirealmCharacters(charactersApi(), userId, {
     paginate: true,
   });
-  const summaries: CardSummary[] = entries.map((e) => ({
-    character_id: e.character.id,
-    character_name: e.character.name,
-    translator_version: e.data.translator_version,
-    uses_lua: e.data.payload.requires.lua,
-    stored_at: e.data.imported_at,
-  }));
+  const lang = TRANSLATE_TARGET_LANG;
+  const summaries: CardSummary[] = entries.map((e) => {
+    const tx = e.data.translations?.[lang]?.name;
+    return {
+      character_id: e.character.id,
+      character_name: e.character.name,
+      ...(tx !== undefined ? { translated_character_name: tx } : {}),
+      translator_version: e.data.translator_version,
+      uses_lua: e.data.payload.requires.lua,
+      stored_at: e.data.imported_at,
+    };
+  });
   summaries.sort((a, b) => b.stored_at - a.stored_at);
   log.info(`listCards: done count=${summaries.length} elapsed=${Date.now() - t0}ms`);
   return summaries;
@@ -5221,23 +5226,34 @@ async function persistCharacterTranslation(
   const existing = fetched.data.translations?.[lang] ?? {};
   const existingLore = existing.lorebook ?? {};
   const nextLore: Record<string, { comment?: string }> = { ...existingLore };
-  for (const item of msg.lorebook) {
-    if (!item.sourceHash) continue;
-    const prior = nextLore[item.sourceHash] ?? {};
-    nextLore[item.sourceHash] = {
-      ...prior,
-      ...(item.comment !== undefined ? { comment: item.comment } : {}),
-    };
+  if (msg.lorebook) {
+    for (const item of msg.lorebook) {
+      if (!item.sourceHash) continue;
+      const prior = nextLore[item.sourceHash] ?? {};
+      nextLore[item.sourceHash] = {
+        ...prior,
+        ...(item.comment !== undefined ? { comment: item.comment } : {}),
+      };
+    }
   }
+  const nameChanged = msg.name !== undefined && msg.name !== existing.name;
+  const nextLang = {
+    ...existing,
+    ...(msg.name !== undefined ? { name: msg.name } : {}),
+    ...(Object.keys(nextLore).length > 0 ? { lorebook: nextLore } : {}),
+  };
   const nextData = {
     ...fetched.data,
     translations: {
       ...(fetched.data.translations ?? {}),
-      [lang]: { ...existing, lorebook: nextLore },
+      [lang]: nextLang,
     },
   };
   expectCharacterEdit(msg.characterId);
   await writeLumirealm(charactersApi(), msg.characterId, nextData, userId);
+  if (nameChanged) {
+    pushCards(await listCards(userId), userId);
+  }
 }
 
 async function pushAttachedForCharacter(
@@ -6134,6 +6150,18 @@ async function assembleCharacterViewerData(
     userId,
     TRANSLATE_TARGET_LANG,
   );
+  const translatedGroupNameByWbId = await buildTranslatedGroupNameByWbId(
+    fetched.character.name,
+    fetched.data,
+    worldBooks,
+    userId,
+    TRANSLATE_TARGET_LANG,
+  );
+  const moduleIdByWbId = new Map<string, string>();
+  const wbMap = fetched.data.user_overrides.attached_module_world_books ?? {};
+  for (const [moduleId, wbId] of Object.entries(wbMap)) {
+    if (typeof wbId === 'string') moduleIdByWbId.set(wbId, moduleId);
+  }
   return buildCharacterViewerData({
     characterId,
     characterName: fetched.character.name,
@@ -6141,7 +6169,48 @@ async function assembleCharacterViewerData(
     worldBooks,
     fetchWarnings,
     translatedCommentBySourceHash,
+    translatedGroupNameByWbId,
+    moduleIdByWbId,
   });
+}
+
+async function buildTranslatedGroupNameByWbId(
+  characterName: string,
+  data: import('./payload/types.js').LumirealmCharacterData,
+  worldBooks: readonly FetchedWorldBook[],
+  userId: string,
+  lang: string,
+): Promise<ReadonlyMap<string, string>> {
+  const out = new Map<string, string>();
+  const moduleWbMap = data.user_overrides.attached_module_world_books ?? {};
+  const wbIdToModuleId = new Map<string, string>();
+  for (const [moduleId, wbId] of Object.entries(moduleWbMap)) {
+    if (typeof wbId === 'string') wbIdToModuleId.set(wbId, moduleId);
+  }
+  const txCharName = data.translations?.[lang]?.name;
+  for (const wb of worldBooks) {
+    const moduleId = wbIdToModuleId.get(wb.id);
+    if (moduleId !== undefined) {
+      try {
+        const env = await readModuleEnvelope(moduleStorage(), userId, moduleId);
+        const txMod = env?.translations?.[lang]?.name;
+        const origMod = (env?.module as { name?: unknown } | undefined)?.name;
+        if (txMod !== undefined && typeof origMod === 'string' && origMod.length > 0 && origMod !== txMod) {
+          out.set(wb.id, wb.name.includes(origMod) ? wb.name.replace(origMod, txMod) : txMod);
+        }
+      } catch (err) {
+        log.warn(`buildTranslatedGroupNameByWbId: module=${moduleId} read failed: ${errMsg(err)}`);
+      }
+      continue;
+    }
+    if (txCharName !== undefined && txCharName !== characterName) {
+      out.set(
+        wb.id,
+        wb.name.includes(characterName) ? wb.name.replace(characterName, txCharName) : txCharName,
+      );
+    }
+  }
+  return out;
 }
 
 // Merge character + attached-module translation maps for the active language.

@@ -47,6 +47,10 @@ export async function translateModuleName(moduleId: string, name: string): Promi
   return singleton?.request({ kind: 'module', moduleId }, 'name', name, 'name') ?? name;
 }
 
+export async function translateCharacterName(characterId: string, name: string): Promise<string> {
+  return singleton?.request({ kind: 'character', characterId }, 'name', name, 'name') ?? name;
+}
+
 export async function translateModuleDescription(moduleId: string, desc: string): Promise<string> {
   return singleton?.request({ kind: 'module', moduleId }, 'description', desc, 'description') ?? desc;
 }
@@ -78,6 +82,7 @@ export function setupTranslateOrchestrator(opts: TranslateOrchestratorOpts): Tra
     lorebook: Map<string, string>;
   }>();
   const characterBatches = new Map<string, {
+    name?: { translated: string };
     lorebook: Map<string, string>;
   }>();
   let timer: ReturnType<typeof setTimeout> | null = null;
@@ -120,7 +125,7 @@ export function setupTranslateOrchestrator(opts: TranslateOrchestratorOpts): Tra
     }
     moduleBatches.clear();
     for (const [characterId, batch] of characterBatches.entries()) {
-      if (batch.lorebook.size === 0) continue;
+      if (batch.name === undefined && batch.lorebook.size === 0) continue;
       const lorebook: Array<{ sourceHash: string; comment?: string }> = [];
       for (const [hash, comment] of batch.lorebook.entries()) {
         lorebook.push({ sourceHash: hash, comment });
@@ -129,7 +134,8 @@ export function setupTranslateOrchestrator(opts: TranslateOrchestratorOpts): Tra
         type: 'cache_character_translation',
         characterId,
         lang: 'en',
-        lorebook,
+        ...(batch.name !== undefined ? { name: batch.name.translated } : {}),
+        ...(lorebook.length > 0 ? { lorebook } : {}),
       });
     }
     characterBatches.clear();
@@ -151,7 +157,8 @@ export function setupTranslateOrchestrator(opts: TranslateOrchestratorOpts): Tra
         batch = { lorebook: new Map() };
         characterBatches.set(scope.characterId, batch);
       }
-      batch.lorebook.set(key, translated);
+      if (kind === 'name') batch.name = { translated };
+      else batch.lorebook.set(key, translated);
     }
     scheduleFlush();
   }

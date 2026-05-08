@@ -12,6 +12,8 @@ export interface CardSummary {
   /** `null` when the Lumiverse character row is missing (e.g. deleted before
    *  `CHARACTER_DELETED` was observed). */
   readonly character_name: string | null;
+  /** Browser-translated cache (target language). Display-only. */
+  readonly translated_character_name?: string;
   readonly translator_version: string;
   readonly uses_lua: boolean;
   readonly stored_at: number;
@@ -190,7 +192,8 @@ export type FrontendToBackend =
       type: 'cache_character_translation';
       characterId: string;
       lang: string;
-      lorebook: ReadonlyArray<{ readonly sourceHash: string; readonly comment?: string }>;
+      name?: string;
+      lorebook?: ReadonlyArray<{ readonly sourceHash: string; readonly comment?: string }>;
     }
   | {
       type: 'request_connections_list';
@@ -813,8 +816,15 @@ export interface ViewerDefaultVariable {
 export interface ViewerLorebookGroup {
   /** character: world_book name; module: module name. */
   readonly groupName: string;
+  /** Browser-translated cache (target language) at assemble time.
+   *  FE prefers a fresh lookup against current modules[]/cards[] state. */
+  readonly translatedGroupName?: string;
   /** world_book uuid for characters, literal "module" for modules. */
   readonly groupId: string;
+  /** Set when this group's lore came from a module: the attached-module's
+   *  envelope id (character source) or the source module itself (module source).
+   *  Lets the FE substitute the latest cached translatedName at render time. */
+  readonly moduleId?: string;
   readonly entries: readonly ViewerLorebookEntry[];
 }
 

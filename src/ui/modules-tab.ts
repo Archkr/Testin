@@ -8,7 +8,7 @@ import type {
 import type { FrontendLog } from './drawer.js';
 import { errMsg } from '../util/coerce.js';
 import { getTranslateEnabled, subscribeTranslateEnabled } from './translate-toggle.js';
-import { translateModuleName, translateModuleDescription, setModuleScopeLang } from './translate-orchestrator.js';
+import { translateModuleName, translateModuleDescription, translateCharacterName, setModuleScopeLang, setCharacterScopeLang } from './translate-orchestrator.js';
 import { dominantScriptLang } from './browser-translator.js';
 
 // Mounts into a host element provided by ui/sidebar.ts.
@@ -343,8 +343,20 @@ export function mountModulesPanel(opts: MountModulesPanelOptions): ModulesPanelH
     summary.className = 'lrm-character-summary';
     const summaryName = document.createElement('span');
     summaryName.className = 'lrm-character-name';
-    summaryName.textContent = card.character_name ?? '(character missing)';
+    const original = card.character_name ?? '(character missing)';
+    const useTranslated = getTranslateEnabled() && card.translated_character_name;
+    summaryName.textContent = useTranslated ? card.translated_character_name! : original;
+    if (useTranslated) summaryName.title = original;
     summary.appendChild(summaryName);
+    if (getTranslateEnabled() && !card.translated_character_name && card.character_name) {
+      setCharacterScopeLang(card.character_id, dominantScriptLang([card.character_name]));
+      void translateCharacterName(card.character_id, card.character_name).then((tx) => {
+        if (tx && tx !== card.character_name && summaryName.isConnected) {
+          summaryName.textContent = tx;
+          summaryName.title = card.character_name ?? '';
+        }
+      });
+    }
     const attachedList = attachedByCharacter.get(card.character_id) ?? [];
     const summaryCount = document.createElement('span');
     summaryCount.className = 'lrm-character-count';

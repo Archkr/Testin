@@ -122,7 +122,7 @@ export interface CharacterTranslations {
 }
 
 export interface CharacterLangTranslation {
-  // Lorebook entry translations keyed by extensions._risu_source_hash.
+  readonly name?: string;
   readonly lorebook?: Readonly<Record<string, CharacterEntryTranslation>>;
 }
 
