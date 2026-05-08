@@ -16,6 +16,7 @@ import { setupRealmModal, isRealmBackendMessage } from './realm/frontend.js';
 import { setupAlertModal } from './ui/alert-modal.js';
 import { setupPickModal } from './ui/pick-modal.js';
 import { setupLegacyReimportModal } from './ui/legacy-reimport-modal.js';
+import { setupHostVersionModal } from './ui/host-version-modal.js';
 import { logStore, isLogThreshold, DEFAULT_LOG_LEVEL, type LogThreshold } from './log/store.js';
 import {
   installConsoleCapture,
@@ -351,6 +352,9 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   const legacyReimportModal = setupLegacyReimportModal({ ctx, sendToBackend, log: flog });
   cleanups.push(() => legacyReimportModal.destroy());
 
+  const hostVersionModal = setupHostVersionModal({ ctx, sendToBackend, log: flog });
+  cleanups.push(() => hostVersionModal.destroy());
+
   let realm: ReturnType<typeof setupRealmModal> | null = null;
   try {
     if (!sidebar) throw new Error('realm: sidebar required');
@@ -626,6 +630,10 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     }
     if (msg.type === 'notify_legacy_card_needs_reimport') {
       legacyReimportModal.handleBackendMessage(msg);
+      return;
+    }
+    if (msg.type === 'notify_host_version_outdated') {
+      hostVersionModal.handleBackendMessage(msg);
       return;
     }
     if (isRealmBackendMessage(msg)) {

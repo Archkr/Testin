@@ -31186,6 +31186,54 @@ function computeDepthPromptSeed(characterExtensions, currentMetadata) {
     outcome: "seeded"
   };
 }
+
+// src/util/version-check.ts
+function compareVersions(a, b) {
+  const parse = (v) => {
+    const core = v.split(/[-+]/)[0] ?? v;
+    return core.split(".").map((part) => {
+      const n = parseInt(part, 10);
+      return Number.isFinite(n) ? n : 0;
+    });
+  };
+  const pa = parse(a);
+  const pb = parse(b);
+  const len = Math.max(pa.length, pb.length);
+  for (let i = 0;i < len; i++) {
+    const ai = pa[i] ?? 0;
+    const bi = pb[i] ?? 0;
+    if (ai > bi)
+      return 1;
+    if (ai < bi)
+      return -1;
+  }
+  return 0;
+}
+function checkHostVersion(hostVersion, minimum) {
+  if (!hostVersion) {
+    return {
+      needsUpdate: false,
+      hostVersion: null,
+      minimum,
+      message: `Lumiverse version could not be determined, skipping minimum-version check (required minimum ${minimum})`
+    };
+  }
+  const cmp = compareVersions(hostVersion, minimum);
+  if (cmp >= 0) {
+    return {
+      needsUpdate: false,
+      hostVersion,
+      minimum,
+      message: `Lumiverse ${hostVersion} satisfies LumiRealm's minimum of ${minimum}`
+    };
+  }
+  return {
+    needsUpdate: true,
+    hostVersion,
+    minimum,
+    message: `LumiRealm requires Lumiverse ${minimum} or newer, but this host is running ${hostVersion}. ` + `Some features may fail or behave unexpectedly. Update Lumiverse for the intended experience.`
+  };
+}
 // src/state/modules-store.ts
 var MODULES_DIR = "lumirealm/modules";
 var INDEX_PATH = `${MODULES_DIR}/index.json`;
@@ -31920,6 +31968,7 @@ function extractLuaForTrigger(triggerRaw) {
 
 // src/backend.ts
 var EXTENSION_VERSION = "0.1.0";
+var MINIMUM_LUMIVERSE_VERSION = "0.9.7";
 function logUid() {
   return currentUserId() ?? null;
 }
@@ -31966,6 +32015,26 @@ var log7 = {
   }
 };
 log7.info(`backend boot: version=${EXTENSION_VERSION}`);
+var hostVersionCheck = null;
+(async () => {
+  let backend = null;
+  let frontend = null;
+  try {
+    backend = await spindle.version.getBackend();
+  } catch (err) {
+    log7.warn(`spindle.version.getBackend() failed: ${errMsg(err)}`);
+  }
+  try {
+    frontend = await spindle.version.getFrontend();
+  } catch (err) {
+    log7.warn(`spindle.version.getFrontend() failed: ${errMsg(err)}`);
+  }
+  hostVersionCheck = checkHostVersion(backend, MINIMUM_LUMIVERSE_VERSION);
+  const tag = hostVersionCheck.needsUpdate ? "WARN" : "ok";
+  log7.info(`host-version: lumiverse backend=${backend ?? "unknown"} frontend=${frontend ?? "unknown"} min=${MINIMUM_LUMIVERSE_VERSION} ${tag}`);
+  if (hostVersionCheck.needsUpdate)
+    log7.warn(hostVersionCheck.message);
+})();
 {
   const proc = globalThis.process;
   proc?.on?.("unhandledRejection", (reason) => {
@@ -36231,6 +36300,14 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
     }
     switch (msg.type) {
       case "get_cards": {
+        if (hostVersionCheck?.needsUpdate) {
+          spindle.sendToFrontend({
+            type: "notify_host_version_outdated",
+            hostVersion: hostVersionCheck.hostVersion,
+            minimum: hostVersionCheck.minimum,
+            message: hostVersionCheck.message
+          }, userId);
+        }
         let cleared = 0;
         for (const [chatId, _] of lastSentBgHtmlByChat) {
           const active = activeCardByChat.get(chatId);

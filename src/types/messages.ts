@@ -393,6 +393,14 @@ export type BackendToFrontend =
       characterId: string;
       characterName: string;
     }
+  // Host running an older Lumiverse than `spindle.json minimum_lumiverse_version`.
+  // FE shows a one-time-per-mount modal nag.
+  | {
+      type: 'notify_host_version_outdated';
+      hostVersion: string | null;
+      minimum: string;
+      message: string;
+    }
   // `risuPayload.background_html` resolved per state tick. FE pipes through Risu-compat
   // rewriter (HTML class prefix + CSS `.chattext` scope + `:host` universals) and paints
   // into a Shadow-DOM host.
