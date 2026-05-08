@@ -4910,7 +4910,7 @@ async function processModuleUpload(
     }
 
     const tUpload = Date.now();
-    const uploadConcurrency = 6;
+    const uploadConcurrency = 12;
     const totalCount = pending.length;
     const PROGRESS_BASE = 0.35;
     const PROGRESS_END = 0.92;

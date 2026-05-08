@@ -425,7 +425,7 @@ export async function importCard(args: ImportCardArgs): Promise<ImportResult> {
 
   progress('uploading_assets', 'Uploading assets…', 0.55);
   const tAssets = Date.now();
-  const uploadConcurrency = 6;
+  const uploadConcurrency = 12;
   const pathToImageId: Record<string, string> = {};
   const imageIds: string[] = [];
   const journalBuffer: string[] = [];
