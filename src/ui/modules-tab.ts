@@ -99,18 +99,18 @@ export function mountModulesPanel(opts: MountModulesPanelOptions): ModulesPanelH
   const charBody = document.createElement('section');
   charBody.className = 'lrm-section-body lrm-tab-body';
 
+  const charDesc = document.createElement('div');
+  charDesc.className = 'lrm-section-desc';
+  charDesc.textContent =
+    'Upload Risu character cards (.charx, .png, .json). Click any row to manage attached modules. Delete characters through Lumiverse.';
+  charBody.appendChild(charDesc);
+
   const charHeaderSlot = document.createElement('div');
   charHeaderSlot.className = 'lrm-character-header-slot';
   charBody.appendChild(charHeaderSlot);
   const charHeaderHandle = opts.mountCharactersHeader
     ? opts.mountCharactersHeader(charHeaderSlot)
     : null;
-
-  const charDesc = document.createElement('div');
-  charDesc.className = 'lrm-section-desc';
-  charDesc.textContent =
-    'Click any row to manage attached modules. Delete characters through Lumiverse.';
-  charBody.appendChild(charDesc);
 
   const charList = document.createElement('div');
   charList.className = 'lrm-characters-list';

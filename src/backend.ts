@@ -2635,6 +2635,37 @@ async function runCharacterMigration(
         return null;
       }
     },
+    getCharacterWorldBookIds: async (charId, uid) => {
+      try {
+        const ch = await spindle.characters.get(charId, uid) as { world_book_ids?: unknown };
+        if (!Array.isArray(ch?.world_book_ids)) return [];
+        return ch.world_book_ids.filter((x): x is string => typeof x === 'string');
+      } catch {
+        return [];
+      }
+    },
+    listWorldBookEntries: async (wbId, uid) => {
+      const out: { id: string; extensions: Record<string, unknown> | null }[] = [];
+      let offset = 0;
+      while (true) {
+        const page = await spindle.world_books.entries.list(wbId, { limit: 200, offset, userId: uid });
+        for (const e of page.data) {
+          const ee = e as { id?: unknown; extensions?: unknown };
+          const id = typeof ee.id === 'string' ? ee.id : null;
+          if (id === null) continue;
+          const ext = ee.extensions && typeof ee.extensions === 'object' && !Array.isArray(ee.extensions)
+            ? ee.extensions as Record<string, unknown>
+            : null;
+          out.push({ id, extensions: ext });
+        }
+        if (page.data.length < 200) break;
+        offset += 200;
+      }
+      return out;
+    },
+    updateWorldBookEntryExtensions: async (entryId, extensions, uid) => {
+      await spindle.world_books.entries.update(entryId, { extensions } as never, uid);
+    },
   };
   const result = await migrateCharacterIfNeeded(
     { characterId, characterName, userId, envelope },
@@ -5924,12 +5955,75 @@ async function assembleCharacterViewerData(
   const fetched = await readLumirealm(charactersApi(), characterId, userId);
   if (!fetched || !fetched.data) return null;
   const fetchWarnings: string[] = [];
+  const worldBooks = await fetchCharacterWorldBooksForViewer(characterId, userId, fetchWarnings);
   return buildCharacterViewerData({
     characterId,
     characterName: fetched.character.name,
     data: fetched.data,
+    worldBooks,
     fetchWarnings,
   });
+}
+
+async function fetchCharacterWorldBooksForViewer(
+  characterId: string,
+  userId: string,
+  warnings: string[],
+): Promise<readonly FetchedWorldBook[]> {
+  let wbIds: readonly string[];
+  try {
+    const ch = await spindle.characters.get(characterId, userId) as { world_book_ids?: unknown };
+    wbIds = Array.isArray(ch?.world_book_ids)
+      ? ch.world_book_ids.filter((x): x is string => typeof x === 'string')
+      : [];
+  } catch (err) {
+    warnings.push(`Could not fetch world_book_ids: ${errMsg(err)}`);
+    return [];
+  }
+  if (wbIds.length === 0) return [];
+  const out: FetchedWorldBook[] = [];
+  for (const wbId of wbIds) {
+    try {
+      const meta = await spindle.world_books.get(wbId, userId) as { name?: unknown };
+      const name = typeof meta?.name === 'string' && meta.name.length > 0 ? meta.name : wbId;
+      const entries: import('./state/viewer-data.js').FetchedWorldBookEntry[] = [];
+      let offset = 0;
+      while (true) {
+        const page = await spindle.world_books.entries.list(wbId, { limit: 200, offset, userId });
+        for (const e of page.data) {
+          const ee = e as unknown as Record<string, unknown>;
+          const id = typeof ee['id'] === 'string' ? ee['id'] : null;
+          if (id === null) continue;
+          const keyRaw = ee['key'];
+          const key = Array.isArray(keyRaw)
+            ? keyRaw.filter((x): x is string => typeof x === 'string')
+            : typeof keyRaw === 'string' ? [keyRaw] : [];
+          const ext = ee['extensions'] && typeof ee['extensions'] === 'object' && !Array.isArray(ee['extensions'])
+            ? ee['extensions'] as Record<string, unknown>
+            : null;
+          entries.push({
+            id,
+            key,
+            content: typeof ee['content'] === 'string' ? ee['content'] : '',
+            ...(typeof ee['comment'] === 'string' ? { comment: ee['comment'] } : {}),
+            ...(typeof ee['disabled'] === 'boolean' ? { disabled: ee['disabled'] } : {}),
+            ...(typeof ee['constant'] === 'boolean' ? { constant: ee['constant'] } : {}),
+            ...(typeof ee['order_value'] === 'number' ? { orderValue: ee['order_value'] } : {}),
+            ...(typeof ee['priority'] === 'number' ? { priority: ee['priority'] } : {}),
+            ...(typeof ee['position'] === 'number' ? { position: ee['position'] } : {}),
+            ...(typeof ee['depth'] === 'number' ? { depth: ee['depth'] } : {}),
+            extensions: ext,
+          });
+        }
+        if (page.data.length < 200) break;
+        offset += 200;
+      }
+      out.push({ id: wbId, name, entries });
+    } catch (err) {
+      warnings.push(`world_book ${wbId}: ${errMsg(err)}`);
+    }
+  }
+  return out;
 }
 
 async function assembleModuleViewerData(

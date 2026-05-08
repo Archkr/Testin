@@ -31,6 +31,11 @@ export interface FetchedWorldBookEntry {
   readonly comment?: string;
   readonly disabled?: boolean;
   readonly constant?: boolean;
+  readonly orderValue?: number;
+  readonly priority?: number;
+  readonly position?: number;
+  readonly depth?: number;
+  readonly extensions?: Readonly<Record<string, unknown>> | null;
 }
 
 export function buildCharacterViewerData(input: {
@@ -96,9 +101,49 @@ export function buildCharacterViewerData(input: {
   }
   defaultVariables.sort((a, b) => a.name.localeCompare(b.name));
 
+  const lorebook: ViewerLorebookGroup[] = [];
+  for (const wb of input.worldBooks ?? []) {
+    if (wb.entries.length === 0) continue;
+    const entries: ViewerLorebookEntry[] = wb.entries.map((e) => {
+      const ext = (e.extensions ?? {}) as Record<string, unknown>;
+      const arrIdxRaw = ext['_risu_array_index'];
+      const arrayIndex = typeof arrIdxRaw === 'number' ? arrIdxRaw : null;
+      const fromRisu = typeof ext['_risu_source_hash'] === 'string';
+      const risuModeRaw = ext['risu_mode'];
+      const risuMode = typeof risuModeRaw === 'string' ? risuModeRaw : undefined;
+      const risuFolderRaw = ext['risu_folder'];
+      const risuFolderRef = typeof risuFolderRaw === 'string' && risuFolderRaw.length > 0
+        ? risuFolderRaw
+        : undefined;
+      const risuFolderKey = risuMode === 'folder' && e.key.length > 0 && e.key[0]!.length > 0
+        ? e.key[0]!
+        : undefined;
+      const built: ViewerLorebookEntry = {
+        id: e.id,
+        key: e.key,
+        content: e.content,
+        ...(e.comment !== undefined ? { comment: e.comment } : {}),
+        ...(e.disabled !== undefined ? { disabled: e.disabled } : {}),
+        ...(e.constant !== undefined ? { constant: e.constant } : {}),
+        arrayIndex,
+        ...(e.orderValue !== undefined ? { orderValue: e.orderValue } : {}),
+        ...(e.priority !== undefined ? { priority: e.priority } : {}),
+        ...(e.position !== undefined ? { position: e.position } : {}),
+        ...(e.depth !== undefined ? { depth: e.depth } : {}),
+        fromRisu,
+        ...(risuMode !== undefined ? { risuMode } : {}),
+        ...(risuFolderKey !== undefined ? { risuFolderKey } : {}),
+        ...(risuFolderRef !== undefined ? { risuFolderRef } : {}),
+      };
+      return built;
+    });
+    sortLorebookEntries(entries);
+    lorebook.push({ groupName: wb.name, groupId: wb.id, entries });
+  }
+
   return {
     source: { kind: 'character', characterId: input.characterId, name: input.characterName },
-    lorebook: [],
+    lorebook,
     regex: [],
     triggers,
     assets,
@@ -107,7 +152,26 @@ export function buildCharacterViewerData(input: {
     defaultVariables,
     ts: input.ts ?? Date.now(),
     fetchWarnings: input.fetchWarnings ?? [],
+    ...(input.data.source === undefined ? { lorebookNeedsReimport: true } : {}),
   };
+}
+
+// Risu-faithful order. User-added entries (no arrayIndex) sort last by orderValue.
+function sortLorebookEntries(entries: ViewerLorebookEntry[]): void {
+  entries.sort((a, b) => {
+    const ai = a.arrayIndex;
+    const bi = b.arrayIndex;
+    if (ai != null && bi != null) {
+      if (ai !== bi) return ai - bi;
+    } else if (ai != null) {
+      return -1;
+    } else if (bi != null) {
+      return 1;
+    }
+    const ao = a.orderValue ?? 0;
+    const bo = b.orderValue ?? 0;
+    return ao - bo;
+  });
 }
 
 export interface LumiSideRegex {

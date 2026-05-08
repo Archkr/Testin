@@ -2444,6 +2444,224 @@
   line-height: 1.45;
 }
 
+/* Risu-faithful lorebook viewer: one line per entry, expand for read-only detail. */
+.lr-viewer-drawer .lrv-lb-section {
+  padding: 0;
+}
+.lr-viewer-drawer .lrv-lb-group {
+  border-top: 1px solid var(--lumiverse-border, rgba(255, 255, 255, 0.05));
+}
+.lr-viewer-drawer .lrv-lb-group-summary {
+  cursor: pointer;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.7));
+}
+.lr-viewer-drawer .lrv-lb-group-summary::-webkit-details-marker { display: none; }
+.lr-viewer-drawer .lrv-lb-group-summary::marker { content: ''; }
+.lr-viewer-drawer .lrv-lb-group-summary::before {
+  content: '▸';
+  display: inline-block;
+  width: 1em;
+  margin-right: 2px;
+  font-size: 10px;
+  transition: transform 0.1s;
+}
+.lr-viewer-drawer .lrv-lb-group[open] > .lrv-lb-group-summary::before {
+  transform: rotate(90deg);
+}
+
+.lr-viewer-drawer .lrv-lb-row {
+  border-top: 1px solid var(--lumiverse-border, rgba(255, 255, 255, 0.04));
+}
+.lr-viewer-drawer .lrv-lb-row:first-of-type {
+  border-top: none;
+}
+.lr-viewer-drawer .lrv-lb-row-summary {
+  cursor: pointer;
+  padding: 4px 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  list-style: none;
+}
+.lr-viewer-drawer .lrv-lb-row-summary::-webkit-details-marker { display: none; }
+.lr-viewer-drawer .lrv-lb-row-summary::marker { content: ''; }
+.lr-viewer-drawer .lrv-lb-row-summary:hover {
+  background: var(--lumiverse-surface-2, rgba(255, 255, 255, 0.03));
+}
+.lr-viewer-drawer .lrv-lb-row-disabled .lrv-lb-row-summary { opacity: 0.45; }
+.lr-viewer-drawer .lrv-lb-status {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.lr-viewer-drawer .lrv-lb-status-always {
+  background: #f5b73a;
+}
+.lr-viewer-drawer .lrv-lb-status-keyed {
+  background: transparent;
+  border: 1px solid var(--lumiverse-text-muted, rgba(255, 255, 255, 0.5));
+  width: 7px;
+  height: 7px;
+}
+.lr-viewer-drawer .lrv-lb-name {
+  flex: 1 1 auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--lumiverse-text, inherit);
+}
+
+.lr-viewer-drawer .lrv-lb-body {
+  padding: 6px 16px 10px 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 11.5px;
+}
+.lr-viewer-drawer .lrv-lb-field {
+  display: flex;
+  gap: 6px;
+}
+.lr-viewer-drawer .lrv-lb-field-label {
+  color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.6));
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.4px;
+  padding-top: 1px;
+}
+.lr-viewer-drawer .lrv-lb-field > .lrv-lb-field-label {
+  flex: 0 0 100px;
+}
+.lr-viewer-drawer .lrv-lb-field-value {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  word-break: break-word;
+}
+.lr-viewer-drawer .lrv-lb-content {
+  margin: 0;
+  padding: 6px 8px;
+  background: var(--lumiverse-surface-2, rgba(255, 255, 255, 0.04));
+  border-radius: 3px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.45;
+  font-family: inherit;
+  max-height: 300px;
+  overflow: auto;
+}
+
+.lr-viewer-drawer .lrv-lb-useradds-head {
+  padding: 10px 16px 4px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.55));
+  border-top: 1px dashed var(--lumiverse-border, rgba(255, 255, 255, 0.08));
+  margin-top: 4px;
+}
+
+.lr-viewer-drawer .lrv-lb-legacy {
+  padding: 16px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* Folder group: collapsible <details> wrapping its children. */
+.lr-viewer-drawer .lrv-lb-folder-group {
+  border-top: 1px solid var(--lumiverse-border, rgba(255, 255, 255, 0.08));
+}
+.lr-viewer-drawer .lrv-lb-folder-summary {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 16px;
+  font-size: 12px;
+  color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.7));
+  list-style: none;
+}
+.lr-viewer-drawer .lrv-lb-folder-summary::-webkit-details-marker { display: none; }
+.lr-viewer-drawer .lrv-lb-folder-summary::marker { content: ''; }
+.lr-viewer-drawer .lrv-lb-folder-summary::before {
+  content: '▸';
+  display: inline-block;
+  width: 1em;
+  margin-right: 2px;
+  font-size: 10px;
+  transition: transform 0.1s;
+}
+.lr-viewer-drawer .lrv-lb-folder-group[open] > .lrv-lb-folder-summary::before {
+  transform: rotate(90deg);
+}
+.lr-viewer-drawer .lrv-lb-folder-summary:hover {
+  background: var(--lumiverse-surface-2, rgba(255, 255, 255, 0.03));
+}
+.lr-viewer-drawer .lrv-lb-folder-name {
+  flex: 1 1 auto;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--lumiverse-text, inherit);
+}
+.lr-viewer-drawer .lrv-lb-folder-count {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.5));
+}
+.lr-viewer-drawer .lrv-lb-folder-body {
+  padding-left: 14px;
+  border-left: 1px dashed var(--lumiverse-border, rgba(255, 255, 255, 0.08));
+  margin-left: 22px;
+}
+
+/* Fallback: standalone folder row when no children are present in the list. */
+.lr-viewer-drawer .lrv-lb-folder {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 16px;
+  border-top: 1px solid var(--lumiverse-border, rgba(255, 255, 255, 0.08));
+  font-size: 12px;
+  color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.55));
+}
+.lr-viewer-drawer .lrv-lb-row + .lrv-lb-folder {
+  margin-top: 4px;
+}
+.lr-viewer-drawer .lrv-lb-folder-icon {
+  display: inline-block;
+  width: 10px;
+  height: 8px;
+  background: currentColor;
+  border-radius: 1px;
+  position: relative;
+  opacity: 0.7;
+}
+.lr-viewer-drawer .lrv-lb-folder-icon::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: -3px;
+  width: 5px;
+  height: 3px;
+  background: currentColor;
+  border-radius: 1px 1px 0 0;
+}
+
+/* Child link row: an entry that lives elsewhere, linked into this list. */
+.lr-viewer-drawer .lrv-lb-child {
+  padding: 4px 16px 4px 28px;
+  font-size: 11.5px;
+  font-style: italic;
+  color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.55));
+}
+
 /* "Lumiverse handles this" redirect block */
 .lr-viewer-drawer .lrv-section-redirect {
   padding: 0;

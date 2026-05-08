@@ -70,10 +70,9 @@ export function mountCardsPanel(opts: MountCardsPanelOptions): DrawerHandle {
   log.info('cards-panel: mounting');
 
   const root = opts.root;
-  root.classList.add('risu-compat-drawer');
 
   const actionRow = document.createElement('div');
-  actionRow.className = 'rc-row';
+  actionRow.className = 'lrm-toolbar';
   const importBtn = document.createElement('button');
   importBtn.type = 'button';
   importBtn.className = 'lrm-btn lrm-btn-primary';

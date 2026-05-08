@@ -62,7 +62,7 @@ function mapMode(e: LoreBook): { constant: boolean; disabled: boolean; position:
   return { constant, disabled: false, position: 0 };
 }
 
-function buildExtensions(e: LoreBook): Record<string, unknown> {
+function buildExtensions(e: LoreBook, idx: number): Record<string, unknown> {
   const ext: Record<string, unknown> = {};
   // Risu spells it "extentions", preserve as-is.
   if (e.extentions !== undefined) ext["risu_extentions"] = e.extentions;
@@ -71,6 +71,9 @@ function buildExtensions(e: LoreBook): Record<string, unknown> {
   if (e.mode !== undefined) ext["risu_mode"] = e.mode;
   if (e.folder !== undefined) ext["risu_folder"] = e.folder;
   if (e.id !== undefined) ext["risu_entry_id"] = e.id;
+  // Source array position drives our viewer's visual order. Excluded from
+  // _risu_source_hash so v6 backfill matches existing entries.
+  ext["_risu_array_index"] = idx;
   return ext;
 }
 
@@ -123,8 +126,9 @@ export function mapLoreBookEntry(
   folders: Map<string, string>,
   now: number,
   uuid: () => string,
+  idx: number = 0,
 ): LumiWorldBookEntry {
-  return mapLoreBookEntryWithStats(entry, worldBookId, folders, now, uuid).entry;
+  return mapLoreBookEntryWithStats(entry, worldBookId, folders, now, uuid, idx).entry;
 }
 
 export function mapLoreBookEntryWithStats(
@@ -133,6 +137,7 @@ export function mapLoreBookEntryWithStats(
   folders: Map<string, string>,
   now: number,
   uuid: () => string,
+  idx: number = 0,
 ): MappedLoreBookEntry {
   const { constant, disabled, position } = mapMode(entry);
   const groupName = resolveFolderName(entry, folders);
@@ -147,7 +152,7 @@ export function mapLoreBookEntryWithStats(
   // Decorators live at the top of content. First non-@@ line ends the block.
   const parsed = parseDecorators(entry.content);
   const draftKey = splitKeywords(entry.key);
-  const draftExt = buildExtensions(entry);
+  const draftExt = buildExtensions(entry, idx);
   const applied = applyDecoratorsToEntry({ key: draftKey, extensions: draftExt }, parsed.decorators);
 
   // Decorator patch wins over Risu mode/extension defaults for Tier 1 fields.
@@ -250,7 +255,7 @@ export function mapLoreBookWithStats(
   let stashed = 0;
   let dropped = 0;
   for (let i = 0; i < entries.length; i++) {
-    const r = mapLoreBookEntryWithStats(entries[i]!, opts.worldBookId, folders, now, uuid);
+    const r = mapLoreBookEntryWithStats(entries[i]!, opts.worldBookId, folders, now, uuid, i);
     out[i] = r.entry;
     if (r.stats.decoratorsSeen > 0) entries_with_decorators += 1;
     decorators_seen += r.stats.decoratorsSeen;

@@ -32,9 +32,12 @@ function stableStringify(value: unknown): string {
 
 // System-managed keys injected post-stamp. `_risu_decorators` stays in the
 // hash because it's translator output, not system metadata.
+// `_risu_array_index` is excluded so adding it later doesn't invalidate the
+// stored hash on existing entries (v6 migration backfills it).
 const SYSTEM_MANAGED_EXTENSION_KEYS: readonly string[] = [
   '_risu_source_hash',
   '_risu_module_id',
+  '_risu_array_index',
 ];
 
 // Excludes id/uid/world_book_id (auto-generated), timestamps/vector_*

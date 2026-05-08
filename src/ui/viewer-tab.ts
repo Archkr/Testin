@@ -225,8 +225,6 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
   interface SubTabSpec {
     readonly id: ViewerSubTab;
     readonly label: string;
-    /** Optional count badge (e.g. "Triggers · 4"). */
-    readonly count?: number;
     readonly render: () => HTMLElement;
   }
 
@@ -236,41 +234,39 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
     tabs.push({
       id: 'assets',
       label: 'Assets',
-      count: d.assets.length,
       render: () => renderAssetsSection(d.assets),
     });
-    // Default vars editor moved to State → Variables → Default (Phase B).
-    tabs.push({
-      id: 'triggers',
-      label: 'Triggers',
-      count: d.triggers.length,
-      render: () => renderTriggersSection(d.triggers),
-    });
-    if (d.backgroundHtml) {
-      tabs.push({
-        id: 'background',
-        label: 'Background HTML',
-        render: () => renderBackgroundHtmlSection(d.backgroundHtml ?? ''),
-      });
-    }
     if (isCharacter) {
       tabs.push({
         id: 'lorebook',
-        label: 'Lorebook',
-        render: () => renderLumiverseRedirect(),
+        label: 'Lore',
+        render: () => d.lorebookNeedsReimport
+          ? renderLorebookLegacyNotice()
+          : renderLorebookSection(d.lorebook),
       });
     } else {
       tabs.push({
         id: 'regex',
         label: 'Regex',
-        count: d.regex.length,
         render: () => renderRegexSection(d.regex),
       });
       tabs.push({
         id: 'lorebook',
-        label: 'Lorebook',
-        count: d.lorebook.reduce((s, g) => s + g.entries.length, 0),
+        label: 'Lore',
         render: () => renderLorebookSection(d.lorebook),
+      });
+    }
+    // Default vars editor moved to State → Variables → Default (Phase B).
+    tabs.push({
+      id: 'triggers',
+      label: 'Triggers',
+      render: () => renderTriggersSection(d.triggers),
+    });
+    if (d.backgroundHtml) {
+      tabs.push({
+        id: 'background',
+        label: ' HTML',
+        render: () => renderBackgroundHtmlSection(d.backgroundHtml ?? ''),
       });
     }
     if (d.cjs) {
@@ -291,7 +287,7 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
       btn.type = 'button';
       btn.className = 'lrv-subtab';
       if (t.id === activeSubTab) btn.classList.add('lrv-subtab-active');
-      btn.textContent = typeof t.count === 'number' ? `${t.label} · ${t.count}` : t.label;
+      btn.textContent = t.label;
       btn.addEventListener('click', () => {
         if (activeSubTab === t.id) return;
         activeSubTab = t.id;
@@ -329,11 +325,6 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
 
   function renderBackgroundHtmlSection(html: string): HTMLElement {
     const det = document.createElement('section');
-    const note = document.createElement('div');
-    note.className = 'lrv-warning';
-    note.textContent =
-      'Painted into chats via the shadow-DOM mount; class names + CSS selectors are rewritten at render time.';
-    det.appendChild(note);
     if (editingBackgroundHtml) {
       const editor = document.createElement('div');
       editor.className = 'lrv-trigger-editor';
@@ -424,21 +415,6 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
     editingBackgroundHtmlBuffer = '';
   }
 
-  function renderLumiverseRedirect(): HTMLDivElement {
-    const wrap = document.createElement('div');
-    wrap.className = 'lrv-section lrv-section-redirect';
-    const head = document.createElement('div');
-    head.className = 'lrv-section-summary';
-    head.textContent = 'Lorebook · Regex';
-    wrap.appendChild(head);
-    const body = document.createElement('div');
-    body.className = 'lrv-redirect-body';
-    body.textContent =
-      "Edit and view this character's lorebook + regex rules through Lumiverse's native UI. " +
-      'To import a standalone lorebook file, use the Import → Lorebooks tab.';
-    wrap.appendChild(body);
-    return wrap;
-  }
 
   // Default-variable editor moved to State → Variables → Default in Phase B.
   // The wire shape (`set_default_variable`/`delete_default_variable`,
@@ -1043,14 +1019,17 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
     return det;
   }
 
+  function renderLorebookLegacyNotice(): HTMLElement {
+    const wrap = document.createElement('div');
+    wrap.className = 'lrv-empty lrv-lb-legacy';
+    wrap.textContent =
+      '⚠️ This is a legacy card imported before 0.3.0. Please reimport this card to unlock the lorebook viewer.';
+    return wrap;
+  }
+
   function renderLorebookSection(groups: readonly ViewerLorebookGroup[]): HTMLElement {
     const det = document.createElement('section');
-    det.className = 'lrv-section';
-    const sum = document.createElement('div');
-    sum.className = 'lrv-section-summary';
-    const totalEntries = groups.reduce((acc, g) => acc + g.entries.length, 0);
-    sum.textContent = `Lorebook · ${groups.length} group${groups.length === 1 ? '' : 's'} · ${totalEntries} entr${totalEntries === 1 ? 'y' : 'ies'}`;
-    det.appendChild(sum);
+    det.className = 'lrv-section lrv-lb-section';
     if (groups.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'lrv-empty';
@@ -1059,35 +1038,196 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
       return det;
     }
     for (const g of groups) {
+      const risuEntries: import('../types/messages.js').ViewerLorebookEntry[] = [];
+      const userAdditions: import('../types/messages.js').ViewerLorebookEntry[] = [];
+      for (const e of g.entries) {
+        if (e.fromRisu === false) userAdditions.push(e);
+        else risuEntries.push(e);
+      }
       const grpDet = document.createElement('details');
-      grpDet.className = 'lrv-lorebook-group';
+      grpDet.className = 'lrv-lb-group';
       grpDet.open = true;
       const grpSum = document.createElement('summary');
-      grpSum.textContent = `${g.groupName} · ${g.entries.length}`;
+      grpSum.className = 'lrv-lb-group-summary';
+      grpSum.textContent = `${g.groupName} (${g.entries.length})`;
       grpDet.appendChild(grpSum);
-      for (const e of g.entries) {
-        const row = document.createElement('div');
-        row.className = 'lrv-lorebook-row';
-        if (e.disabled) row.classList.add('lrv-lorebook-row-disabled');
-        const keyEl = document.createElement('div');
-        keyEl.className = 'lrv-lorebook-keys';
-        keyEl.textContent = e.key.length > 0 ? e.key.join(', ') : '(no keys)';
-        row.appendChild(keyEl);
-        if (e.comment) {
-          const com = document.createElement('div');
-          com.className = 'lrv-lorebook-comment';
-          com.textContent = e.comment;
-          row.appendChild(com);
-        }
-        const body = document.createElement('div');
-        body.className = 'lrv-lorebook-content';
-        body.textContent = e.content.length > 400 ? e.content.slice(0, 400) + '…' : e.content;
-        row.appendChild(body);
-        grpDet.appendChild(row);
+      renderLorebookEntriesWithFolders(grpDet, risuEntries);
+      if (userAdditions.length > 0) {
+        const uaHead = document.createElement('div');
+        uaHead.className = 'lrv-lb-useradds-head';
+        uaHead.textContent = `User Additions (${userAdditions.length})`;
+        grpDet.appendChild(uaHead);
+        renderLorebookEntriesWithFolders(grpDet, userAdditions);
       }
       det.appendChild(grpDet);
     }
     return det;
+  }
+
+  function renderLorebookEntriesWithFolders(
+    container: HTMLElement,
+    entries: readonly import('../types/messages.js').ViewerLorebookEntry[],
+  ): void {
+    const childrenByFolder = new Map<string, import('../types/messages.js').ViewerLorebookEntry[]>();
+    const folderKeys = new Set<string>();
+    for (const e of entries) {
+      if (e.risuMode === 'folder' && e.risuFolderKey) folderKeys.add(e.risuFolderKey);
+      if (e.risuFolderRef) {
+        const arr = childrenByFolder.get(e.risuFolderRef) ?? [];
+        arr.push(e);
+        childrenByFolder.set(e.risuFolderRef, arr);
+      }
+    }
+    for (const e of entries) {
+      if (e.risuMode === 'folder' && e.risuFolderKey) {
+        const children = childrenByFolder.get(e.risuFolderKey) ?? [];
+        container.appendChild(renderLorebookFolderGroup(e, children));
+        continue;
+      }
+      if (e.risuFolderRef && folderKeys.has(e.risuFolderRef)) continue;
+      container.appendChild(renderLorebookRow(e));
+    }
+  }
+
+  function renderLorebookFolderGroup(
+    folder: import('../types/messages.js').ViewerLorebookEntry,
+    children: readonly import('../types/messages.js').ViewerLorebookEntry[],
+  ): HTMLDetailsElement {
+    const det = document.createElement('details');
+    det.className = 'lrv-lb-folder-group';
+    const sum = document.createElement('summary');
+    sum.className = 'lrv-lb-folder-summary';
+    const icon = document.createElement('span');
+    icon.className = 'lrv-lb-folder-icon';
+    icon.setAttribute('aria-hidden', 'true');
+    sum.appendChild(icon);
+    const name = document.createElement('span');
+    name.className = 'lrv-lb-folder-name';
+    name.textContent = folder.comment && folder.comment.length > 0
+      ? folder.comment
+      : '(unnamed folder)';
+    sum.appendChild(name);
+    const count = document.createElement('span');
+    count.className = 'lrv-lb-folder-count';
+    count.textContent = `(${children.length})`;
+    sum.appendChild(count);
+    det.appendChild(sum);
+    const body = document.createElement('div');
+    body.className = 'lrv-lb-folder-body';
+    for (const c of children) body.appendChild(renderLorebookRow(c));
+    det.appendChild(body);
+    return det;
+  }
+
+  function renderLorebookRow(e: import('../types/messages.js').ViewerLorebookEntry): HTMLElement {
+    if (e.risuMode === 'folder') return renderLorebookFolderHeader(e);
+    if (e.risuMode === 'child') return renderLorebookChildLink(e);
+    const row = document.createElement('details');
+    row.className = 'lrv-lb-row';
+    if (e.disabled) row.classList.add('lrv-lb-row-disabled');
+    const sum = document.createElement('summary');
+    sum.className = 'lrv-lb-row-summary';
+    const dot = document.createElement('span');
+    dot.className = e.constant
+      ? 'lrv-lb-status lrv-lb-status-always'
+      : 'lrv-lb-status lrv-lb-status-keyed';
+    dot.title = e.disabled
+      ? 'disabled'
+      : e.constant ? 'always active' : 'key-based';
+    sum.appendChild(dot);
+    const name = document.createElement('span');
+    name.className = 'lrv-lb-name';
+    name.textContent = lorebookEntryName(e);
+    sum.appendChild(name);
+    row.appendChild(sum);
+    row.appendChild(renderLorebookRowDetail(e));
+    return row;
+  }
+
+  function renderLorebookFolderHeader(
+    e: import('../types/messages.js').ViewerLorebookEntry,
+  ): HTMLDivElement {
+    const row = document.createElement('div');
+    row.className = 'lrv-lb-folder';
+    const icon = document.createElement('span');
+    icon.className = 'lrv-lb-folder-icon';
+    icon.setAttribute('aria-hidden', 'true');
+    row.appendChild(icon);
+    const name = document.createElement('span');
+    name.className = 'lrv-lb-folder-name';
+    name.textContent = e.comment && e.comment.length > 0 ? e.comment : '(unnamed folder)';
+    row.appendChild(name);
+    return row;
+  }
+
+  function renderLorebookChildLink(
+    e: import('../types/messages.js').ViewerLorebookEntry,
+  ): HTMLDivElement {
+    const row = document.createElement('div');
+    row.className = 'lrv-lb-child';
+    const name = document.createElement('span');
+    name.className = 'lrv-lb-child-name';
+    name.textContent = e.comment && e.comment.length > 0 ? e.comment : '(linked entry)';
+    row.appendChild(name);
+    return row;
+  }
+
+  function lorebookEntryName(e: import('../types/messages.js').ViewerLorebookEntry): string {
+    if (e.comment && e.comment.length > 0) return e.comment;
+    if (e.key.length > 0) return e.key.join(', ');
+    return '(unnamed)';
+  }
+
+  function renderLorebookRowDetail(
+    e: import('../types/messages.js').ViewerLorebookEntry,
+  ): HTMLDivElement {
+    const body = document.createElement('div');
+    body.className = 'lrv-lb-body';
+    if (!e.constant && e.key.length > 0) {
+      body.appendChild(field('Activation keys', e.key.join(', ')));
+    }
+    if (typeof e.position === 'number') {
+      body.appendChild(field('Position', positionLabel(e.position, e.depth)));
+    }
+    if (typeof e.orderValue === 'number') {
+      body.appendChild(field('Insert order', String(e.orderValue)));
+    }
+    const promptLabel = document.createElement('div');
+    promptLabel.className = 'lrv-lb-field-label';
+    promptLabel.textContent = 'Prompt';
+    body.appendChild(promptLabel);
+    const content = document.createElement('pre');
+    content.className = 'lrv-lb-content';
+    content.textContent = e.content;
+    body.appendChild(content);
+    return body;
+  }
+
+  function field(label: string, value: string): HTMLDivElement {
+    const row = document.createElement('div');
+    row.className = 'lrv-lb-field';
+    const l = document.createElement('span');
+    l.className = 'lrv-lb-field-label';
+    l.textContent = label;
+    const v = document.createElement('span');
+    v.className = 'lrv-lb-field-value';
+    v.textContent = value;
+    row.appendChild(l);
+    row.appendChild(v);
+    return row;
+  }
+
+  function positionLabel(position: number, depth?: number): string {
+    switch (position) {
+      case 0: return 'before char';
+      case 1: return 'after char';
+      case 2: return 'before AN';
+      case 3: return 'after AN';
+      case 4: return `depth ${depth ?? '?'}`;
+      case 5: return 'before ex';
+      case 6: return 'after ex';
+      default: return `pos ${position}`;
+    }
   }
 
   function renderCjsSection(cjs: string): HTMLElement {

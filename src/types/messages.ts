@@ -765,6 +765,10 @@ export interface ViewerData {
   readonly ts: number;
   /** Fetch issues / cross-tab routing notes for a banner. */
   readonly fetchWarnings: readonly string[];
+  /** True when envelope.source is missing (pre-0.3.0 import). The Risu-faithful
+   *  lorebook viewer can't render order-correctly without source-backed v6
+   *  backfill, so the FE surfaces a re-import notice instead. */
+  readonly lorebookNeedsReimport?: boolean;
 }
 
 export interface ViewerDefaultVariable {
@@ -794,6 +798,24 @@ export interface ViewerLorebookEntry {
   readonly constant?: boolean;
   /** Lumi entry uuid for characters, array index for modules. */
   readonly id: string;
+  /** Risu source array position. Null when user-added or pre-v6 entry. */
+  readonly arrayIndex?: number | null;
+  /** Lumi `order_value`, tiebreak when arrayIndex is null. */
+  readonly orderValue?: number;
+  /** Lumi entry priority. */
+  readonly priority?: number;
+  /** Position enum 0..6 (before_char, after_char, depth-injected, etc.). */
+  readonly position?: number;
+  /** Depth for position=4 entries. */
+  readonly depth?: number;
+  /** True when extensions._risu_source_hash exists. False means user-added. */
+  readonly fromRisu?: boolean;
+  /** Risu's `mode` field. Folders render as headers, others as entries. */
+  readonly risuMode?: string;
+  /** For folder rows, Risu's folder identifier (matches children's risuFolderRef). */
+  readonly risuFolderKey?: string;
+  /** For child entries, the parent folder's key (matches a folder row's risuFolderKey). */
+  readonly risuFolderRef?: string;
 }
 
 export interface ViewerRegexEntry {

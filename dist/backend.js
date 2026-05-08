@@ -20946,7 +20946,8 @@ function stableStringify(value) {
 }
 var SYSTEM_MANAGED_EXTENSION_KEYS = [
   "_risu_source_hash",
-  "_risu_module_id"
+  "_risu_module_id",
+  "_risu_array_index"
 ];
 function computeEntrySourceHash(entry) {
   const fields = {};
@@ -21002,7 +21003,7 @@ function mapMode(e) {
   const constant = e.mode === "constant" || !!e.alwaysActive;
   return { constant, disabled: false, position: 0 };
 }
-function buildExtensions2(e) {
+function buildExtensions2(e, idx) {
   const ext = {};
   if (e.extentions !== undefined)
     ext["risu_extentions"] = e.extentions;
@@ -21016,6 +21017,7 @@ function buildExtensions2(e) {
     ext["risu_folder"] = e.folder;
   if (e.id !== undefined)
     ext["risu_entry_id"] = e.id;
+  ext["_risu_array_index"] = idx;
   return ext;
 }
 function rebuildContentWithStashedDecorators(rawContent, decorators, applied) {
@@ -21047,14 +21049,14 @@ function rebuildContentWithStashedDecorators(rawContent, decorators, applied) {
 `) + `
 ` + remaining;
 }
-function mapLoreBookEntryWithStats(entry, worldBookId, folders, now, uuid) {
+function mapLoreBookEntryWithStats(entry, worldBookId, folders, now, uuid, idx = 0) {
   const { constant, disabled, position } = mapMode(entry);
   const groupName = resolveFolderName(entry, folders);
   const probability = entry.activationPercent !== undefined && entry.activationPercent !== null ? entry.activationPercent : 100;
   const caseSensitive = entry.extentions?.risu_case_sensitive === true;
   const parsed = parseDecorators(entry.content);
   const draftKey = splitKeywords(entry.key);
-  const draftExt = buildExtensions2(entry);
+  const draftExt = buildExtensions2(entry, idx);
   const applied = applyDecoratorsToEntry({ key: draftKey, extensions: draftExt }, parsed.decorators);
   const finalKey = applied.patch.key ?? draftKey;
   const finalExtensions = applied.patch.extensions ?? draftExt;
@@ -21129,7 +21131,7 @@ function mapLoreBookWithStats(entries, opts) {
   let stashed = 0;
   let dropped = 0;
   for (let i = 0;i < entries.length; i++) {
-    const r = mapLoreBookEntryWithStats(entries[i], opts.worldBookId, folders, now, uuid);
+    const r = mapLoreBookEntryWithStats(entries[i], opts.worldBookId, folders, now, uuid, i);
     out[i] = r.entry;
     if (r.stats.decoratorsSeen > 0)
       entries_with_decorators += 1;
@@ -25315,6 +25317,79 @@ async function applyV5AssetIndexRebuild(args, deps) {
     ]
   };
 }
+async function applyV6BackfillArrayIndex(args, deps) {
+  const indexBySourceHash = new Map;
+  for (const e of args.newBundle.worldBookEntries) {
+    const ext = e.extensions ?? {};
+    const hash = ext["_risu_source_hash"];
+    const idx = ext["_risu_array_index"];
+    if (typeof hash === "string" && typeof idx === "number") {
+      indexBySourceHash.set(hash, idx);
+    }
+  }
+  if (indexBySourceHash.size === 0) {
+    return { nextEnvelope: args.envelope, notes: ["no source-hashed entries in new bundle"] };
+  }
+  let worldBookIds;
+  try {
+    worldBookIds = await deps.getCharacterWorldBookIds(args.characterId, args.userId);
+  } catch (err) {
+    return {
+      nextEnvelope: args.envelope,
+      notes: [`getCharacterWorldBookIds failed: ${err instanceof Error ? err.message : String(err)}`]
+    };
+  }
+  if (worldBookIds.length === 0) {
+    return { nextEnvelope: args.envelope, notes: ["character has no world_book_ids"] };
+  }
+  let liveTotal = 0;
+  let matched = 0;
+  let updated = 0;
+  let unmatched = 0;
+  for (const wbId of worldBookIds) {
+    let entries;
+    try {
+      entries = await deps.listWorldBookEntries(wbId, args.userId);
+    } catch (err) {
+      deps.log.warn(`migrate(${args.characterId}) v6: list wb=${wbId} failed: ${err instanceof Error ? err.message : String(err)}`);
+      continue;
+    }
+    liveTotal += entries.length;
+    for (const live of entries) {
+      const ext = live.extensions ?? {};
+      const hash = ext["_risu_source_hash"];
+      if (typeof hash !== "string") {
+        unmatched += 1;
+        continue;
+      }
+      const idx = indexBySourceHash.get(hash);
+      if (typeof idx !== "number") {
+        unmatched += 1;
+        continue;
+      }
+      matched += 1;
+      const existingIdx = ext["_risu_array_index"];
+      if (existingIdx === idx)
+        continue;
+      try {
+        await deps.updateWorldBookEntryExtensions(live.id, { ...ext, _risu_array_index: idx }, args.userId);
+        updated += 1;
+      } catch (err) {
+        deps.log.warn(`migrate(${args.characterId}) v6: update entry=${live.id} failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  }
+  return {
+    nextEnvelope: args.envelope,
+    notes: [
+      `wbs=${worldBookIds.length}`,
+      `live=${liveTotal}`,
+      `matched=${matched}`,
+      `updated=${updated}`,
+      `unmatched=${unmatched}`
+    ]
+  };
+}
 var CHARACTER_MIGRATIONS = [
   {
     version: 5,
@@ -25326,6 +25401,12 @@ var CHARACTER_MIGRATIONS = [
       "payload.emotion_images"
     ],
     apply: applyV5AssetIndexRebuild
+  },
+  {
+    version: 6,
+    description: "Backfill extensions._risu_array_index on existing WB entries for the Risu-faithful viewer order.",
+    touches: ["world_book_entries"],
+    apply: applyV6BackfillArrayIndex
   }
 ];
 var CURRENT_CHARACTER_SCHEMA_VERSION = CHARACTER_MIGRATIONS.length > 0 ? Math.max(...CHARACTER_MIGRATIONS.map((m) => m.version)) : 1;
@@ -31492,9 +31573,45 @@ function buildCharacterViewerData(input) {
     });
   }
   defaultVariables.sort((a, b) => a.name.localeCompare(b.name));
+  const lorebook2 = [];
+  for (const wb of input.worldBooks ?? []) {
+    if (wb.entries.length === 0)
+      continue;
+    const entries = wb.entries.map((e) => {
+      const ext = e.extensions ?? {};
+      const arrIdxRaw = ext["_risu_array_index"];
+      const arrayIndex = typeof arrIdxRaw === "number" ? arrIdxRaw : null;
+      const fromRisu = typeof ext["_risu_source_hash"] === "string";
+      const risuModeRaw = ext["risu_mode"];
+      const risuMode = typeof risuModeRaw === "string" ? risuModeRaw : undefined;
+      const risuFolderRaw = ext["risu_folder"];
+      const risuFolderRef = typeof risuFolderRaw === "string" && risuFolderRaw.length > 0 ? risuFolderRaw : undefined;
+      const risuFolderKey = risuMode === "folder" && e.key.length > 0 && e.key[0].length > 0 ? e.key[0] : undefined;
+      const built = {
+        id: e.id,
+        key: e.key,
+        content: e.content,
+        ...e.comment !== undefined ? { comment: e.comment } : {},
+        ...e.disabled !== undefined ? { disabled: e.disabled } : {},
+        ...e.constant !== undefined ? { constant: e.constant } : {},
+        arrayIndex,
+        ...e.orderValue !== undefined ? { orderValue: e.orderValue } : {},
+        ...e.priority !== undefined ? { priority: e.priority } : {},
+        ...e.position !== undefined ? { position: e.position } : {},
+        ...e.depth !== undefined ? { depth: e.depth } : {},
+        fromRisu,
+        ...risuMode !== undefined ? { risuMode } : {},
+        ...risuFolderKey !== undefined ? { risuFolderKey } : {},
+        ...risuFolderRef !== undefined ? { risuFolderRef } : {}
+      };
+      return built;
+    });
+    sortLorebookEntries(entries);
+    lorebook2.push({ groupName: wb.name, groupId: wb.id, entries });
+  }
   return {
     source: { kind: "character", characterId: input.characterId, name: input.characterName },
-    lorebook: [],
+    lorebook: lorebook2,
     regex: [],
     triggers: triggers2,
     assets,
@@ -31502,8 +31619,26 @@ function buildCharacterViewerData(input) {
     backgroundHtml,
     defaultVariables,
     ts: input.ts ?? Date.now(),
-    fetchWarnings: input.fetchWarnings ?? []
+    fetchWarnings: input.fetchWarnings ?? [],
+    ...input.data.source === undefined ? { lorebookNeedsReimport: true } : {}
   };
+}
+function sortLorebookEntries(entries) {
+  entries.sort((a, b) => {
+    const ai = a.arrayIndex;
+    const bi = b.arrayIndex;
+    if (ai != null && bi != null) {
+      if (ai !== bi)
+        return ai - bi;
+    } else if (ai != null) {
+      return -1;
+    } else if (bi != null) {
+      return 1;
+    }
+    const ao = a.orderValue ?? 0;
+    const bo = b.orderValue ?? 0;
+    return ao - bo;
+  });
 }
 function toViewerTrigger(fallbackId, rawTrigger, lua2, idx) {
   const t = rawTrigger ?? {};
@@ -33477,6 +33612,38 @@ async function runCharacterMigration(characterId, characterName, userId, envelop
       } catch {
         return null;
       }
+    },
+    getCharacterWorldBookIds: async (charId, uid) => {
+      try {
+        const ch = await spindle.characters.get(charId, uid);
+        if (!Array.isArray(ch?.world_book_ids))
+          return [];
+        return ch.world_book_ids.filter((x) => typeof x === "string");
+      } catch {
+        return [];
+      }
+    },
+    listWorldBookEntries: async (wbId, uid) => {
+      const out = [];
+      let offset = 0;
+      while (true) {
+        const page = await spindle.world_books.entries.list(wbId, { limit: 200, offset, userId: uid });
+        for (const e of page.data) {
+          const ee = e;
+          const id = typeof ee.id === "string" ? ee.id : null;
+          if (id === null)
+            continue;
+          const ext = ee.extensions && typeof ee.extensions === "object" && !Array.isArray(ee.extensions) ? ee.extensions : null;
+          out.push({ id, extensions: ext });
+        }
+        if (page.data.length < 200)
+          break;
+        offset += 200;
+      }
+      return out;
+    },
+    updateWorldBookEntryExtensions: async (entryId, extensions, uid) => {
+      await spindle.world_books.entries.update(entryId, { extensions }, uid);
     }
   };
   const result = await migrateCharacterIfNeeded({ characterId, characterName, userId, envelope }, deps);
@@ -35879,12 +36046,67 @@ async function assembleCharacterViewerData(characterId, userId) {
   if (!fetched || !fetched.data)
     return null;
   const fetchWarnings = [];
+  const worldBooks = await fetchCharacterWorldBooksForViewer(characterId, userId, fetchWarnings);
   return buildCharacterViewerData({
     characterId,
     characterName: fetched.character.name,
     data: fetched.data,
+    worldBooks,
     fetchWarnings
   });
+}
+async function fetchCharacterWorldBooksForViewer(characterId, userId, warnings) {
+  let wbIds;
+  try {
+    const ch = await spindle.characters.get(characterId, userId);
+    wbIds = Array.isArray(ch?.world_book_ids) ? ch.world_book_ids.filter((x) => typeof x === "string") : [];
+  } catch (err) {
+    warnings.push(`Could not fetch world_book_ids: ${errMsg(err)}`);
+    return [];
+  }
+  if (wbIds.length === 0)
+    return [];
+  const out = [];
+  for (const wbId of wbIds) {
+    try {
+      const meta = await spindle.world_books.get(wbId, userId);
+      const name = typeof meta?.name === "string" && meta.name.length > 0 ? meta.name : wbId;
+      const entries = [];
+      let offset = 0;
+      while (true) {
+        const page = await spindle.world_books.entries.list(wbId, { limit: 200, offset, userId });
+        for (const e of page.data) {
+          const ee = e;
+          const id = typeof ee["id"] === "string" ? ee["id"] : null;
+          if (id === null)
+            continue;
+          const keyRaw = ee["key"];
+          const key3 = Array.isArray(keyRaw) ? keyRaw.filter((x) => typeof x === "string") : typeof keyRaw === "string" ? [keyRaw] : [];
+          const ext = ee["extensions"] && typeof ee["extensions"] === "object" && !Array.isArray(ee["extensions"]) ? ee["extensions"] : null;
+          entries.push({
+            id,
+            key: key3,
+            content: typeof ee["content"] === "string" ? ee["content"] : "",
+            ...typeof ee["comment"] === "string" ? { comment: ee["comment"] } : {},
+            ...typeof ee["disabled"] === "boolean" ? { disabled: ee["disabled"] } : {},
+            ...typeof ee["constant"] === "boolean" ? { constant: ee["constant"] } : {},
+            ...typeof ee["order_value"] === "number" ? { orderValue: ee["order_value"] } : {},
+            ...typeof ee["priority"] === "number" ? { priority: ee["priority"] } : {},
+            ...typeof ee["position"] === "number" ? { position: ee["position"] } : {},
+            ...typeof ee["depth"] === "number" ? { depth: ee["depth"] } : {},
+            extensions: ext
+          });
+        }
+        if (page.data.length < 200)
+          break;
+        offset += 200;
+      }
+      out.push({ id: wbId, name, entries });
+    } catch (err) {
+      warnings.push(`world_book ${wbId}: ${errMsg(err)}`);
+    }
+  }
+  return out;
 }
 async function assembleModuleViewerData(moduleId, userId) {
   const env = await readEnvelope(moduleStorage(), userId, moduleId);

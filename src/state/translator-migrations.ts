@@ -12,6 +12,11 @@ import {
 } from '../payload/types.js';
 import { buildAssetIndexes } from '../payload/import.js';
 
+export interface LiveWorldBookEntry {
+  readonly id: string;
+  readonly extensions: Readonly<Record<string, unknown>> | null;
+}
+
 export interface MigrationDeps {
   loadCatalog: () => CatalogIndex;
   installCharacterRegexScripts: (
@@ -32,6 +37,14 @@ export interface MigrationDeps {
   ) => Promise<void>;
   // For `ccdefault:` URI resolution during asset_index rebuild.
   getAvatarImageId: (characterId: string, userId: string) => Promise<string | null>;
+  // v6: in-place backfill of extensions._risu_array_index on existing WB entries.
+  getCharacterWorldBookIds: (characterId: string, userId: string) => Promise<readonly string[]>;
+  listWorldBookEntries: (worldBookId: string, userId: string) => Promise<readonly LiveWorldBookEntry[]>;
+  updateWorldBookEntryExtensions: (
+    entryId: string,
+    extensions: Readonly<Record<string, unknown>>,
+    userId: string,
+  ) => Promise<void>;
   log: {
     info: (s: string) => void;
     warn: (s: string) => void;
@@ -154,6 +167,95 @@ async function applyV5AssetIndexRebuild(
   };
 }
 
+async function applyV6BackfillArrayIndex(
+  args: CharacterMigrationStepArgs,
+  deps: MigrationDeps,
+): Promise<CharacterMigrationStepResult> {
+  // _risu_array_index is excluded from _risu_source_hash (lorebook-hash.ts),
+  // so old + new hashes match for the same source row.
+  const indexBySourceHash = new Map<string, number>();
+  for (const e of args.newBundle.worldBookEntries) {
+    const ext = (e.extensions ?? {}) as Record<string, unknown>;
+    const hash = ext['_risu_source_hash'];
+    const idx = ext['_risu_array_index'];
+    if (typeof hash === 'string' && typeof idx === 'number') {
+      indexBySourceHash.set(hash, idx);
+    }
+  }
+  if (indexBySourceHash.size === 0) {
+    return { nextEnvelope: args.envelope, notes: ['no source-hashed entries in new bundle'] };
+  }
+
+  let worldBookIds: readonly string[];
+  try {
+    worldBookIds = await deps.getCharacterWorldBookIds(args.characterId, args.userId);
+  } catch (err) {
+    return {
+      nextEnvelope: args.envelope,
+      notes: [`getCharacterWorldBookIds failed: ${err instanceof Error ? err.message : String(err)}`],
+    };
+  }
+  if (worldBookIds.length === 0) {
+    return { nextEnvelope: args.envelope, notes: ['character has no world_book_ids'] };
+  }
+
+  let liveTotal = 0;
+  let matched = 0;
+  let updated = 0;
+  let unmatched = 0;
+  for (const wbId of worldBookIds) {
+    let entries: readonly LiveWorldBookEntry[];
+    try {
+      entries = await deps.listWorldBookEntries(wbId, args.userId);
+    } catch (err) {
+      deps.log.warn(
+        `migrate(${args.characterId}) v6: list wb=${wbId} failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      continue;
+    }
+    liveTotal += entries.length;
+    for (const live of entries) {
+      const ext = (live.extensions ?? {}) as Record<string, unknown>;
+      const hash = ext['_risu_source_hash'];
+      if (typeof hash !== 'string') {
+        unmatched += 1;
+        continue;
+      }
+      const idx = indexBySourceHash.get(hash);
+      if (typeof idx !== 'number') {
+        unmatched += 1;
+        continue;
+      }
+      matched += 1;
+      const existingIdx = ext['_risu_array_index'];
+      if (existingIdx === idx) continue;
+      try {
+        await deps.updateWorldBookEntryExtensions(
+          live.id,
+          { ...ext, _risu_array_index: idx },
+          args.userId,
+        );
+        updated += 1;
+      } catch (err) {
+        deps.log.warn(
+          `migrate(${args.characterId}) v6: update entry=${live.id} failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+  }
+
+  return {
+    nextEnvelope: args.envelope,
+    notes: [
+      `wbs=${worldBookIds.length}`,
+      `live=${liveTotal}`,
+      `matched=${matched}`,
+      `updated=${updated}`,
+      `unmatched=${unmatched}`,
+    ],
+  };
+}
+
 export const CHARACTER_MIGRATIONS: readonly CharacterMigrationStep[] = [
   {
     version: 5,
@@ -166,6 +268,13 @@ export const CHARACTER_MIGRATIONS: readonly CharacterMigrationStep[] = [
       'payload.emotion_images',
     ],
     apply: applyV5AssetIndexRebuild,
+  },
+  {
+    version: 6,
+    description:
+      'Backfill extensions._risu_array_index on existing WB entries for the Risu-faithful viewer order.',
+    touches: ['world_book_entries'],
+    apply: applyV6BackfillArrayIndex,
   },
 ];
 

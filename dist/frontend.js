@@ -2445,6 +2445,224 @@ var styles_default = `.risu-compat-drawer {\r
   line-height: 1.45;\r
 }\r
 \r
+/* Risu-faithful lorebook viewer: one line per entry, expand for read-only detail. */\r
+.lr-viewer-drawer .lrv-lb-section {\r
+  padding: 0;\r
+}\r
+.lr-viewer-drawer .lrv-lb-group {\r
+  border-top: 1px solid var(--lumiverse-border, rgba(255, 255, 255, 0.05));\r
+}\r
+.lr-viewer-drawer .lrv-lb-group-summary {\r
+  cursor: pointer;\r
+  padding: 6px 12px;\r
+  font-size: 12px;\r
+  font-weight: 500;\r
+  color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.7));\r
+}\r
+.lr-viewer-drawer .lrv-lb-group-summary::-webkit-details-marker { display: none; }\r
+.lr-viewer-drawer .lrv-lb-group-summary::marker { content: ''; }\r
+.lr-viewer-drawer .lrv-lb-group-summary::before {\r
+  content: '▸';\r
+  display: inline-block;\r
+  width: 1em;\r
+  margin-right: 2px;\r
+  font-size: 10px;\r
+  transition: transform 0.1s;\r
+}\r
+.lr-viewer-drawer .lrv-lb-group[open] > .lrv-lb-group-summary::before {\r
+  transform: rotate(90deg);\r
+}\r
+\r
+.lr-viewer-drawer .lrv-lb-row {\r
+  border-top: 1px solid var(--lumiverse-border, rgba(255, 255, 255, 0.04));\r
+}\r
+.lr-viewer-drawer .lrv-lb-row:first-of-type {\r
+  border-top: none;\r
+}\r
+.lr-viewer-drawer .lrv-lb-row-summary {\r
+  cursor: pointer;\r
+  padding: 4px 16px;\r
+  display: flex;\r
+  align-items: center;\r
+  gap: 8px;\r
+  font-size: 12px;\r
+  list-style: none;\r
+}\r
+.lr-viewer-drawer .lrv-lb-row-summary::-webkit-details-marker { display: none; }\r
+.lr-viewer-drawer .lrv-lb-row-summary::marker { content: ''; }\r
+.lr-viewer-drawer .lrv-lb-row-summary:hover {\r
+  background: var(--lumiverse-surface-2, rgba(255, 255, 255, 0.03));\r
+}\r
+.lr-viewer-drawer .lrv-lb-row-disabled .lrv-lb-row-summary { opacity: 0.45; }\r
+.lr-viewer-drawer .lrv-lb-status {\r
+  flex: 0 0 auto;\r
+  width: 8px;\r
+  height: 8px;\r
+  border-radius: 50%;\r
+  display: inline-block;\r
+}\r
+.lr-viewer-drawer .lrv-lb-status-always {\r
+  background: #f5b73a;\r
+}\r
+.lr-viewer-drawer .lrv-lb-status-keyed {\r
+  background: transparent;\r
+  border: 1px solid var(--lumiverse-text-muted, rgba(255, 255, 255, 0.5));\r
+  width: 7px;\r
+  height: 7px;\r
+}\r
+.lr-viewer-drawer .lrv-lb-name {\r
+  flex: 1 1 auto;\r
+  white-space: nowrap;\r
+  overflow: hidden;\r
+  text-overflow: ellipsis;\r
+  color: var(--lumiverse-text, inherit);\r
+}\r
+\r
+.lr-viewer-drawer .lrv-lb-body {\r
+  padding: 6px 16px 10px 32px;\r
+  display: flex;\r
+  flex-direction: column;\r
+  gap: 6px;\r
+  font-size: 11.5px;\r
+}\r
+.lr-viewer-drawer .lrv-lb-field {\r
+  display: flex;\r
+  gap: 6px;\r
+}\r
+.lr-viewer-drawer .lrv-lb-field-label {\r
+  color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.6));\r
+  text-transform: uppercase;\r
+  font-size: 10px;\r
+  letter-spacing: 0.4px;\r
+  padding-top: 1px;\r
+}\r
+.lr-viewer-drawer .lrv-lb-field > .lrv-lb-field-label {\r
+  flex: 0 0 100px;\r
+}\r
+.lr-viewer-drawer .lrv-lb-field-value {\r
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;\r
+  word-break: break-word;\r
+}\r
+.lr-viewer-drawer .lrv-lb-content {\r
+  margin: 0;\r
+  padding: 6px 8px;\r
+  background: var(--lumiverse-surface-2, rgba(255, 255, 255, 0.04));\r
+  border-radius: 3px;\r
+  white-space: pre-wrap;\r
+  word-break: break-word;\r
+  line-height: 1.45;\r
+  font-family: inherit;\r
+  max-height: 300px;\r
+  overflow: auto;\r
+}\r
+\r
+.lr-viewer-drawer .lrv-lb-useradds-head {\r
+  padding: 10px 16px 4px;\r
+  font-size: 10px;\r
+  font-weight: 600;\r
+  text-transform: uppercase;\r
+  letter-spacing: 0.5px;\r
+  color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.55));\r
+  border-top: 1px dashed var(--lumiverse-border, rgba(255, 255, 255, 0.08));\r
+  margin-top: 4px;\r
+}\r
+\r
+.lr-viewer-drawer .lrv-lb-legacy {\r
+  padding: 16px;\r
+  font-size: 12px;\r
+  line-height: 1.5;\r
+}\r
+\r
+/* Folder group: collapsible <details> wrapping its children. */\r
+.lr-viewer-drawer .lrv-lb-folder-group {\r
+  border-top: 1px solid var(--lumiverse-border, rgba(255, 255, 255, 0.08));\r
+}\r
+.lr-viewer-drawer .lrv-lb-folder-summary {\r
+  cursor: pointer;\r
+  display: flex;\r
+  align-items: center;\r
+  gap: 6px;\r
+  padding: 6px 16px;\r
+  font-size: 12px;\r
+  color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.7));\r
+  list-style: none;\r
+}\r
+.lr-viewer-drawer .lrv-lb-folder-summary::-webkit-details-marker { display: none; }\r
+.lr-viewer-drawer .lrv-lb-folder-summary::marker { content: ''; }\r
+.lr-viewer-drawer .lrv-lb-folder-summary::before {\r
+  content: '▸';\r
+  display: inline-block;\r
+  width: 1em;\r
+  margin-right: 2px;\r
+  font-size: 10px;\r
+  transition: transform 0.1s;\r
+}\r
+.lr-viewer-drawer .lrv-lb-folder-group[open] > .lrv-lb-folder-summary::before {\r
+  transform: rotate(90deg);\r
+}\r
+.lr-viewer-drawer .lrv-lb-folder-summary:hover {\r
+  background: var(--lumiverse-surface-2, rgba(255, 255, 255, 0.03));\r
+}\r
+.lr-viewer-drawer .lrv-lb-folder-name {\r
+  flex: 1 1 auto;\r
+  font-weight: 500;\r
+  white-space: nowrap;\r
+  overflow: hidden;\r
+  text-overflow: ellipsis;\r
+  color: var(--lumiverse-text, inherit);\r
+}\r
+.lr-viewer-drawer .lrv-lb-folder-count {\r
+  flex: 0 0 auto;\r
+  font-size: 11px;\r
+  color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.5));\r
+}\r
+.lr-viewer-drawer .lrv-lb-folder-body {\r
+  padding-left: 14px;\r
+  border-left: 1px dashed var(--lumiverse-border, rgba(255, 255, 255, 0.08));\r
+  margin-left: 22px;\r
+}\r
+\r
+/* Fallback: standalone folder row when no children are present in the list. */\r
+.lr-viewer-drawer .lrv-lb-folder {\r
+  display: flex;\r
+  align-items: center;\r
+  gap: 6px;\r
+  padding: 6px 16px;\r
+  border-top: 1px solid var(--lumiverse-border, rgba(255, 255, 255, 0.08));\r
+  font-size: 12px;\r
+  color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.55));\r
+}\r
+.lr-viewer-drawer .lrv-lb-row + .lrv-lb-folder {\r
+  margin-top: 4px;\r
+}\r
+.lr-viewer-drawer .lrv-lb-folder-icon {\r
+  display: inline-block;\r
+  width: 10px;\r
+  height: 8px;\r
+  background: currentColor;\r
+  border-radius: 1px;\r
+  position: relative;\r
+  opacity: 0.7;\r
+}\r
+.lr-viewer-drawer .lrv-lb-folder-icon::before {\r
+  content: '';\r
+  position: absolute;\r
+  left: 0;\r
+  top: -3px;\r
+  width: 5px;\r
+  height: 3px;\r
+  background: currentColor;\r
+  border-radius: 1px 1px 0 0;\r
+}\r
+\r
+/* Child link row: an entry that lives elsewhere, linked into this list. */\r
+.lr-viewer-drawer .lrv-lb-child {\r
+  padding: 4px 16px 4px 28px;\r
+  font-size: 11.5px;\r
+  font-style: italic;\r
+  color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.55));\r
+}\r
+\r
 /* "Lumiverse handles this" redirect block */\r
 .lr-viewer-drawer .lrv-section-redirect {\r
   padding: 0;\r
@@ -2986,9 +3204,8 @@ function mountCardsPanel(opts) {
   const { ctx, sendToBackend, log } = opts;
   log.info("cards-panel: mounting");
   const root = opts.root;
-  root.classList.add("risu-compat-drawer");
   const actionRow = document.createElement("div");
-  actionRow.className = "rc-row";
+  actionRow.className = "lrm-toolbar";
   const importBtn = document.createElement("button");
   importBtn.type = "button";
   importBtn.className = "lrm-btn lrm-btn-primary";
@@ -5559,14 +5776,14 @@ function mountModulesPanel(opts) {
   let activeSubTab = "characters";
   const charBody = document.createElement("section");
   charBody.className = "lrm-section-body lrm-tab-body";
+  const charDesc = document.createElement("div");
+  charDesc.className = "lrm-section-desc";
+  charDesc.textContent = "Upload Risu character cards (.charx, .png, .json). Click any row to manage attached modules. Delete characters through Lumiverse.";
+  charBody.appendChild(charDesc);
   const charHeaderSlot = document.createElement("div");
   charHeaderSlot.className = "lrm-character-header-slot";
   charBody.appendChild(charHeaderSlot);
   const charHeaderHandle = opts.mountCharactersHeader ? opts.mountCharactersHeader(charHeaderSlot) : null;
-  const charDesc = document.createElement("div");
-  charDesc.className = "lrm-section-desc";
-  charDesc.textContent = "Click any row to manage attached modules. Delete characters through Lumiverse.";
-  charBody.appendChild(charDesc);
   const charList = document.createElement("div");
   charList.className = "lrm-characters-list";
   charBody.appendChild(charList);
@@ -6376,40 +6593,36 @@ function mountViewerPanel(opts) {
     tabs.push({
       id: "assets",
       label: "Assets",
-      count: d.assets.length,
       render: () => renderAssetsSection(d.assets)
     });
-    tabs.push({
-      id: "triggers",
-      label: "Triggers",
-      count: d.triggers.length,
-      render: () => renderTriggersSection(d.triggers)
-    });
-    if (d.backgroundHtml) {
-      tabs.push({
-        id: "background",
-        label: "Background HTML",
-        render: () => renderBackgroundHtmlSection(d.backgroundHtml ?? "")
-      });
-    }
     if (isCharacter) {
       tabs.push({
         id: "lorebook",
-        label: "Lorebook",
-        render: () => renderLumiverseRedirect()
+        label: "Lore",
+        render: () => d.lorebookNeedsReimport ? renderLorebookLegacyNotice() : renderLorebookSection(d.lorebook)
       });
     } else {
       tabs.push({
         id: "regex",
         label: "Regex",
-        count: d.regex.length,
         render: () => renderRegexSection(d.regex)
       });
       tabs.push({
         id: "lorebook",
-        label: "Lorebook",
-        count: d.lorebook.reduce((s, g) => s + g.entries.length, 0),
+        label: "Lore",
         render: () => renderLorebookSection(d.lorebook)
+      });
+    }
+    tabs.push({
+      id: "triggers",
+      label: "Triggers",
+      render: () => renderTriggersSection(d.triggers)
+    });
+    if (d.backgroundHtml) {
+      tabs.push({
+        id: "background",
+        label: " HTML",
+        render: () => renderBackgroundHtmlSection(d.backgroundHtml ?? "")
       });
     }
     if (d.cjs) {
@@ -6430,7 +6643,7 @@ function mountViewerPanel(opts) {
       btn.className = "lrv-subtab";
       if (t.id === activeSubTab)
         btn.classList.add("lrv-subtab-active");
-      btn.textContent = typeof t.count === "number" ? `${t.label} · ${t.count}` : t.label;
+      btn.textContent = t.label;
       btn.addEventListener("click", () => {
         if (activeSubTab === t.id)
           return;
@@ -6468,10 +6681,6 @@ function mountViewerPanel(opts) {
   }
   function renderBackgroundHtmlSection(html) {
     const det = document.createElement("section");
-    const note = document.createElement("div");
-    note.className = "lrv-warning";
-    note.textContent = "Painted into chats via the shadow-DOM mount; class names + CSS selectors are rewritten at render time.";
-    det.appendChild(note);
     if (editingBackgroundHtml) {
       const editor = document.createElement("div");
       editor.className = "lrv-trigger-editor";
@@ -6564,19 +6773,6 @@ function mountViewerPanel(opts) {
     });
     editingBackgroundHtml = false;
     editingBackgroundHtmlBuffer = "";
-  }
-  function renderLumiverseRedirect() {
-    const wrap = document.createElement("div");
-    wrap.className = "lrv-section lrv-section-redirect";
-    const head = document.createElement("div");
-    head.className = "lrv-section-summary";
-    head.textContent = "Lorebook · Regex";
-    wrap.appendChild(head);
-    const body = document.createElement("div");
-    body.className = "lrv-redirect-body";
-    body.textContent = "Edit and view this character's lorebook + regex rules through Lumiverse's native UI. " + "To import a standalone lorebook file, use the Import → Lorebooks tab.";
-    wrap.appendChild(body);
-    return wrap;
   }
   function renderAssetsSection(assets) {
     const det = document.createElement("section");
@@ -7158,14 +7354,15 @@ function mountViewerPanel(opts) {
     }
     return det;
   }
+  function renderLorebookLegacyNotice() {
+    const wrap = document.createElement("div");
+    wrap.className = "lrv-empty lrv-lb-legacy";
+    wrap.textContent = "⚠️ This is a legacy card imported before 0.3.0. Please reimport this card to unlock the lorebook viewer.";
+    return wrap;
+  }
   function renderLorebookSection(groups) {
     const det = document.createElement("section");
-    det.className = "lrv-section";
-    const sum = document.createElement("div");
-    sum.className = "lrv-section-summary";
-    const totalEntries = groups.reduce((acc, g) => acc + g.entries.length, 0);
-    sum.textContent = `Lorebook · ${groups.length} group${groups.length === 1 ? "" : "s"} · ${totalEntries} entr${totalEntries === 1 ? "y" : "ies"}`;
-    det.appendChild(sum);
+    det.className = "lrv-section lrv-lb-section";
     if (groups.length === 0) {
       const empty = document.createElement("div");
       empty.className = "lrv-empty";
@@ -7174,36 +7371,187 @@ function mountViewerPanel(opts) {
       return det;
     }
     for (const g of groups) {
+      const risuEntries = [];
+      const userAdditions = [];
+      for (const e of g.entries) {
+        if (e.fromRisu === false)
+          userAdditions.push(e);
+        else
+          risuEntries.push(e);
+      }
       const grpDet = document.createElement("details");
-      grpDet.className = "lrv-lorebook-group";
+      grpDet.className = "lrv-lb-group";
       grpDet.open = true;
       const grpSum = document.createElement("summary");
-      grpSum.textContent = `${g.groupName} · ${g.entries.length}`;
+      grpSum.className = "lrv-lb-group-summary";
+      grpSum.textContent = `${g.groupName} (${g.entries.length})`;
       grpDet.appendChild(grpSum);
-      for (const e of g.entries) {
-        const row = document.createElement("div");
-        row.className = "lrv-lorebook-row";
-        if (e.disabled)
-          row.classList.add("lrv-lorebook-row-disabled");
-        const keyEl = document.createElement("div");
-        keyEl.className = "lrv-lorebook-keys";
-        keyEl.textContent = e.key.length > 0 ? e.key.join(", ") : "(no keys)";
-        row.appendChild(keyEl);
-        if (e.comment) {
-          const com = document.createElement("div");
-          com.className = "lrv-lorebook-comment";
-          com.textContent = e.comment;
-          row.appendChild(com);
-        }
-        const body = document.createElement("div");
-        body.className = "lrv-lorebook-content";
-        body.textContent = e.content.length > 400 ? e.content.slice(0, 400) + "…" : e.content;
-        row.appendChild(body);
-        grpDet.appendChild(row);
+      renderLorebookEntriesWithFolders(grpDet, risuEntries);
+      if (userAdditions.length > 0) {
+        const uaHead = document.createElement("div");
+        uaHead.className = "lrv-lb-useradds-head";
+        uaHead.textContent = `User Additions (${userAdditions.length})`;
+        grpDet.appendChild(uaHead);
+        renderLorebookEntriesWithFolders(grpDet, userAdditions);
       }
       det.appendChild(grpDet);
     }
     return det;
+  }
+  function renderLorebookEntriesWithFolders(container, entries) {
+    const childrenByFolder = new Map;
+    const folderKeys = new Set;
+    for (const e of entries) {
+      if (e.risuMode === "folder" && e.risuFolderKey)
+        folderKeys.add(e.risuFolderKey);
+      if (e.risuFolderRef) {
+        const arr = childrenByFolder.get(e.risuFolderRef) ?? [];
+        arr.push(e);
+        childrenByFolder.set(e.risuFolderRef, arr);
+      }
+    }
+    for (const e of entries) {
+      if (e.risuMode === "folder" && e.risuFolderKey) {
+        const children = childrenByFolder.get(e.risuFolderKey) ?? [];
+        container.appendChild(renderLorebookFolderGroup(e, children));
+        continue;
+      }
+      if (e.risuFolderRef && folderKeys.has(e.risuFolderRef))
+        continue;
+      container.appendChild(renderLorebookRow(e));
+    }
+  }
+  function renderLorebookFolderGroup(folder, children) {
+    const det = document.createElement("details");
+    det.className = "lrv-lb-folder-group";
+    const sum = document.createElement("summary");
+    sum.className = "lrv-lb-folder-summary";
+    const icon = document.createElement("span");
+    icon.className = "lrv-lb-folder-icon";
+    icon.setAttribute("aria-hidden", "true");
+    sum.appendChild(icon);
+    const name = document.createElement("span");
+    name.className = "lrv-lb-folder-name";
+    name.textContent = folder.comment && folder.comment.length > 0 ? folder.comment : "(unnamed folder)";
+    sum.appendChild(name);
+    const count = document.createElement("span");
+    count.className = "lrv-lb-folder-count";
+    count.textContent = `(${children.length})`;
+    sum.appendChild(count);
+    det.appendChild(sum);
+    const body = document.createElement("div");
+    body.className = "lrv-lb-folder-body";
+    for (const c of children)
+      body.appendChild(renderLorebookRow(c));
+    det.appendChild(body);
+    return det;
+  }
+  function renderLorebookRow(e) {
+    if (e.risuMode === "folder")
+      return renderLorebookFolderHeader(e);
+    if (e.risuMode === "child")
+      return renderLorebookChildLink(e);
+    const row = document.createElement("details");
+    row.className = "lrv-lb-row";
+    if (e.disabled)
+      row.classList.add("lrv-lb-row-disabled");
+    const sum = document.createElement("summary");
+    sum.className = "lrv-lb-row-summary";
+    const dot = document.createElement("span");
+    dot.className = e.constant ? "lrv-lb-status lrv-lb-status-always" : "lrv-lb-status lrv-lb-status-keyed";
+    dot.title = e.disabled ? "disabled" : e.constant ? "always active" : "key-based";
+    sum.appendChild(dot);
+    const name = document.createElement("span");
+    name.className = "lrv-lb-name";
+    name.textContent = lorebookEntryName(e);
+    sum.appendChild(name);
+    row.appendChild(sum);
+    row.appendChild(renderLorebookRowDetail(e));
+    return row;
+  }
+  function renderLorebookFolderHeader(e) {
+    const row = document.createElement("div");
+    row.className = "lrv-lb-folder";
+    const icon = document.createElement("span");
+    icon.className = "lrv-lb-folder-icon";
+    icon.setAttribute("aria-hidden", "true");
+    row.appendChild(icon);
+    const name = document.createElement("span");
+    name.className = "lrv-lb-folder-name";
+    name.textContent = e.comment && e.comment.length > 0 ? e.comment : "(unnamed folder)";
+    row.appendChild(name);
+    return row;
+  }
+  function renderLorebookChildLink(e) {
+    const row = document.createElement("div");
+    row.className = "lrv-lb-child";
+    const name = document.createElement("span");
+    name.className = "lrv-lb-child-name";
+    name.textContent = e.comment && e.comment.length > 0 ? e.comment : "(linked entry)";
+    row.appendChild(name);
+    return row;
+  }
+  function lorebookEntryName(e) {
+    if (e.comment && e.comment.length > 0)
+      return e.comment;
+    if (e.key.length > 0)
+      return e.key.join(", ");
+    return "(unnamed)";
+  }
+  function renderLorebookRowDetail(e) {
+    const body = document.createElement("div");
+    body.className = "lrv-lb-body";
+    if (!e.constant && e.key.length > 0) {
+      body.appendChild(field("Activation keys", e.key.join(", ")));
+    }
+    if (typeof e.position === "number") {
+      body.appendChild(field("Position", positionLabel(e.position, e.depth)));
+    }
+    if (typeof e.orderValue === "number") {
+      body.appendChild(field("Insert order", String(e.orderValue)));
+    }
+    const promptLabel = document.createElement("div");
+    promptLabel.className = "lrv-lb-field-label";
+    promptLabel.textContent = "Prompt";
+    body.appendChild(promptLabel);
+    const content = document.createElement("pre");
+    content.className = "lrv-lb-content";
+    content.textContent = e.content;
+    body.appendChild(content);
+    return body;
+  }
+  function field(label, value) {
+    const row = document.createElement("div");
+    row.className = "lrv-lb-field";
+    const l = document.createElement("span");
+    l.className = "lrv-lb-field-label";
+    l.textContent = label;
+    const v = document.createElement("span");
+    v.className = "lrv-lb-field-value";
+    v.textContent = value;
+    row.appendChild(l);
+    row.appendChild(v);
+    return row;
+  }
+  function positionLabel(position, depth) {
+    switch (position) {
+      case 0:
+        return "before char";
+      case 1:
+        return "after char";
+      case 2:
+        return "before AN";
+      case 3:
+        return "after AN";
+      case 4:
+        return `depth ${depth ?? "?"}`;
+      case 5:
+        return "before ex";
+      case 6:
+        return "after ex";
+      default:
+        return `pos ${position}`;
+    }
   }
   function renderCjsSection(cjs) {
     const det = document.createElement("section");
