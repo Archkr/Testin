@@ -54,6 +54,30 @@ function unknownArray(v: unknown): readonly unknown[] {
   return v;
 }
 
+// Normalize CCSv2 `[name, src, fileName?]` tuples to v3 `{type, name, uri, ext?}` shape.
+function risuV2AdditionalAssetsAsV3(risuai: Record<string, unknown>): readonly unknown[] {
+  const raw = risuai["additionalAssets"];
+  if (!Array.isArray(raw)) return [];
+  const out: unknown[] = [];
+  for (const t of raw as unknown[]) {
+    if (!Array.isArray(t)) continue;
+    const name = typeof t[0] === "string" ? (t[0] as string) : "";
+    const uri = typeof t[1] === "string" ? (t[1] as string) : "";
+    if (!name || !uri) continue;
+    const fileName = typeof t[2] === "string" ? (t[2] as string) : "";
+    let ext: string | undefined;
+    if (fileName.length > 0) {
+      const dot = fileName.lastIndexOf(".");
+      if (dot >= 0 && dot < fileName.length - 1) {
+        const candidate = fileName.slice(dot + 1).toLowerCase();
+        if (/^[a-z0-9]{1,6}$/.test(candidate)) ext = candidate;
+      }
+    }
+    out.push({ type: "x-risu-asset", name, uri, ...(ext ? { ext } : {}) });
+  }
+  return out;
+}
+
 function buildExtensions(
   data: Record<string, unknown>,
   spec: string,
@@ -131,7 +155,10 @@ export function mapCharacter(card: unknown, opts: MapCardOptions = {}): MappedCh
     triggerScripts: unknownArray(risuai["triggerscript"]),
     virtualScript: typeof risuai["virtualscript"] === "string" ? (risuai["virtualscript"] as string) : null,
     defaultVariables: typeof risuai["defaultVariables"] === "string" ? (risuai["defaultVariables"] as string) : null,
-    assets: unknownArray(data["assets"]),
+    assets: [
+      ...unknownArray(data["assets"]),
+      ...risuV2AdditionalAssetsAsV3(risuai),
+    ],
     depthPrompt: extensions["depth_prompt"] ?? null,
     utilityBot: risuai["utilityBot"] === true,
     additionalText:

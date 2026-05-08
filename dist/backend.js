@@ -4918,6 +4918,3715 @@ var init_svg_rasterize = __esm(() => {
   VIEWBOX_RE = /\bviewBox\s*=\s*["']?\s*([\d.-]+)\s+([\d.-]+)\s+([\d.]+)\s+([\d.]+)/i;
   PLACEHOLDER_RE = /<img\b[^>]*\bdata-lumirealm-svg-pending\s*=\s*["']?(\d+)["']?[^>]*>/gi;
 });
+// src/core/cbs/catalog/schema.ts
+function isComplete(entry) {
+  if (entry.argShape === "UNCERTAIN")
+    return false;
+  if (entry.summary.trim().length === 0)
+    return false;
+  if (!entry.pure && entry.readsState.length === 0 && entry.writesState.length === 0)
+    return false;
+  return true;
+}
+var stateReadKindSchema, stateWriteKindSchema, macroCategorySchema, lumiverseCollisionSchema, macroCatalogEntrySchema, macroCatalogSchema;
+var init_schema = __esm(() => {
+  init_zod();
+  stateReadKindSchema = exports_external.enum([
+    "none",
+    "localVars",
+    "globalVars",
+    "chatState",
+    "characterFields",
+    "time",
+    "rng",
+    "messages"
+  ]);
+  stateWriteKindSchema = exports_external.enum([
+    "none",
+    "localVars",
+    "globalVars",
+    "chatState",
+    "messages"
+  ]);
+  macroCategorySchema = exports_external.enum([
+    "identity",
+    "character_fields",
+    "chat_context",
+    "time",
+    "variables",
+    "math",
+    "logic",
+    "arrays",
+    "strings",
+    "random",
+    "tokenize",
+    "display",
+    "escape_markup",
+    "control_flow",
+    "metadata",
+    "flow_control",
+    "other"
+  ]);
+  lumiverseCollisionSchema = exports_external.object({
+    name: exports_external.string(),
+    compatible: exports_external.boolean(),
+    notes: exports_external.string()
+  });
+  macroCatalogEntrySchema = exports_external.object({
+    name: exports_external.string().min(1),
+    aliases: exports_external.array(exports_external.string()),
+    category: macroCategorySchema,
+    argShape: exports_external.string().min(1),
+    minArgs: exports_external.number().int().min(0),
+    maxArgs: exports_external.number().int().min(-1),
+    pure: exports_external.boolean(),
+    readsState: exports_external.array(stateReadKindSchema),
+    writesState: exports_external.array(stateWriteKindSchema),
+    lumiverseCollision: lumiverseCollisionSchema.nullable(),
+    risuFile: exports_external.string(),
+    risuLine: exports_external.number().int().min(1),
+    summary: exports_external.string(),
+    notes: exports_external.string()
+  });
+  macroCatalogSchema = exports_external.array(macroCatalogEntrySchema);
+});
+
+// src/core/cbs/catalog/loader.ts
+class CatalogIndex {
+  entriesByCanonical = new Map;
+  entriesByLookup = new Map;
+  entries;
+  constructor(entries) {
+    this.entries = entries;
+    for (const e of entries) {
+      const canonical = stripBlockMarker(e.name);
+      if (this.entriesByCanonical.has(canonical)) {
+        throw new Error(`catalog: duplicate canonical name "${canonical}"`);
+      }
+      this.entriesByCanonical.set(canonical, e);
+      const canonicalNorm = normalizeMacroName(canonical);
+      this.entriesByLookup.set(canonicalNorm, e);
+      for (const alias of e.aliases) {
+        const norm = normalizeMacroName(stripBlockMarker(alias));
+        if (!this.entriesByLookup.has(norm))
+          this.entriesByLookup.set(norm, e);
+      }
+    }
+  }
+  find(name) {
+    const norm = normalizeMacroName(stripBlockMarker(name));
+    return this.entriesByLookup.get(norm) ?? null;
+  }
+  delegatesToLumiverse(name) {
+    const e = this.find(name);
+    return !!e && !!e.lumiverseCollision && e.lumiverseCollision.compatible;
+  }
+  needsRename(name) {
+    const e = this.find(name);
+    return !!e && !!e.lumiverseCollision && !e.lumiverseCollision.compatible;
+  }
+  incompatibleNames() {
+    const names = [];
+    for (const e of this.entries) {
+      if (!e.lumiverseCollision || e.lumiverseCollision.compatible)
+        continue;
+      names.push(e.name);
+      if (e.aliases)
+        names.push(...e.aliases);
+    }
+    return names;
+  }
+  handlerEntries() {
+    return this.entries.filter((e) => !e.lumiverseCollision || !e.lumiverseCollision.compatible);
+  }
+  completeEntries() {
+    return this.entries.filter(isComplete);
+  }
+  skeletonEntries() {
+    return this.entries.filter((e) => !isComplete(e));
+  }
+}
+function stripBlockMarker(name) {
+  if (name.startsWith("#") || name.startsWith(":"))
+    return name.slice(1);
+  return name;
+}
+function parseCatalog(raw) {
+  return macroCatalogSchema.parse(raw);
+}
+var init_loader = __esm(() => {
+  init_schema();
+  init_parser();
+});
+
+// src/core/cbs/catalog/index.ts
+var init_catalog = __esm(() => {
+  init_schema();
+  init_loader();
+});
+
+// src/core/cbs/rewrite/index.ts
+var init_rewrite = __esm(() => {
+  init_encode();
+  init_text();
+  init_blocks();
+});
+// src/core/cbs/runtime/mock.ts
+class MockVariableStore {
+  data = {
+    local: new Map,
+    global: new Map,
+    temp: new Map
+  };
+  get(scope, name) {
+    return this.data[scope].get(name) ?? "";
+  }
+  set(scope, name, value) {
+    this.data[scope].set(name, value);
+  }
+  add(scope, name, delta) {
+    const current = Number(this.data[scope].get(name) ?? "0");
+    const next = (Number.isFinite(current) ? current : 0) + delta;
+    this.data[scope].set(name, String(next));
+  }
+  has(scope, name) {
+    return this.data[scope].has(name);
+  }
+  delete(scope, name) {
+    this.data[scope].delete(name);
+  }
+}
+
+class MockFunctionRegistry {
+  table = new Map;
+  define(name, body, argNames) {
+    this.table.set(name, { body, argNames });
+  }
+  get(name) {
+    return this.table.get(name) ?? null;
+  }
+  delete(name) {
+    this.table.delete(name);
+  }
+  has(name) {
+    return this.table.has(name);
+  }
+}
+var init_mock = () => {};
+
+// src/core/cbs/runtime/index.ts
+var init_runtime = __esm(() => {
+  init_mock();
+});
+
+// src/core/cbs/index.ts
+var init_cbs = __esm(() => {
+  init_parser();
+  init_catalog();
+  init_rewrite();
+  init_runtime();
+});
+
+// src/core/cbs/catalog/risu-macros.json
+var risu_macros_default;
+var init_risu_macros = __esm(() => {
+  risu_macros_default = [
+    {
+      name: "#each",
+      aliases: [
+        ":each"
+      ],
+      category: "control_flow",
+      argShape: "[::keep ]ARRAY as VAR + body",
+      minArgs: 2,
+      maxArgs: 2,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/parser/parser.svelte.ts",
+      risuLine: 1388,
+      summary: "Iterates over a JSON or \xA7-delimited array, substituting {{slot::VAR}} inside the body per iteration.",
+      notes: "Known deviation: inner macros are not re-evaluated per iteration; remaining {{\u2026}} in output appear literal."
+    },
+    {
+      name: "#code",
+      aliases: [
+        "#normalize"
+      ],
+      category: "control_flow",
+      argShape: "body",
+      minArgs: 1,
+      maxArgs: 1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/parser/parser.svelte.ts",
+      risuLine: 1486,
+      summary: "Normalizes a code body: trims, strips newlines and tabs, processes backslash escape sequences (\\n, \\r, \\t, \\uXXXX, \\x, etc).",
+      notes: "Often used to inline machine-generated JSON into a prompt."
+    },
+    {
+      name: "#ignore",
+      aliases: [],
+      category: "control_flow",
+      argShape: "body",
+      minArgs: 1,
+      maxArgs: 1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/parser/parser.svelte.ts",
+      risuLine: 1517,
+      summary: "Discards the block body and returns empty string. Inner macros are not evaluated.",
+      notes: "Typical use: disabling a section of a card without deleting it."
+    },
+    {
+      name: "#escape",
+      aliases: [],
+      category: "control_flow",
+      argShape: "[::keep] + body",
+      minArgs: 0,
+      maxArgs: 1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/parser/parser.svelte.ts",
+      risuLine: 1514,
+      summary: "Replaces { } ( ) in the body with Private Use Area chars so they don't parse as macro/function syntax.",
+      notes: "Body is trimmed unless mode=keep. Inner macros are not evaluated (opaque block)."
+    },
+    {
+      name: "#if",
+      aliases: [],
+      category: "control_flow",
+      argShape: "cond + body",
+      minArgs: 1,
+      maxArgs: 2,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/parser/parser.svelte.ts",
+      risuLine: 1138,
+      summary: 'Conditional block. Returns body if condition is truthy ("true" or "1"), else empty (or {{:else}} branch if present).',
+      notes: "DEPRECATED. Use #when instead. Risu short-circuits body evaluation for the untaken branch; Lumiverse does not."
+    },
+    {
+      name: "#if_pure",
+      aliases: [],
+      category: "control_flow",
+      argShape: "cond + body",
+      minArgs: 1,
+      maxArgs: 2,
+      pure: false,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/parser/parser.svelte.ts",
+      risuLine: 1143,
+      summary: "Conditional block variant that preserves interior whitespace. DEPRECATED; use #when::keep::cond instead.",
+      notes: "DEPRECATED."
+    },
+    {
+      name: "#pure",
+      aliases: [],
+      category: "control_flow",
+      argShape: "body",
+      minArgs: 1,
+      maxArgs: 1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/parser/parser.svelte.ts",
+      risuLine: 1420,
+      summary: "Returns the block body as literal text without evaluating inner CBS macros.",
+      notes: "Body is trimmed. Inner macros are preserved verbatim (opaque block)."
+    },
+    {
+      name: "#puredisplay",
+      aliases: [
+        "pure_display",
+        "pure-display"
+      ],
+      category: "control_flow",
+      argShape: "body",
+      minArgs: 1,
+      maxArgs: 1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/parser/parser.svelte.ts",
+      risuLine: 1722,
+      summary: "Returns the trimmed block body with {{ and }} backslash-escaped so downstream parsers leave them alone.",
+      notes: "Like #pure, but additionally escapes brace pairs to prevent any further macro parsing."
+    },
+    {
+      name: "#when",
+      aliases: [],
+      category: "control_flow",
+      argShape: "[op::]cond[::op::cond::\u2026] + body",
+      minArgs: 1,
+      maxArgs: -1,
+      pure: false,
+      readsState: [
+        "localVars",
+        "globalVars"
+      ],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/parser/parser.svelte.ts",
+      risuLine: 1150,
+      summary: "Conditional block with operator chain. Supports and/or/is/isnot/not/var/vis/visnot/toggle/tis/tisnot/>/</>=/<= plus whitespace modes keep and legacy.",
+      notes: "Known deviation: body eager-evaluates in Lumiverse regardless of condition; side effects in the untaken branch still fire."
+    },
+    {
+      name: "//",
+      aliases: [],
+      category: "other",
+      argShape: "TEXT",
+      minArgs: 0,
+      maxArgs: -1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 2257,
+      summary: "Inline comment \u2014 always returns ''.",
+      notes: ""
+    },
+    {
+      name: ":else",
+      aliases: [],
+      category: "other",
+      argShape: "UNCERTAIN",
+      minArgs: 0,
+      maxArgs: 0,
+      pure: false,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 2442,
+      summary: "Else statement for CBS. Must be used inside {{#when}}. if {{#when}} is multiline",
+      notes: ""
+    },
+    {
+      name: "?",
+      aliases: [],
+      category: "other",
+      argShape: "UNCERTAIN",
+      minArgs: 0,
+      maxArgs: 0,
+      pure: false,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 2264,
+      summary: "Runs math operations on numbers. Supports +, -, *, /, %, ^ (exponentiation), % (",
+      notes: ""
+    },
+    {
+      name: "__",
+      aliases: [],
+      category: "other",
+      argShape: "UNCERTAIN",
+      minArgs: 0,
+      maxArgs: 0,
+      pure: false,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 2271,
+      summary: "**INTERNAL FUNCTION - DO NOT USE**",
+      notes: ""
+    },
+    {
+      name: "abs",
+      aliases: [],
+      category: "math",
+      argShape: "N",
+      minArgs: 1,
+      maxArgs: 1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: {
+        name: "abs",
+        compatible: false,
+        notes: ""
+      },
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1128,
+      summary: "Returns the absolute value of a number.",
+      notes: ""
+    },
+    {
+      name: "addvar",
+      aliases: [],
+      category: "variables",
+      argShape: "NAME::DELTA",
+      minArgs: 2,
+      maxArgs: 2,
+      pure: false,
+      readsState: [
+        "localVars"
+      ],
+      writesState: [
+        "localVars"
+      ],
+      lumiverseCollision: {
+        name: "addvar",
+        compatible: false,
+        notes: ""
+      },
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 810,
+      summary: "Adds DELTA to the current numeric value of NAME.",
+      notes: ""
+    },
+    {
+      name: "all",
+      aliases: [],
+      category: "other",
+      argShape: "ARR or F1::F2::\u2026",
+      minArgs: 1,
+      maxArgs: -1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1667,
+      summary: "Returns '1' iff every value is the literal '1'. Accepts a JSON array or multiple args.",
+      notes: ""
+    },
+    {
+      name: "and",
+      aliases: [],
+      category: "logic",
+      argShape: "A::B",
+      minArgs: 2,
+      maxArgs: 2,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: {
+        name: "and",
+        compatible: false,
+        notes: ""
+      },
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 943,
+      summary: "Boolean AND: returns '1' iff both args are the literal '1'.",
+      notes: ""
+    },
+    {
+      name: "any",
+      aliases: [],
+      category: "other",
+      argShape: "ARR or F1::F2::\u2026",
+      minArgs: 1,
+      maxArgs: -1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1680,
+      summary: "Returns '1' if any value is the literal '1'.",
+      notes: ""
+    },
+    {
+      name: "arrayassert",
+      aliases: [
+        "arrayassert"
+      ],
+      category: "arrays",
+      argShape: "JSON_ARR::INDEX::VALUE",
+      minArgs: 3,
+      maxArgs: 3,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1280,
+      summary: "Sets arr[INDEX]=VALUE only if INDEX is out of bounds (extends the array).",
+      notes: ""
+    },
+    {
+      name: "arrayelement",
+      aliases: [
+        "arrayelement"
+      ],
+      category: "arrays",
+      argShape: "JSON_ARR::INDEX",
+      minArgs: 2,
+      maxArgs: 2,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1178,
+      summary: "Returns arr[INDEX] (JSON-stringified if object). 'null' if OOB.",
+      notes: ""
+    },
+    {
+      name: "arraylength",
+      aliases: [
+        "arraylength"
+      ],
+      category: "arrays",
+      argShape: "JSON_ARR",
+      minArgs: 1,
+      maxArgs: 1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1065,
+      summary: "Length of a JSON array.",
+      notes: ""
+    },
+    {
+      name: "arraypop",
+      aliases: [
+        "arraypop"
+      ],
+      category: "arrays",
+      argShape: "JSON_ARR",
+      minArgs: 1,
+      maxArgs: 1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1247,
+      summary: "Removes and discards the last element.",
+      notes: ""
+    },
+    {
+      name: "arraypush",
+      aliases: [
+        "arraypush"
+      ],
+      category: "arrays",
+      argShape: "JSON_ARR::ELEM",
+      minArgs: 2,
+      maxArgs: 2,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1258,
+      summary: "Appends an element to the array.",
+      notes: ""
+    },
+    {
+      name: "arrayshift",
+      aliases: [
+        "arrayshift"
+      ],
+      category: "arrays",
+      argShape: "JSON_ARR",
+      minArgs: 1,
+      maxArgs: 1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1236,
+      summary: "Removes and discards the first element; returns the modified JSON array.",
+      notes: ""
+    },
+    {
+      name: "arraysplice",
+      aliases: [
+        "arraysplice"
+      ],
+      category: "arrays",
+      argShape: "JSON_ARR::START::DELETE_COUNT::NEW_ELEM",
+      minArgs: 4,
+      maxArgs: 4,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1269,
+      summary: "Risu-style splice: (arr, start, deleteCount, newElement).",
+      notes: ""
+    },
+    {
+      name: "asset",
+      aliases: [],
+      category: "display",
+      argShape: "NAME",
+      minArgs: 1,
+      maxArgs: 1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 2282,
+      summary: "doc_only \u2014 stripped at prompt stage; rendered as character asset element at display.",
+      notes: "Shim returns '' at prompt stage. Display-time HTML injection belongs to a Lumiverse renderer extension."
+    },
+    {
+      name: "assetlist",
+      aliases: [],
+      category: "display",
+      argShape: "(no args)",
+      minArgs: 0,
+      maxArgs: 0,
+      pure: false,
+      readsState: [
+        "characterFields"
+      ],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1340,
+      summary: "JSON array of additional asset names. '' for group characters.",
+      notes: ""
+    },
+    {
+      name: "audio",
+      aliases: [],
+      category: "other",
+      argShape: "NAME",
+      minArgs: 1,
+      maxArgs: 1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 2296,
+      summary: "doc_only \u2014 audio asset NAME. Stripped at prompt stage.",
+      notes: ""
+    },
+    {
+      name: "authornote",
+      aliases: [
+        "author_note"
+      ],
+      category: "logic",
+      argShape: "no args",
+      minArgs: 0,
+      maxArgs: 0,
+      pure: false,
+      readsState: [
+        "characterFields"
+      ],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 393,
+      summary: "Returns the author's note for the current chat.",
+      notes: ""
+    },
+    {
+      name: "average",
+      aliases: [],
+      category: "other",
+      argShape: "ARR or N1::N2::\u2026",
+      minArgs: 1,
+      maxArgs: -1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1741,
+      summary: "Arithmetic mean. Returns NaN on empty input.",
+      notes: ""
+    },
+    {
+      name: "axmodel",
+      aliases: [],
+      category: "identity",
+      argShape: "no args",
+      minArgs: 0,
+      maxArgs: 0,
+      pure: false,
+      readsState: [
+        "chatState"
+      ],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 660,
+      summary: "Returns the id of the auxiliary model.",
+      notes: ""
+    },
+    {
+      name: "bg",
+      aliases: [],
+      category: "display",
+      argShape: "NAME",
+      minArgs: 1,
+      maxArgs: 1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 2303,
+      summary: "doc_only \u2014 background image NAME. Stripped at prompt stage.",
+      notes: ""
+    },
+    {
+      name: "bgm",
+      aliases: [],
+      category: "display",
+      argShape: "NAME",
+      minArgs: 1,
+      maxArgs: 1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 2310,
+      summary: "doc_only \u2014 background music NAME. Stripped at prompt stage.",
+      notes: ""
+    },
+    {
+      name: "bkspc",
+      aliases: [],
+      category: "other",
+      argShape: "(no args)",
+      minArgs: 0,
+      maxArgs: 0,
+      pure: false,
+      readsState: [
+        "chatState"
+      ],
+      writesState: [
+        "chatState"
+      ],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 2179,
+      summary: "Risu rewinds the generated buffer by one word. No buffer in risu-compat \u2014 shim '' (deviation).",
+      notes: ""
+    },
+    {
+      name: "blank",
+      aliases: [
+        "none"
+      ],
+      category: "other",
+      argShape: "no args",
+      minArgs: 0,
+      maxArgs: 0,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 435,
+      summary: "Returns an empty string.",
+      notes: ""
+    },
+    {
+      name: "bo",
+      aliases: [
+        "ddecbo",
+        "doubledisplayescapedcurlybracketopen"
+      ],
+      category: "other",
+      argShape: "(no args)",
+      minArgs: 0,
+      maxArgs: 0,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1415,
+      summary: "Displays as {{ (two PUA sentinels).",
+      notes: ""
+    },
+    {
+      name: "br",
+      aliases: [
+        "newline"
+      ],
+      category: "other",
+      argShape: "no args",
+      minArgs: 0,
+      maxArgs: 0,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 641,
+      summary: "Returns a literal newline character.",
+      notes: ""
+    },
+    {
+      name: "button",
+      aliases: [],
+      category: "other",
+      argShape: "LABEL::TRIGGER",
+      minArgs: 2,
+      maxArgs: 2,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 869,
+      summary: 'HTML button with risu-trigger="TRIGGER" that fires the named manual trigger when clicked.',
+      notes: ""
+    },
+    {
+      name: "calc",
+      aliases: [],
+      category: "math",
+      argShape: "EXPR",
+      minArgs: 1,
+      maxArgs: 1,
+      pure: false,
+      readsState: [
+        "localVars",
+        "globalVars"
+      ],
+      writesState: [],
+      lumiverseCollision: {
+        name: "calc",
+        compatible: false,
+        notes: ""
+      },
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 801,
+      summary: "Evaluates a math expression. Supports +, -, *, /, ^, %, and comparisons. $var reads a local chat var; @var reads a global chat var.",
+      notes: ""
+    },
+    {
+      name: "capitalize",
+      aliases: [],
+      category: "strings",
+      argShape: "STR",
+      minArgs: 1,
+      maxArgs: 1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: {
+        name: "capitalize",
+        compatible: false,
+        notes: ""
+      },
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1092,
+      summary: "Uppercases only the first character of STR.",
+      notes: ""
+    },
+    {
+      name: "cbr",
+      aliases: [
+        "cnl",
+        "cnewline"
+      ],
+      category: "other",
+      argShape: "[N]",
+      minArgs: 0,
+      maxArgs: 1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1384,
+      summary: "Emits literal '\\n' (backslash+n). Optional N repeats the sequence.",
+      notes: ""
+    },
+    {
+      name: "ceil",
+      aliases: [],
+      category: "math",
+      argShape: "N",
+      minArgs: 1,
+      maxArgs: 1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: {
+        name: "ceil",
+        compatible: false,
+        notes: ""
+      },
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1119,
+      summary: "Rounds toward positive infinity (ceil).",
+      notes: ""
+    },
+    {
+      name: "char",
+      aliases: [
+        "bot"
+      ],
+      category: "character_fields",
+      argShape: "UNCERTAIN",
+      minArgs: 0,
+      maxArgs: 0,
+      pure: false,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: {
+        name: "char",
+        compatible: true,
+        notes: ""
+      },
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 146,
+      summary: "Returns the name or nickname of the current character/bot. In consistent charact",
+      notes: ""
+    },
+    {
+      name: "chardisplayasset",
+      aliases: [],
+      category: "character_fields",
+      argShape: "(no args)",
+      minArgs: 0,
+      maxArgs: 0,
+      pure: false,
+      readsState: [
+        "characterFields"
+      ],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1487,
+      summary: "JSON array of display assets filtered by prebuiltAssetExclude. Empty when prebuiltAssetCommand is off.",
+      notes: ""
+    },
+    {
+      name: "charhistory",
+      aliases: [
+        "charmessages",
+        "char_history"
+      ],
+      category: "chat_context",
+      argShape: "(no args)",
+      minArgs: 0,
+      maxArgs: 0,
+      pure: false,
+      readsState: [
+        "messages"
+      ],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 354,
+      summary: "JSON array of all assistant/character messages. role normalized to Risu's 'char'.",
+      notes: ""
+    },
+    {
+      name: "chatindex",
+      aliases: [
+        "chat_index"
+      ],
+      category: "other",
+      argShape: "(no args)",
+      minArgs: 0,
+      maxArgs: 0,
+      pure: false,
+      readsState: [
+        "messages"
+      ],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 415,
+      summary: "Index of the current message being processed. Empty string outside a message context.",
+      notes: ""
+    },
+    {
+      name: "codeblock",
+      aliases: [],
+      category: "other",
+      argShape: "[LANG::]CODE",
+      minArgs: 1,
+      maxArgs: 2,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 2159,
+      summary: "Emits <pre><code>...</code></pre> or a highlight-ready placeholder when LANG is provided.",
+      notes: ""
+    },
+    {
+      name: "comment",
+      aliases: [],
+      category: "other",
+      argShape: "TEXT",
+      minArgs: 1,
+      maxArgs: 1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: {
+        name: "comment",
+        compatible: false,
+        notes: ""
+      },
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 2129,
+      summary: "Emits '' in model prompt; renders as a <div> on display. Our runtime never hits display mode, so always returns ''.",
+      notes: ""
+    },
+    {
+      name: "contains",
+      aliases: [],
+      category: "other",
+      argShape: "STR::NEEDLE",
+      minArgs: 2,
+      maxArgs: 2,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1001,
+      summary: "Returns '1' if STR contains NEEDLE anywhere.",
+      notes: ""
+    },
+    {
+      name: "crypt",
+      aliases: [
+        "crypto",
+        "caesar",
+        "encrypt",
+        "decrypt"
+      ],
+      category: "other",
+      argShape: "STR[::SHIFT]",
+      minArgs: 1,
+      maxArgs: 2,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1973,
+      summary: "Caesar-style Unicode shift cipher. Default SHIFT = 32768 (self-inverting over 16-bit code points).",
+      notes: ""
+    },
+    {
+      name: "date",
+      aliases: [
+        "datetimeformat"
+      ],
+      category: "time",
+      argShape: "[FMT[::UNIX_MS]]",
+      minArgs: 0,
+      maxArgs: 2,
+      pure: false,
+      readsState: [
+        "time"
+      ],
+      writesState: [],
+      lumiverseCollision: {
+        name: "date",
+        compatible: false,
+        notes: ""
+      },
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1563,
+      summary: "No args \u2192 YYYY-M-D. First arg = format string. Second arg = unix ms.",
+      notes: ""
+    },
+    {
+      name: "decbo",
+      aliases: [
+        "displayescapedcurlybracketopen"
+      ],
+      category: "other",
+      argShape: "(no args)",
+      minArgs: 0,
+      maxArgs: 0,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1397,
+      summary: "Displays as { without re-parsing (PUA sentinel \\uE9B8).",
+      notes: ""
+    },
+    {
+      name: "declare",
+      aliases: [],
+      category: "other",
+      argShape: "NAME",
+      minArgs: 1,
+      maxArgs: 1,
+      pure: false,
+      readsState: [],
+      writesState: [
+        "localVars"
+      ],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 2247,
+      summary: "Sets a __declared_NAME__ marker in the temp scope (writable from later {{declared::NAME}} reads).",
+      notes: ""
+    },
+    {
+      name: "description",
+      aliases: [
+        "chardesc"
+      ],
+      category: "character_fields",
+      argShape: "no args",
+      minArgs: 0,
+      maxArgs: 0,
+      pure: false,
+      readsState: [
+        "characterFields"
+      ],
+      writesState: [],
+      lumiverseCollision: {
+        name: "description",
+        compatible: true,
+        notes: "Both return the equivalent character field; semantics match."
+      },
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 252,
+      summary: "Returns the description field of the current character. The text is processed th",
+      notes: ""
+    },
+    {
+      name: "dice",
+      aliases: [],
+      category: "random",
+      argShape: "NdS",
+      minArgs: 1,
+      maxArgs: 1,
+      pure: false,
+      readsState: [
+        "rng"
+      ],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1826,
+      summary: "Dice roll via NdS notation. Both numbers required \u2014 returns NaN otherwise.",
+      notes: ""
+    },
+    {
+      name: "dictelement",
+      aliases: [
+        "dictelement",
+        "objectelement"
+      ],
+      category: "arrays",
+      argShape: "JSON_OBJ::KEY",
+      minArgs: 2,
+      maxArgs: 2,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1188,
+      summary: "Returns dict[KEY] or 'null' if missing.",
+      notes: ""
+    },
+    {
+      name: "displayescapedanglebracketclose",
+      aliases: [
+        "deabc",
+        ">"
+      ],
+      category: "escape_markup",
+      argShape: "(no args)",
+      minArgs: 0,
+      maxArgs: 0,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1460,
+      summary: "Displays as > (PUA \\uE9BD).",
+      notes: ""
+    },
+    {
+      name: "displayescapedanglebracketopen",
+      aliases: [
+        "deabo",
+        "<"
+      ],
+      category: "escape_markup",
+      argShape: "(no args)",
+      minArgs: 0,
+      maxArgs: 0,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1451,
+      summary: "Displays as < (PUA \\uE9BC).",
+      notes: ""
+    },
+    {
+      name: "displayescapedbracketclose",
+      aliases: [
+        "debc",
+        ")"
+      ],
+      category: "escape_markup",
+      argShape: "(no args)",
+      minArgs: 0,
+      maxArgs: 0,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1442,
+      summary: "Displays as ) (PUA \\uE9BB).",
+      notes: ""
+    },
+    {
+      name: "displayescapedbracketopen",
+      aliases: [
+        "debo",
+        "("
+      ],
+      category: "escape_markup",
+      argShape: "(no args)",
+      minArgs: 0,
+      maxArgs: 0,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1433,
+      summary: "Displays as ( (PUA \\uE9BA).",
+      notes: ""
+    },
+    {
+      name: "displayescapedcolon",
+      aliases: [
+        "dec",
+        ":"
+      ],
+      category: "escape_markup",
+      argShape: "(no args)",
+      minArgs: 0,
+      maxArgs: 0,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1469,
+      summary: "Displays as : without being parsed as a CBS separator (PUA \\uE9BE).",
+      notes: ""
+    },
+    {
+      name: "displayescapedsemicolon",
+      aliases: [
+        ";"
+      ],
+      category: "escape_markup",
+      argShape: "(no args)",
+      minArgs: 0,
+      maxArgs: 0,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1478,
+      summary: "Displays as ; (PUA \\uE9BF).",
+      notes: ""
+    },
+    {
+      name: "element",
+      aliases: [
+        "ele"
+      ],
+      category: "arrays",
+      argShape: "JSON::KEY1[::KEY2\u2026]",
+      minArgs: 2,
+      maxArgs: -1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1211,
+      summary: "Walks a JSON structure by successive keys/indices; returns 'null' if any step fails.",
+      notes: ""
+    },
+    {
+      name: "emotion",
+      aliases: [],
+      category: "display",
+      argShape: "NAME",
+      minArgs: 1,
+      maxArgs: 1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 2289,
+      summary: "doc_only \u2014 emotion image NAME. Stripped at prompt stage.",
+      notes: ""
+    },
+    {
+      name: "emotionlist",
+      aliases: [],
+      category: "display",
+      argShape: "(no args)",
+      minArgs: 0,
+      maxArgs: 0,
+      pure: false,
+      readsState: [
+        "characterFields"
+      ],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1324,
+      summary: "JSON array of emotion image names for the current character.",
+      notes: ""
+    },
+    {
+      name: "endswith",
+      aliases: [],
+      category: "other",
+      argShape: "STR::SUFFIX",
+      minArgs: 2,
+      maxArgs: 2,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 992,
+      summary: "Returns '1' if STR ends with SUFFIX.",
+      notes: ""
+    },
+    {
+      name: "equal",
+      aliases: [],
+      category: "logic",
+      argShape: "A::B",
+      minArgs: 2,
+      maxArgs: 2,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 889,
+      summary: "Returns '1' if A === B (string compare), else '0'.",
+      notes: ""
+    },
+    {
+      name: "erase",
+      aliases: [],
+      category: "other",
+      argShape: "(no args)",
+      minArgs: 0,
+      maxArgs: 0,
+      pure: false,
+      readsState: [
+        "chatState"
+      ],
+      writesState: [
+        "chatState"
+      ],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 2211,
+      summary: "Risu rewinds the generated buffer by one sentence. Shim '' (deviation).",
+      notes: ""
+    },
+    {
+      name: "exampledialogue",
+      aliases: [
+        "examplemessage",
+        "example_dialogue"
+      ],
+      category: "other",
+      argShape: "no args",
+      minArgs: 0,
+      maxArgs: 0,
+      pure: false,
+      readsState: [
+        "characterFields"
+      ],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 283,
+      summary: "Returns the example dialogue/message field of the current character.",
+      notes: ""
+    },
+    {
+      name: "file",
+      aliases: [],
+      category: "other",
+      argShape: "NAME::BASE64",
+      minArgs: 2,
+      maxArgs: 2,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 970,
+      summary: "Decodes base64 file content to UTF-8 for inclusion in the model prompt. (Risu's display mode returns an HTML div; renderer-only \u2014 not ported.)",
+      notes: ""
+    },
+    {
+      name: "filter",
+      aliases: [],
+      category: "other",
+      argShape: "JSON_ARR::MODE",
+      minArgs: 2,
+      maxArgs: 2,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1639,
+      summary: "Filters a JSON array. MODE = 'all' (unique + non-empty), 'nonempty', or 'unique'.",
+      notes: ""
+    },
+    {
+      name: "firstmsgindex",
+      aliases: [
+        "firstmessageindex",
+        "first_msg_index"
+      ],
+      category: "other",
+      argShape: "(no args)",
+      minArgs: 0,
+      maxArgs: 0,
+      pure: false,
+      readsState: [
+        "messages"
+      ],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 424,
+      summary: "Index of the selected first-message/alternate-greeting. Always '0' in our model.",
+      notes: ""
+    },
+    {
+      name: "fixnum",
+      aliases: [
+        "fixnum",
+        "fixnumber"
+      ],
+      category: "other",
+      argShape: "N::DIGITS",
+      minArgs: 2,
+      maxArgs: 2,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1758,
+      summary: "Rounds N to DIGITS decimal places (via toFixed).",
+      notes: ""
+    },
+    {
+      name: "floor",
+      aliases: [],
+      category: "math",
+      argShape: "N",
+      minArgs: 1,
+      maxArgs: 1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: {
+        name: "floor",
+        compatible: false,
+        notes: ""
+      },
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1110,
+      summary: "Rounds toward negative infinity (floor).",
+      notes: ""
+    },
+    {
+      name: "fromhex",
+      aliases: [],
+      category: "escape_markup",
+      argShape: "HEX",
+      minArgs: 1,
+      maxArgs: 1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1845,
+      summary: "Converts a hex string to its decimal representation.",
+      notes: ""
+    },
+    {
+      name: "getglobalvar",
+      aliases: [],
+      category: "variables",
+      argShape: "NAME",
+      minArgs: 1,
+      maxArgs: 1,
+      pure: false,
+      readsState: [
+        "globalVars"
+      ],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 860,
+      summary: "Reads a global (cross-chat) variable.",
+      notes: ""
+    },
+    {
+      name: "getvar",
+      aliases: [],
+      category: "variables",
+      argShape: "NAME",
+      minArgs: 1,
+      maxArgs: 1,
+      pure: false,
+      readsState: [
+        "localVars"
+      ],
+      writesState: [],
+      lumiverseCollision: {
+        name: "getvar",
+        compatible: true,
+        notes: ""
+      },
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 792,
+      summary: "Reads a chat-scoped variable. Empty string if unset.",
+      notes: ""
+    },
+    {
+      name: "globalnote",
+      aliases: [
+        "globalnote",
+        "systemnote",
+        "ujb"
+      ],
+      category: "logic",
+      argShape: "no args",
+      minArgs: 0,
+      maxArgs: 0,
+      pure: false,
+      readsState: [
+        "characterFields"
+      ],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 383,
+      summary: "Returns the global note / system note / ujb appended to prompts.",
+      notes: ""
+    },
+    {
+      name: "greater",
+      aliases: [],
+      category: "logic",
+      argShape: "A::B",
+      minArgs: 2,
+      maxArgs: 2,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: {
+        name: "greater",
+        compatible: false,
+        notes: ""
+      },
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 907,
+      summary: "Returns '1' if Number(A) > Number(B).",
+      notes: ""
+    },
+    {
+      name: "greaterequal",
+      aliases: [
+        "greater_equal"
+      ],
+      category: "logic",
+      argShape: "A::B",
+      minArgs: 2,
+      maxArgs: 2,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 925,
+      summary: "Returns '1' if Number(A) >= Number(B).",
+      notes: ""
+    },
+    {
+      name: "hash",
+      aliases: [],
+      category: "other",
+      argShape: "STR",
+      minArgs: 1,
+      maxArgs: 1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1803,
+      summary: "Deterministic 7-digit hash of the input string.",
+      notes: ""
+    },
+    {
+      name: "hiddenkey",
+      aliases: [],
+      category: "other",
+      argShape: "STR",
+      minArgs: 1,
+      maxArgs: 1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 2111,
+      summary: "Activates lorebook entries by keyword but emits nothing \u2014 returns the empty string.",
+      notes: ""
+    },
+    {
+      name: "history",
+      aliases: [
+        "messages"
+      ],
+      category: "chat_context",
+      argShape: "[role]",
+      minArgs: 0,
+      maxArgs: 1,
+      pure: false,
+      readsState: [
+        "messages",
+        "characterFields"
+      ],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1511,
+      summary: "No args \u2192 full JSON history with first-greeting prepended. Arg 'role' \u2192 array of 'role: data' strings.",
+      notes: ""
+    },
+    {
+      name: "idleduration",
+      aliases: [
+        "idle_duration"
+      ],
+      category: "other",
+      argShape: "no args",
+      minArgs: 0,
+      maxArgs: 0,
+      pure: false,
+      readsState: [
+        "messages",
+        "time"
+      ],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 604,
+      summary: "HH:MM:SS since the last message.",
+      notes: ""
+    },
+    {
+      name: "image",
+      aliases: [],
+      category: "display",
+      argShape: "NAME",
+      minArgs: 1,
+      maxArgs: 1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 2331,
+      summary: "doc_only \u2014 image asset NAME. Stripped at prompt stage.",
+      notes: ""
+    },
+    {
+      name: "img",
+      aliases: [],
+      category: "other",
+      argShape: "NAME",
+      minArgs: 1,
+      maxArgs: 1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 2338,
+      summary: "doc_only \u2014 unstyled image asset NAME. Stripped at prompt stage.",
+      notes: ""
+    },
+    {
+      name: "inlay",
+      aliases: [],
+      category: "other",
+      argShape: "NAME",
+      minArgs: 1,
+      maxArgs: 1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 2352,
+      summary: "doc_only \u2014 unstyled inlay NAME (not sent to model). Stripped at prompt.",
+      notes: ""
+    },
+    {
+      name: "inlayed",
+      aliases: [],
+      category: "other",
+      argShape: "NAME",
+      minArgs: 1,
+      maxArgs: 1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 2359,
+      summary: "doc_only \u2014 styled inlay NAME (not sent to model). Stripped at prompt.",
+      notes: ""
+    },
+    {
+      name: "inlayeddata",
+      aliases: [],
+      category: "other",
+      argShape: "NAME",
+      minArgs: 1,
+      maxArgs: 1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 2366,
+      summary: "doc_only \u2014 styled inlay NAME (included in model request). Stripped at prompt in risu-compat.",
+      notes: "Risu's implementation DOES include this in the model prompt. Our shim drops it; enable only when a display-adapter is wired."
+    },
+    {
+      name: "iserror",
+      aliases: [],
+      category: "logic",
+      argShape: "STR",
+      minArgs: 1,
+      maxArgs: 1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1937,
+      summary: "Returns '1' if STR begins with 'error:' (case-insensitive).",
+      notes: ""
+    },
+    {
+      name: "isfirstmsg",
+      aliases: [
+        "isfirstmsg",
+        "isfirstmessage"
+      ],
+      category: "other",
+      argShape: "no args",
+      minArgs: 0,
+      maxArgs: 0,
+      pure: false,
+      readsState: [
+        "chatState"
+      ],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 690,
+      summary: "Returns 1 if the current context is the first greeting message, 0 otherwise.",
+      notes: ""
+    },
+    {
+      name: "isodate",
+      aliases: [],
+      category: "time",
+      argShape: "no args",
+      minArgs: 0,
+      maxArgs: 0,
+      pure: false,
+      readsState: [
+        "time"
+      ],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 536,
+      summary: "Returns the current UTC date in YYYY-M-D format (unpadded).",
+      notes: ""
+    },
+    {
+      name: "isotime",
+      aliases: [],
+      category: "time",
+      argShape: "no args",
+      minArgs: 0,
+      maxArgs: 0,
+      pure: false,
+      readsState: [
+        "time"
+      ],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 526,
+      summary: "Returns the current UTC time in H:M:S format.",
+      notes: ""
+    },
+    {
+      name: "jb",
+      aliases: [
+        "jailbreak"
+      ],
+      category: "other",
+      argShape: "no args",
+      minArgs: 0,
+      maxArgs: 0,
+      pure: false,
+      readsState: [
+        "characterFields"
+      ],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 373,
+      summary: "Returns the jailbreak prompt text.",
+      notes: ""
+    },
+    {
+      name: "jbtoggled",
+      aliases: [],
+      category: "other",
+      argShape: "(no args)",
+      minArgs: 0,
+      maxArgs: 0,
+      pure: false,
+      readsState: [
+        "chatState"
+      ],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 702,
+      summary: "'1' iff the global jailbreak toggle is on.",
+      notes: ""
+    },
+    {
+      name: "join",
+      aliases: [],
+      category: "other",
+      argShape: "JSON_ARR::DELIM",
+      minArgs: 2,
+      maxArgs: 2,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: {
+        name: "join",
+        compatible: false,
+        notes: ""
+      },
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1028,
+      summary: "Joins a JSON array with DELIM.",
+      notes: ""
+    },
+    {
+      name: "lastmessage",
+      aliases: [],
+      category: "chat_context",
+      argShape: "(no args)",
+      minArgs: 0,
+      maxArgs: 0,
+      pure: false,
+      readsState: [
+        "messages"
+      ],
+      writesState: [],
+      lumiverseCollision: {
+        name: "lastmessage",
+        compatible: false,
+        notes: ""
+      },
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 722,
+      summary: "Content of the most recent message in the chat (any role). '' if empty.",
+      notes: ""
+    },
+    {
+      name: "lastmessageid",
+      aliases: [
+        "lastmessageindex"
+      ],
+      category: "chat_context",
+      argShape: "(no args)",
+      minArgs: 0,
+      maxArgs: 0,
+      pure: false,
+      readsState: [
+        "messages"
+      ],
+      writesState: [],
+      lumiverseCollision: {
+        name: "lastmessageid",
+        compatible: false,
+        notes: "Risu: chat.message[].length - 1 (greeting excluded) \u2192 -1 on greeting-only. Lumi: messages.length - 1 (greeting included as msg 0) \u2192 0 on greeting-only. Off-by-one. Card-level literal comparisons like {{equal::lastmessageid::-1}} require Risu-frame \u2014 the rewriter emits {{risu_lastmessageid}} and our handler returns the Risu-frame value."
+      },
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 737,
+      summary: "Index of the last message (count-1) or '' if empty.",
+      notes: ""
+    },
+    {
+      name: "length",
+      aliases: [],
+      category: "other",
+      argShape: "STR",
+      minArgs: 1,
+      maxArgs: 1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: {
+        name: "length",
+        compatible: false,
+        notes: ""
+      },
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1055,
+      summary: "Returns the character length of STR.",
+      notes: ""
+    },
+    {
+      name: "less",
+      aliases: [],
+      category: "logic",
+      argShape: "A::B",
+      minArgs: 2,
+      maxArgs: 2,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 916,
+      summary: "Returns '1' if Number(A) < Number(B).",
+      notes: ""
+    },
+    {
+      name: "lessequal",
+      aliases: [
+        "less_equal"
+      ],
+      category: "logic",
+      argShape: "A::B",
+      minArgs: 2,
+      maxArgs: 2,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 934,
+      summary: "Returns '1' if Number(A) <= Number(B).",
+      notes: ""
+    },
+    {
+      name: "lorebook",
+      aliases: [
+        "worldinfo"
+      ],
+      category: "logic",
+      argShape: "(no args)",
+      minArgs: 0,
+      maxArgs: 0,
+      pure: false,
+      readsState: [
+        "chatState"
+      ],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 317,
+      summary: "JSON array of all active lorebook entries (character + chat + module lore).",
+      notes: ""
+    },
+    {
+      name: "lower",
+      aliases: [],
+      category: "strings",
+      argShape: "STR",
+      minArgs: 1,
+      maxArgs: 1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: {
+        name: "lower",
+        compatible: false,
+        notes: ""
+      },
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1074,
+      summary: "Locale-aware lowercase.",
+      notes: ""
+    },
+    {
+      name: "mainprompt",
+      aliases: [
+        "systemprompt",
+        "main_prompt"
+      ],
+      category: "other",
+      argShape: "no args",
+      minArgs: 0,
+      maxArgs: 0,
+      pure: false,
+      readsState: [
+        "characterFields"
+      ],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 308,
+      summary: "Returns the system/main prompt for the current character.",
+      notes: ""
+    },
+    {
+      name: "makearray",
+      aliases: [
+        "array",
+        "a",
+        "makearray"
+      ],
+      category: "arrays",
+      argShape: "E1::E2::\u2026",
+      minArgs: 0,
+      maxArgs: -1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1294,
+      summary: "Creates a JSON array from the given arguments.",
+      notes: ""
+    },
+    {
+      name: "makedict",
+      aliases: [
+        "dict",
+        "d",
+        "makedict",
+        "makeobject",
+        "object",
+        "o"
+      ],
+      category: "other",
+      argShape: "K1::V1[::K2::V2\u2026]",
+      minArgs: 0,
+      maxArgs: -1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1303,
+      summary: "Creates a JSON object from interleaved key-value arguments. Note: Risu's built-in parses 'key=value' strings; our port accepts separate args \u2014 behavior documented.",
+      notes: "Risu's upstream makedict parses each arg as 'key=value'. Our port accepts alternating key/value args (pair-wise), which matches the risu-compat handler."
+    },
+    {
+      name: "max",
+      aliases: [],
+      category: "math",
+      argShape: "ARR or N1::N2::\u2026",
+      minArgs: 1,
+      maxArgs: -1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: {
+        name: "max",
+        compatible: false,
+        notes: ""
+      },
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1709,
+      summary: "Largest numeric value. Accepts a JSON array or multiple args.",
+      notes: ""
+    },
+    {
+      name: "maxcontext",
+      aliases: [],
+      category: "math",
+      argShape: "(no args)",
+      minArgs: 0,
+      maxArgs: 0,
+      pure: false,
+      readsState: [
+        "chatState"
+      ],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 712,
+      summary: "Max context token limit for the active model, as a decimal string.",
+      notes: ""
+    },
+    {
+      name: "messagedate",
+      aliases: [
+        "message_date"
+      ],
+      category: "chat_context",
+      argShape: "no args",
+      minArgs: 0,
+      maxArgs: 0,
+      pure: false,
+      readsState: [
+        "messages",
+        "time"
+      ],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 469,
+      summary: "Local date the current message was sent.",
+      notes: ""
+    },
+    {
+      name: "messageidleduration",
+      aliases: [
+        "message_idle_duration"
+      ],
+      category: "chat_context",
+      argShape: "no args",
+      minArgs: 0,
+      maxArgs: 0,
+      pure: false,
+      readsState: [
+        "messages",
+        "time"
+      ],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 547,
+      summary: "HH:MM:SS between the current and previous user message.",
+      notes: ""
+    },
+    {
+      name: "messagetime",
+      aliases: [
+        "message_time"
+      ],
+      category: "chat_context",
+      argShape: "no args",
+      minArgs: 0,
+      maxArgs: 0,
+      pure: false,
+      readsState: [
+        "messages",
+        "time"
+      ],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 445,
+      summary: "Local time the current message was sent.",
+      notes: ""
+    },
+    {
+      name: "messageunixtimearray",
+      aliases: [
+        "message_unixtime_array"
+      ],
+      category: "chat_context",
+      argShape: "no args",
+      minArgs: 0,
+      maxArgs: 0,
+      pure: false,
+      readsState: [
+        "messages"
+      ],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 492,
+      summary: "JSON array of all message unix timestamps.",
+      notes: ""
+    },
+    {
+      name: "metadata",
+      aliases: [],
+      category: "other",
+      argShape: "KEY",
+      minArgs: 1,
+      maxArgs: 1,
+      pure: false,
+      readsState: [
+        "chatState"
+      ],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1863,
+      summary: "Host metadata. Supported: imateapot, mobile/local/node, risutype, modelname/modelshortname/modelinternalid. Other keys return 'Error: X is not a valid metadata key.'.",
+      notes: ""
+    },
+    {
+      name: "min",
+      aliases: [],
+      category: "math",
+      argShape: "ARR or N1::N2::\u2026",
+      minArgs: 1,
+      maxArgs: -1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: {
+        name: "min",
+        compatible: false,
+        notes: ""
+      },
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1693,
+      summary: "Smallest numeric value. Accepts a JSON array or multiple args; non-numeric values treated as 0.",
+      notes: ""
+    },
+    {
+      name: "model",
+      aliases: [],
+      category: "identity",
+      argShape: "no args",
+      minArgs: 0,
+      maxArgs: 0,
+      pure: false,
+      readsState: [
+        "chatState"
+      ],
+      writesState: [],
+      lumiverseCollision: {
+        name: "model",
+        compatible: false,
+        notes: ""
+      },
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 650,
+      summary: "Returns the id of the currently selected AI model.",
+      notes: ""
+    },
+    {
+      name: "moduleassetlist",
+      aliases: [
+        "module_assetlist"
+      ],
+      category: "display",
+      argShape: "NAMESPACE",
+      minArgs: 1,
+      maxArgs: 1,
+      pure: false,
+      readsState: [
+        "chatState"
+      ],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1622,
+      summary: "JSON array of module asset names for NAMESPACE. Empty without module state.",
+      notes: ""
+    },
+    {
+      name: "moduleenabled",
+      aliases: [
+        "module_enabled"
+      ],
+      category: "other",
+      argShape: "NAMESPACE",
+      minArgs: 1,
+      maxArgs: 1,
+      pure: false,
+      readsState: [
+        "chatState"
+      ],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1607,
+      summary: "Returns '1' if module NAMESPACE is loaded, else '0'. Our ctx has no module state \u2014 always '0'.",
+      notes: ""
+    },
+    {
+      name: "not",
+      aliases: [],
+      category: "logic",
+      argShape: "A",
+      minArgs: 1,
+      maxArgs: 1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: {
+        name: "not",
+        compatible: false,
+        notes: ""
+      },
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 961,
+      summary: "Boolean NOT: '1' \u2192 '0'; any other value \u2192 '1'.",
+      notes: ""
+    },
+    {
+      name: "notequal",
+      aliases: [
+        "not_equal"
+      ],
+      category: "logic",
+      argShape: "A::B",
+      minArgs: 2,
+      maxArgs: 2,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 898,
+      summary: "Returns '1' if A !== B, else '0'.",
+      notes: ""
+    },
+    {
+      name: "objectassert",
+      aliases: [
+        "dictassert",
+        "object_assert"
+      ],
+      category: "other",
+      argShape: "JSON_OBJ::KEY::VALUE",
+      minArgs: 3,
+      maxArgs: 3,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1198,
+      summary: "Sets obj[KEY]=VALUE only if KEY is missing/falsy.",
+      notes: ""
+    },
+    {
+      name: "or",
+      aliases: [],
+      category: "logic",
+      argShape: "A::B",
+      minArgs: 2,
+      maxArgs: 2,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 952,
+      summary: "Boolean OR: returns '1' if either arg is '1'.",
+      notes: ""
+    },
+    {
+      name: "path",
+      aliases: [
+        "raw"
+      ],
+      category: "other",
+      argShape: "NAME",
+      minArgs: 1,
+      maxArgs: 1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 2345,
+      summary: "doc_only \u2014 asset URL lookup. Shim returns ''.",
+      notes: ""
+    },
+    {
+      name: "persona",
+      aliases: [
+        "userpersona"
+      ],
+      category: "character_fields",
+      argShape: "no args",
+      minArgs: 0,
+      maxArgs: 0,
+      pure: false,
+      readsState: [
+        "characterFields"
+      ],
+      writesState: [],
+      lumiverseCollision: {
+        name: "persona",
+        compatible: true,
+        notes: "Both return the equivalent character field; semantics match."
+      },
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 298,
+      summary: "Returns the user persona prompt text. The text is processed through the chat par",
+      notes: ""
+    },
+    {
+      name: "personality",
+      aliases: [
+        "charpersona"
+      ],
+      category: "character_fields",
+      argShape: "no args",
+      minArgs: 0,
+      maxArgs: 0,
+      pure: false,
+      readsState: [
+        "characterFields"
+      ],
+      writesState: [],
+      lumiverseCollision: {
+        name: "personality",
+        compatible: true,
+        notes: "Both return the equivalent character field; semantics match."
+      },
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 237,
+      summary: "Returns the personality field of the current character. The text is processed th",
+      notes: ""
+    },
+    {
+      name: "pick",
+      aliases: [],
+      category: "random",
+      argShape: "[ARR or E1::E2::\u2026]",
+      minArgs: 0,
+      maxArgs: -1,
+      pure: false,
+      readsState: [
+        "rng",
+        "messages"
+      ],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 2033,
+      summary: "Hash-deterministic pick seeded by message count + character name. Same inputs at same chat position return the same element.",
+      notes: ""
+    },
+    {
+      name: "position",
+      aliases: [],
+      category: "other",
+      argShape: "NAME",
+      minArgs: 1,
+      maxArgs: 1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 2497,
+      summary: "doc_only \u2014 @@position decorator marker. Shim returns ''.",
+      notes: ""
+    },
+    {
+      name: "pow",
+      aliases: [],
+      category: "math",
+      argShape: "BASE::EXP",
+      minArgs: 2,
+      maxArgs: 2,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1169,
+      summary: "Returns BASE raised to EXP (Math.pow).",
+      notes: ""
+    },
+    {
+      name: "prefillsupported",
+      aliases: [
+        "prefill_supported",
+        "prefill"
+      ],
+      category: "logic",
+      argShape: "(no args)",
+      minArgs: 0,
+      maxArgs: 0,
+      pure: false,
+      readsState: [
+        "chatState"
+      ],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1356,
+      summary: "'1' if the active model id starts with 'claude', else '0'.",
+      notes: ""
+    },
+    {
+      name: "previouscharchat",
+      aliases: [
+        "previouscharchat",
+        "lastcharmessage"
+      ],
+      category: "chat_context",
+      argShape: "(no args)",
+      minArgs: 0,
+      maxArgs: 0,
+      pure: false,
+      readsState: [
+        "messages",
+        "characterFields"
+      ],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 194,
+      summary: "Last assistant message prior to currentMessageIndex; first-greeting fallback.",
+      notes: ""
+    },
+    {
+      name: "previouschatlog",
+      aliases: [
+        "previous_chat_log"
+      ],
+      category: "chat_context",
+      argShape: "INDEX",
+      minArgs: 1,
+      maxArgs: 1,
+      pure: false,
+      readsState: [
+        "messages"
+      ],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1146,
+      summary: "Returns message[INDEX].content or 'Out of range' if invalid.",
+      notes: ""
+    },
+    {
+      name: "previoususerchat",
+      aliases: [
+        "previoususerchat",
+        "lastusermessage"
+      ],
+      category: "chat_context",
+      argShape: "(no args)",
+      minArgs: 0,
+      maxArgs: 0,
+      pure: false,
+      readsState: [
+        "messages",
+        "characterFields"
+      ],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 213,
+      summary: "Last user message prior to currentMessageIndex. '' if currentMessageIndex=null.",
+      notes: ""
+    },
+    {
+      name: "randint",
+      aliases: [],
+      category: "logic",
+      argShape: "MIN::MAX",
+      minArgs: 2,
+      maxArgs: 2,
+      pure: false,
+      readsState: [
+        "rng"
+      ],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1812,
+      summary: "Uniform random integer in [MIN, MAX] inclusive.",
+      notes: ""
+    },
+    {
+      name: "random",
+      aliases: [],
+      category: "logic",
+      argShape: "[ARR or E1::E2::\u2026]",
+      minArgs: 0,
+      maxArgs: -1,
+      pure: false,
+      readsState: [
+        "rng"
+      ],
+      writesState: [],
+      lumiverseCollision: {
+        name: "random",
+        compatible: false,
+        notes: ""
+      },
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 2024,
+      summary: "No args \u2192 random [0,1). One array arg \u2192 picks a random element. Multiple args \u2192 picks one.",
+      notes: ""
+    },
+    {
+      name: "range",
+      aliases: [],
+      category: "other",
+      argShape: "JSON_ARR",
+      minArgs: 1,
+      maxArgs: 1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1544,
+      summary: "Creates a range. [N] \u2192 [0..N-1]. [A,B] \u2192 [A..B-1]. [A,B,S] \u2192 step S.",
+      notes: ""
+    },
+    {
+      name: "remaind",
+      aliases: [],
+      category: "other",
+      argShape: "A::B",
+      minArgs: 2,
+      maxArgs: 2,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1137,
+      summary: "Returns A mod B (JavaScript % operator).",
+      notes: ""
+    },
+    {
+      name: "replace",
+      aliases: [],
+      category: "strings",
+      argShape: "STR::NEEDLE::REPL",
+      minArgs: 3,
+      maxArgs: 3,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: {
+        name: "replace",
+        compatible: false,
+        notes: ""
+      },
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1010,
+      summary: "Replaces all occurrences of NEEDLE in STR with REPL (case-sensitive, global).",
+      notes: ""
+    },
+    {
+      name: "return",
+      aliases: [],
+      category: "flow_control",
+      argShape: "VALUE",
+      minArgs: 1,
+      maxArgs: 1,
+      pure: false,
+      readsState: [],
+      writesState: [
+        "localVars"
+      ],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 778,
+      summary: "Risu sets __force_return__ to halt parsing and returns VALUE. Our port emits VALUE in place; known deviation.",
+      notes: ""
+    },
+    {
+      name: "reverse",
+      aliases: [],
+      category: "other",
+      argShape: "STR",
+      minArgs: 1,
+      maxArgs: 1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 2120,
+      summary: "Reverses a string (code-point safe via spread/join).",
+      notes: ""
+    },
+    {
+      name: "risu",
+      aliases: [],
+      category: "other",
+      argShape: "[SIZE]",
+      minArgs: 0,
+      maxArgs: 1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 878,
+      summary: "Embeds the RisuAI logo <img> at SIZE px (default 45).",
+      notes: ""
+    },
+    {
+      name: "role",
+      aliases: [],
+      category: "identity",
+      argShape: "no args",
+      minArgs: 0,
+      maxArgs: 0,
+      pure: false,
+      readsState: [
+        "chatState"
+      ],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 670,
+      summary: "Returns the role of the current message (user, char, system), or literal null when unknown.",
+      notes: ""
+    },
+    {
+      name: "roll",
+      aliases: [],
+      category: "random",
+      argShape: "[NdS|S]",
+      minArgs: 0,
+      maxArgs: 1,
+      pure: false,
+      readsState: [
+        "rng"
+      ],
+      writesState: [],
+      lumiverseCollision: {
+        name: "roll",
+        compatible: false,
+        notes: ""
+      },
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 2047,
+      summary: "Dice roll. 'XdY' syntax; default 1d6 when no arg. Returns NaN on invalid notation.",
+      notes: ""
+    },
+    {
+      name: "rollp",
+      aliases: [
+        "rollpick"
+      ],
+      category: "random",
+      argShape: "[NdS|S]",
+      minArgs: 0,
+      maxArgs: 1,
+      pure: false,
+      readsState: [
+        "rng",
+        "messages"
+      ],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 2076,
+      summary: "Hash-deterministic dice roll. Same chat position returns the same outcome.",
+      notes: ""
+    },
+    {
+      name: "round",
+      aliases: [],
+      category: "math",
+      argShape: "N",
+      minArgs: 1,
+      maxArgs: 1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: {
+        name: "round",
+        compatible: false,
+        notes: ""
+      },
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1101,
+      summary: "Rounds a decimal number to the nearest integer (half-up).",
+      notes: ""
+    },
+    {
+      name: "ruby",
+      aliases: [
+        "furigana"
+      ],
+      category: "other",
+      argShape: "BASE::READING",
+      minArgs: 2,
+      maxArgs: 2,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 2150,
+      summary: "Emits <ruby>...<rt>...</rt></ruby> furigana HTML.",
+      notes: ""
+    },
+    {
+      name: "scenario",
+      aliases: [],
+      category: "character_fields",
+      argShape: "no args",
+      minArgs: 0,
+      maxArgs: 0,
+      pure: false,
+      readsState: [
+        "characterFields"
+      ],
+      writesState: [],
+      lumiverseCollision: {
+        name: "scenario",
+        compatible: true,
+        notes: "Both return the equivalent character field; semantics match."
+      },
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 267,
+      summary: "Returns the scenario field of the current character. The text is processed throu",
+      notes: ""
+    },
+    {
+      name: "screenheight",
+      aliases: [
+        "screen_height"
+      ],
+      category: "other",
+      argShape: "(no args)",
+      minArgs: 0,
+      maxArgs: 0,
+      pure: false,
+      readsState: [
+        "chatState"
+      ],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1375,
+      summary: "Window height in pixels. No host introspection \u2014 always '0'.",
+      notes: ""
+    },
+    {
+      name: "screenwidth",
+      aliases: [
+        "screen_width"
+      ],
+      category: "other",
+      argShape: "(no args)",
+      minArgs: 0,
+      maxArgs: 0,
+      pure: false,
+      readsState: [
+        "chatState"
+      ],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1366,
+      summary: "Window width in pixels. No host introspection in risu-compat \u2014 always '0' (known deviation).",
+      notes: ""
+    },
+    {
+      name: "setdefaultvar",
+      aliases: [],
+      category: "variables",
+      argShape: "NAME::VALUE",
+      minArgs: 2,
+      maxArgs: 2,
+      pure: false,
+      readsState: [
+        "localVars"
+      ],
+      writesState: [
+        "localVars"
+      ],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 842,
+      summary: "Sets NAME=VALUE only if NAME is currently unset or empty.",
+      notes: ""
+    },
+    {
+      name: "settempvar",
+      aliases: [],
+      category: "variables",
+      argShape: "NAME::VALUE",
+      minArgs: 2,
+      maxArgs: 2,
+      pure: false,
+      readsState: [],
+      writesState: [
+        "localVars"
+      ],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 765,
+      summary: "Sets a per-evaluation temporary variable.",
+      notes: ""
+    },
+    {
+      name: "setvar",
+      aliases: [],
+      category: "variables",
+      argShape: "NAME::VALUE",
+      minArgs: 2,
+      maxArgs: 2,
+      pure: false,
+      readsState: [],
+      writesState: [
+        "localVars"
+      ],
+      lumiverseCollision: {
+        name: "setvar",
+        compatible: true,
+        notes: ""
+      },
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 826,
+      summary: "Sets a chat-scoped variable.",
+      notes: ""
+    },
+    {
+      name: "slot",
+      aliases: [],
+      category: "other",
+      argShape: "VAR",
+      minArgs: 0,
+      maxArgs: 1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 2490,
+      summary: "Iteration/func slot reference. Resolved inside each/call block handlers via string substitution.",
+      notes: ""
+    },
+    {
+      name: "source",
+      aliases: [],
+      category: "other",
+      argShape: "user|char",
+      minArgs: 1,
+      maxArgs: 1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 2373,
+      summary: "doc_only \u2014 avatar URL for 'user' or 'char'. Shim returns ''.",
+      notes: ""
+    },
+    {
+      name: "split",
+      aliases: [],
+      category: "other",
+      argShape: "STR::DELIM",
+      minArgs: 2,
+      maxArgs: 2,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: {
+        name: "split",
+        compatible: false,
+        notes: ""
+      },
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1019,
+      summary: "Splits STR by DELIM; returns a JSON array.",
+      notes: ""
+    },
+    {
+      name: "spread",
+      aliases: [],
+      category: "other",
+      argShape: "JSON_ARR",
+      minArgs: 1,
+      maxArgs: 1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1037,
+      summary: "Joins a JSON array with '::' (CBS argument separator).",
+      notes: ""
+    },
+    {
+      name: "startswith",
+      aliases: [],
+      category: "other",
+      argShape: "STR::PREFIX",
+      minArgs: 2,
+      maxArgs: 2,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 983,
+      summary: "Returns '1' if STR starts with PREFIX (case-sensitive).",
+      notes: ""
+    },
+    {
+      name: "sum",
+      aliases: [],
+      category: "math",
+      argShape: "ARR or N1::N2::\u2026",
+      minArgs: 1,
+      maxArgs: -1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1725,
+      summary: "Sum of numeric values. Accepts a JSON array or multiple args.",
+      notes: ""
+    },
+    {
+      name: "tempvar",
+      aliases: [
+        "gettempvar"
+      ],
+      category: "variables",
+      argShape: "NAME",
+      minArgs: 1,
+      maxArgs: 1,
+      pure: false,
+      readsState: [
+        "localVars"
+      ],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 753,
+      summary: "Reads a per-evaluation temporary variable.",
+      notes: "Risu stores temp vars in a `vars` dict that lives for a single parser pass. Our context implements them as the 'temp' scope of ctx.vars."
+    },
+    {
+      name: "tex",
+      aliases: [
+        "latex",
+        "katex"
+      ],
+      category: "other",
+      argShape: "EXPR",
+      minArgs: 1,
+      maxArgs: 1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 2141,
+      summary: "Wraps EXPR in $$...$$ for KaTeX rendering.",
+      notes: ""
+    },
+    {
+      name: "time",
+      aliases: [],
+      category: "time",
+      argShape: "no args",
+      minArgs: 0,
+      maxArgs: 0,
+      pure: false,
+      readsState: [
+        "time"
+      ],
+      writesState: [],
+      lumiverseCollision: {
+        name: "time",
+        compatible: false,
+        notes: ""
+      },
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 516,
+      summary: "Returns the current local time in H:M:S format (unpadded).",
+      notes: ""
+    },
+    {
+      name: "tohex",
+      aliases: [],
+      category: "escape_markup",
+      argShape: "N",
+      minArgs: 1,
+      maxArgs: 1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1854,
+      summary: "Converts a decimal number to a hex string.",
+      notes: ""
+    },
+    {
+      name: "tonumber",
+      aliases: [],
+      category: "other",
+      argShape: "STR",
+      minArgs: 1,
+      maxArgs: 1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1158,
+      summary: "Extracts digits and decimal points from a string (drops everything else).",
+      notes: ""
+    },
+    {
+      name: "trigger_id",
+      aliases: [
+        "triggerid"
+      ],
+      category: "identity",
+      argShape: "no args",
+      minArgs: 0,
+      maxArgs: 0,
+      pure: false,
+      readsState: [
+        "chatState"
+      ],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 184,
+      summary: "Returns the ID value from the risu-id attribute of the clicked element that trig",
+      notes: ""
+    },
+    {
+      name: "trim",
+      aliases: [],
+      category: "strings",
+      argShape: "STR",
+      minArgs: 1,
+      maxArgs: 1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1046,
+      summary: "Removes leading and trailing whitespace.",
+      notes: ""
+    },
+    {
+      name: "u",
+      aliases: [
+        "unicodedecodefromhex"
+      ],
+      category: "other",
+      argShape: "HEX",
+      minArgs: 1,
+      maxArgs: 1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1785,
+      summary: "Returns the character for a hex Unicode code point.",
+      notes: ""
+    },
+    {
+      name: "ue",
+      aliases: [
+        "unicodeencodefromhex"
+      ],
+      category: "other",
+      argShape: "HEX",
+      minArgs: 1,
+      maxArgs: 1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1794,
+      summary: "Alias of {{u}}.",
+      notes: ""
+    },
+    {
+      name: "unicodedecode",
+      aliases: [
+        "unicode_decode"
+      ],
+      category: "escape_markup",
+      argShape: "CODE",
+      minArgs: 1,
+      maxArgs: 1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1776,
+      summary: "Converts a decimal Unicode code point to its character.",
+      notes: ""
+    },
+    {
+      name: "unicodeencode",
+      aliases: [
+        "unicode_encode"
+      ],
+      category: "escape_markup",
+      argShape: "STR[::INDEX]",
+      minArgs: 1,
+      maxArgs: 2,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1767,
+      summary: "Returns the Unicode code point of STR[INDEX] (default 0) as decimal.",
+      notes: ""
+    },
+    {
+      name: "unixtime",
+      aliases: [],
+      category: "time",
+      argShape: "no args",
+      minArgs: 0,
+      maxArgs: 0,
+      pure: false,
+      readsState: [
+        "time"
+      ],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 506,
+      summary: "Returns the current unix timestamp in seconds.",
+      notes: ""
+    },
+    {
+      name: "upper",
+      aliases: [],
+      category: "strings",
+      argShape: "STR",
+      minArgs: 1,
+      maxArgs: 1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: {
+        name: "upper",
+        compatible: false,
+        notes: ""
+      },
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1083,
+      summary: "Locale-aware uppercase.",
+      notes: ""
+    },
+    {
+      name: "user",
+      aliases: [],
+      category: "identity",
+      argShape: "UNCERTAIN",
+      minArgs: 0,
+      maxArgs: 0,
+      pure: false,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: {
+        name: "user",
+        compatible: true,
+        notes: ""
+      },
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 172,
+      summary: "Returns the current user\\",
+      notes: ""
+    },
+    {
+      name: "userhistory",
+      aliases: [
+        "usermessages",
+        "user_history"
+      ],
+      category: "chat_context",
+      argShape: "(no args)",
+      minArgs: 0,
+      maxArgs: 0,
+      pure: false,
+      readsState: [
+        "messages"
+      ],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 336,
+      summary: "JSON array of all user messages with role='user'.",
+      notes: ""
+    },
+    {
+      name: "video",
+      aliases: [],
+      category: "other",
+      argShape: "NAME",
+      minArgs: 1,
+      maxArgs: 1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 2317,
+      summary: "doc_only \u2014 video asset NAME. Stripped at prompt stage.",
+      notes: ""
+    },
+    {
+      name: "video-img",
+      aliases: [],
+      category: "other",
+      argShape: "NAME",
+      minArgs: 1,
+      maxArgs: 1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 2324,
+      summary: "doc_only \u2014 video rendered as image. Stripped at prompt stage.",
+      notes: ""
+    },
+    {
+      name: "xor",
+      aliases: [
+        "xorencrypt",
+        "xorencode",
+        "xore"
+      ],
+      category: "logic",
+      argShape: "STR",
+      minArgs: 1,
+      maxArgs: 1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1947,
+      summary: "XOR-encrypts STR with 0xFF and base64-encodes the result.",
+      notes: ""
+    },
+    {
+      name: "xordecrypt",
+      aliases: [
+        "xordecode",
+        "xord"
+      ],
+      category: "logic",
+      argShape: "B64",
+      minArgs: 1,
+      maxArgs: 1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1960,
+      summary: "Inverse of {{xor}} \u2014 decodes base64 + XOR with 0xFF.",
+      notes: ""
+    },
+    {
+      name: "#func",
+      aliases: [
+        "#function"
+      ],
+      category: "control_flow",
+      argShape: "funcName arg0 arg1 ... + body",
+      minArgs: 1,
+      maxArgs: -1,
+      pure: false,
+      readsState: [],
+      writesState: [
+        "chatState"
+      ],
+      lumiverseCollision: null,
+      risuFile: "src/ts/parser/parser.svelte.ts",
+      risuLine: 1400,
+      summary: "Defines a named function. The body is stored and invoked later via {{call::funcName::\u2026}}.",
+      notes: "Deviation: function table is Lumiscript-session scoped, not per-evaluation pass like Risu."
+    },
+    {
+      name: "call",
+      aliases: [],
+      category: "flow_control",
+      argShape: "funcName::arg0::arg1::\u2026",
+      minArgs: 1,
+      maxArgs: -1,
+      pure: false,
+      readsState: [
+        "chatState"
+      ],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/parser/parser.svelte.ts",
+      risuLine: 1737,
+      summary: "Invokes a function previously defined by #func. Arguments are passed as additional :: tokens; referenced inside the function body as {{arg::0}}, {{arg::1}}, etc.",
+      notes: "Known deviation: inner macros in the function body are not re-evaluated after substitution."
+    },
+    {
+      name: "legacy",
+      aliases: [],
+      category: "control_flow",
+      argShape: `{#if cond
+content#} expression`,
+      minArgs: 1,
+      maxArgs: 1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/parser/parser.svelte.ts",
+      risuLine: 1082,
+      summary: `Legacy {#if cond
+content#} form. Returns trimmed content if cond is not the empty string, 0, or -1.`,
+      notes: "Deprecated Risu form; preserved for compatibility."
+    },
+    {
+      name: "unknown",
+      aliases: [],
+      category: "control_flow",
+      argShape: "any + body",
+      minArgs: 0,
+      maxArgs: -1,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "packages/core/src/cbs/rewrite/blocks.ts",
+      risuLine: 1,
+      summary: `Fallback handler for unrecognized block kinds. Returns body verbatim without interpretation, matching Risu's "nothing" type fall-through.`,
+      notes: "Synthetic name emitted by the rewriter when it sees {{#someUnknownBlock}}\u2026{{/someUnknownBlock}}. Not a Risu macro."
+    },
+    {
+      name: "deletevar",
+      aliases: [],
+      category: "variables",
+      argShape: "NAME",
+      minArgs: 1,
+      maxArgs: 1,
+      pure: false,
+      readsState: [],
+      writesState: [
+        "localVars"
+      ],
+      lumiverseCollision: null,
+      risuFile: "src/ts/process/triggers.ts",
+      risuLine: 1,
+      summary: "Deletes a chat-scoped variable. Exposed via Risu's editCharVar trigger op \u2014 shim in risu-compat.",
+      notes: "Not a cbs.ts registerFunction; exists as a trigger effect in Risu. Added so triggers that compile into {{deletevar::X}} macro calls survive the discipline gate."
+    },
+    {
+      name: "flushvar",
+      aliases: [],
+      category: "variables",
+      argShape: "NAME",
+      minArgs: 1,
+      maxArgs: 1,
+      pure: false,
+      readsState: [],
+      writesState: [
+        "localVars"
+      ],
+      lumiverseCollision: null,
+      risuFile: "src/ts/process/triggers.ts",
+      risuLine: 1,
+      summary: "Alias of deletevar. Name matches older Risu trigger-compiler output.",
+      notes: "Synthetic alias; see deletevar."
+    },
+    {
+      name: "getchatvar",
+      aliases: [],
+      category: "variables",
+      argShape: "NAME",
+      minArgs: 1,
+      maxArgs: 1,
+      pure: false,
+      readsState: [
+        "localVars"
+      ],
+      writesState: [],
+      lumiverseCollision: {
+        name: "getchatvar",
+        compatible: false,
+        notes: "Lumiverse getchatvar uses a distinct chat scope; Risu only has one chat scope so our shim aliases to local."
+      },
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 792,
+      summary: "Reads a chat-scoped variable. Aliased to getvar in Risu's single-chat-scope model.",
+      notes: "Synthetic; Risu has no separate chat-scope. Provided for parity with Lumiverse's getchatvar."
+    },
+    {
+      name: "setchatvar",
+      aliases: [],
+      category: "variables",
+      argShape: "NAME::VALUE",
+      minArgs: 2,
+      maxArgs: 2,
+      pure: false,
+      readsState: [],
+      writesState: [
+        "localVars"
+      ],
+      lumiverseCollision: {
+        name: "setchatvar",
+        compatible: false,
+        notes: "See getchatvar."
+      },
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 826,
+      summary: "Sets a chat-scoped variable. Aliased to setvar.",
+      notes: "Synthetic; see getchatvar."
+    },
+    {
+      name: "bc",
+      aliases: [
+        "ddecbc",
+        "doubledisplayescapedcurlybracketclose"
+      ],
+      category: "escape_markup",
+      argShape: "(no args)",
+      minArgs: 0,
+      maxArgs: 0,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1424,
+      summary: "Displays as }} without being re-parsed (two PUA sentinels).",
+      notes: ""
+    },
+    {
+      name: "decbc",
+      aliases: [
+        "displayescapedcurlybracketclose"
+      ],
+      category: "escape_markup",
+      argShape: "(no args)",
+      minArgs: 0,
+      maxArgs: 0,
+      pure: true,
+      readsState: [],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1406,
+      summary: "Displays as } without being re-parsed (PUA \\uE9B9).",
+      notes: ""
+    },
+    {
+      name: "messagecount",
+      aliases: [],
+      category: "chat_context",
+      argShape: "(no args)",
+      minArgs: 0,
+      maxArgs: 0,
+      pure: false,
+      readsState: [
+        "messages"
+      ],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 1,
+      summary: "Total number of messages in the chat as a string. Frequently synthesized in CBS templates.",
+      notes: "Not registered in Risu's cbs.ts as a named function; many cards use it via script."
+    },
+    {
+      name: "declared",
+      aliases: [],
+      category: "metadata",
+      argShape: "NAME",
+      minArgs: 1,
+      maxArgs: 1,
+      pure: false,
+      readsState: [
+        "localVars"
+      ],
+      writesState: [],
+      lumiverseCollision: null,
+      risuFile: "src/ts/cbs.ts",
+      risuLine: 2247,
+      summary: "Reads a declaration marker set by {{declare::NAME}}; returns '1' if declared else '0'.",
+      notes: "Risu implements this implicitly via var checks; we expose it as a dedicated handler for clarity."
+    }
+  ];
+});
 
 // node_modules/fengari-web/dist/fengari-web.bundle.js
 var require_fengari_web_bundle = __commonJS((exports, module) => {
@@ -12031,3715 +15740,6 @@ Based on: ` + r.LUA_COPYRIGHT;
     l[s.LUA_FENGARILIBNAME] = A;
   }]);
 });
-// src/core/cbs/catalog/schema.ts
-function isComplete(entry) {
-  if (entry.argShape === "UNCERTAIN")
-    return false;
-  if (entry.summary.trim().length === 0)
-    return false;
-  if (!entry.pure && entry.readsState.length === 0 && entry.writesState.length === 0)
-    return false;
-  return true;
-}
-var stateReadKindSchema, stateWriteKindSchema, macroCategorySchema, lumiverseCollisionSchema, macroCatalogEntrySchema, macroCatalogSchema;
-var init_schema = __esm(() => {
-  init_zod();
-  stateReadKindSchema = exports_external.enum([
-    "none",
-    "localVars",
-    "globalVars",
-    "chatState",
-    "characterFields",
-    "time",
-    "rng",
-    "messages"
-  ]);
-  stateWriteKindSchema = exports_external.enum([
-    "none",
-    "localVars",
-    "globalVars",
-    "chatState",
-    "messages"
-  ]);
-  macroCategorySchema = exports_external.enum([
-    "identity",
-    "character_fields",
-    "chat_context",
-    "time",
-    "variables",
-    "math",
-    "logic",
-    "arrays",
-    "strings",
-    "random",
-    "tokenize",
-    "display",
-    "escape_markup",
-    "control_flow",
-    "metadata",
-    "flow_control",
-    "other"
-  ]);
-  lumiverseCollisionSchema = exports_external.object({
-    name: exports_external.string(),
-    compatible: exports_external.boolean(),
-    notes: exports_external.string()
-  });
-  macroCatalogEntrySchema = exports_external.object({
-    name: exports_external.string().min(1),
-    aliases: exports_external.array(exports_external.string()),
-    category: macroCategorySchema,
-    argShape: exports_external.string().min(1),
-    minArgs: exports_external.number().int().min(0),
-    maxArgs: exports_external.number().int().min(-1),
-    pure: exports_external.boolean(),
-    readsState: exports_external.array(stateReadKindSchema),
-    writesState: exports_external.array(stateWriteKindSchema),
-    lumiverseCollision: lumiverseCollisionSchema.nullable(),
-    risuFile: exports_external.string(),
-    risuLine: exports_external.number().int().min(1),
-    summary: exports_external.string(),
-    notes: exports_external.string()
-  });
-  macroCatalogSchema = exports_external.array(macroCatalogEntrySchema);
-});
-
-// src/core/cbs/catalog/loader.ts
-class CatalogIndex {
-  entriesByCanonical = new Map;
-  entriesByLookup = new Map;
-  entries;
-  constructor(entries) {
-    this.entries = entries;
-    for (const e of entries) {
-      const canonical = stripBlockMarker(e.name);
-      if (this.entriesByCanonical.has(canonical)) {
-        throw new Error(`catalog: duplicate canonical name "${canonical}"`);
-      }
-      this.entriesByCanonical.set(canonical, e);
-      const canonicalNorm = normalizeMacroName(canonical);
-      this.entriesByLookup.set(canonicalNorm, e);
-      for (const alias of e.aliases) {
-        const norm = normalizeMacroName(stripBlockMarker(alias));
-        if (!this.entriesByLookup.has(norm))
-          this.entriesByLookup.set(norm, e);
-      }
-    }
-  }
-  find(name) {
-    const norm = normalizeMacroName(stripBlockMarker(name));
-    return this.entriesByLookup.get(norm) ?? null;
-  }
-  delegatesToLumiverse(name) {
-    const e = this.find(name);
-    return !!e && !!e.lumiverseCollision && e.lumiverseCollision.compatible;
-  }
-  needsRename(name) {
-    const e = this.find(name);
-    return !!e && !!e.lumiverseCollision && !e.lumiverseCollision.compatible;
-  }
-  incompatibleNames() {
-    const names = [];
-    for (const e of this.entries) {
-      if (!e.lumiverseCollision || e.lumiverseCollision.compatible)
-        continue;
-      names.push(e.name);
-      if (e.aliases)
-        names.push(...e.aliases);
-    }
-    return names;
-  }
-  handlerEntries() {
-    return this.entries.filter((e) => !e.lumiverseCollision || !e.lumiverseCollision.compatible);
-  }
-  completeEntries() {
-    return this.entries.filter(isComplete);
-  }
-  skeletonEntries() {
-    return this.entries.filter((e) => !isComplete(e));
-  }
-}
-function stripBlockMarker(name) {
-  if (name.startsWith("#") || name.startsWith(":"))
-    return name.slice(1);
-  return name;
-}
-function parseCatalog(raw) {
-  return macroCatalogSchema.parse(raw);
-}
-var init_loader = __esm(() => {
-  init_schema();
-  init_parser();
-});
-
-// src/core/cbs/catalog/index.ts
-var init_catalog = __esm(() => {
-  init_schema();
-  init_loader();
-});
-
-// src/core/cbs/rewrite/index.ts
-var init_rewrite = __esm(() => {
-  init_encode();
-  init_text();
-  init_blocks();
-});
-// src/core/cbs/runtime/mock.ts
-class MockVariableStore {
-  data = {
-    local: new Map,
-    global: new Map,
-    temp: new Map
-  };
-  get(scope, name) {
-    return this.data[scope].get(name) ?? "";
-  }
-  set(scope, name, value) {
-    this.data[scope].set(name, value);
-  }
-  add(scope, name, delta) {
-    const current = Number(this.data[scope].get(name) ?? "0");
-    const next = (Number.isFinite(current) ? current : 0) + delta;
-    this.data[scope].set(name, String(next));
-  }
-  has(scope, name) {
-    return this.data[scope].has(name);
-  }
-  delete(scope, name) {
-    this.data[scope].delete(name);
-  }
-}
-
-class MockFunctionRegistry {
-  table = new Map;
-  define(name, body, argNames) {
-    this.table.set(name, { body, argNames });
-  }
-  get(name) {
-    return this.table.get(name) ?? null;
-  }
-  delete(name) {
-    this.table.delete(name);
-  }
-  has(name) {
-    return this.table.has(name);
-  }
-}
-var init_mock = () => {};
-
-// src/core/cbs/runtime/index.ts
-var init_runtime = __esm(() => {
-  init_mock();
-});
-
-// src/core/cbs/index.ts
-var init_cbs = __esm(() => {
-  init_parser();
-  init_catalog();
-  init_rewrite();
-  init_runtime();
-});
-
-// src/core/cbs/catalog/risu-macros.json
-var risu_macros_default;
-var init_risu_macros = __esm(() => {
-  risu_macros_default = [
-    {
-      name: "#each",
-      aliases: [
-        ":each"
-      ],
-      category: "control_flow",
-      argShape: "[::keep ]ARRAY as VAR + body",
-      minArgs: 2,
-      maxArgs: 2,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/parser/parser.svelte.ts",
-      risuLine: 1388,
-      summary: "Iterates over a JSON or \xA7-delimited array, substituting {{slot::VAR}} inside the body per iteration.",
-      notes: "Known deviation: inner macros are not re-evaluated per iteration; remaining {{\u2026}} in output appear literal."
-    },
-    {
-      name: "#code",
-      aliases: [
-        "#normalize"
-      ],
-      category: "control_flow",
-      argShape: "body",
-      minArgs: 1,
-      maxArgs: 1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/parser/parser.svelte.ts",
-      risuLine: 1486,
-      summary: "Normalizes a code body: trims, strips newlines and tabs, processes backslash escape sequences (\\n, \\r, \\t, \\uXXXX, \\x, etc).",
-      notes: "Often used to inline machine-generated JSON into a prompt."
-    },
-    {
-      name: "#ignore",
-      aliases: [],
-      category: "control_flow",
-      argShape: "body",
-      minArgs: 1,
-      maxArgs: 1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/parser/parser.svelte.ts",
-      risuLine: 1517,
-      summary: "Discards the block body and returns empty string. Inner macros are not evaluated.",
-      notes: "Typical use: disabling a section of a card without deleting it."
-    },
-    {
-      name: "#escape",
-      aliases: [],
-      category: "control_flow",
-      argShape: "[::keep] + body",
-      minArgs: 0,
-      maxArgs: 1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/parser/parser.svelte.ts",
-      risuLine: 1514,
-      summary: "Replaces { } ( ) in the body with Private Use Area chars so they don't parse as macro/function syntax.",
-      notes: "Body is trimmed unless mode=keep. Inner macros are not evaluated (opaque block)."
-    },
-    {
-      name: "#if",
-      aliases: [],
-      category: "control_flow",
-      argShape: "cond + body",
-      minArgs: 1,
-      maxArgs: 2,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/parser/parser.svelte.ts",
-      risuLine: 1138,
-      summary: 'Conditional block. Returns body if condition is truthy ("true" or "1"), else empty (or {{:else}} branch if present).',
-      notes: "DEPRECATED. Use #when instead. Risu short-circuits body evaluation for the untaken branch; Lumiverse does not."
-    },
-    {
-      name: "#if_pure",
-      aliases: [],
-      category: "control_flow",
-      argShape: "cond + body",
-      minArgs: 1,
-      maxArgs: 2,
-      pure: false,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/parser/parser.svelte.ts",
-      risuLine: 1143,
-      summary: "Conditional block variant that preserves interior whitespace. DEPRECATED; use #when::keep::cond instead.",
-      notes: "DEPRECATED."
-    },
-    {
-      name: "#pure",
-      aliases: [],
-      category: "control_flow",
-      argShape: "body",
-      minArgs: 1,
-      maxArgs: 1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/parser/parser.svelte.ts",
-      risuLine: 1420,
-      summary: "Returns the block body as literal text without evaluating inner CBS macros.",
-      notes: "Body is trimmed. Inner macros are preserved verbatim (opaque block)."
-    },
-    {
-      name: "#puredisplay",
-      aliases: [
-        "pure_display",
-        "pure-display"
-      ],
-      category: "control_flow",
-      argShape: "body",
-      minArgs: 1,
-      maxArgs: 1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/parser/parser.svelte.ts",
-      risuLine: 1722,
-      summary: "Returns the trimmed block body with {{ and }} backslash-escaped so downstream parsers leave them alone.",
-      notes: "Like #pure, but additionally escapes brace pairs to prevent any further macro parsing."
-    },
-    {
-      name: "#when",
-      aliases: [],
-      category: "control_flow",
-      argShape: "[op::]cond[::op::cond::\u2026] + body",
-      minArgs: 1,
-      maxArgs: -1,
-      pure: false,
-      readsState: [
-        "localVars",
-        "globalVars"
-      ],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/parser/parser.svelte.ts",
-      risuLine: 1150,
-      summary: "Conditional block with operator chain. Supports and/or/is/isnot/not/var/vis/visnot/toggle/tis/tisnot/>/</>=/<= plus whitespace modes keep and legacy.",
-      notes: "Known deviation: body eager-evaluates in Lumiverse regardless of condition; side effects in the untaken branch still fire."
-    },
-    {
-      name: "//",
-      aliases: [],
-      category: "other",
-      argShape: "TEXT",
-      minArgs: 0,
-      maxArgs: -1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 2257,
-      summary: "Inline comment \u2014 always returns ''.",
-      notes: ""
-    },
-    {
-      name: ":else",
-      aliases: [],
-      category: "other",
-      argShape: "UNCERTAIN",
-      minArgs: 0,
-      maxArgs: 0,
-      pure: false,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 2442,
-      summary: "Else statement for CBS. Must be used inside {{#when}}. if {{#when}} is multiline",
-      notes: ""
-    },
-    {
-      name: "?",
-      aliases: [],
-      category: "other",
-      argShape: "UNCERTAIN",
-      minArgs: 0,
-      maxArgs: 0,
-      pure: false,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 2264,
-      summary: "Runs math operations on numbers. Supports +, -, *, /, %, ^ (exponentiation), % (",
-      notes: ""
-    },
-    {
-      name: "__",
-      aliases: [],
-      category: "other",
-      argShape: "UNCERTAIN",
-      minArgs: 0,
-      maxArgs: 0,
-      pure: false,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 2271,
-      summary: "**INTERNAL FUNCTION - DO NOT USE**",
-      notes: ""
-    },
-    {
-      name: "abs",
-      aliases: [],
-      category: "math",
-      argShape: "N",
-      minArgs: 1,
-      maxArgs: 1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: {
-        name: "abs",
-        compatible: false,
-        notes: ""
-      },
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1128,
-      summary: "Returns the absolute value of a number.",
-      notes: ""
-    },
-    {
-      name: "addvar",
-      aliases: [],
-      category: "variables",
-      argShape: "NAME::DELTA",
-      minArgs: 2,
-      maxArgs: 2,
-      pure: false,
-      readsState: [
-        "localVars"
-      ],
-      writesState: [
-        "localVars"
-      ],
-      lumiverseCollision: {
-        name: "addvar",
-        compatible: false,
-        notes: ""
-      },
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 810,
-      summary: "Adds DELTA to the current numeric value of NAME.",
-      notes: ""
-    },
-    {
-      name: "all",
-      aliases: [],
-      category: "other",
-      argShape: "ARR or F1::F2::\u2026",
-      minArgs: 1,
-      maxArgs: -1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1667,
-      summary: "Returns '1' iff every value is the literal '1'. Accepts a JSON array or multiple args.",
-      notes: ""
-    },
-    {
-      name: "and",
-      aliases: [],
-      category: "logic",
-      argShape: "A::B",
-      minArgs: 2,
-      maxArgs: 2,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: {
-        name: "and",
-        compatible: false,
-        notes: ""
-      },
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 943,
-      summary: "Boolean AND: returns '1' iff both args are the literal '1'.",
-      notes: ""
-    },
-    {
-      name: "any",
-      aliases: [],
-      category: "other",
-      argShape: "ARR or F1::F2::\u2026",
-      minArgs: 1,
-      maxArgs: -1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1680,
-      summary: "Returns '1' if any value is the literal '1'.",
-      notes: ""
-    },
-    {
-      name: "arrayassert",
-      aliases: [
-        "arrayassert"
-      ],
-      category: "arrays",
-      argShape: "JSON_ARR::INDEX::VALUE",
-      minArgs: 3,
-      maxArgs: 3,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1280,
-      summary: "Sets arr[INDEX]=VALUE only if INDEX is out of bounds (extends the array).",
-      notes: ""
-    },
-    {
-      name: "arrayelement",
-      aliases: [
-        "arrayelement"
-      ],
-      category: "arrays",
-      argShape: "JSON_ARR::INDEX",
-      minArgs: 2,
-      maxArgs: 2,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1178,
-      summary: "Returns arr[INDEX] (JSON-stringified if object). 'null' if OOB.",
-      notes: ""
-    },
-    {
-      name: "arraylength",
-      aliases: [
-        "arraylength"
-      ],
-      category: "arrays",
-      argShape: "JSON_ARR",
-      minArgs: 1,
-      maxArgs: 1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1065,
-      summary: "Length of a JSON array.",
-      notes: ""
-    },
-    {
-      name: "arraypop",
-      aliases: [
-        "arraypop"
-      ],
-      category: "arrays",
-      argShape: "JSON_ARR",
-      minArgs: 1,
-      maxArgs: 1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1247,
-      summary: "Removes and discards the last element.",
-      notes: ""
-    },
-    {
-      name: "arraypush",
-      aliases: [
-        "arraypush"
-      ],
-      category: "arrays",
-      argShape: "JSON_ARR::ELEM",
-      minArgs: 2,
-      maxArgs: 2,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1258,
-      summary: "Appends an element to the array.",
-      notes: ""
-    },
-    {
-      name: "arrayshift",
-      aliases: [
-        "arrayshift"
-      ],
-      category: "arrays",
-      argShape: "JSON_ARR",
-      minArgs: 1,
-      maxArgs: 1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1236,
-      summary: "Removes and discards the first element; returns the modified JSON array.",
-      notes: ""
-    },
-    {
-      name: "arraysplice",
-      aliases: [
-        "arraysplice"
-      ],
-      category: "arrays",
-      argShape: "JSON_ARR::START::DELETE_COUNT::NEW_ELEM",
-      minArgs: 4,
-      maxArgs: 4,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1269,
-      summary: "Risu-style splice: (arr, start, deleteCount, newElement).",
-      notes: ""
-    },
-    {
-      name: "asset",
-      aliases: [],
-      category: "display",
-      argShape: "NAME",
-      minArgs: 1,
-      maxArgs: 1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 2282,
-      summary: "doc_only \u2014 stripped at prompt stage; rendered as character asset element at display.",
-      notes: "Shim returns '' at prompt stage. Display-time HTML injection belongs to a Lumiverse renderer extension."
-    },
-    {
-      name: "assetlist",
-      aliases: [],
-      category: "display",
-      argShape: "(no args)",
-      minArgs: 0,
-      maxArgs: 0,
-      pure: false,
-      readsState: [
-        "characterFields"
-      ],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1340,
-      summary: "JSON array of additional asset names. '' for group characters.",
-      notes: ""
-    },
-    {
-      name: "audio",
-      aliases: [],
-      category: "other",
-      argShape: "NAME",
-      minArgs: 1,
-      maxArgs: 1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 2296,
-      summary: "doc_only \u2014 audio asset NAME. Stripped at prompt stage.",
-      notes: ""
-    },
-    {
-      name: "authornote",
-      aliases: [
-        "author_note"
-      ],
-      category: "logic",
-      argShape: "no args",
-      minArgs: 0,
-      maxArgs: 0,
-      pure: false,
-      readsState: [
-        "characterFields"
-      ],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 393,
-      summary: "Returns the author's note for the current chat.",
-      notes: ""
-    },
-    {
-      name: "average",
-      aliases: [],
-      category: "other",
-      argShape: "ARR or N1::N2::\u2026",
-      minArgs: 1,
-      maxArgs: -1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1741,
-      summary: "Arithmetic mean. Returns NaN on empty input.",
-      notes: ""
-    },
-    {
-      name: "axmodel",
-      aliases: [],
-      category: "identity",
-      argShape: "no args",
-      minArgs: 0,
-      maxArgs: 0,
-      pure: false,
-      readsState: [
-        "chatState"
-      ],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 660,
-      summary: "Returns the id of the auxiliary model.",
-      notes: ""
-    },
-    {
-      name: "bg",
-      aliases: [],
-      category: "display",
-      argShape: "NAME",
-      minArgs: 1,
-      maxArgs: 1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 2303,
-      summary: "doc_only \u2014 background image NAME. Stripped at prompt stage.",
-      notes: ""
-    },
-    {
-      name: "bgm",
-      aliases: [],
-      category: "display",
-      argShape: "NAME",
-      minArgs: 1,
-      maxArgs: 1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 2310,
-      summary: "doc_only \u2014 background music NAME. Stripped at prompt stage.",
-      notes: ""
-    },
-    {
-      name: "bkspc",
-      aliases: [],
-      category: "other",
-      argShape: "(no args)",
-      minArgs: 0,
-      maxArgs: 0,
-      pure: false,
-      readsState: [
-        "chatState"
-      ],
-      writesState: [
-        "chatState"
-      ],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 2179,
-      summary: "Risu rewinds the generated buffer by one word. No buffer in risu-compat \u2014 shim '' (deviation).",
-      notes: ""
-    },
-    {
-      name: "blank",
-      aliases: [
-        "none"
-      ],
-      category: "other",
-      argShape: "no args",
-      minArgs: 0,
-      maxArgs: 0,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 435,
-      summary: "Returns an empty string.",
-      notes: ""
-    },
-    {
-      name: "bo",
-      aliases: [
-        "ddecbo",
-        "doubledisplayescapedcurlybracketopen"
-      ],
-      category: "other",
-      argShape: "(no args)",
-      minArgs: 0,
-      maxArgs: 0,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1415,
-      summary: "Displays as {{ (two PUA sentinels).",
-      notes: ""
-    },
-    {
-      name: "br",
-      aliases: [
-        "newline"
-      ],
-      category: "other",
-      argShape: "no args",
-      minArgs: 0,
-      maxArgs: 0,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 641,
-      summary: "Returns a literal newline character.",
-      notes: ""
-    },
-    {
-      name: "button",
-      aliases: [],
-      category: "other",
-      argShape: "LABEL::TRIGGER",
-      minArgs: 2,
-      maxArgs: 2,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 869,
-      summary: 'HTML button with risu-trigger="TRIGGER" that fires the named manual trigger when clicked.',
-      notes: ""
-    },
-    {
-      name: "calc",
-      aliases: [],
-      category: "math",
-      argShape: "EXPR",
-      minArgs: 1,
-      maxArgs: 1,
-      pure: false,
-      readsState: [
-        "localVars",
-        "globalVars"
-      ],
-      writesState: [],
-      lumiverseCollision: {
-        name: "calc",
-        compatible: false,
-        notes: ""
-      },
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 801,
-      summary: "Evaluates a math expression. Supports +, -, *, /, ^, %, and comparisons. $var reads a local chat var; @var reads a global chat var.",
-      notes: ""
-    },
-    {
-      name: "capitalize",
-      aliases: [],
-      category: "strings",
-      argShape: "STR",
-      minArgs: 1,
-      maxArgs: 1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: {
-        name: "capitalize",
-        compatible: false,
-        notes: ""
-      },
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1092,
-      summary: "Uppercases only the first character of STR.",
-      notes: ""
-    },
-    {
-      name: "cbr",
-      aliases: [
-        "cnl",
-        "cnewline"
-      ],
-      category: "other",
-      argShape: "[N]",
-      minArgs: 0,
-      maxArgs: 1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1384,
-      summary: "Emits literal '\\n' (backslash+n). Optional N repeats the sequence.",
-      notes: ""
-    },
-    {
-      name: "ceil",
-      aliases: [],
-      category: "math",
-      argShape: "N",
-      minArgs: 1,
-      maxArgs: 1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: {
-        name: "ceil",
-        compatible: false,
-        notes: ""
-      },
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1119,
-      summary: "Rounds toward positive infinity (ceil).",
-      notes: ""
-    },
-    {
-      name: "char",
-      aliases: [
-        "bot"
-      ],
-      category: "character_fields",
-      argShape: "UNCERTAIN",
-      minArgs: 0,
-      maxArgs: 0,
-      pure: false,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: {
-        name: "char",
-        compatible: true,
-        notes: ""
-      },
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 146,
-      summary: "Returns the name or nickname of the current character/bot. In consistent charact",
-      notes: ""
-    },
-    {
-      name: "chardisplayasset",
-      aliases: [],
-      category: "character_fields",
-      argShape: "(no args)",
-      minArgs: 0,
-      maxArgs: 0,
-      pure: false,
-      readsState: [
-        "characterFields"
-      ],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1487,
-      summary: "JSON array of display assets filtered by prebuiltAssetExclude. Empty when prebuiltAssetCommand is off.",
-      notes: ""
-    },
-    {
-      name: "charhistory",
-      aliases: [
-        "charmessages",
-        "char_history"
-      ],
-      category: "chat_context",
-      argShape: "(no args)",
-      minArgs: 0,
-      maxArgs: 0,
-      pure: false,
-      readsState: [
-        "messages"
-      ],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 354,
-      summary: "JSON array of all assistant/character messages. role normalized to Risu's 'char'.",
-      notes: ""
-    },
-    {
-      name: "chatindex",
-      aliases: [
-        "chat_index"
-      ],
-      category: "other",
-      argShape: "(no args)",
-      minArgs: 0,
-      maxArgs: 0,
-      pure: false,
-      readsState: [
-        "messages"
-      ],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 415,
-      summary: "Index of the current message being processed. Empty string outside a message context.",
-      notes: ""
-    },
-    {
-      name: "codeblock",
-      aliases: [],
-      category: "other",
-      argShape: "[LANG::]CODE",
-      minArgs: 1,
-      maxArgs: 2,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 2159,
-      summary: "Emits <pre><code>...</code></pre> or a highlight-ready placeholder when LANG is provided.",
-      notes: ""
-    },
-    {
-      name: "comment",
-      aliases: [],
-      category: "other",
-      argShape: "TEXT",
-      minArgs: 1,
-      maxArgs: 1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: {
-        name: "comment",
-        compatible: false,
-        notes: ""
-      },
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 2129,
-      summary: "Emits '' in model prompt; renders as a <div> on display. Our runtime never hits display mode, so always returns ''.",
-      notes: ""
-    },
-    {
-      name: "contains",
-      aliases: [],
-      category: "other",
-      argShape: "STR::NEEDLE",
-      minArgs: 2,
-      maxArgs: 2,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1001,
-      summary: "Returns '1' if STR contains NEEDLE anywhere.",
-      notes: ""
-    },
-    {
-      name: "crypt",
-      aliases: [
-        "crypto",
-        "caesar",
-        "encrypt",
-        "decrypt"
-      ],
-      category: "other",
-      argShape: "STR[::SHIFT]",
-      minArgs: 1,
-      maxArgs: 2,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1973,
-      summary: "Caesar-style Unicode shift cipher. Default SHIFT = 32768 (self-inverting over 16-bit code points).",
-      notes: ""
-    },
-    {
-      name: "date",
-      aliases: [
-        "datetimeformat"
-      ],
-      category: "time",
-      argShape: "[FMT[::UNIX_MS]]",
-      minArgs: 0,
-      maxArgs: 2,
-      pure: false,
-      readsState: [
-        "time"
-      ],
-      writesState: [],
-      lumiverseCollision: {
-        name: "date",
-        compatible: false,
-        notes: ""
-      },
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1563,
-      summary: "No args \u2192 YYYY-M-D. First arg = format string. Second arg = unix ms.",
-      notes: ""
-    },
-    {
-      name: "decbo",
-      aliases: [
-        "displayescapedcurlybracketopen"
-      ],
-      category: "other",
-      argShape: "(no args)",
-      minArgs: 0,
-      maxArgs: 0,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1397,
-      summary: "Displays as { without re-parsing (PUA sentinel \\uE9B8).",
-      notes: ""
-    },
-    {
-      name: "declare",
-      aliases: [],
-      category: "other",
-      argShape: "NAME",
-      minArgs: 1,
-      maxArgs: 1,
-      pure: false,
-      readsState: [],
-      writesState: [
-        "localVars"
-      ],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 2247,
-      summary: "Sets a __declared_NAME__ marker in the temp scope (writable from later {{declared::NAME}} reads).",
-      notes: ""
-    },
-    {
-      name: "description",
-      aliases: [
-        "chardesc"
-      ],
-      category: "character_fields",
-      argShape: "no args",
-      minArgs: 0,
-      maxArgs: 0,
-      pure: false,
-      readsState: [
-        "characterFields"
-      ],
-      writesState: [],
-      lumiverseCollision: {
-        name: "description",
-        compatible: true,
-        notes: "Both return the equivalent character field; semantics match."
-      },
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 252,
-      summary: "Returns the description field of the current character. The text is processed th",
-      notes: ""
-    },
-    {
-      name: "dice",
-      aliases: [],
-      category: "random",
-      argShape: "NdS",
-      minArgs: 1,
-      maxArgs: 1,
-      pure: false,
-      readsState: [
-        "rng"
-      ],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1826,
-      summary: "Dice roll via NdS notation. Both numbers required \u2014 returns NaN otherwise.",
-      notes: ""
-    },
-    {
-      name: "dictelement",
-      aliases: [
-        "dictelement",
-        "objectelement"
-      ],
-      category: "arrays",
-      argShape: "JSON_OBJ::KEY",
-      minArgs: 2,
-      maxArgs: 2,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1188,
-      summary: "Returns dict[KEY] or 'null' if missing.",
-      notes: ""
-    },
-    {
-      name: "displayescapedanglebracketclose",
-      aliases: [
-        "deabc",
-        ">"
-      ],
-      category: "escape_markup",
-      argShape: "(no args)",
-      minArgs: 0,
-      maxArgs: 0,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1460,
-      summary: "Displays as > (PUA \\uE9BD).",
-      notes: ""
-    },
-    {
-      name: "displayescapedanglebracketopen",
-      aliases: [
-        "deabo",
-        "<"
-      ],
-      category: "escape_markup",
-      argShape: "(no args)",
-      minArgs: 0,
-      maxArgs: 0,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1451,
-      summary: "Displays as < (PUA \\uE9BC).",
-      notes: ""
-    },
-    {
-      name: "displayescapedbracketclose",
-      aliases: [
-        "debc",
-        ")"
-      ],
-      category: "escape_markup",
-      argShape: "(no args)",
-      minArgs: 0,
-      maxArgs: 0,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1442,
-      summary: "Displays as ) (PUA \\uE9BB).",
-      notes: ""
-    },
-    {
-      name: "displayescapedbracketopen",
-      aliases: [
-        "debo",
-        "("
-      ],
-      category: "escape_markup",
-      argShape: "(no args)",
-      minArgs: 0,
-      maxArgs: 0,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1433,
-      summary: "Displays as ( (PUA \\uE9BA).",
-      notes: ""
-    },
-    {
-      name: "displayescapedcolon",
-      aliases: [
-        "dec",
-        ":"
-      ],
-      category: "escape_markup",
-      argShape: "(no args)",
-      minArgs: 0,
-      maxArgs: 0,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1469,
-      summary: "Displays as : without being parsed as a CBS separator (PUA \\uE9BE).",
-      notes: ""
-    },
-    {
-      name: "displayescapedsemicolon",
-      aliases: [
-        ";"
-      ],
-      category: "escape_markup",
-      argShape: "(no args)",
-      minArgs: 0,
-      maxArgs: 0,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1478,
-      summary: "Displays as ; (PUA \\uE9BF).",
-      notes: ""
-    },
-    {
-      name: "element",
-      aliases: [
-        "ele"
-      ],
-      category: "arrays",
-      argShape: "JSON::KEY1[::KEY2\u2026]",
-      minArgs: 2,
-      maxArgs: -1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1211,
-      summary: "Walks a JSON structure by successive keys/indices; returns 'null' if any step fails.",
-      notes: ""
-    },
-    {
-      name: "emotion",
-      aliases: [],
-      category: "display",
-      argShape: "NAME",
-      minArgs: 1,
-      maxArgs: 1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 2289,
-      summary: "doc_only \u2014 emotion image NAME. Stripped at prompt stage.",
-      notes: ""
-    },
-    {
-      name: "emotionlist",
-      aliases: [],
-      category: "display",
-      argShape: "(no args)",
-      minArgs: 0,
-      maxArgs: 0,
-      pure: false,
-      readsState: [
-        "characterFields"
-      ],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1324,
-      summary: "JSON array of emotion image names for the current character.",
-      notes: ""
-    },
-    {
-      name: "endswith",
-      aliases: [],
-      category: "other",
-      argShape: "STR::SUFFIX",
-      minArgs: 2,
-      maxArgs: 2,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 992,
-      summary: "Returns '1' if STR ends with SUFFIX.",
-      notes: ""
-    },
-    {
-      name: "equal",
-      aliases: [],
-      category: "logic",
-      argShape: "A::B",
-      minArgs: 2,
-      maxArgs: 2,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 889,
-      summary: "Returns '1' if A === B (string compare), else '0'.",
-      notes: ""
-    },
-    {
-      name: "erase",
-      aliases: [],
-      category: "other",
-      argShape: "(no args)",
-      minArgs: 0,
-      maxArgs: 0,
-      pure: false,
-      readsState: [
-        "chatState"
-      ],
-      writesState: [
-        "chatState"
-      ],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 2211,
-      summary: "Risu rewinds the generated buffer by one sentence. Shim '' (deviation).",
-      notes: ""
-    },
-    {
-      name: "exampledialogue",
-      aliases: [
-        "examplemessage",
-        "example_dialogue"
-      ],
-      category: "other",
-      argShape: "no args",
-      minArgs: 0,
-      maxArgs: 0,
-      pure: false,
-      readsState: [
-        "characterFields"
-      ],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 283,
-      summary: "Returns the example dialogue/message field of the current character.",
-      notes: ""
-    },
-    {
-      name: "file",
-      aliases: [],
-      category: "other",
-      argShape: "NAME::BASE64",
-      minArgs: 2,
-      maxArgs: 2,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 970,
-      summary: "Decodes base64 file content to UTF-8 for inclusion in the model prompt. (Risu's display mode returns an HTML div; renderer-only \u2014 not ported.)",
-      notes: ""
-    },
-    {
-      name: "filter",
-      aliases: [],
-      category: "other",
-      argShape: "JSON_ARR::MODE",
-      minArgs: 2,
-      maxArgs: 2,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1639,
-      summary: "Filters a JSON array. MODE = 'all' (unique + non-empty), 'nonempty', or 'unique'.",
-      notes: ""
-    },
-    {
-      name: "firstmsgindex",
-      aliases: [
-        "firstmessageindex",
-        "first_msg_index"
-      ],
-      category: "other",
-      argShape: "(no args)",
-      minArgs: 0,
-      maxArgs: 0,
-      pure: false,
-      readsState: [
-        "messages"
-      ],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 424,
-      summary: "Index of the selected first-message/alternate-greeting. Always '0' in our model.",
-      notes: ""
-    },
-    {
-      name: "fixnum",
-      aliases: [
-        "fixnum",
-        "fixnumber"
-      ],
-      category: "other",
-      argShape: "N::DIGITS",
-      minArgs: 2,
-      maxArgs: 2,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1758,
-      summary: "Rounds N to DIGITS decimal places (via toFixed).",
-      notes: ""
-    },
-    {
-      name: "floor",
-      aliases: [],
-      category: "math",
-      argShape: "N",
-      minArgs: 1,
-      maxArgs: 1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: {
-        name: "floor",
-        compatible: false,
-        notes: ""
-      },
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1110,
-      summary: "Rounds toward negative infinity (floor).",
-      notes: ""
-    },
-    {
-      name: "fromhex",
-      aliases: [],
-      category: "escape_markup",
-      argShape: "HEX",
-      minArgs: 1,
-      maxArgs: 1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1845,
-      summary: "Converts a hex string to its decimal representation.",
-      notes: ""
-    },
-    {
-      name: "getglobalvar",
-      aliases: [],
-      category: "variables",
-      argShape: "NAME",
-      minArgs: 1,
-      maxArgs: 1,
-      pure: false,
-      readsState: [
-        "globalVars"
-      ],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 860,
-      summary: "Reads a global (cross-chat) variable.",
-      notes: ""
-    },
-    {
-      name: "getvar",
-      aliases: [],
-      category: "variables",
-      argShape: "NAME",
-      minArgs: 1,
-      maxArgs: 1,
-      pure: false,
-      readsState: [
-        "localVars"
-      ],
-      writesState: [],
-      lumiverseCollision: {
-        name: "getvar",
-        compatible: true,
-        notes: ""
-      },
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 792,
-      summary: "Reads a chat-scoped variable. Empty string if unset.",
-      notes: ""
-    },
-    {
-      name: "globalnote",
-      aliases: [
-        "globalnote",
-        "systemnote",
-        "ujb"
-      ],
-      category: "logic",
-      argShape: "no args",
-      minArgs: 0,
-      maxArgs: 0,
-      pure: false,
-      readsState: [
-        "characterFields"
-      ],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 383,
-      summary: "Returns the global note / system note / ujb appended to prompts.",
-      notes: ""
-    },
-    {
-      name: "greater",
-      aliases: [],
-      category: "logic",
-      argShape: "A::B",
-      minArgs: 2,
-      maxArgs: 2,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: {
-        name: "greater",
-        compatible: false,
-        notes: ""
-      },
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 907,
-      summary: "Returns '1' if Number(A) > Number(B).",
-      notes: ""
-    },
-    {
-      name: "greaterequal",
-      aliases: [
-        "greater_equal"
-      ],
-      category: "logic",
-      argShape: "A::B",
-      minArgs: 2,
-      maxArgs: 2,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 925,
-      summary: "Returns '1' if Number(A) >= Number(B).",
-      notes: ""
-    },
-    {
-      name: "hash",
-      aliases: [],
-      category: "other",
-      argShape: "STR",
-      minArgs: 1,
-      maxArgs: 1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1803,
-      summary: "Deterministic 7-digit hash of the input string.",
-      notes: ""
-    },
-    {
-      name: "hiddenkey",
-      aliases: [],
-      category: "other",
-      argShape: "STR",
-      minArgs: 1,
-      maxArgs: 1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 2111,
-      summary: "Activates lorebook entries by keyword but emits nothing \u2014 returns the empty string.",
-      notes: ""
-    },
-    {
-      name: "history",
-      aliases: [
-        "messages"
-      ],
-      category: "chat_context",
-      argShape: "[role]",
-      minArgs: 0,
-      maxArgs: 1,
-      pure: false,
-      readsState: [
-        "messages",
-        "characterFields"
-      ],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1511,
-      summary: "No args \u2192 full JSON history with first-greeting prepended. Arg 'role' \u2192 array of 'role: data' strings.",
-      notes: ""
-    },
-    {
-      name: "idleduration",
-      aliases: [
-        "idle_duration"
-      ],
-      category: "other",
-      argShape: "no args",
-      minArgs: 0,
-      maxArgs: 0,
-      pure: false,
-      readsState: [
-        "messages",
-        "time"
-      ],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 604,
-      summary: "HH:MM:SS since the last message.",
-      notes: ""
-    },
-    {
-      name: "image",
-      aliases: [],
-      category: "display",
-      argShape: "NAME",
-      minArgs: 1,
-      maxArgs: 1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 2331,
-      summary: "doc_only \u2014 image asset NAME. Stripped at prompt stage.",
-      notes: ""
-    },
-    {
-      name: "img",
-      aliases: [],
-      category: "other",
-      argShape: "NAME",
-      minArgs: 1,
-      maxArgs: 1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 2338,
-      summary: "doc_only \u2014 unstyled image asset NAME. Stripped at prompt stage.",
-      notes: ""
-    },
-    {
-      name: "inlay",
-      aliases: [],
-      category: "other",
-      argShape: "NAME",
-      minArgs: 1,
-      maxArgs: 1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 2352,
-      summary: "doc_only \u2014 unstyled inlay NAME (not sent to model). Stripped at prompt.",
-      notes: ""
-    },
-    {
-      name: "inlayed",
-      aliases: [],
-      category: "other",
-      argShape: "NAME",
-      minArgs: 1,
-      maxArgs: 1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 2359,
-      summary: "doc_only \u2014 styled inlay NAME (not sent to model). Stripped at prompt.",
-      notes: ""
-    },
-    {
-      name: "inlayeddata",
-      aliases: [],
-      category: "other",
-      argShape: "NAME",
-      minArgs: 1,
-      maxArgs: 1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 2366,
-      summary: "doc_only \u2014 styled inlay NAME (included in model request). Stripped at prompt in risu-compat.",
-      notes: "Risu's implementation DOES include this in the model prompt. Our shim drops it; enable only when a display-adapter is wired."
-    },
-    {
-      name: "iserror",
-      aliases: [],
-      category: "logic",
-      argShape: "STR",
-      minArgs: 1,
-      maxArgs: 1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1937,
-      summary: "Returns '1' if STR begins with 'error:' (case-insensitive).",
-      notes: ""
-    },
-    {
-      name: "isfirstmsg",
-      aliases: [
-        "isfirstmsg",
-        "isfirstmessage"
-      ],
-      category: "other",
-      argShape: "no args",
-      minArgs: 0,
-      maxArgs: 0,
-      pure: false,
-      readsState: [
-        "chatState"
-      ],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 690,
-      summary: "Returns 1 if the current context is the first greeting message, 0 otherwise.",
-      notes: ""
-    },
-    {
-      name: "isodate",
-      aliases: [],
-      category: "time",
-      argShape: "no args",
-      minArgs: 0,
-      maxArgs: 0,
-      pure: false,
-      readsState: [
-        "time"
-      ],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 536,
-      summary: "Returns the current UTC date in YYYY-M-D format (unpadded).",
-      notes: ""
-    },
-    {
-      name: "isotime",
-      aliases: [],
-      category: "time",
-      argShape: "no args",
-      minArgs: 0,
-      maxArgs: 0,
-      pure: false,
-      readsState: [
-        "time"
-      ],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 526,
-      summary: "Returns the current UTC time in H:M:S format.",
-      notes: ""
-    },
-    {
-      name: "jb",
-      aliases: [
-        "jailbreak"
-      ],
-      category: "other",
-      argShape: "no args",
-      minArgs: 0,
-      maxArgs: 0,
-      pure: false,
-      readsState: [
-        "characterFields"
-      ],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 373,
-      summary: "Returns the jailbreak prompt text.",
-      notes: ""
-    },
-    {
-      name: "jbtoggled",
-      aliases: [],
-      category: "other",
-      argShape: "(no args)",
-      minArgs: 0,
-      maxArgs: 0,
-      pure: false,
-      readsState: [
-        "chatState"
-      ],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 702,
-      summary: "'1' iff the global jailbreak toggle is on.",
-      notes: ""
-    },
-    {
-      name: "join",
-      aliases: [],
-      category: "other",
-      argShape: "JSON_ARR::DELIM",
-      minArgs: 2,
-      maxArgs: 2,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: {
-        name: "join",
-        compatible: false,
-        notes: ""
-      },
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1028,
-      summary: "Joins a JSON array with DELIM.",
-      notes: ""
-    },
-    {
-      name: "lastmessage",
-      aliases: [],
-      category: "chat_context",
-      argShape: "(no args)",
-      minArgs: 0,
-      maxArgs: 0,
-      pure: false,
-      readsState: [
-        "messages"
-      ],
-      writesState: [],
-      lumiverseCollision: {
-        name: "lastmessage",
-        compatible: false,
-        notes: ""
-      },
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 722,
-      summary: "Content of the most recent message in the chat (any role). '' if empty.",
-      notes: ""
-    },
-    {
-      name: "lastmessageid",
-      aliases: [
-        "lastmessageindex"
-      ],
-      category: "chat_context",
-      argShape: "(no args)",
-      minArgs: 0,
-      maxArgs: 0,
-      pure: false,
-      readsState: [
-        "messages"
-      ],
-      writesState: [],
-      lumiverseCollision: {
-        name: "lastmessageid",
-        compatible: false,
-        notes: "Risu: chat.message[].length - 1 (greeting excluded) \u2192 -1 on greeting-only. Lumi: messages.length - 1 (greeting included as msg 0) \u2192 0 on greeting-only. Off-by-one. Card-level literal comparisons like {{equal::lastmessageid::-1}} require Risu-frame \u2014 the rewriter emits {{risu_lastmessageid}} and our handler returns the Risu-frame value."
-      },
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 737,
-      summary: "Index of the last message (count-1) or '' if empty.",
-      notes: ""
-    },
-    {
-      name: "length",
-      aliases: [],
-      category: "other",
-      argShape: "STR",
-      minArgs: 1,
-      maxArgs: 1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: {
-        name: "length",
-        compatible: false,
-        notes: ""
-      },
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1055,
-      summary: "Returns the character length of STR.",
-      notes: ""
-    },
-    {
-      name: "less",
-      aliases: [],
-      category: "logic",
-      argShape: "A::B",
-      minArgs: 2,
-      maxArgs: 2,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 916,
-      summary: "Returns '1' if Number(A) < Number(B).",
-      notes: ""
-    },
-    {
-      name: "lessequal",
-      aliases: [
-        "less_equal"
-      ],
-      category: "logic",
-      argShape: "A::B",
-      minArgs: 2,
-      maxArgs: 2,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 934,
-      summary: "Returns '1' if Number(A) <= Number(B).",
-      notes: ""
-    },
-    {
-      name: "lorebook",
-      aliases: [
-        "worldinfo"
-      ],
-      category: "logic",
-      argShape: "(no args)",
-      minArgs: 0,
-      maxArgs: 0,
-      pure: false,
-      readsState: [
-        "chatState"
-      ],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 317,
-      summary: "JSON array of all active lorebook entries (character + chat + module lore).",
-      notes: ""
-    },
-    {
-      name: "lower",
-      aliases: [],
-      category: "strings",
-      argShape: "STR",
-      minArgs: 1,
-      maxArgs: 1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: {
-        name: "lower",
-        compatible: false,
-        notes: ""
-      },
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1074,
-      summary: "Locale-aware lowercase.",
-      notes: ""
-    },
-    {
-      name: "mainprompt",
-      aliases: [
-        "systemprompt",
-        "main_prompt"
-      ],
-      category: "other",
-      argShape: "no args",
-      minArgs: 0,
-      maxArgs: 0,
-      pure: false,
-      readsState: [
-        "characterFields"
-      ],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 308,
-      summary: "Returns the system/main prompt for the current character.",
-      notes: ""
-    },
-    {
-      name: "makearray",
-      aliases: [
-        "array",
-        "a",
-        "makearray"
-      ],
-      category: "arrays",
-      argShape: "E1::E2::\u2026",
-      minArgs: 0,
-      maxArgs: -1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1294,
-      summary: "Creates a JSON array from the given arguments.",
-      notes: ""
-    },
-    {
-      name: "makedict",
-      aliases: [
-        "dict",
-        "d",
-        "makedict",
-        "makeobject",
-        "object",
-        "o"
-      ],
-      category: "other",
-      argShape: "K1::V1[::K2::V2\u2026]",
-      minArgs: 0,
-      maxArgs: -1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1303,
-      summary: "Creates a JSON object from interleaved key-value arguments. Note: Risu's built-in parses 'key=value' strings; our port accepts separate args \u2014 behavior documented.",
-      notes: "Risu's upstream makedict parses each arg as 'key=value'. Our port accepts alternating key/value args (pair-wise), which matches the risu-compat handler."
-    },
-    {
-      name: "max",
-      aliases: [],
-      category: "math",
-      argShape: "ARR or N1::N2::\u2026",
-      minArgs: 1,
-      maxArgs: -1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: {
-        name: "max",
-        compatible: false,
-        notes: ""
-      },
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1709,
-      summary: "Largest numeric value. Accepts a JSON array or multiple args.",
-      notes: ""
-    },
-    {
-      name: "maxcontext",
-      aliases: [],
-      category: "math",
-      argShape: "(no args)",
-      minArgs: 0,
-      maxArgs: 0,
-      pure: false,
-      readsState: [
-        "chatState"
-      ],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 712,
-      summary: "Max context token limit for the active model, as a decimal string.",
-      notes: ""
-    },
-    {
-      name: "messagedate",
-      aliases: [
-        "message_date"
-      ],
-      category: "chat_context",
-      argShape: "no args",
-      minArgs: 0,
-      maxArgs: 0,
-      pure: false,
-      readsState: [
-        "messages",
-        "time"
-      ],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 469,
-      summary: "Local date the current message was sent.",
-      notes: ""
-    },
-    {
-      name: "messageidleduration",
-      aliases: [
-        "message_idle_duration"
-      ],
-      category: "chat_context",
-      argShape: "no args",
-      minArgs: 0,
-      maxArgs: 0,
-      pure: false,
-      readsState: [
-        "messages",
-        "time"
-      ],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 547,
-      summary: "HH:MM:SS between the current and previous user message.",
-      notes: ""
-    },
-    {
-      name: "messagetime",
-      aliases: [
-        "message_time"
-      ],
-      category: "chat_context",
-      argShape: "no args",
-      minArgs: 0,
-      maxArgs: 0,
-      pure: false,
-      readsState: [
-        "messages",
-        "time"
-      ],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 445,
-      summary: "Local time the current message was sent.",
-      notes: ""
-    },
-    {
-      name: "messageunixtimearray",
-      aliases: [
-        "message_unixtime_array"
-      ],
-      category: "chat_context",
-      argShape: "no args",
-      minArgs: 0,
-      maxArgs: 0,
-      pure: false,
-      readsState: [
-        "messages"
-      ],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 492,
-      summary: "JSON array of all message unix timestamps.",
-      notes: ""
-    },
-    {
-      name: "metadata",
-      aliases: [],
-      category: "other",
-      argShape: "KEY",
-      minArgs: 1,
-      maxArgs: 1,
-      pure: false,
-      readsState: [
-        "chatState"
-      ],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1863,
-      summary: "Host metadata. Supported: imateapot, mobile/local/node, risutype, modelname/modelshortname/modelinternalid. Other keys return 'Error: X is not a valid metadata key.'.",
-      notes: ""
-    },
-    {
-      name: "min",
-      aliases: [],
-      category: "math",
-      argShape: "ARR or N1::N2::\u2026",
-      minArgs: 1,
-      maxArgs: -1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: {
-        name: "min",
-        compatible: false,
-        notes: ""
-      },
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1693,
-      summary: "Smallest numeric value. Accepts a JSON array or multiple args; non-numeric values treated as 0.",
-      notes: ""
-    },
-    {
-      name: "model",
-      aliases: [],
-      category: "identity",
-      argShape: "no args",
-      minArgs: 0,
-      maxArgs: 0,
-      pure: false,
-      readsState: [
-        "chatState"
-      ],
-      writesState: [],
-      lumiverseCollision: {
-        name: "model",
-        compatible: false,
-        notes: ""
-      },
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 650,
-      summary: "Returns the id of the currently selected AI model.",
-      notes: ""
-    },
-    {
-      name: "moduleassetlist",
-      aliases: [
-        "module_assetlist"
-      ],
-      category: "display",
-      argShape: "NAMESPACE",
-      minArgs: 1,
-      maxArgs: 1,
-      pure: false,
-      readsState: [
-        "chatState"
-      ],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1622,
-      summary: "JSON array of module asset names for NAMESPACE. Empty without module state.",
-      notes: ""
-    },
-    {
-      name: "moduleenabled",
-      aliases: [
-        "module_enabled"
-      ],
-      category: "other",
-      argShape: "NAMESPACE",
-      minArgs: 1,
-      maxArgs: 1,
-      pure: false,
-      readsState: [
-        "chatState"
-      ],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1607,
-      summary: "Returns '1' if module NAMESPACE is loaded, else '0'. Our ctx has no module state \u2014 always '0'.",
-      notes: ""
-    },
-    {
-      name: "not",
-      aliases: [],
-      category: "logic",
-      argShape: "A",
-      minArgs: 1,
-      maxArgs: 1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: {
-        name: "not",
-        compatible: false,
-        notes: ""
-      },
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 961,
-      summary: "Boolean NOT: '1' \u2192 '0'; any other value \u2192 '1'.",
-      notes: ""
-    },
-    {
-      name: "notequal",
-      aliases: [
-        "not_equal"
-      ],
-      category: "logic",
-      argShape: "A::B",
-      minArgs: 2,
-      maxArgs: 2,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 898,
-      summary: "Returns '1' if A !== B, else '0'.",
-      notes: ""
-    },
-    {
-      name: "objectassert",
-      aliases: [
-        "dictassert",
-        "object_assert"
-      ],
-      category: "other",
-      argShape: "JSON_OBJ::KEY::VALUE",
-      minArgs: 3,
-      maxArgs: 3,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1198,
-      summary: "Sets obj[KEY]=VALUE only if KEY is missing/falsy.",
-      notes: ""
-    },
-    {
-      name: "or",
-      aliases: [],
-      category: "logic",
-      argShape: "A::B",
-      minArgs: 2,
-      maxArgs: 2,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 952,
-      summary: "Boolean OR: returns '1' if either arg is '1'.",
-      notes: ""
-    },
-    {
-      name: "path",
-      aliases: [
-        "raw"
-      ],
-      category: "other",
-      argShape: "NAME",
-      minArgs: 1,
-      maxArgs: 1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 2345,
-      summary: "doc_only \u2014 asset URL lookup. Shim returns ''.",
-      notes: ""
-    },
-    {
-      name: "persona",
-      aliases: [
-        "userpersona"
-      ],
-      category: "character_fields",
-      argShape: "no args",
-      minArgs: 0,
-      maxArgs: 0,
-      pure: false,
-      readsState: [
-        "characterFields"
-      ],
-      writesState: [],
-      lumiverseCollision: {
-        name: "persona",
-        compatible: true,
-        notes: "Both return the equivalent character field; semantics match."
-      },
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 298,
-      summary: "Returns the user persona prompt text. The text is processed through the chat par",
-      notes: ""
-    },
-    {
-      name: "personality",
-      aliases: [
-        "charpersona"
-      ],
-      category: "character_fields",
-      argShape: "no args",
-      minArgs: 0,
-      maxArgs: 0,
-      pure: false,
-      readsState: [
-        "characterFields"
-      ],
-      writesState: [],
-      lumiverseCollision: {
-        name: "personality",
-        compatible: true,
-        notes: "Both return the equivalent character field; semantics match."
-      },
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 237,
-      summary: "Returns the personality field of the current character. The text is processed th",
-      notes: ""
-    },
-    {
-      name: "pick",
-      aliases: [],
-      category: "random",
-      argShape: "[ARR or E1::E2::\u2026]",
-      minArgs: 0,
-      maxArgs: -1,
-      pure: false,
-      readsState: [
-        "rng",
-        "messages"
-      ],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 2033,
-      summary: "Hash-deterministic pick seeded by message count + character name. Same inputs at same chat position return the same element.",
-      notes: ""
-    },
-    {
-      name: "position",
-      aliases: [],
-      category: "other",
-      argShape: "NAME",
-      minArgs: 1,
-      maxArgs: 1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 2497,
-      summary: "doc_only \u2014 @@position decorator marker. Shim returns ''.",
-      notes: ""
-    },
-    {
-      name: "pow",
-      aliases: [],
-      category: "math",
-      argShape: "BASE::EXP",
-      minArgs: 2,
-      maxArgs: 2,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1169,
-      summary: "Returns BASE raised to EXP (Math.pow).",
-      notes: ""
-    },
-    {
-      name: "prefillsupported",
-      aliases: [
-        "prefill_supported",
-        "prefill"
-      ],
-      category: "logic",
-      argShape: "(no args)",
-      minArgs: 0,
-      maxArgs: 0,
-      pure: false,
-      readsState: [
-        "chatState"
-      ],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1356,
-      summary: "'1' if the active model id starts with 'claude', else '0'.",
-      notes: ""
-    },
-    {
-      name: "previouscharchat",
-      aliases: [
-        "previouscharchat",
-        "lastcharmessage"
-      ],
-      category: "chat_context",
-      argShape: "(no args)",
-      minArgs: 0,
-      maxArgs: 0,
-      pure: false,
-      readsState: [
-        "messages",
-        "characterFields"
-      ],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 194,
-      summary: "Last assistant message prior to currentMessageIndex; first-greeting fallback.",
-      notes: ""
-    },
-    {
-      name: "previouschatlog",
-      aliases: [
-        "previous_chat_log"
-      ],
-      category: "chat_context",
-      argShape: "INDEX",
-      minArgs: 1,
-      maxArgs: 1,
-      pure: false,
-      readsState: [
-        "messages"
-      ],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1146,
-      summary: "Returns message[INDEX].content or 'Out of range' if invalid.",
-      notes: ""
-    },
-    {
-      name: "previoususerchat",
-      aliases: [
-        "previoususerchat",
-        "lastusermessage"
-      ],
-      category: "chat_context",
-      argShape: "(no args)",
-      minArgs: 0,
-      maxArgs: 0,
-      pure: false,
-      readsState: [
-        "messages",
-        "characterFields"
-      ],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 213,
-      summary: "Last user message prior to currentMessageIndex. '' if currentMessageIndex=null.",
-      notes: ""
-    },
-    {
-      name: "randint",
-      aliases: [],
-      category: "logic",
-      argShape: "MIN::MAX",
-      minArgs: 2,
-      maxArgs: 2,
-      pure: false,
-      readsState: [
-        "rng"
-      ],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1812,
-      summary: "Uniform random integer in [MIN, MAX] inclusive.",
-      notes: ""
-    },
-    {
-      name: "random",
-      aliases: [],
-      category: "logic",
-      argShape: "[ARR or E1::E2::\u2026]",
-      minArgs: 0,
-      maxArgs: -1,
-      pure: false,
-      readsState: [
-        "rng"
-      ],
-      writesState: [],
-      lumiverseCollision: {
-        name: "random",
-        compatible: false,
-        notes: ""
-      },
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 2024,
-      summary: "No args \u2192 random [0,1). One array arg \u2192 picks a random element. Multiple args \u2192 picks one.",
-      notes: ""
-    },
-    {
-      name: "range",
-      aliases: [],
-      category: "other",
-      argShape: "JSON_ARR",
-      minArgs: 1,
-      maxArgs: 1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1544,
-      summary: "Creates a range. [N] \u2192 [0..N-1]. [A,B] \u2192 [A..B-1]. [A,B,S] \u2192 step S.",
-      notes: ""
-    },
-    {
-      name: "remaind",
-      aliases: [],
-      category: "other",
-      argShape: "A::B",
-      minArgs: 2,
-      maxArgs: 2,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1137,
-      summary: "Returns A mod B (JavaScript % operator).",
-      notes: ""
-    },
-    {
-      name: "replace",
-      aliases: [],
-      category: "strings",
-      argShape: "STR::NEEDLE::REPL",
-      minArgs: 3,
-      maxArgs: 3,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: {
-        name: "replace",
-        compatible: false,
-        notes: ""
-      },
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1010,
-      summary: "Replaces all occurrences of NEEDLE in STR with REPL (case-sensitive, global).",
-      notes: ""
-    },
-    {
-      name: "return",
-      aliases: [],
-      category: "flow_control",
-      argShape: "VALUE",
-      minArgs: 1,
-      maxArgs: 1,
-      pure: false,
-      readsState: [],
-      writesState: [
-        "localVars"
-      ],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 778,
-      summary: "Risu sets __force_return__ to halt parsing and returns VALUE. Our port emits VALUE in place; known deviation.",
-      notes: ""
-    },
-    {
-      name: "reverse",
-      aliases: [],
-      category: "other",
-      argShape: "STR",
-      minArgs: 1,
-      maxArgs: 1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 2120,
-      summary: "Reverses a string (code-point safe via spread/join).",
-      notes: ""
-    },
-    {
-      name: "risu",
-      aliases: [],
-      category: "other",
-      argShape: "[SIZE]",
-      minArgs: 0,
-      maxArgs: 1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 878,
-      summary: "Embeds the RisuAI logo <img> at SIZE px (default 45).",
-      notes: ""
-    },
-    {
-      name: "role",
-      aliases: [],
-      category: "identity",
-      argShape: "no args",
-      minArgs: 0,
-      maxArgs: 0,
-      pure: false,
-      readsState: [
-        "chatState"
-      ],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 670,
-      summary: "Returns the role of the current message (user, char, system), or literal null when unknown.",
-      notes: ""
-    },
-    {
-      name: "roll",
-      aliases: [],
-      category: "random",
-      argShape: "[NdS|S]",
-      minArgs: 0,
-      maxArgs: 1,
-      pure: false,
-      readsState: [
-        "rng"
-      ],
-      writesState: [],
-      lumiverseCollision: {
-        name: "roll",
-        compatible: false,
-        notes: ""
-      },
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 2047,
-      summary: "Dice roll. 'XdY' syntax; default 1d6 when no arg. Returns NaN on invalid notation.",
-      notes: ""
-    },
-    {
-      name: "rollp",
-      aliases: [
-        "rollpick"
-      ],
-      category: "random",
-      argShape: "[NdS|S]",
-      minArgs: 0,
-      maxArgs: 1,
-      pure: false,
-      readsState: [
-        "rng",
-        "messages"
-      ],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 2076,
-      summary: "Hash-deterministic dice roll. Same chat position returns the same outcome.",
-      notes: ""
-    },
-    {
-      name: "round",
-      aliases: [],
-      category: "math",
-      argShape: "N",
-      minArgs: 1,
-      maxArgs: 1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: {
-        name: "round",
-        compatible: false,
-        notes: ""
-      },
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1101,
-      summary: "Rounds a decimal number to the nearest integer (half-up).",
-      notes: ""
-    },
-    {
-      name: "ruby",
-      aliases: [
-        "furigana"
-      ],
-      category: "other",
-      argShape: "BASE::READING",
-      minArgs: 2,
-      maxArgs: 2,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 2150,
-      summary: "Emits <ruby>...<rt>...</rt></ruby> furigana HTML.",
-      notes: ""
-    },
-    {
-      name: "scenario",
-      aliases: [],
-      category: "character_fields",
-      argShape: "no args",
-      minArgs: 0,
-      maxArgs: 0,
-      pure: false,
-      readsState: [
-        "characterFields"
-      ],
-      writesState: [],
-      lumiverseCollision: {
-        name: "scenario",
-        compatible: true,
-        notes: "Both return the equivalent character field; semantics match."
-      },
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 267,
-      summary: "Returns the scenario field of the current character. The text is processed throu",
-      notes: ""
-    },
-    {
-      name: "screenheight",
-      aliases: [
-        "screen_height"
-      ],
-      category: "other",
-      argShape: "(no args)",
-      minArgs: 0,
-      maxArgs: 0,
-      pure: false,
-      readsState: [
-        "chatState"
-      ],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1375,
-      summary: "Window height in pixels. No host introspection \u2014 always '0'.",
-      notes: ""
-    },
-    {
-      name: "screenwidth",
-      aliases: [
-        "screen_width"
-      ],
-      category: "other",
-      argShape: "(no args)",
-      minArgs: 0,
-      maxArgs: 0,
-      pure: false,
-      readsState: [
-        "chatState"
-      ],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1366,
-      summary: "Window width in pixels. No host introspection in risu-compat \u2014 always '0' (known deviation).",
-      notes: ""
-    },
-    {
-      name: "setdefaultvar",
-      aliases: [],
-      category: "variables",
-      argShape: "NAME::VALUE",
-      minArgs: 2,
-      maxArgs: 2,
-      pure: false,
-      readsState: [
-        "localVars"
-      ],
-      writesState: [
-        "localVars"
-      ],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 842,
-      summary: "Sets NAME=VALUE only if NAME is currently unset or empty.",
-      notes: ""
-    },
-    {
-      name: "settempvar",
-      aliases: [],
-      category: "variables",
-      argShape: "NAME::VALUE",
-      minArgs: 2,
-      maxArgs: 2,
-      pure: false,
-      readsState: [],
-      writesState: [
-        "localVars"
-      ],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 765,
-      summary: "Sets a per-evaluation temporary variable.",
-      notes: ""
-    },
-    {
-      name: "setvar",
-      aliases: [],
-      category: "variables",
-      argShape: "NAME::VALUE",
-      minArgs: 2,
-      maxArgs: 2,
-      pure: false,
-      readsState: [],
-      writesState: [
-        "localVars"
-      ],
-      lumiverseCollision: {
-        name: "setvar",
-        compatible: true,
-        notes: ""
-      },
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 826,
-      summary: "Sets a chat-scoped variable.",
-      notes: ""
-    },
-    {
-      name: "slot",
-      aliases: [],
-      category: "other",
-      argShape: "VAR",
-      minArgs: 0,
-      maxArgs: 1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 2490,
-      summary: "Iteration/func slot reference. Resolved inside each/call block handlers via string substitution.",
-      notes: ""
-    },
-    {
-      name: "source",
-      aliases: [],
-      category: "other",
-      argShape: "user|char",
-      minArgs: 1,
-      maxArgs: 1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 2373,
-      summary: "doc_only \u2014 avatar URL for 'user' or 'char'. Shim returns ''.",
-      notes: ""
-    },
-    {
-      name: "split",
-      aliases: [],
-      category: "other",
-      argShape: "STR::DELIM",
-      minArgs: 2,
-      maxArgs: 2,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: {
-        name: "split",
-        compatible: false,
-        notes: ""
-      },
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1019,
-      summary: "Splits STR by DELIM; returns a JSON array.",
-      notes: ""
-    },
-    {
-      name: "spread",
-      aliases: [],
-      category: "other",
-      argShape: "JSON_ARR",
-      minArgs: 1,
-      maxArgs: 1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1037,
-      summary: "Joins a JSON array with '::' (CBS argument separator).",
-      notes: ""
-    },
-    {
-      name: "startswith",
-      aliases: [],
-      category: "other",
-      argShape: "STR::PREFIX",
-      minArgs: 2,
-      maxArgs: 2,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 983,
-      summary: "Returns '1' if STR starts with PREFIX (case-sensitive).",
-      notes: ""
-    },
-    {
-      name: "sum",
-      aliases: [],
-      category: "math",
-      argShape: "ARR or N1::N2::\u2026",
-      minArgs: 1,
-      maxArgs: -1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1725,
-      summary: "Sum of numeric values. Accepts a JSON array or multiple args.",
-      notes: ""
-    },
-    {
-      name: "tempvar",
-      aliases: [
-        "gettempvar"
-      ],
-      category: "variables",
-      argShape: "NAME",
-      minArgs: 1,
-      maxArgs: 1,
-      pure: false,
-      readsState: [
-        "localVars"
-      ],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 753,
-      summary: "Reads a per-evaluation temporary variable.",
-      notes: "Risu stores temp vars in a `vars` dict that lives for a single parser pass. Our context implements them as the 'temp' scope of ctx.vars."
-    },
-    {
-      name: "tex",
-      aliases: [
-        "latex",
-        "katex"
-      ],
-      category: "other",
-      argShape: "EXPR",
-      minArgs: 1,
-      maxArgs: 1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 2141,
-      summary: "Wraps EXPR in $$...$$ for KaTeX rendering.",
-      notes: ""
-    },
-    {
-      name: "time",
-      aliases: [],
-      category: "time",
-      argShape: "no args",
-      minArgs: 0,
-      maxArgs: 0,
-      pure: false,
-      readsState: [
-        "time"
-      ],
-      writesState: [],
-      lumiverseCollision: {
-        name: "time",
-        compatible: false,
-        notes: ""
-      },
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 516,
-      summary: "Returns the current local time in H:M:S format (unpadded).",
-      notes: ""
-    },
-    {
-      name: "tohex",
-      aliases: [],
-      category: "escape_markup",
-      argShape: "N",
-      minArgs: 1,
-      maxArgs: 1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1854,
-      summary: "Converts a decimal number to a hex string.",
-      notes: ""
-    },
-    {
-      name: "tonumber",
-      aliases: [],
-      category: "other",
-      argShape: "STR",
-      minArgs: 1,
-      maxArgs: 1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1158,
-      summary: "Extracts digits and decimal points from a string (drops everything else).",
-      notes: ""
-    },
-    {
-      name: "trigger_id",
-      aliases: [
-        "triggerid"
-      ],
-      category: "identity",
-      argShape: "no args",
-      minArgs: 0,
-      maxArgs: 0,
-      pure: false,
-      readsState: [
-        "chatState"
-      ],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 184,
-      summary: "Returns the ID value from the risu-id attribute of the clicked element that trig",
-      notes: ""
-    },
-    {
-      name: "trim",
-      aliases: [],
-      category: "strings",
-      argShape: "STR",
-      minArgs: 1,
-      maxArgs: 1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1046,
-      summary: "Removes leading and trailing whitespace.",
-      notes: ""
-    },
-    {
-      name: "u",
-      aliases: [
-        "unicodedecodefromhex"
-      ],
-      category: "other",
-      argShape: "HEX",
-      minArgs: 1,
-      maxArgs: 1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1785,
-      summary: "Returns the character for a hex Unicode code point.",
-      notes: ""
-    },
-    {
-      name: "ue",
-      aliases: [
-        "unicodeencodefromhex"
-      ],
-      category: "other",
-      argShape: "HEX",
-      minArgs: 1,
-      maxArgs: 1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1794,
-      summary: "Alias of {{u}}.",
-      notes: ""
-    },
-    {
-      name: "unicodedecode",
-      aliases: [
-        "unicode_decode"
-      ],
-      category: "escape_markup",
-      argShape: "CODE",
-      minArgs: 1,
-      maxArgs: 1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1776,
-      summary: "Converts a decimal Unicode code point to its character.",
-      notes: ""
-    },
-    {
-      name: "unicodeencode",
-      aliases: [
-        "unicode_encode"
-      ],
-      category: "escape_markup",
-      argShape: "STR[::INDEX]",
-      minArgs: 1,
-      maxArgs: 2,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1767,
-      summary: "Returns the Unicode code point of STR[INDEX] (default 0) as decimal.",
-      notes: ""
-    },
-    {
-      name: "unixtime",
-      aliases: [],
-      category: "time",
-      argShape: "no args",
-      minArgs: 0,
-      maxArgs: 0,
-      pure: false,
-      readsState: [
-        "time"
-      ],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 506,
-      summary: "Returns the current unix timestamp in seconds.",
-      notes: ""
-    },
-    {
-      name: "upper",
-      aliases: [],
-      category: "strings",
-      argShape: "STR",
-      minArgs: 1,
-      maxArgs: 1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: {
-        name: "upper",
-        compatible: false,
-        notes: ""
-      },
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1083,
-      summary: "Locale-aware uppercase.",
-      notes: ""
-    },
-    {
-      name: "user",
-      aliases: [],
-      category: "identity",
-      argShape: "UNCERTAIN",
-      minArgs: 0,
-      maxArgs: 0,
-      pure: false,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: {
-        name: "user",
-        compatible: true,
-        notes: ""
-      },
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 172,
-      summary: "Returns the current user\\",
-      notes: ""
-    },
-    {
-      name: "userhistory",
-      aliases: [
-        "usermessages",
-        "user_history"
-      ],
-      category: "chat_context",
-      argShape: "(no args)",
-      minArgs: 0,
-      maxArgs: 0,
-      pure: false,
-      readsState: [
-        "messages"
-      ],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 336,
-      summary: "JSON array of all user messages with role='user'.",
-      notes: ""
-    },
-    {
-      name: "video",
-      aliases: [],
-      category: "other",
-      argShape: "NAME",
-      minArgs: 1,
-      maxArgs: 1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 2317,
-      summary: "doc_only \u2014 video asset NAME. Stripped at prompt stage.",
-      notes: ""
-    },
-    {
-      name: "video-img",
-      aliases: [],
-      category: "other",
-      argShape: "NAME",
-      minArgs: 1,
-      maxArgs: 1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 2324,
-      summary: "doc_only \u2014 video rendered as image. Stripped at prompt stage.",
-      notes: ""
-    },
-    {
-      name: "xor",
-      aliases: [
-        "xorencrypt",
-        "xorencode",
-        "xore"
-      ],
-      category: "logic",
-      argShape: "STR",
-      minArgs: 1,
-      maxArgs: 1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1947,
-      summary: "XOR-encrypts STR with 0xFF and base64-encodes the result.",
-      notes: ""
-    },
-    {
-      name: "xordecrypt",
-      aliases: [
-        "xordecode",
-        "xord"
-      ],
-      category: "logic",
-      argShape: "B64",
-      minArgs: 1,
-      maxArgs: 1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1960,
-      summary: "Inverse of {{xor}} \u2014 decodes base64 + XOR with 0xFF.",
-      notes: ""
-    },
-    {
-      name: "#func",
-      aliases: [
-        "#function"
-      ],
-      category: "control_flow",
-      argShape: "funcName arg0 arg1 ... + body",
-      minArgs: 1,
-      maxArgs: -1,
-      pure: false,
-      readsState: [],
-      writesState: [
-        "chatState"
-      ],
-      lumiverseCollision: null,
-      risuFile: "src/ts/parser/parser.svelte.ts",
-      risuLine: 1400,
-      summary: "Defines a named function. The body is stored and invoked later via {{call::funcName::\u2026}}.",
-      notes: "Deviation: function table is Lumiscript-session scoped, not per-evaluation pass like Risu."
-    },
-    {
-      name: "call",
-      aliases: [],
-      category: "flow_control",
-      argShape: "funcName::arg0::arg1::\u2026",
-      minArgs: 1,
-      maxArgs: -1,
-      pure: false,
-      readsState: [
-        "chatState"
-      ],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/parser/parser.svelte.ts",
-      risuLine: 1737,
-      summary: "Invokes a function previously defined by #func. Arguments are passed as additional :: tokens; referenced inside the function body as {{arg::0}}, {{arg::1}}, etc.",
-      notes: "Known deviation: inner macros in the function body are not re-evaluated after substitution."
-    },
-    {
-      name: "legacy",
-      aliases: [],
-      category: "control_flow",
-      argShape: `{#if cond
-content#} expression`,
-      minArgs: 1,
-      maxArgs: 1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/parser/parser.svelte.ts",
-      risuLine: 1082,
-      summary: `Legacy {#if cond
-content#} form. Returns trimmed content if cond is not the empty string, 0, or -1.`,
-      notes: "Deprecated Risu form; preserved for compatibility."
-    },
-    {
-      name: "unknown",
-      aliases: [],
-      category: "control_flow",
-      argShape: "any + body",
-      minArgs: 0,
-      maxArgs: -1,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "packages/core/src/cbs/rewrite/blocks.ts",
-      risuLine: 1,
-      summary: `Fallback handler for unrecognized block kinds. Returns body verbatim without interpretation, matching Risu's "nothing" type fall-through.`,
-      notes: "Synthetic name emitted by the rewriter when it sees {{#someUnknownBlock}}\u2026{{/someUnknownBlock}}. Not a Risu macro."
-    },
-    {
-      name: "deletevar",
-      aliases: [],
-      category: "variables",
-      argShape: "NAME",
-      minArgs: 1,
-      maxArgs: 1,
-      pure: false,
-      readsState: [],
-      writesState: [
-        "localVars"
-      ],
-      lumiverseCollision: null,
-      risuFile: "src/ts/process/triggers.ts",
-      risuLine: 1,
-      summary: "Deletes a chat-scoped variable. Exposed via Risu's editCharVar trigger op \u2014 shim in risu-compat.",
-      notes: "Not a cbs.ts registerFunction; exists as a trigger effect in Risu. Added so triggers that compile into {{deletevar::X}} macro calls survive the discipline gate."
-    },
-    {
-      name: "flushvar",
-      aliases: [],
-      category: "variables",
-      argShape: "NAME",
-      minArgs: 1,
-      maxArgs: 1,
-      pure: false,
-      readsState: [],
-      writesState: [
-        "localVars"
-      ],
-      lumiverseCollision: null,
-      risuFile: "src/ts/process/triggers.ts",
-      risuLine: 1,
-      summary: "Alias of deletevar. Name matches older Risu trigger-compiler output.",
-      notes: "Synthetic alias; see deletevar."
-    },
-    {
-      name: "getchatvar",
-      aliases: [],
-      category: "variables",
-      argShape: "NAME",
-      minArgs: 1,
-      maxArgs: 1,
-      pure: false,
-      readsState: [
-        "localVars"
-      ],
-      writesState: [],
-      lumiverseCollision: {
-        name: "getchatvar",
-        compatible: false,
-        notes: "Lumiverse getchatvar uses a distinct chat scope; Risu only has one chat scope so our shim aliases to local."
-      },
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 792,
-      summary: "Reads a chat-scoped variable. Aliased to getvar in Risu's single-chat-scope model.",
-      notes: "Synthetic; Risu has no separate chat-scope. Provided for parity with Lumiverse's getchatvar."
-    },
-    {
-      name: "setchatvar",
-      aliases: [],
-      category: "variables",
-      argShape: "NAME::VALUE",
-      minArgs: 2,
-      maxArgs: 2,
-      pure: false,
-      readsState: [],
-      writesState: [
-        "localVars"
-      ],
-      lumiverseCollision: {
-        name: "setchatvar",
-        compatible: false,
-        notes: "See getchatvar."
-      },
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 826,
-      summary: "Sets a chat-scoped variable. Aliased to setvar.",
-      notes: "Synthetic; see getchatvar."
-    },
-    {
-      name: "bc",
-      aliases: [
-        "ddecbc",
-        "doubledisplayescapedcurlybracketclose"
-      ],
-      category: "escape_markup",
-      argShape: "(no args)",
-      minArgs: 0,
-      maxArgs: 0,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1424,
-      summary: "Displays as }} without being re-parsed (two PUA sentinels).",
-      notes: ""
-    },
-    {
-      name: "decbc",
-      aliases: [
-        "displayescapedcurlybracketclose"
-      ],
-      category: "escape_markup",
-      argShape: "(no args)",
-      minArgs: 0,
-      maxArgs: 0,
-      pure: true,
-      readsState: [],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1406,
-      summary: "Displays as } without being re-parsed (PUA \\uE9B9).",
-      notes: ""
-    },
-    {
-      name: "messagecount",
-      aliases: [],
-      category: "chat_context",
-      argShape: "(no args)",
-      minArgs: 0,
-      maxArgs: 0,
-      pure: false,
-      readsState: [
-        "messages"
-      ],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 1,
-      summary: "Total number of messages in the chat as a string. Frequently synthesized in CBS templates.",
-      notes: "Not registered in Risu's cbs.ts as a named function; many cards use it via script."
-    },
-    {
-      name: "declared",
-      aliases: [],
-      category: "metadata",
-      argShape: "NAME",
-      minArgs: 1,
-      maxArgs: 1,
-      pure: false,
-      readsState: [
-        "localVars"
-      ],
-      writesState: [],
-      lumiverseCollision: null,
-      risuFile: "src/ts/cbs.ts",
-      risuLine: 2247,
-      summary: "Reads a declaration marker set by {{declare::NAME}}; returns '1' if declared else '0'.",
-      notes: "Risu implements this implicitly via var checks; we expose it as a dedicated handler for clarity."
-    }
-  ];
-});
 
 // src/risu-compat/registry.ts
 class HandlerRegistry {
@@ -19187,7 +19187,6 @@ function convertPngCardToCharx(bytes) {
   ];
   for (const a of assets) {
     entries.push({ name: a.key, data: a.bytes });
-    entries.push({ name: `${ASSET_KEY_PREFIX}:${a.key}`, data: a.bytes });
   }
   const zip = writeStoredZip(entries);
   return {
@@ -19537,718 +19536,6 @@ function base64ToBytes(b64) {
   for (let i = 0;i < bin.length; i++)
     out[i] = bin.charCodeAt(i);
   return out;
-}
-
-// src/core/payload/types.ts
-var CURRENT_TRANSLATOR_SCHEMA_VERSION = 4;
-var LUMIREALM_EXT_KEY = "lumirealm";
-// src/payload/codec.ts
-class RisuCompatUnsupportedError extends Error {
-  feature;
-  reason;
-  name = "RisuCompatUnsupportedError";
-  constructor(feature, reason) {
-    super(`risu-compat: ${feature} is unsupported (${reason})`);
-    this.feature = feature;
-    this.reason = reason;
-  }
-}
-
-class RisuCompatVersionError extends Error {
-  missing;
-  extensionVersion;
-  name = "RisuCompatVersionError";
-  constructor(missing, extensionVersion) {
-    super(`risu-compat v${extensionVersion} is missing required capabilities: ${missing.join(", ")}. Please update the extension.`);
-    this.missing = missing;
-    this.extensionVersion = extensionVersion;
-  }
-}
-
-class RisuConsentDeclinedError extends Error {
-  characterName;
-  name = "RisuConsentDeclinedError";
-  constructor(characterName) {
-    super(`risu-compat: import of "${characterName}" cancelled \u2014 low-level access consent declined.`);
-    this.characterName = characterName;
-  }
-}
-var SUPPORTED_HOST_FEATURES = new Set([
-  "alertSelect"
-]);
-var DEGRADED_HOST_FEATURES = new Set([
-  "utilityBot",
-  "displayTriggerSemantics"
-]);
-function preValidateRequires(requires) {
-  const missing = [];
-  const degraded = [];
-  for (const feature of requires.hostFeatures) {
-    if (SUPPORTED_HOST_FEATURES.has(feature))
-      continue;
-    if (DEGRADED_HOST_FEATURES.has(feature)) {
-      degraded.push(feature);
-      continue;
-    }
-    missing.push(feature);
-  }
-  return { ok: missing.length === 0, missing, degraded };
-}
-function buildLumirealmData(payload, extensionVersion, regexScripts = [], assetIndex = {}, emotionIndex = {}, importedAt = Date.now(), userOverrides = {}, source, translatorSchemaVersion) {
-  return {
-    schema_version: 1,
-    imported_at: importedAt,
-    extension_version: extensionVersion,
-    translator_version: payload.translator_version,
-    ...translatorSchemaVersion !== undefined ? { translator_schema_version: translatorSchemaVersion } : {},
-    ...source ? { source } : {},
-    payload: {
-      triggers: payload.triggers,
-      lua_scripts: payload.lua_scripts,
-      at_actions: payload.at_actions,
-      additional_assets: payload.additional_assets,
-      emotion_images: payload.emotion_images,
-      background_html: payload.background_html,
-      utility_bot: payload.utility_bot,
-      scriptstate_defaults: payload.scriptstate_defaults,
-      requires: payload.requires,
-      ...payload.untranslated ? { untranslated: payload.untranslated } : {}
-    },
-    asset_index: assetIndex,
-    emotion_index: emotionIndex,
-    regex_scripts: regexScripts,
-    user_overrides: userOverrides
-  };
-}
-function isLumirealmData(value) {
-  if (value === null || typeof value !== "object")
-    return false;
-  const v = value;
-  return v.schema_version === 1;
-}
-
-// src/core/pipeline/risu-payload.ts
-var KNOWN_RISUAI_FIELDS = new Set([
-  "backgroundHTML",
-  "customScripts",
-  "triggerscript",
-  "virtualscript",
-  "defaultVariables",
-  "utilityBot",
-  "emotions"
-]);
-var EMBEDED_PREFIX = "embeded://";
-function stripEmbededPrefix(uri) {
-  if (uri.startsWith(EMBEDED_PREFIX))
-    return uri.slice(EMBEDED_PREFIX.length);
-  return uri;
-}
-function extFromPath(path) {
-  const dot = path.lastIndexOf(".");
-  if (dot < 0 || dot === path.length - 1)
-    return;
-  const ext = path.slice(dot + 1).toLowerCase();
-  if (!/^[a-z0-9]{1,6}$/.test(ext))
-    return;
-  return ext;
-}
-function extractAdditionalAssets(assets) {
-  const out = [];
-  for (const raw of assets) {
-    if (!raw || typeof raw !== "object" || Array.isArray(raw))
-      continue;
-    const a = raw;
-    if (a["type"] !== "x-risu-asset")
-      continue;
-    const name = typeof a["name"] === "string" ? a["name"] : "";
-    const uri = typeof a["uri"] === "string" ? a["uri"] : "";
-    if (!name || !uri)
-      continue;
-    const path = stripEmbededPrefix(uri);
-    const explicitExt = typeof a["ext"] === "string" ? a["ext"].toLowerCase() : undefined;
-    const ext = explicitExt ?? extFromPath(path);
-    out.push({ name, path, ...ext ? { ext } : {} });
-  }
-  return out;
-}
-function extractEmotionImages(extensions) {
-  const risuai = extensions["risuai"];
-  if (!risuai || typeof risuai !== "object" || Array.isArray(risuai))
-    return [];
-  const emotions = risuai["emotions"];
-  if (!Array.isArray(emotions))
-    return [];
-  const out = [];
-  for (const raw of emotions) {
-    if (Array.isArray(raw)) {
-      const [n, s, e] = raw;
-      const name = typeof n === "string" ? n : "";
-      const path = typeof s === "string" ? s : "";
-      const ext = typeof e === "string" ? e.toLowerCase() : undefined;
-      if (!name || !path)
-        continue;
-      out.push({ name, path, ...ext ?? extFromPath(path) ? { ext: ext ?? extFromPath(path) } : {} });
-    } else if (raw && typeof raw === "object") {
-      const o = raw;
-      const name = typeof o["name"] === "string" ? o["name"] : "";
-      const path = typeof o["path"] === "string" ? o["path"] : typeof o["src"] === "string" ? o["src"] : "";
-      const explicitExt = typeof o["ext"] === "string" ? o["ext"].toLowerCase() : undefined;
-      if (!name || !path)
-        continue;
-      const ext = explicitExt ?? extFromPath(path);
-      out.push({ name, path, ...ext ? { ext } : {} });
-    }
-  }
-  return out;
-}
-function parseScriptstateDefaults(text) {
-  if (!text || typeof text !== "string")
-    return {};
-  const out = {};
-  for (const rawLine of text.split(`
-`)) {
-    const line = rawLine.trimStart();
-    if (!line || line.startsWith("#") || line.startsWith("//"))
-      continue;
-    const eq = line.indexOf("=");
-    if (eq <= 0)
-      continue;
-    const key = line.slice(0, eq).trim();
-    if (!key)
-      continue;
-    let value = line.slice(eq + 1);
-    if (value.endsWith("\r"))
-      value = value.slice(0, -1);
-    out[key] = value;
-  }
-  return out;
-}
-function extractLuaScripts(triggers) {
-  return triggers.map((t) => {
-    const parts = [];
-    for (const e of t.effect ?? []) {
-      const eo = e;
-      if (eo.type === "triggerlua" && typeof eo.code === "string") {
-        parts.push(eo.code);
-      }
-    }
-    return parts.join(`
-`);
-  });
-}
-function extractRisuaiExtra(extensions) {
-  const risuai = extensions["risuai"];
-  if (!risuai || typeof risuai !== "object" || Array.isArray(risuai))
-    return {};
-  const out = {};
-  for (const [k, v] of Object.entries(risuai)) {
-    if (KNOWN_RISUAI_FIELDS.has(k))
-      continue;
-    out[k] = v;
-  }
-  return out;
-}
-function buildRisuPayload(input) {
-  const payload = {
-    triggers: input.triggers,
-    lua_scripts: extractLuaScripts(input.triggers),
-    at_actions: input.atActions,
-    background_html: input.extracted.backgroundHTML,
-    virtualscript: input.extracted.virtualScript,
-    utility_bot: input.extracted.utilityBot,
-    scriptstate_defaults: parseScriptstateDefaults(input.extracted.defaultVariables),
-    additional_assets: extractAdditionalAssets(input.extracted.assets),
-    emotion_images: extractEmotionImages(input.characterExtensions),
-    extra: extractRisuaiExtra(input.characterExtensions),
-    translator_version: input.translatorVersion,
-    risu_spec_version: input.risuSpecVersion,
-    requires: input.requires,
-    ...input.untranslated ? { untranslated: input.untranslated } : {}
-  };
-  return payload;
-}
-
-// src/state/own-character-edit.ts
-var expecting = new Map;
-function expectCharacterEdit(characterId) {
-  expecting.set(characterId, (expecting.get(characterId) ?? 0) + 1);
-}
-function consumeOwnCharacterEdit(characterId) {
-  const n = expecting.get(characterId) ?? 0;
-  if (n <= 0) {
-    expecting.delete(characterId);
-    return false;
-  }
-  if (n === 1)
-    expecting.delete(characterId);
-  else
-    expecting.set(characterId, n - 1);
-  return true;
-}
-
-// src/log/store.ts
-var LEVEL_RANK = {
-  silent: 0,
-  error: 1,
-  warn: 2,
-  info: 3,
-  debug: 4,
-  trace: 5
-};
-var DEFAULT_LOG_LEVEL = "info";
-var LOG_LEVEL_VALUES = [
-  "silent",
-  "error",
-  "warn",
-  "info",
-  "debug",
-  "trace"
-];
-function isLogThreshold(v) {
-  return typeof v === "string" && LOG_LEVEL_VALUES.includes(v);
-}
-function meetsThreshold(call, threshold) {
-  return LEVEL_RANK[call] <= LEVEL_RANK[threshold];
-}
-var MAX_BYTES = 5 * 1024 * 1024;
-var STATE_STORAGE_KEY = "lumirealm/log-state.json";
-var DEFAULT_STATE = { enabled: false, includeChatData: false, level: DEFAULT_LOG_LEVEL };
-var SYSTEM_KEY = "__SYSTEM__";
-
-class LogStore {
-  events = [];
-  bytes = 0;
-  statesByUser = new Map;
-  keyOf(userId) {
-    return typeof userId === "string" && userId.length > 0 ? userId : SYSTEM_KEY;
-  }
-  stateFor(userId) {
-    return this.statesByUser.get(this.keyOf(userId)) ?? DEFAULT_STATE;
-  }
-  isEnabled(userId) {
-    return this.stateFor(userId).enabled;
-  }
-  shouldRedact(userId) {
-    return !this.stateFor(userId).includeChatData;
-  }
-  getLevel(userId) {
-    return this.stateFor(userId).level;
-  }
-  shouldEmit(level, userId) {
-    if (userId !== undefined && userId !== null) {
-      const s = this.stateFor(userId);
-      return s.enabled && meetsThreshold(level, s.level);
-    }
-    for (const s of this.statesByUser.values()) {
-      if (s.enabled && meetsThreshold(level, s.level))
-        return true;
-    }
-    return false;
-  }
-  push(level, category, message, userId) {
-    if (!this.shouldEmit(level, userId))
-      return;
-    let redactNow;
-    if (userId !== undefined) {
-      redactNow = !this.stateFor(userId).includeChatData;
-    } else {
-      redactNow = false;
-      for (const s of this.statesByUser.values()) {
-        if (s.enabled && !s.includeChatData) {
-          redactNow = true;
-          break;
-        }
-      }
-    }
-    const text = redactNow ? redact(message) : message;
-    const tagged = typeof userId === "string" && userId.length > 0 ? userId : null;
-    const ev = { ts: Date.now(), level, category, message: text, userId: tagged };
-    const size = approxBytes(ev);
-    this.events.push(ev);
-    this.bytes += size;
-    while (this.bytes > MAX_BYTES && this.events.length > 1) {
-      const dropped = this.events.shift();
-      if (dropped)
-        this.bytes -= approxBytes(dropped);
-    }
-  }
-  snapshot(userId) {
-    if (userId === undefined)
-      return { events: this.events.slice() };
-    const target = typeof userId === "string" && userId.length > 0 ? userId : null;
-    return { events: this.events.filter((e) => e.userId === target || e.userId === null) };
-  }
-  clear(userId) {
-    if (userId === undefined) {
-      this.events = [];
-      this.bytes = 0;
-      return;
-    }
-    const target = typeof userId === "string" && userId.length > 0 ? userId : null;
-    this.events = this.events.filter((e) => e.userId !== target && e.userId !== null);
-    this.bytes = this.events.reduce((a, e) => a + approxBytes(e), 0);
-  }
-  getState(userId) {
-    const s = this.stateFor(userId);
-    let eventCount = 0;
-    let bufferBytes = 0;
-    if (userId === undefined) {
-      eventCount = this.events.length;
-      bufferBytes = this.bytes;
-    } else {
-      const target = typeof userId === "string" && userId.length > 0 ? userId : null;
-      for (const e of this.events) {
-        if (e.userId === target || e.userId === null) {
-          eventCount += 1;
-          bufferBytes += approxBytes(e);
-        }
-      }
-    }
-    return { ...s, eventCount, bufferBytes };
-  }
-  setState(next, userId) {
-    const key = this.keyOf(userId);
-    const prior = this.statesByUser.get(key) ?? DEFAULT_STATE;
-    const merged = {
-      enabled: next.enabled ?? prior.enabled,
-      includeChatData: next.includeChatData ?? prior.includeChatData,
-      level: isLogThreshold(next.level) ? next.level : prior.level
-    };
-    this.statesByUser.set(key, merged);
-    if (!merged.enabled && prior.enabled)
-      this.clear(userId);
-    return this.getState(userId);
-  }
-}
-var logStore = new LogStore;
-function approxBytes(ev) {
-  return ev.message.length + ev.category.length + 32;
-}
-var REDACT_PATTERNS = [
-  { re: /Bearer\s+[A-Za-z0-9\-_.~+/]+=*/gi, to: "Bearer [REDACTED]" },
-  { re: /\bsk-[A-Za-z0-9_-]{20,}/g, to: "sk-[REDACTED]" },
-  { re: /\b(api[_-]?key|secret|password|token)\s*[=:]\s*[^\s,;}]+/gi, to: "$1=[REDACTED]" },
-  { re: /\b(content|content_preview|message|message_preview|text|text_preview|raw|raw_preview|template|prompt|response|reply)\s*=\s*"[^"]*"/gi, to: '$1="[REDACTED]"' },
-  { re: /\b(content|content_preview|message|message_preview|text|text_preview|raw|raw_preview|template|prompt|response|reply)\s*=\s*'[^']*'/gi, to: "$1='[REDACTED]'" },
-  { re: /"[^"\n]{80,}"/g, to: '"[CONTENT_REDACTED]"' },
-  { re: /'[^'\n]{80,}'/g, to: "'[CONTENT_REDACTED]'" }
-];
-function redact(input) {
-  let out = input;
-  for (const { re, to } of REDACT_PATTERNS)
-    out = out.replace(re, to);
-  return out;
-}
-async function loadPersistedLogState(storage, userId) {
-  try {
-    const fallback = { enabled: false, includeChatData: false, level: DEFAULT_LOG_LEVEL };
-    const got = await storage.getJson(STATE_STORAGE_KEY, { fallback, userId });
-    logStore.setState({
-      enabled: got.enabled === true,
-      includeChatData: got.includeChatData === true,
-      level: isLogThreshold(got.level) ? got.level : DEFAULT_LOG_LEVEL
-    }, userId);
-  } catch {}
-}
-async function persistLogState(storage, userId) {
-  try {
-    const s = logStore.getState(userId);
-    const payload = { enabled: s.enabled, includeChatData: s.includeChatData, level: s.level };
-    await storage.setJson(STATE_STORAGE_KEY, payload, { userId });
-  } catch {}
-}
-
-// src/util/safe-log.ts
-function getSpindle() {
-  try {
-    return globalThis.spindle;
-  } catch {
-    return;
-  }
-}
-function consoleFor(level) {
-  if (level === "error")
-    return (m) => {
-      try {
-        console.error(m);
-      } catch {}
-    };
-  if (level === "warn")
-    return (m) => {
-      try {
-        console.warn(m);
-      } catch {}
-    };
-  return (m) => {
-    try {
-      console.log(m);
-    } catch {}
-  };
-}
-function spindleChannel(level) {
-  if (level === "error")
-    return "error";
-  if (level === "warn")
-    return "warn";
-  return "info";
-}
-function makeSafeLogger(prefix) {
-  function emit(level, msg) {
-    const line = `[lumirealm] ${prefix}: ${msg}`;
-    const consoleEmit = level === "error" || logStore.shouldEmit(level);
-    if (consoleEmit) {
-      const ch = spindleChannel(level);
-      const sp = getSpindle();
-      const fn = sp?.log?.[ch];
-      if (fn) {
-        try {
-          fn(line);
-        } catch {
-          consoleFor(ch)(line);
-        }
-      } else {
-        consoleFor(ch)(line);
-      }
-    }
-    logStore.push(level, prefix, msg);
-  }
-  return {
-    error: (m) => emit("error", m),
-    warn: (m) => emit("warn", m),
-    info: (m) => emit("info", m),
-    debug: (m) => emit("debug", m),
-    trace: (m) => emit("trace", m)
-  };
-}
-
-// src/state/lumirealm-character.ts
-var logger = makeSafeLogger("lumirealm:character");
-var logInfo = (msg) => logger.info(msg);
-var logWarn = (msg) => logger.warn(msg);
-var logError = (msg) => logger.error(msg);
-async function readLumirealm(api, characterId, userId) {
-  const t0 = Date.now();
-  let character;
-  try {
-    character = await api.get(characterId, userId);
-  } catch (err) {
-    logError(`readLumirealm: get(${characterId}) threw \u2014 ${err instanceof Error ? err.message : String(err)}`);
-    return null;
-  }
-  if (!character) {
-    logInfo(`readLumirealm: character not found id=${characterId}`);
-    return null;
-  }
-  const ext = character.extensions ?? {};
-  const rawLumi = ext[LUMIREALM_EXT_KEY];
-  const data = isLumirealmData(rawLumi) ? rawLumi : null;
-  const risuai = ext["risuai"] && typeof ext["risuai"] === "object" ? ext["risuai"] : {};
-  if (!data) {
-    logInfo(`readLumirealm: not a lumirealm character id=${characterId} ` + `lumirealm_key=${rawLumi === null ? "null" : typeof rawLumi} ` + `elapsed=${Date.now() - t0}ms`);
-    return { character, data: null, risuai };
-  }
-  const tv = data.translator_version;
-  const triggerCount = data.payload?.triggers?.length;
-  const regexCount = data.regex_scripts?.length;
-  const assetIdx = data.asset_index;
-  const assetCount = assetIdx && typeof assetIdx === "object" ? Object.keys(assetIdx).length : "?";
-  logInfo(`readLumirealm: hit id=${characterId} translator=${typeof tv === "string" ? tv : "?"} ` + `triggers=${typeof triggerCount === "number" ? triggerCount : "?"} ` + `regex=${typeof regexCount === "number" ? regexCount : "?"} ` + `assets=${assetCount} elapsed=${Date.now() - t0}ms`);
-  return { character, data, risuai };
-}
-async function writeLumirealm(api, characterId, data, userId) {
-  const t0 = Date.now();
-  expectCharacterEdit(characterId);
-  try {
-    await api.update(characterId, { extensions: { [LUMIREALM_EXT_KEY]: data } }, userId);
-    logInfo(`writeLumirealm: ok id=${characterId} schema=${data.schema_version} ` + `regex=${data.regex_scripts.length} assets=${Object.keys(data.asset_index).length} ` + `elapsed=${Date.now() - t0}ms`);
-  } catch (err) {
-    logError(`writeLumirealm: update(${characterId}) threw \u2014 ${err instanceof Error ? err.message : String(err)}`);
-    throw err;
-  }
-}
-async function updateLumirealm(api, characterId, userId, mutator) {
-  const fetched = await readLumirealm(api, characterId, userId);
-  if (!fetched || !fetched.data) {
-    logWarn(`updateLumirealm: skipping \u2014 not a lumirealm character id=${characterId}`);
-    return null;
-  }
-  const next = mutator(fetched.data);
-  await writeLumirealm(api, characterId, next, userId);
-  return next;
-}
-async function clearLumirealm(api, characterId, userId) {
-  expectCharacterEdit(characterId);
-  try {
-    await api.update(characterId, { extensions: { [LUMIREALM_EXT_KEY]: null } }, userId);
-    logInfo(`clearLumirealm: soft-removed id=${characterId}`);
-    return true;
-  } catch (err) {
-    logError(`clearLumirealm: update(${characterId}) threw \u2014 ${err instanceof Error ? err.message : String(err)}`);
-    return false;
-  }
-}
-async function listLumirealmCharacters(api, userId, opts) {
-  const limit = Math.min(200, Math.max(1, opts?.limit ?? 200));
-  const paginate = opts?.paginate ?? false;
-  const out = [];
-  let offset = 0;
-  let pages = 0;
-  const t0 = Date.now();
-  while (true) {
-    pages += 1;
-    let page;
-    try {
-      page = await api.list({ limit, offset, ...userId === undefined ? {} : { userId } });
-    } catch (err) {
-      logError(`listLumirealmCharacters: list({ limit:${limit}, offset:${offset} }) threw \u2014 ${err instanceof Error ? err.message : String(err)}`);
-      break;
-    }
-    for (const character of page.data) {
-      const ext = character.extensions ?? {};
-      const raw = ext[LUMIREALM_EXT_KEY];
-      if (!isLumirealmData(raw))
-        continue;
-      out.push({ character, data: raw });
-    }
-    if (!paginate)
-      break;
-    if (page.data.length < limit)
-      break;
-    offset += limit;
-    if (pages >= 50) {
-      logWarn(`listLumirealmCharacters: paginate cap hit at offset=${offset} \u2014 bailing`);
-      break;
-    }
-  }
-  logInfo(`listLumirealmCharacters: hits=${out.length} pages=${pages} ` + `elapsed=${Date.now() - t0}ms`);
-  return out;
-}
-var SYNTHETIC_RISU_SPEC_VERSION = "";
-function mergeAttachedModulesIntoPayload(basePayload, baseAssetIndex, modules) {
-  if (modules.length === 0) {
-    return {
-      triggers: basePayload.triggers,
-      lua_scripts: basePayload.lua_scripts,
-      asset_index: baseAssetIndex,
-      requires: basePayload.requires,
-      module_background_embedding: "",
-      modules_by_namespace: {}
-    };
-  }
-  const triggers = [...basePayload.triggers];
-  const lua_scripts = [...basePayload.lua_scripts];
-  const moduleAssets = {};
-  const modulesByNamespace = {};
-  let bgEmbed = "";
-  for (const m of modules) {
-    for (const [name, entry] of Object.entries(m.asset_index)) {
-      moduleAssets[name] = entry;
-    }
-    const nsKey = typeof m.namespace === "string" && m.namespace.length > 0 ? m.namespace : m.id;
-    const assetNames = Object.keys(m.asset_index);
-    if (modulesByNamespace[nsKey]) {
-      modulesByNamespace[nsKey].push(...assetNames);
-    } else {
-      modulesByNamespace[nsKey] = [...assetNames];
-    }
-    if (nsKey !== m.id && !modulesByNamespace[m.id]) {
-      modulesByNamespace[m.id] = [...assetNames];
-    }
-    for (let i = 0;i < m.triggers.length; i++) {
-      const trig = m.triggers[i];
-      if (m.low_level_access && trig && typeof trig === "object") {
-        triggers.push({ ...trig, lowLevelAccess: true });
-      } else {
-        triggers.push(trig);
-      }
-      lua_scripts.push(m.lua_scripts[i] ?? "");
-    }
-    if (typeof m.background_embedding === "string" && m.background_embedding.length > 0) {
-      bgEmbed += `
-` + m.background_embedding + `
-`;
-    }
-  }
-  const finalAssetIndex = {
-    ...moduleAssets,
-    ...baseAssetIndex
-  };
-  const folded = {
-    lua: basePayload.requires.lua || modules.some((m) => m.triggers.length > 0 && m.lua_scripts.some((s) => s.length > 0)),
-    lowLevelAccess: basePayload.requires.lowLevelAccess || modules.some((m) => m.low_level_access),
-    hostFeatures: basePayload.requires.hostFeatures
-  };
-  return {
-    triggers,
-    lua_scripts,
-    asset_index: finalAssetIndex,
-    requires: folded,
-    module_background_embedding: bgEmbed,
-    modules_by_namespace: modulesByNamespace
-  };
-}
-function buildSyntheticStoredCard(characterId, data, risuai, attachedModules = []) {
-  const lumiDefaults = data.payload.scriptstate_defaults;
-  const cardDefaults = lumiDefaults && Object.keys(lumiDefaults).length > 0 ? lumiDefaults : parseScriptstateDefaults(typeof risuai.defaultVariables === "string" ? risuai.defaultVariables : null);
-  const overrides = data.user_overrides.default_variables_overrides ?? {};
-  const mergedDefaults = { ...cardDefaults, ...overrides };
-  const lumiUtilityBot = data.payload.utility_bot;
-  const cardUtilityBot = typeof lumiUtilityBot === "boolean" ? lumiUtilityBot : typeof risuai.utilityBot === "boolean" ? risuai.utilityBot : false;
-  const utilityBot = data.user_overrides.utility_bot_override ?? cardUtilityBot;
-  const lumiBg = data.payload.background_html;
-  const backgroundHtml = typeof lumiBg === "string" && lumiBg.length > 0 ? lumiBg : typeof risuai.backgroundHTML === "string" && risuai.backgroundHTML.length > 0 ? risuai.backgroundHTML : null;
-  const baseRequires = data.payload.requires;
-  const baseTrigCount = data.payload.triggers.length;
-  const baseLuaCount = data.payload.lua_scripts.length;
-  const merged = mergeAttachedModulesIntoPayload({
-    triggers: data.payload.triggers,
-    lua_scripts: data.payload.lua_scripts,
-    at_actions: data.payload.at_actions,
-    background_html: backgroundHtml,
-    virtualscript: null,
-    utility_bot: utilityBot,
-    scriptstate_defaults: mergedDefaults,
-    additional_assets: [],
-    emotion_images: [],
-    extra: {},
-    translator_version: data.translator_version,
-    risu_spec_version: SYNTHETIC_RISU_SPEC_VERSION,
-    requires: baseRequires
-  }, data.asset_index, attachedModules);
-  const risuPayload = {
-    triggers: merged.triggers,
-    lua_scripts: merged.lua_scripts,
-    at_actions: data.payload.at_actions,
-    background_html: backgroundHtml,
-    ...merged.module_background_embedding.length > 0 ? { module_background_embedding: merged.module_background_embedding } : {},
-    virtualscript: null,
-    utility_bot: utilityBot,
-    scriptstate_defaults: mergedDefaults,
-    additional_assets: [],
-    emotion_images: [],
-    extra: {
-      ...attachedModules.length > 0 ? {
-        attached_modules: attachedModules.map((m) => m.id),
-        base_trigger_count: baseTrigCount,
-        base_lua_count: baseLuaCount,
-        modules_by_namespace: merged.modules_by_namespace
-      } : {}
-    },
-    translator_version: data.translator_version,
-    risu_spec_version: SYNTHETIC_RISU_SPEC_VERSION,
-    requires: merged.requires,
-    ...data.payload.untranslated ? { untranslated: data.payload.untranslated } : {}
-  };
-  return {
-    schema_version: 1,
-    character_id: characterId,
-    stored_at: data.imported_at,
-    extension_version: data.extension_version,
-    risuPayload,
-    asset_index: merged.asset_index,
-    emotion_index: data.emotion_index,
-    ...data.regex_scripts.length > 0 ? { regex_scripts: data.regex_scripts } : {}
-  };
 }
 
 // src/core/errors.ts
@@ -21200,6 +20487,32 @@ function unknownArray(v) {
     return [];
   return v;
 }
+function risuV2AdditionalAssetsAsV3(risuai) {
+  const raw = risuai["additionalAssets"];
+  if (!Array.isArray(raw))
+    return [];
+  const out = [];
+  for (const t of raw) {
+    if (!Array.isArray(t))
+      continue;
+    const name = typeof t[0] === "string" ? t[0] : "";
+    const uri = typeof t[1] === "string" ? t[1] : "";
+    if (!name || !uri)
+      continue;
+    const fileName = typeof t[2] === "string" ? t[2] : "";
+    let ext;
+    if (fileName.length > 0) {
+      const dot = fileName.lastIndexOf(".");
+      if (dot >= 0 && dot < fileName.length - 1) {
+        const candidate = fileName.slice(dot + 1).toLowerCase();
+        if (/^[a-z0-9]{1,6}$/.test(candidate))
+          ext = candidate;
+      }
+    }
+    out.push({ type: "x-risu-asset", name, uri, ...ext ? { ext } : {} });
+  }
+  return out;
+}
 function buildExtensions(data, spec, specVersion, sourceId, translationNotes) {
   const out = {};
   const ext = data["extensions"];
@@ -21262,7 +20575,10 @@ function mapCharacter(card, opts = {}) {
     triggerScripts: unknownArray(risuai["triggerscript"]),
     virtualScript: typeof risuai["virtualscript"] === "string" ? risuai["virtualscript"] : null,
     defaultVariables: typeof risuai["defaultVariables"] === "string" ? risuai["defaultVariables"] : null,
-    assets: unknownArray(data["assets"]),
+    assets: [
+      ...unknownArray(data["assets"]),
+      ...risuV2AdditionalAssetsAsV3(risuai)
+    ],
     depthPrompt: extensions["depth_prompt"] ?? null,
     utilityBot: risuai["utilityBot"] === true,
     additionalText: typeof risuai["additionalText"] === "string" && risuai["additionalText"].length > 0 ? risuai["additionalText"] : null
@@ -21628,6 +20944,10 @@ function stableStringify(value) {
   const keys = Object.keys(obj).sort();
   return "{" + keys.map((k) => JSON.stringify(k) + ":" + stableStringify(obj[k])).join(",") + "}";
 }
+var SYSTEM_MANAGED_EXTENSION_KEYS = [
+  "_risu_source_hash",
+  "_risu_module_id"
+];
 function computeEntrySourceHash(entry) {
   const fields = {};
   for (const k of ENTRY_HASH_FIELDS)
@@ -21635,7 +20955,8 @@ function computeEntrySourceHash(entry) {
   const ext = entry["extensions"];
   if (ext && typeof ext === "object" && !Array.isArray(ext)) {
     const cleaned = { ...ext };
-    delete cleaned["_risu_source_hash"];
+    for (const k of SYSTEM_MANAGED_EXTENSION_KEYS)
+      delete cleaned[k];
     fields["extensions"] = cleaned;
   } else {
     fields["extensions"] = {};
@@ -24118,6 +23439,174 @@ function renderCode(a) {
 // src/core/pipeline/translate.ts
 init_text();
 
+// src/core/pipeline/risu-payload.ts
+var KNOWN_RISUAI_FIELDS = new Set([
+  "backgroundHTML",
+  "customScripts",
+  "triggerscript",
+  "virtualscript",
+  "defaultVariables",
+  "utilityBot",
+  "emotions"
+]);
+var EMBEDED_PREFIX = "embeded://";
+var ASSET_PREFIX = "__asset:";
+function stripAssetUriPrefix(uri) {
+  if (uri.startsWith(EMBEDED_PREFIX))
+    return uri.slice(EMBEDED_PREFIX.length);
+  if (uri.startsWith(ASSET_PREFIX))
+    return uri.slice(ASSET_PREFIX.length);
+  return uri;
+}
+function extFromPath(path) {
+  const dot = path.lastIndexOf(".");
+  if (dot < 0 || dot === path.length - 1)
+    return;
+  const ext = path.slice(dot + 1).toLowerCase();
+  if (!/^[a-z0-9]{1,6}$/.test(ext))
+    return;
+  return ext;
+}
+function extractAdditionalAssets(assets) {
+  const out = [];
+  for (const raw of assets) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw))
+      continue;
+    const a = raw;
+    if (a["type"] !== "x-risu-asset")
+      continue;
+    const name = typeof a["name"] === "string" ? a["name"] : "";
+    const uri = typeof a["uri"] === "string" ? a["uri"] : "";
+    if (!name || !uri)
+      continue;
+    const path = stripAssetUriPrefix(uri);
+    const explicitExt = typeof a["ext"] === "string" ? a["ext"].toLowerCase() : undefined;
+    const ext = explicitExt ?? extFromPath(path);
+    out.push({ name, path, ...ext ? { ext } : {} });
+  }
+  return out;
+}
+function extractV3EmotionAssets(assets) {
+  const out = [];
+  for (const raw of assets) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw))
+      continue;
+    const a = raw;
+    if (a["type"] !== "emotion")
+      continue;
+    const name = typeof a["name"] === "string" ? a["name"] : "";
+    const uri = typeof a["uri"] === "string" ? a["uri"] : "";
+    if (!name || !uri)
+      continue;
+    const path = stripAssetUriPrefix(uri);
+    const explicitExt = typeof a["ext"] === "string" ? a["ext"].toLowerCase() : undefined;
+    const ext = explicitExt ?? extFromPath(path);
+    out.push({ name, path, ...ext ? { ext } : {} });
+  }
+  return out;
+}
+function extractEmotionImages(extensions) {
+  const risuai = extensions["risuai"];
+  if (!risuai || typeof risuai !== "object" || Array.isArray(risuai))
+    return [];
+  const emotions = risuai["emotions"];
+  if (!Array.isArray(emotions))
+    return [];
+  const out = [];
+  for (const raw of emotions) {
+    if (Array.isArray(raw)) {
+      const [n, s, e] = raw;
+      const name = typeof n === "string" ? n : "";
+      const rawSrc = typeof s === "string" ? s : "";
+      const path = stripAssetUriPrefix(rawSrc);
+      const ext = typeof e === "string" ? e.toLowerCase() : undefined;
+      if (!name || !path)
+        continue;
+      out.push({ name, path, ...ext ?? extFromPath(path) ? { ext: ext ?? extFromPath(path) } : {} });
+    } else if (raw && typeof raw === "object") {
+      const o = raw;
+      const name = typeof o["name"] === "string" ? o["name"] : "";
+      const rawPath = typeof o["path"] === "string" ? o["path"] : typeof o["src"] === "string" ? o["src"] : "";
+      const path = stripAssetUriPrefix(rawPath);
+      const explicitExt = typeof o["ext"] === "string" ? o["ext"].toLowerCase() : undefined;
+      if (!name || !path)
+        continue;
+      const ext = explicitExt ?? extFromPath(path);
+      out.push({ name, path, ...ext ? { ext } : {} });
+    }
+  }
+  return out;
+}
+function parseScriptstateDefaults(text) {
+  if (!text || typeof text !== "string")
+    return {};
+  const out = {};
+  for (const rawLine of text.split(`
+`)) {
+    const line3 = rawLine.trimStart();
+    if (!line3 || line3.startsWith("#") || line3.startsWith("//"))
+      continue;
+    const eq = line3.indexOf("=");
+    if (eq <= 0)
+      continue;
+    const key = line3.slice(0, eq).trim();
+    if (!key)
+      continue;
+    let value = line3.slice(eq + 1);
+    if (value.endsWith("\r"))
+      value = value.slice(0, -1);
+    out[key] = value;
+  }
+  return out;
+}
+function extractLuaScripts(triggers) {
+  return triggers.map((t) => {
+    const parts = [];
+    for (const e of t.effect ?? []) {
+      const eo = e;
+      if (eo.type === "triggerlua" && typeof eo.code === "string") {
+        parts.push(eo.code);
+      }
+    }
+    return parts.join(`
+`);
+  });
+}
+function extractRisuaiExtra(extensions) {
+  const risuai = extensions["risuai"];
+  if (!risuai || typeof risuai !== "object" || Array.isArray(risuai))
+    return {};
+  const out = {};
+  for (const [k, v] of Object.entries(risuai)) {
+    if (KNOWN_RISUAI_FIELDS.has(k))
+      continue;
+    out[k] = v;
+  }
+  return out;
+}
+function buildRisuPayload(input) {
+  const payload = {
+    triggers: input.triggers,
+    lua_scripts: extractLuaScripts(input.triggers),
+    at_actions: input.atActions,
+    background_html: input.extracted.backgroundHTML,
+    virtualscript: input.extracted.virtualScript,
+    utility_bot: input.extracted.utilityBot,
+    scriptstate_defaults: parseScriptstateDefaults(input.extracted.defaultVariables),
+    additional_assets: extractAdditionalAssets(input.extracted.assets),
+    emotion_images: [
+      ...extractEmotionImages(input.characterExtensions),
+      ...extractV3EmotionAssets(input.extracted.assets)
+    ],
+    extra: extractRisuaiExtra(input.characterExtensions),
+    translator_version: input.translatorVersion,
+    risu_spec_version: input.risuSpecVersion,
+    requires: input.requires,
+    ...input.untranslated ? { untranslated: input.untranslated } : {}
+  };
+  return payload;
+}
+
 // src/core/mappers/font-hoist.ts
 function extractGlobalFontDeclarations(replaceStrings) {
   if (replaceStrings.length === 0)
@@ -24345,10 +23834,51 @@ function translateFromStoredSource(source, opts = {}) {
   };
   return translateFromCharxBundle(bundle, opts);
 }
+var SYNTHETIC_DATA_URI_PREFIX = "__data_uri_";
+function expandInlineDataUriAssets(card, assets) {
+  if (!card || typeof card !== "object")
+    return 0;
+  const data = card.data;
+  if (!data || typeof data !== "object")
+    return 0;
+  const list = data.assets;
+  if (!Array.isArray(list))
+    return 0;
+  let synthesized = 0;
+  for (let i = 0;i < list.length; i++) {
+    const a = list[i];
+    if (!a || typeof a !== "object")
+      continue;
+    const uri = a.uri;
+    if (typeof uri !== "string" || !uri.startsWith("data:"))
+      continue;
+    const comma = uri.indexOf(",");
+    if (comma < 0)
+      continue;
+    const head = uri.slice(0, comma);
+    const body = uri.slice(comma + 1);
+    let bytes;
+    try {
+      if (head.includes(";base64")) {
+        bytes = new Uint8Array(Buffer.from(body, "base64"));
+      } else {
+        bytes = new TextEncoder().encode(decodeURIComponent(body));
+      }
+    } catch {
+      continue;
+    }
+    const path = `${SYNTHETIC_DATA_URI_PREFIX}${i}`;
+    assets.set(path, bytes);
+    a.uri = `embeded://${path}`;
+    synthesized += 1;
+  }
+  return synthesized;
+}
 function translateFromCharxBundle(bundle, opts = {}) {
   const now = opts.now ?? nowMs;
   const uuid = opts.uuid ?? newUuid;
   const issues = [];
+  expandInlineDataUriAssets(bundle.card, bundle.assets);
   const mode = opts.mode !== undefined ? opts.mode : opts.rewriteCbs === false ? "diagnostic" : opts.catalog ? "full" : "diagnostic";
   const wantFull = mode === "full" || mode === "diagnostic";
   const wantRegex = opts.emitRegex ?? wantFull;
@@ -24837,111 +24367,96 @@ function detectMacrosInText(c) {
   }
   return false;
 }
+// src/payload/import.ts
+init_cbs();
 
-// src/state/translator-migrations.ts
-async function migrateCharacterIfNeeded(args, deps) {
-  const stored = args.envelope.translator_schema_version ?? 1;
-  const target = CURRENT_TRANSLATOR_SCHEMA_VERSION;
-  if (stored >= target)
-    return { kind: "noop", storedVersion: stored };
-  if (!args.envelope.source) {
-    return { kind: "needs_reimport", reason: "no_source", storedVersion: stored };
-  }
-  try {
-    const t0 = Date.now();
-    const newBundle = translateFromStoredSource({
-      card: args.envelope.source.card,
-      module: args.envelope.source.module
-    }, {
-      sourceId: `migrate:${args.characterId}`,
-      mode: "full",
-      catalog: deps.loadCatalog(),
-      emitPackScripts: false
-    });
-    if (!newBundle.risuPayload) {
-      return {
-        kind: "failed",
-        from: stored,
-        to: target,
-        error: "translator returned no risuPayload"
-      };
-    }
-    const folderLabel = `Risu - ${args.characterName}`.slice(0, 80);
-    const newScripts = newBundle.regexScripts.map((r) => ({
-      name: r.name,
-      script_id: r.script_id,
-      find_regex: r.find_regex,
-      replace_string: r.replace_string,
-      flags: r.flags,
-      placement: [...r.placement],
-      scope: r.scope,
-      scope_id: r.scope === "character" ? args.characterId : r.scope_id,
-      target: r.target,
-      min_depth: r.min_depth,
-      max_depth: r.max_depth,
-      trim_strings: [...r.trim_strings],
-      run_on_edit: r.run_on_edit,
-      substitute_macros: r.substitute_macros,
-      disabled: r.disabled,
-      sort_order: r.sort_order,
-      description: r.description,
-      folder: r.folder || folderLabel,
-      metadata: { ...r.metadata }
-    }));
-    await deps.installCharacterRegexScripts(args.characterId, args.characterName, newScripts);
-    const modulesCount = await deps.reinstallAttachedModules(args.characterId);
-    if (newBundle.pendingSvgRasters.length > 0) {
-      deps.dispatchSvgRasterize(args.characterId, args.characterName, newBundle.pendingSvgRasters);
-    }
-    const newEnvelope = buildLumirealmData(newBundle.risuPayload, deps.extensionVersion, newScripts, args.envelope.asset_index, args.envelope.emotion_index, args.envelope.imported_at, args.envelope.user_overrides, args.envelope.source, target);
-    await deps.writeEnvelope(args.characterId, newEnvelope, args.userId);
-    deps.log.info(`migrate(${args.characterId}): v${stored}->v${target} ` + `regex=${newScripts.length} modules=${modulesCount} ` + `elapsed=${Date.now() - t0}ms`);
-    return {
-      kind: "migrated",
-      from: stored,
-      to: target,
-      regexCount: newScripts.length,
-      modulesReinstalled: modulesCount
-    };
-  } catch (err) {
-    const errMsg2 = err instanceof Error ? err.message : String(err);
-    deps.log.error(`migrate(${args.characterId}): v${stored}->v${target} FAILED: ${errMsg2}`);
-    return { kind: "failed", from: stored, to: target, error: errMsg2 };
+// src/payload/codec.ts
+class RisuCompatUnsupportedError extends Error {
+  feature;
+  reason;
+  name = "RisuCompatUnsupportedError";
+  constructor(feature, reason) {
+    super(`risu-compat: ${feature} is unsupported (${reason})`);
+    this.feature = feature;
+    this.reason = reason;
   }
 }
 
-// src/state/module-migrations.ts
-async function migrateModuleIfNeeded(env, deps) {
-  const stored = env.translator_schema_version ?? 1;
-  const target = CURRENT_TRANSLATOR_SCHEMA_VERSION;
-  if (stored >= target)
-    return { kind: "noop", storedVersion: stored };
-  try {
-    const t0 = Date.now();
-    const wbId = await deps.syncWorldBook(env);
-    const charCount = await deps.reinstallArtifactsForAttached(env.id);
-    const next = {
-      ...env,
-      ...wbId ? { installed_world_book_id: wbId } : {},
-      translator_schema_version: target
-    };
-    await deps.writeEnvelope(next);
-    deps.log.info(`migrate-module(${env.id}): v${stored}->v${target} ` + `wb=${wbId ?? "none"} chars_refreshed=${charCount} ` + `elapsed=${Date.now() - t0}ms`);
-    return {
-      kind: "migrated",
-      moduleId: env.id,
-      from: stored,
-      to: target,
-      worldBookId: wbId,
-      regexReinstalledChars: charCount
-    };
-  } catch (err) {
-    const errStr = err instanceof Error ? err.message : String(err);
-    deps.log.error(`migrate-module(${env.id}): v${stored}->v${target} FAILED: ${errStr}`);
-    return { kind: "failed", moduleId: env.id, from: stored, to: target, error: errStr };
+class RisuCompatVersionError extends Error {
+  missing;
+  extensionVersion;
+  name = "RisuCompatVersionError";
+  constructor(missing, extensionVersion) {
+    super(`risu-compat v${extensionVersion} is missing required capabilities: ${missing.join(", ")}. Please update the extension.`);
+    this.missing = missing;
+    this.extensionVersion = extensionVersion;
   }
 }
 
+class RisuConsentDeclinedError extends Error {
+  characterName;
+  name = "RisuConsentDeclinedError";
+  constructor(characterName) {
+    super(`risu-compat: import of "${characterName}" cancelled \u2014 low-level access consent declined.`);
+    this.characterName = characterName;
+  }
+}
+var SUPPORTED_HOST_FEATURES = new Set([
+  "alertSelect"
+]);
+var DEGRADED_HOST_FEATURES = new Set([
+  "utilityBot",
+  "displayTriggerSemantics"
+]);
+function preValidateRequires(requires) {
+  const missing = [];
+  const degraded = [];
+  for (const feature of requires.hostFeatures) {
+    if (SUPPORTED_HOST_FEATURES.has(feature))
+      continue;
+    if (DEGRADED_HOST_FEATURES.has(feature)) {
+      degraded.push(feature);
+      continue;
+    }
+    missing.push(feature);
+  }
+  return { ok: missing.length === 0, missing, degraded };
+}
+function buildLumirealmData(payload, extensionVersion, regexScripts = [], assetIndex = {}, emotionIndex = {}, importedAt = Date.now(), userOverrides = {}, source, translatorSchemaVersion) {
+  return {
+    schema_version: 1,
+    imported_at: importedAt,
+    extension_version: extensionVersion,
+    translator_version: payload.translator_version,
+    ...translatorSchemaVersion !== undefined ? { translator_schema_version: translatorSchemaVersion } : {},
+    ...source ? { source } : {},
+    payload: {
+      triggers: payload.triggers,
+      lua_scripts: payload.lua_scripts,
+      at_actions: payload.at_actions,
+      additional_assets: payload.additional_assets,
+      emotion_images: payload.emotion_images,
+      background_html: payload.background_html,
+      utility_bot: payload.utility_bot,
+      scriptstate_defaults: payload.scriptstate_defaults,
+      requires: payload.requires,
+      ...payload.untranslated ? { untranslated: payload.untranslated } : {}
+    },
+    asset_index: assetIndex,
+    emotion_index: emotionIndex,
+    regex_scripts: regexScripts,
+    user_overrides: userOverrides
+  };
+}
+function isLumirealmData(value) {
+  if (value === null || typeof value !== "object")
+    return false;
+  const v = value;
+  return v.schema_version === 1;
+}
+
+// src/core/payload/types.ts
+var LUMIREALM_EXT_KEY = "lumirealm";
 // src/state/image-journal.ts
 var JOURNAL_DIR = "lumirealm/image_journal";
 var SCHEMA_VERSION = 1;
@@ -25003,6 +24518,1256 @@ async function listImageJournalCharacterIds(storage, userId) {
     out.push(name.replace(/\.json$/i, ""));
   }
   return out;
+}
+
+// src/log/store.ts
+var LEVEL_RANK = {
+  silent: 0,
+  error: 1,
+  warn: 2,
+  info: 3,
+  debug: 4,
+  trace: 5
+};
+var DEFAULT_LOG_LEVEL = "info";
+var LOG_LEVEL_VALUES = [
+  "silent",
+  "error",
+  "warn",
+  "info",
+  "debug",
+  "trace"
+];
+function isLogThreshold(v) {
+  return typeof v === "string" && LOG_LEVEL_VALUES.includes(v);
+}
+function meetsThreshold(call, threshold) {
+  return LEVEL_RANK[call] <= LEVEL_RANK[threshold];
+}
+var MAX_BYTES = 5 * 1024 * 1024;
+var STATE_STORAGE_KEY = "lumirealm/log-state.json";
+var DEFAULT_STATE = { enabled: false, includeChatData: false, level: DEFAULT_LOG_LEVEL };
+var SYSTEM_KEY = "__SYSTEM__";
+
+class LogStore {
+  events = [];
+  bytes = 0;
+  statesByUser = new Map;
+  keyOf(userId) {
+    return typeof userId === "string" && userId.length > 0 ? userId : SYSTEM_KEY;
+  }
+  stateFor(userId) {
+    return this.statesByUser.get(this.keyOf(userId)) ?? DEFAULT_STATE;
+  }
+  isEnabled(userId) {
+    return this.stateFor(userId).enabled;
+  }
+  shouldRedact(userId) {
+    return !this.stateFor(userId).includeChatData;
+  }
+  getLevel(userId) {
+    return this.stateFor(userId).level;
+  }
+  shouldEmit(level, userId) {
+    if (userId !== undefined && userId !== null) {
+      const s = this.stateFor(userId);
+      return s.enabled && meetsThreshold(level, s.level);
+    }
+    for (const s of this.statesByUser.values()) {
+      if (s.enabled && meetsThreshold(level, s.level))
+        return true;
+    }
+    return false;
+  }
+  push(level, category, message, userId) {
+    if (!this.shouldEmit(level, userId))
+      return;
+    let redactNow;
+    if (userId !== undefined) {
+      redactNow = !this.stateFor(userId).includeChatData;
+    } else {
+      redactNow = false;
+      for (const s of this.statesByUser.values()) {
+        if (s.enabled && !s.includeChatData) {
+          redactNow = true;
+          break;
+        }
+      }
+    }
+    const text = redactNow ? redact(message) : message;
+    const tagged = typeof userId === "string" && userId.length > 0 ? userId : null;
+    const ev = { ts: Date.now(), level, category, message: text, userId: tagged };
+    const size = approxBytes(ev);
+    this.events.push(ev);
+    this.bytes += size;
+    while (this.bytes > MAX_BYTES && this.events.length > 1) {
+      const dropped = this.events.shift();
+      if (dropped)
+        this.bytes -= approxBytes(dropped);
+    }
+  }
+  snapshot(userId) {
+    if (userId === undefined)
+      return { events: this.events.slice() };
+    const target = typeof userId === "string" && userId.length > 0 ? userId : null;
+    return { events: this.events.filter((e) => e.userId === target || e.userId === null) };
+  }
+  clear(userId) {
+    if (userId === undefined) {
+      this.events = [];
+      this.bytes = 0;
+      return;
+    }
+    const target = typeof userId === "string" && userId.length > 0 ? userId : null;
+    this.events = this.events.filter((e) => e.userId !== target && e.userId !== null);
+    this.bytes = this.events.reduce((a, e) => a + approxBytes(e), 0);
+  }
+  getState(userId) {
+    const s = this.stateFor(userId);
+    let eventCount = 0;
+    let bufferBytes = 0;
+    if (userId === undefined) {
+      eventCount = this.events.length;
+      bufferBytes = this.bytes;
+    } else {
+      const target = typeof userId === "string" && userId.length > 0 ? userId : null;
+      for (const e of this.events) {
+        if (e.userId === target || e.userId === null) {
+          eventCount += 1;
+          bufferBytes += approxBytes(e);
+        }
+      }
+    }
+    return { ...s, eventCount, bufferBytes };
+  }
+  setState(next, userId) {
+    const key = this.keyOf(userId);
+    const prior = this.statesByUser.get(key) ?? DEFAULT_STATE;
+    const merged = {
+      enabled: next.enabled ?? prior.enabled,
+      includeChatData: next.includeChatData ?? prior.includeChatData,
+      level: isLogThreshold(next.level) ? next.level : prior.level
+    };
+    this.statesByUser.set(key, merged);
+    if (!merged.enabled && prior.enabled)
+      this.clear(userId);
+    return this.getState(userId);
+  }
+}
+var logStore = new LogStore;
+function approxBytes(ev) {
+  return ev.message.length + ev.category.length + 32;
+}
+var REDACT_PATTERNS = [
+  { re: /Bearer\s+[A-Za-z0-9\-_.~+/]+=*/gi, to: "Bearer [REDACTED]" },
+  { re: /\bsk-[A-Za-z0-9_-]{20,}/g, to: "sk-[REDACTED]" },
+  { re: /\b(api[_-]?key|secret|password|token)\s*[=:]\s*[^\s,;}]+/gi, to: "$1=[REDACTED]" },
+  { re: /\b(content|content_preview|message|message_preview|text|text_preview|raw|raw_preview|template|prompt|response|reply)\s*=\s*"[^"]*"/gi, to: '$1="[REDACTED]"' },
+  { re: /\b(content|content_preview|message|message_preview|text|text_preview|raw|raw_preview|template|prompt|response|reply)\s*=\s*'[^']*'/gi, to: "$1='[REDACTED]'" },
+  { re: /"[^"\n]{80,}"/g, to: '"[CONTENT_REDACTED]"' },
+  { re: /'[^'\n]{80,}'/g, to: "'[CONTENT_REDACTED]'" }
+];
+function redact(input) {
+  let out = input;
+  for (const { re, to } of REDACT_PATTERNS)
+    out = out.replace(re, to);
+  return out;
+}
+async function loadPersistedLogState(storage, userId) {
+  try {
+    const fallback = { enabled: false, includeChatData: false, level: DEFAULT_LOG_LEVEL };
+    const got = await storage.getJson(STATE_STORAGE_KEY, { fallback, userId });
+    logStore.setState({
+      enabled: got.enabled === true,
+      includeChatData: got.includeChatData === true,
+      level: isLogThreshold(got.level) ? got.level : DEFAULT_LOG_LEVEL
+    }, userId);
+  } catch {}
+}
+async function persistLogState(storage, userId) {
+  try {
+    const s = logStore.getState(userId);
+    const payload = { enabled: s.enabled, includeChatData: s.includeChatData, level: s.level };
+    await storage.setJson(STATE_STORAGE_KEY, payload, { userId });
+  } catch {}
+}
+
+// src/util/safe-log.ts
+function getSpindle() {
+  try {
+    return globalThis.spindle;
+  } catch {
+    return;
+  }
+}
+function consoleFor(level) {
+  if (level === "error")
+    return (m) => {
+      try {
+        console.error(m);
+      } catch {}
+    };
+  if (level === "warn")
+    return (m) => {
+      try {
+        console.warn(m);
+      } catch {}
+    };
+  return (m) => {
+    try {
+      console.log(m);
+    } catch {}
+  };
+}
+function spindleChannel(level) {
+  if (level === "error")
+    return "error";
+  if (level === "warn")
+    return "warn";
+  return "info";
+}
+function makeSafeLogger(prefix) {
+  function emit(level, msg) {
+    const line3 = `[lumirealm] ${prefix}: ${msg}`;
+    const consoleEmit = level === "error" || logStore.shouldEmit(level);
+    if (consoleEmit) {
+      const ch = spindleChannel(level);
+      const sp = getSpindle();
+      const fn = sp?.log?.[ch];
+      if (fn) {
+        try {
+          fn(line3);
+        } catch {
+          consoleFor(ch)(line3);
+        }
+      } else {
+        consoleFor(ch)(line3);
+      }
+    }
+    logStore.push(level, prefix, msg);
+  }
+  return {
+    error: (m) => emit("error", m),
+    warn: (m) => emit("warn", m),
+    info: (m) => emit("info", m),
+    debug: (m) => emit("debug", m),
+    trace: (m) => emit("trace", m)
+  };
+}
+
+// src/payload/import.ts
+init_risu_macros();
+var logger = makeSafeLogger("import");
+var logInfo = (msg) => logger.info(msg);
+var logWarn = (msg) => logger.warn(msg);
+var logError = (msg) => logger.error(msg);
+var cachedCatalog = null;
+function loadCatalog() {
+  if (cachedCatalog)
+    return cachedCatalog;
+  cachedCatalog = new CatalogIndex(parseCatalog(risu_macros_default));
+  return cachedCatalog;
+}
+function makeLowLevelAccessConsentMessage(characterName) {
+  return `"${characterName}" requests low-level access. With this granted the card may:
+
+` + `  \u2022 Make additional LLM API calls (uses your tokens / billing)
+` + `  \u2022 Run helper / classifier prompts in the background
+` + `  \u2022 Trigger image generation (if your provider supports it)
+` + `  \u2022 Inspect message similarity / embeddings
+
+` + `Only grant access for cards from sources you trust. ` + `Decline to import the card without low-level features (some panels / ` + `auto-updates may not work).`;
+}
+function guessMimeType(path) {
+  const lower = path.toLowerCase();
+  if (lower.endsWith(".png"))
+    return "image/png";
+  if (lower.endsWith(".jpg") || lower.endsWith(".jpeg"))
+    return "image/jpeg";
+  if (lower.endsWith(".gif"))
+    return "image/gif";
+  if (lower.endsWith(".webp"))
+    return "image/webp";
+  if (lower.endsWith(".mp3"))
+    return "audio/mpeg";
+  if (lower.endsWith(".ogg"))
+    return "audio/ogg";
+  if (lower.endsWith(".wav"))
+    return "audio/wav";
+  if (lower.endsWith(".mp4"))
+    return "video/mp4";
+  if (lower.endsWith(".webm"))
+    return "video/webm";
+  return "application/octet-stream";
+}
+function pickAvatar(assets) {
+  const isImage = (p) => /\.(png|jpe?g|webp|gif)$/i.test(p);
+  for (const [path, data] of assets) {
+    if (/^assets\/icon\/main\.(png|jpe?g|webp|gif)$/i.test(path))
+      return { path, data };
+  }
+  for (const [path, data] of assets) {
+    if (/\/icon\//i.test(path) && isImage(path))
+      return { path, data };
+  }
+  for (const [path, data] of assets) {
+    if (isImage(path))
+      return { path, data };
+  }
+  return null;
+}
+function base64ToBytes2(b64) {
+  return new Uint8Array(Buffer.from(b64, "base64"));
+}
+async function importCard(args) {
+  const progress = args.onProgress ?? (() => {});
+  const tImport = Date.now();
+  logInfo(`start file=${args.fileName} b64-bytes=${args.bytesB64.length} userId=${args.userId ?? "<none>"}`);
+  progress("decoding", `Decoding ${args.fileName}\u2026`, 0.05);
+  const tDecode = Date.now();
+  const bytes = base64ToBytes2(args.bytesB64);
+  logInfo(`(1) decoded base64 -> ${bytes.byteLength} bytes in ${Date.now() - tDecode}ms`);
+  progress("translating", "Translating Risu card\u2026", 0.15);
+  const tTranslate = Date.now();
+  const catalog2 = loadCatalog();
+  logInfo(`(2) translate: starting translateCharx bytes=${bytes.byteLength}`);
+  const charxBundle = readCharx(bytes);
+  const bundle = translateFromCharxBundle(charxBundle, {
+    sourceId: args.sourceId ?? `file:${args.fileName}`,
+    mode: "full",
+    catalog: catalog2,
+    emitPackScripts: false
+  });
+  logInfo(`(2) translate: done in ${Date.now() - tTranslate}ms \u2014 char="${bundle.character.name}" ` + `lore=${bundle.worldBookEntries.length} regex=${bundle.regexScripts.length} ` + `assets=${bundle.assets.size} payload.triggers=${bundle.risuPayload?.triggers.length ?? 0} ` + `payload.lua=${bundle.risuPayload?.lua_scripts.length ?? 0}`);
+  if (bundle.decoratorStats.decorators_seen > 0) {
+    logInfo(`(2.1) lorebook decorators: ` + `entries_with_decorators=${bundle.decoratorStats.entries_with_decorators}/${bundle.worldBookEntries.length} ` + `seen=${bundle.decoratorStats.decorators_seen} ` + `mapped=${bundle.decoratorStats.mapped} ` + `stashed=${bundle.decoratorStats.stashed} ` + `dropped=${bundle.decoratorStats.dropped}`);
+  }
+  const issues = bundle.manifest.issues;
+  if (issues.length > 0) {
+    logWarn(`(2) translate produced ${issues.length} issue(s):`);
+    for (const iss of issues) {
+      logWarn(`    - ${iss.path}: ${iss.message}`);
+    }
+  }
+  if (!bundle.risuPayload) {
+    logError(`translator produced no risuPayload`);
+    throw new Error("risu-compat: translator produced no risuPayload");
+  }
+  progress("translating", "Validating compatibility\u2026", 0.22);
+  logInfo(`(3) preValidate requires=${JSON.stringify(bundle.risuPayload.requires)}`);
+  const check = preValidateRequires(bundle.risuPayload.requires);
+  const warnings = [];
+  if (!check.ok) {
+    logError(`(3) requires missing=[${check.missing.join(", ")}] \u2014 throwing RisuCompatVersionError`);
+    throw new RisuCompatVersionError(check.missing, args.extensionVersion);
+  }
+  if (check.degraded.length > 0) {
+    logWarn(`(3) degraded=[${check.degraded.join(", ")}]`);
+    warnings.push(`Card uses degraded features: ${check.degraded.join(", ")}.`);
+  }
+  const svgTemplatedStripped = bundle.manifest.untranslated.svg_templated_stripped ?? 0;
+  const svgDangerousStripped = bundle.manifest.untranslated.svg_dangerous_stripped ?? 0;
+  if (svgTemplatedStripped > 0) {
+    logWarn(`(3) svg_templated_stripped=${svgTemplatedStripped}`);
+    warnings.push(`${svgTemplatedStripped} dynamic SVG icon(s) on this card use template captures or macros and won't render \u2014 ` + `the rest were rasterized to PNG. Visual gap on these icons only.`);
+  }
+  if (svgDangerousStripped > 0) {
+    logWarn(`(3) svg_dangerous_stripped=${svgDangerousStripped}`);
+    warnings.push(`${svgDangerousStripped} SVG(s) with external references or scripts were skipped for safety.`);
+  }
+  const userOverrides = {};
+  if (bundle.risuPayload.requires.lowLevelAccess === true) {
+    logInfo(`(3.5) requires.lowLevelAccess=true \u2014 prompting user consent`);
+    const consentMessage = makeLowLevelAccessConsentMessage(bundle.character.name);
+    let confirmed = false;
+    if (args.spindle.requestConsent) {
+      try {
+        const res = await args.spindle.requestConsent({
+          title: `Risu card "${bundle.character.name}" requests low-level access`,
+          message: consentMessage,
+          confirmLabel: "Grant access",
+          cancelLabel: "Decline"
+        });
+        confirmed = !!res?.confirmed;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logError(`(3.5) consent prompt threw: ${msg}`);
+        confirmed = false;
+      }
+    } else {
+      logWarn(`(3.5) requestConsent callback missing \u2014 refusing low-level access`);
+      confirmed = false;
+    }
+    if (!confirmed) {
+      logInfo(`(3.5) consent declined for "${bundle.character.name}" \u2014 aborting import`);
+      progress("error", `Import cancelled: low-level access declined`, null);
+      throw new RisuConsentDeclinedError(bundle.character.name);
+    }
+    userOverrides.low_level_access_granted = true;
+    userOverrides.consent_acknowledged_at = Date.now();
+    logInfo(`(3.5) consent granted; flag set on user_overrides`);
+  }
+  let worldBookId = null;
+  if (bundle.worldBookEntries.length > 0 && args.spindle.world_books) {
+    progress("creating_character", `Creating world book with ${bundle.worldBookEntries.length} entries\u2026`, 0.3);
+    const tBook = Date.now();
+    try {
+      const wbName = bundle.worldBook?.name ?? `${bundle.character.name} \u2014 lore`;
+      logInfo(`(4a) create world_book name="${wbName}" for ${bundle.worldBookEntries.length} entries`);
+      const book = await args.spindle.world_books.create({
+        name: wbName,
+        metadata: {
+          source: "character",
+          auto_managed_by_character: true
+        }
+      }, args.userId);
+      worldBookId = book.id;
+      logInfo(`(4a) world_book created id=${worldBookId} in ${Date.now() - tBook}ms`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logError(`(4a) world_book create failed: ${msg}`);
+      warnings.push(`Failed to create world book: ${msg}. Lorebook entries skipped.`);
+    }
+  } else {
+    logInfo(`(4a) world_books: ${bundle.worldBookEntries.length === 0 ? "no entries" : "spindle.world_books unavailable"}`);
+  }
+  progress("creating_character", `Creating character "${bundle.character.name}"\u2026`, 0.4);
+  const tChar = Date.now();
+  const characterInput = {
+    name: bundle.character.name,
+    description: bundle.character.description,
+    personality: bundle.character.personality,
+    scenario: bundle.character.scenario,
+    first_mes: bundle.character.first_mes,
+    mes_example: bundle.character.mes_example,
+    creator: bundle.character.creator,
+    creator_notes: bundle.character.creator_notes,
+    system_prompt: bundle.character.system_prompt,
+    post_history_instructions: bundle.character.post_history_instructions,
+    tags: [...bundle.character.tags],
+    alternate_greetings: [...bundle.character.alternate_greetings]
+  };
+  if (worldBookId)
+    characterInput.world_book_ids = [worldBookId];
+  logInfo(`(4b) spindle.characters.create name="${bundle.character.name}" tags=${bundle.character.tags.length} alts=${bundle.character.alternate_greetings.length} worldBookId=${worldBookId ?? "<none>"}`);
+  const created = await args.spindle.characters.create(characterInput, args.userId);
+  const characterId = created.id;
+  logInfo(`(4b) spindle.characters.create -> id=${characterId} in ${Date.now() - tChar}ms`);
+  if (worldBookId && args.spindle.world_books) {
+    try {
+      await args.spindle.world_books.update(worldBookId, {
+        metadata: {
+          source: "character",
+          source_character_id: characterId,
+          auto_managed_by_character: true
+        }
+      }, args.userId);
+      logInfo(`(4c) world_book metadata patched with source_character_id=${characterId}`);
+    } catch (err) {
+      logWarn(`(4c) world_book metadata patch failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  let avatarImageId = null;
+  if (args.spindle.characters.setAvatar) {
+    const preferred = bundle.preferredAvatar;
+    const avatar = preferred ? { path: preferred.filename, data: preferred.data, filename: preferred.filename, mime: preferred.mime } : (() => {
+      const picked = pickAvatar(bundle.assets);
+      return picked ? { path: picked.path, data: picked.data, filename: picked.path.split("/").pop() ?? "avatar.png", mime: guessMimeType(picked.path) } : null;
+    })();
+    if (avatar) {
+      const tAvatar = Date.now();
+      try {
+        logInfo(`(5a) setAvatar source=${preferred ? "preferred" : "asset-scan"} path=${avatar.path} bytes=${avatar.data.byteLength} mime=${avatar.mime}`);
+        const avatarResult = await args.spindle.characters.setAvatar(characterId, {
+          data: avatar.data,
+          filename: avatar.filename,
+          mime_type: avatar.mime
+        }, args.userId);
+        if (typeof avatarResult.image_id === "string" && avatarResult.image_id.length > 0) {
+          avatarImageId = avatarResult.image_id;
+        }
+        logInfo(`(5a) setAvatar done in ${Date.now() - tAvatar}ms image_id=${avatarImageId ?? "<none>"}`);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logWarn(`(5a) setAvatar failed: ${msg}`);
+        warnings.push(`Failed to set character avatar: ${msg}`);
+      }
+    } else {
+      logInfo(`(5a) setAvatar: no avatar candidate (no preferred avatar, no image in assets)`);
+    }
+  } else {
+    logInfo(`(5a) setAvatar: API unavailable (spindle-types < 0.4.31) \u2014 skipping`);
+  }
+  progress("uploading_assets", "Uploading assets\u2026", 0.55);
+  const tAssets = Date.now();
+  const uploadConcurrency = 6;
+  const pathToImageId = {};
+  const imageIds = [];
+  const journalBuffer = [];
+  let journalChain = Promise.resolve();
+  const flushJournal = () => {
+    if (journalBuffer.length === 0)
+      return;
+    const ids = journalBuffer.splice(0);
+    journalChain = journalChain.then(async () => {
+      try {
+        await appendImageIdsToJournal(args.userStorage, args.userId, characterId, ids);
+      } catch (err) {
+        journalBuffer.unshift(...ids);
+        logWarn(`image-journal flush failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    });
+  };
+  if (avatarImageId) {
+    imageIds.push(avatarImageId);
+    journalBuffer.push(avatarImageId);
+    flushJournal();
+  }
+  const assetEntries = [...bundle.assets];
+  const totalAssetCount = assetEntries.length;
+  let totalAssetBytes = 0;
+  for (const [, data] of assetEntries)
+    totalAssetBytes += data.byteLength;
+  logInfo(`(5b) uploading ${totalAssetCount} assets totalBytes=${totalAssetBytes} ` + `concurrency=${uploadConcurrency} via spindle.images.upload`);
+  const progressEvery = Math.max(1, Math.min(25, Math.floor(totalAssetCount / 20) || 1));
+  const PROGRESS_BASE = 0.55;
+  const PROGRESS_END = 0.9;
+  let processed = 0;
+  let assetUploadFailures = 0;
+  let nextIndex = 0;
+  const uploadWorker = async () => {
+    while (true) {
+      const i = nextIndex++;
+      if (i >= totalAssetCount)
+        break;
+      const entry = assetEntries[i];
+      if (!entry)
+        break;
+      const [path, data] = entry;
+      const filename = path.split("/").pop() ?? "asset.bin";
+      try {
+        const result = await args.spindle.images.upload({ data, mime_type: guessMimeType(path), filename, owner_character_id: characterId }, args.userId);
+        if (typeof result?.id !== "string" || result.id.length === 0) {
+          throw new Error("upload returned without an image id");
+        }
+        pathToImageId[path] = result.id;
+        imageIds.push(result.id);
+        journalBuffer.push(result.id);
+      } catch (err) {
+        assetUploadFailures += 1;
+        const msg = err instanceof Error ? err.message : String(err);
+        logWarn(`(5b) upload failed path=${path}: ${msg}`);
+      }
+      processed += 1;
+      if (processed % progressEvery === 0 || processed === totalAssetCount) {
+        flushJournal();
+        const frac = totalAssetCount === 0 ? PROGRESS_END : PROGRESS_BASE + (PROGRESS_END - PROGRESS_BASE) * (processed / totalAssetCount);
+        progress("uploading_assets", `Uploading assets (${processed}/${totalAssetCount})\u2026`, frac);
+      }
+    }
+  };
+  if (totalAssetCount > 0) {
+    const workers = [];
+    for (let w = 0;w < Math.min(uploadConcurrency, totalAssetCount); w++) {
+      workers.push(uploadWorker());
+    }
+    await Promise.all(workers);
+  }
+  flushJournal();
+  await journalChain;
+  if (assetUploadFailures > 0) {
+    warnings.push(`${assetUploadFailures} of ${totalAssetCount} asset upload(s) failed; ` + `the card will work but may render fallback art.`);
+  }
+  logInfo(`(5b) uploaded ${totalAssetCount - assetUploadFailures}/${totalAssetCount} assets ` + `failed=${assetUploadFailures} elapsed=${Date.now() - tAssets}ms`);
+  const builtIndexes = buildAssetIndexes({
+    additional_assets: bundle.risuPayload.additional_assets,
+    emotion_images: bundle.risuPayload.emotion_images
+  }, pathToImageId, avatarImageId);
+  const assetIndex = builtIndexes.assetIndex;
+  const emotionIndex = builtIndexes.emotionIndex;
+  if (worldBookId && args.spindle.world_books) {
+    progress("uploading_assets", `Uploading ${bundle.worldBookEntries.length} world-info entries\u2026`, 0.6);
+    const tEntries = Date.now();
+    const entries = bundle.worldBookEntries;
+    let failed = 0;
+    for (let i = 0;i < entries.length; i++) {
+      const entry = entries[i];
+      try {
+        const entryInput = {
+          key: entry.key,
+          keysecondary: entry.keysecondary,
+          content: entry.content,
+          comment: entry.comment,
+          position: entry.position,
+          depth: entry.depth,
+          order_value: entry.order_value,
+          selective: entry.selective,
+          constant: entry.constant,
+          disabled: entry.disabled,
+          group_name: entry.group_name,
+          group_override: entry.group_override,
+          group_weight: entry.group_weight,
+          probability: entry.probability,
+          case_sensitive: entry.case_sensitive,
+          match_whole_words: entry.match_whole_words,
+          use_regex: entry.use_regex,
+          prevent_recursion: entry.prevent_recursion,
+          exclude_recursion: entry.exclude_recursion,
+          delay_until_recursion: entry.delay_until_recursion,
+          priority: entry.priority,
+          sticky: entry.sticky,
+          cooldown: entry.cooldown,
+          delay: entry.delay,
+          selective_logic: entry.selective_logic,
+          use_probability: entry.use_probability,
+          vectorized: entry.vectorized,
+          ...entry.role !== null ? { role: entry.role } : {},
+          ...entry.scan_depth !== null ? { scan_depth: entry.scan_depth } : {},
+          ...entry.automation_id !== null ? { automation_id: entry.automation_id } : {},
+          ...entry.extensions ? { extensions: entry.extensions } : {}
+        };
+        await args.spindle.world_books.entries.create(worldBookId, entryInput, args.userId);
+      } catch (err) {
+        failed += 1;
+        const emsg = err instanceof Error ? err.message : String(err);
+        logWarn(`(6) entry "${entry.comment}" failed: ${emsg}`);
+        warnings.push(`Failed to create world info entry "${entry.comment}": ${emsg}`);
+      }
+      if (i % 10 === 0 || i === entries.length - 1) {
+        progress("uploading_assets", `Uploading world-info entries (${i + 1}/${entries.length})\u2026`, 0.55 + 0.35 * ((i + 1) / entries.length));
+      }
+    }
+    logInfo(`(6) entries done ok=${entries.length - failed} failed=${failed} elapsed=${Date.now() - tEntries}ms`);
+  }
+  const folderLabel = `Risu \u2014 ${bundle.character.name}`.slice(0, 80);
+  const allRows = bundle.regexScripts.map((r) => ({
+    name: r.name,
+    script_id: r.script_id,
+    find_regex: r.find_regex,
+    replace_string: r.replace_string,
+    flags: r.flags,
+    placement: [...r.placement],
+    scope: r.scope,
+    scope_id: r.scope === "character" ? characterId : r.scope_id,
+    target: r.target,
+    min_depth: r.min_depth,
+    max_depth: r.max_depth,
+    trim_strings: [...r.trim_strings],
+    run_on_edit: r.run_on_edit,
+    substitute_macros: r.substitute_macros,
+    disabled: r.disabled,
+    sort_order: r.sort_order,
+    description: r.description,
+    folder: r.folder || folderLabel,
+    metadata: { ...r.metadata }
+  }));
+  const pendingRegexScripts = allRows.map((r) => ({
+    name: r.name,
+    script_id: r.script_id,
+    find_regex: r.find_regex,
+    replace_string: r.replace_string,
+    flags: r.flags,
+    placement: r.placement,
+    scope: r.scope,
+    scope_id: r.scope_id,
+    target: r.target,
+    min_depth: r.min_depth,
+    max_depth: r.max_depth,
+    trim_strings: r.trim_strings,
+    run_on_edit: r.run_on_edit,
+    substitute_macros: r.substitute_macros,
+    disabled: r.disabled,
+    sort_order: r.sort_order,
+    description: r.description,
+    folder: r.folder,
+    metadata: { ...r.metadata ?? {} }
+  }));
+  const partitionedOut = allRows.length - pendingRegexScripts.length;
+  logInfo(`(8) pendingRegexScripts: total=${allRows.length} pushedToLumi=${pendingRegexScripts.length} ` + `extensionManaged=${partitionedOut} folder="${folderLabel}"`);
+  progress("saving_payload", "Saving lumirealm payload\u2026", 0.92);
+  const tSave = Date.now();
+  const storedRegexScripts = allRows.map((r) => ({
+    name: r.name,
+    script_id: r.script_id,
+    find_regex: r.find_regex,
+    replace_string: r.replace_string,
+    flags: r.flags,
+    placement: r.placement,
+    scope: r.scope,
+    scope_id: r.scope_id,
+    target: r.target,
+    min_depth: r.min_depth,
+    max_depth: r.max_depth,
+    trim_strings: r.trim_strings,
+    run_on_edit: r.run_on_edit,
+    substitute_macros: r.substitute_macros,
+    disabled: r.disabled,
+    sort_order: r.sort_order,
+    description: r.description,
+    folder: r.folder,
+    metadata: r.metadata
+  }));
+  const storedSource = {
+    schema_version: 1,
+    captured_at: Date.now(),
+    card: charxBundle.card,
+    module: charxBundle.moduleEnvelope?.module ?? null,
+    path_to_image_id: { ...pathToImageId }
+  };
+  const lumirealmData = buildLumirealmData(bundle.risuPayload, args.extensionVersion, storedRegexScripts, assetIndex, emotionIndex, Date.now(), userOverrides, storedSource, CURRENT_CHARACTER_SCHEMA_VERSION);
+  try {
+    await args.spindle.characters.update(characterId, { extensions: { [LUMIREALM_EXT_KEY]: lumirealmData } }, args.userId);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logError(`(9) characters.update extensions write failed: ${msg}`);
+    throw err;
+  }
+  logInfo(`(9) writeLumirealm done in ${Date.now() - tSave}ms regex_scripts=${storedRegexScripts.length}`);
+  progress("saving_payload", `Saved ${bundle.character.name}`, 1);
+  logInfo(`done file=${args.fileName} characterId=${characterId} total=${Date.now() - tImport}ms warnings=${warnings.length}`);
+  return {
+    characterId,
+    characterName: bundle.character.name,
+    lumirealm: lumirealmData,
+    imageIds,
+    pendingRegexScripts,
+    warnings,
+    createdWorldBookIds: worldBookId ? [worldBookId] : [],
+    pendingSvgRasters: bundle.pendingSvgRasters
+  };
+}
+var CCDEFAULT_PATH_MARKER = "ccdefault:";
+function buildAssetIndexes(payload, uploads, ccdefaultImageId) {
+  const assetIndex = {};
+  const emotionIndex = {};
+  let mappedCount = 0;
+  const resolveImageId = (path) => path === CCDEFAULT_PATH_MARKER ? ccdefaultImageId ?? undefined : uploads[path];
+  for (const a of payload.additional_assets ?? []) {
+    const imageId = resolveImageId(a.path);
+    if (!imageId)
+      continue;
+    const key = a.name;
+    let bucket = assetIndex[key];
+    if (!bucket) {
+      bucket = a.ext ? { imageIds: [], ext: a.ext } : { imageIds: [] };
+      assetIndex[key] = bucket;
+    }
+    if (bucket.ext === a.ext) {
+      bucket.imageIds.push(imageId);
+      mappedCount++;
+    }
+  }
+  for (const a of payload.emotion_images ?? []) {
+    const imageId = resolveImageId(a.path);
+    if (!imageId)
+      continue;
+    const key = a.name;
+    emotionIndex[key] = a.ext ? { imageIds: [imageId], ext: a.ext } : { imageIds: [imageId] };
+    mappedCount++;
+  }
+  return { assetIndex, emotionIndex, mappedCount };
+}
+
+// src/state/translator-migrations.ts
+async function applyV5AssetIndexRebuild(args, deps) {
+  const source = args.envelope.source;
+  if (!source)
+    throw new Error("v5 requires envelope.source");
+  const pathToImageId = source.path_to_image_id ?? {};
+  if (Object.keys(pathToImageId).length === 0) {
+    return {
+      nextEnvelope: {
+        ...args.envelope,
+        payload: {
+          ...args.envelope.payload,
+          additional_assets: args.newBundle.risuPayload.additional_assets,
+          emotion_images: args.newBundle.risuPayload.emotion_images
+        }
+      },
+      notes: ["skipped: source.path_to_image_id is empty"]
+    };
+  }
+  let avatarImageId = null;
+  try {
+    avatarImageId = await deps.getAvatarImageId(args.characterId, args.userId);
+  } catch (err) {
+    deps.log.warn(`migrate(${args.characterId}) v5: getAvatarImageId failed: ` + (err instanceof Error ? err.message : String(err)));
+  }
+  const rebuilt = buildAssetIndexes({
+    additional_assets: args.newBundle.risuPayload.additional_assets,
+    emotion_images: args.newBundle.risuPayload.emotion_images
+  }, pathToImageId, avatarImageId);
+  const nextEnvelope = {
+    ...args.envelope,
+    asset_index: rebuilt.assetIndex,
+    emotion_index: rebuilt.emotionIndex,
+    payload: {
+      ...args.envelope.payload,
+      additional_assets: args.newBundle.risuPayload.additional_assets,
+      emotion_images: args.newBundle.risuPayload.emotion_images
+    }
+  };
+  return {
+    nextEnvelope,
+    notes: [
+      `assets=${Object.keys(rebuilt.assetIndex).length}`,
+      `emotions=${Object.keys(rebuilt.emotionIndex).length}`
+    ]
+  };
+}
+var CHARACTER_MIGRATIONS = [
+  {
+    version: 5,
+    description: "Rebuild asset_index/emotion_index for new URI handling.",
+    touches: [
+      "asset_index",
+      "emotion_index",
+      "payload.additional_assets",
+      "payload.emotion_images"
+    ],
+    apply: applyV5AssetIndexRebuild
+  }
+];
+var CURRENT_CHARACTER_SCHEMA_VERSION = CHARACTER_MIGRATIONS.length > 0 ? Math.max(...CHARACTER_MIGRATIONS.map((m) => m.version)) : 1;
+async function migrateCharacterIfNeeded(args, deps) {
+  const stored = args.envelope.translator_schema_version ?? 1;
+  const target = CURRENT_CHARACTER_SCHEMA_VERSION;
+  if (stored >= target)
+    return { kind: "noop", storedVersion: stored };
+  if (!args.envelope.source) {
+    return { kind: "needs_reimport", reason: "no_source", storedVersion: stored };
+  }
+  const pending = CHARACTER_MIGRATIONS.filter((m) => m.version > stored && m.version <= target);
+  let newBundle;
+  try {
+    newBundle = translateFromStoredSource({
+      card: args.envelope.source.card,
+      module: args.envelope.source.module
+    }, {
+      sourceId: `migrate:${args.characterId}`,
+      mode: "full",
+      catalog: deps.loadCatalog(),
+      emitPackScripts: false
+    });
+  } catch (err) {
+    return {
+      kind: "failed",
+      from: stored,
+      to: target,
+      error: err instanceof Error ? err.message : String(err)
+    };
+  }
+  if (!newBundle.risuPayload) {
+    return {
+      kind: "failed",
+      from: stored,
+      to: target,
+      error: "translator returned no risuPayload"
+    };
+  }
+  let current = args.envelope;
+  const stepsApplied = [];
+  const t0 = Date.now();
+  for (const step of pending) {
+    try {
+      const result = await step.apply({
+        envelope: current,
+        characterId: args.characterId,
+        characterName: args.characterName,
+        userId: args.userId,
+        newBundle
+      }, deps);
+      const stamped = stampEnvelope(result.nextEnvelope, deps.extensionVersion, step.version);
+      await deps.writeEnvelope(args.characterId, stamped, args.userId);
+      current = stamped;
+      stepsApplied.push({ version: step.version, notes: result.notes });
+      deps.log.info(`migrate(${args.characterId}): step v${step.version} done , ${result.notes.join(", ")}`);
+    } catch (err) {
+      const errStr = err instanceof Error ? err.message : String(err);
+      deps.log.error(`migrate(${args.characterId}): step v${step.version} FAILED: ${errStr}`);
+      return {
+        kind: "failed",
+        from: stored,
+        to: target,
+        error: errStr,
+        partialAt: stepsApplied.length > 0 ? stepsApplied[stepsApplied.length - 1].version : stored
+      };
+    }
+  }
+  if (stepsApplied.length === 0 && stored < target) {
+    const stamped = stampEnvelope(current, deps.extensionVersion, target);
+    await deps.writeEnvelope(args.characterId, stamped, args.userId);
+  }
+  deps.log.info(`migrate(${args.characterId}): v${stored}->v${target} done ` + `steps=[${stepsApplied.map((s) => `v${s.version}`).join(",")}] ` + `elapsed=${Date.now() - t0}ms`);
+  return { kind: "migrated", from: stored, to: target, stepsApplied };
+}
+function stampEnvelope(envelope, extensionVersion, version) {
+  return {
+    ...envelope,
+    extension_version: extensionVersion,
+    translator_schema_version: version
+  };
+}
+
+// src/state/module-migrations.ts
+var MODULE_MIGRATIONS = [];
+var CURRENT_MODULE_SCHEMA_VERSION = MODULE_MIGRATIONS.length > 0 ? Math.max(...MODULE_MIGRATIONS.map((m) => m.version)) : 4;
+async function migrateModuleIfNeeded(env, deps) {
+  const stored = env.translator_schema_version ?? 1;
+  const target = CURRENT_MODULE_SCHEMA_VERSION;
+  if (stored >= target)
+    return { kind: "noop", storedVersion: stored };
+  const pending = MODULE_MIGRATIONS.filter((m) => m.version > stored && m.version <= target);
+  let current = env;
+  const stepsApplied = [];
+  const t0 = Date.now();
+  for (const step of pending) {
+    try {
+      const result = await step.apply({ env: current }, deps);
+      const stamped = {
+        ...result.nextEnv,
+        translator_schema_version: step.version
+      };
+      await deps.writeEnvelope(stamped);
+      current = stamped;
+      stepsApplied.push({ version: step.version, notes: result.notes });
+      deps.log.info(`migrate-module(${env.id}): step v${step.version} done , ${result.notes.join(", ")}`);
+    } catch (err) {
+      const errStr = err instanceof Error ? err.message : String(err);
+      deps.log.error(`migrate-module(${env.id}): step v${step.version} FAILED: ${errStr}`);
+      return {
+        kind: "failed",
+        moduleId: env.id,
+        from: stored,
+        to: target,
+        error: errStr,
+        partialAt: stepsApplied.length > 0 ? stepsApplied[stepsApplied.length - 1].version : stored
+      };
+    }
+  }
+  if (stepsApplied.length === 0 && stored < target) {
+    const stamped = { ...current, translator_schema_version: target };
+    await deps.writeEnvelope(stamped);
+  }
+  deps.log.info(`migrate-module(${env.id}): v${stored}->v${target} done ` + `steps=[${stepsApplied.map((s) => `v${s.version}`).join(",")}] ` + `elapsed=${Date.now() - t0}ms`);
+  return { kind: "migrated", moduleId: env.id, from: stored, to: target, stepsApplied };
+}
+
+// src/state/own-character-edit.ts
+var expecting = new Map;
+function expectCharacterEdit(characterId) {
+  expecting.set(characterId, (expecting.get(characterId) ?? 0) + 1);
+}
+function consumeOwnCharacterEdit(characterId) {
+  const n = expecting.get(characterId) ?? 0;
+  if (n <= 0) {
+    expecting.delete(characterId);
+    return false;
+  }
+  if (n === 1)
+    expecting.delete(characterId);
+  else
+    expecting.set(characterId, n - 1);
+  return true;
+}
+
+// src/state/lumirealm-character.ts
+var logger2 = makeSafeLogger("lumirealm:character");
+var logInfo2 = (msg) => logger2.info(msg);
+var logWarn2 = (msg) => logger2.warn(msg);
+var logError2 = (msg) => logger2.error(msg);
+async function readLumirealm(api, characterId, userId) {
+  const t0 = Date.now();
+  let character;
+  try {
+    character = await api.get(characterId, userId);
+  } catch (err) {
+    logError2(`readLumirealm: get(${characterId}) threw \u2014 ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  }
+  if (!character) {
+    logInfo2(`readLumirealm: character not found id=${characterId}`);
+    return null;
+  }
+  const ext = character.extensions ?? {};
+  const rawLumi = ext[LUMIREALM_EXT_KEY];
+  const data = isLumirealmData(rawLumi) ? rawLumi : null;
+  const risuai = ext["risuai"] && typeof ext["risuai"] === "object" ? ext["risuai"] : {};
+  if (!data) {
+    logInfo2(`readLumirealm: not a lumirealm character id=${characterId} ` + `lumirealm_key=${rawLumi === null ? "null" : typeof rawLumi} ` + `elapsed=${Date.now() - t0}ms`);
+    return { character, data: null, risuai };
+  }
+  const tv = data.translator_version;
+  const triggerCount = data.payload?.triggers?.length;
+  const regexCount = data.regex_scripts?.length;
+  const assetIdx = data.asset_index;
+  const assetCount = assetIdx && typeof assetIdx === "object" ? Object.keys(assetIdx).length : "?";
+  logInfo2(`readLumirealm: hit id=${characterId} translator=${typeof tv === "string" ? tv : "?"} ` + `triggers=${typeof triggerCount === "number" ? triggerCount : "?"} ` + `regex=${typeof regexCount === "number" ? regexCount : "?"} ` + `assets=${assetCount} elapsed=${Date.now() - t0}ms`);
+  return { character, data, risuai };
+}
+async function writeLumirealm(api, characterId, data, userId) {
+  const t0 = Date.now();
+  expectCharacterEdit(characterId);
+  try {
+    await api.update(characterId, { extensions: { [LUMIREALM_EXT_KEY]: data } }, userId);
+    logInfo2(`writeLumirealm: ok id=${characterId} schema=${data.schema_version} ` + `regex=${data.regex_scripts.length} assets=${Object.keys(data.asset_index).length} ` + `elapsed=${Date.now() - t0}ms`);
+  } catch (err) {
+    logError2(`writeLumirealm: update(${characterId}) threw \u2014 ${err instanceof Error ? err.message : String(err)}`);
+    throw err;
+  }
+}
+async function updateLumirealm(api, characterId, userId, mutator) {
+  const fetched = await readLumirealm(api, characterId, userId);
+  if (!fetched || !fetched.data) {
+    logWarn2(`updateLumirealm: skipping \u2014 not a lumirealm character id=${characterId}`);
+    return null;
+  }
+  const next = mutator(fetched.data);
+  await writeLumirealm(api, characterId, next, userId);
+  return next;
+}
+async function clearLumirealm(api, characterId, userId) {
+  expectCharacterEdit(characterId);
+  try {
+    await api.update(characterId, { extensions: { [LUMIREALM_EXT_KEY]: null } }, userId);
+    logInfo2(`clearLumirealm: soft-removed id=${characterId}`);
+    return true;
+  } catch (err) {
+    logError2(`clearLumirealm: update(${characterId}) threw \u2014 ${err instanceof Error ? err.message : String(err)}`);
+    return false;
+  }
+}
+async function listLumirealmCharacters(api, userId, opts) {
+  const limit = Math.min(200, Math.max(1, opts?.limit ?? 200));
+  const paginate = opts?.paginate ?? false;
+  const out = [];
+  let offset = 0;
+  let pages = 0;
+  const t0 = Date.now();
+  while (true) {
+    pages += 1;
+    let page;
+    try {
+      page = await api.list({ limit, offset, ...userId === undefined ? {} : { userId } });
+    } catch (err) {
+      logError2(`listLumirealmCharacters: list({ limit:${limit}, offset:${offset} }) threw \u2014 ${err instanceof Error ? err.message : String(err)}`);
+      break;
+    }
+    for (const character of page.data) {
+      const ext = character.extensions ?? {};
+      const raw = ext[LUMIREALM_EXT_KEY];
+      if (!isLumirealmData(raw))
+        continue;
+      out.push({ character, data: raw });
+    }
+    if (!paginate)
+      break;
+    if (page.data.length < limit)
+      break;
+    offset += limit;
+    if (pages >= 50) {
+      logWarn2(`listLumirealmCharacters: paginate cap hit at offset=${offset} \u2014 bailing`);
+      break;
+    }
+  }
+  logInfo2(`listLumirealmCharacters: hits=${out.length} pages=${pages} ` + `elapsed=${Date.now() - t0}ms`);
+  return out;
+}
+var SYNTHETIC_RISU_SPEC_VERSION = "";
+function mergeAttachedModulesIntoPayload(basePayload, baseAssetIndex, modules) {
+  if (modules.length === 0) {
+    return {
+      triggers: basePayload.triggers,
+      lua_scripts: basePayload.lua_scripts,
+      asset_index: baseAssetIndex,
+      requires: basePayload.requires,
+      module_background_embedding: "",
+      modules_by_namespace: {}
+    };
+  }
+  const triggers = [...basePayload.triggers];
+  const lua_scripts = [...basePayload.lua_scripts];
+  const moduleAssets = {};
+  const modulesByNamespace = {};
+  let bgEmbed = "";
+  for (const m of modules) {
+    for (const [name, entry] of Object.entries(m.asset_index)) {
+      moduleAssets[name] = entry;
+    }
+    const nsKey = typeof m.namespace === "string" && m.namespace.length > 0 ? m.namespace : m.id;
+    const assetNames = Object.keys(m.asset_index);
+    if (modulesByNamespace[nsKey]) {
+      modulesByNamespace[nsKey].push(...assetNames);
+    } else {
+      modulesByNamespace[nsKey] = [...assetNames];
+    }
+    if (nsKey !== m.id && !modulesByNamespace[m.id]) {
+      modulesByNamespace[m.id] = [...assetNames];
+    }
+    for (let i = 0;i < m.triggers.length; i++) {
+      const trig = m.triggers[i];
+      if (m.low_level_access && trig && typeof trig === "object") {
+        triggers.push({ ...trig, lowLevelAccess: true });
+      } else {
+        triggers.push(trig);
+      }
+      lua_scripts.push(m.lua_scripts[i] ?? "");
+    }
+    if (typeof m.background_embedding === "string" && m.background_embedding.length > 0) {
+      bgEmbed += `
+` + m.background_embedding + `
+`;
+    }
+  }
+  const finalAssetIndex = {
+    ...moduleAssets,
+    ...baseAssetIndex
+  };
+  const folded = {
+    lua: basePayload.requires.lua || modules.some((m) => m.triggers.length > 0 && m.lua_scripts.some((s) => s.length > 0)),
+    lowLevelAccess: basePayload.requires.lowLevelAccess || modules.some((m) => m.low_level_access),
+    hostFeatures: basePayload.requires.hostFeatures
+  };
+  return {
+    triggers,
+    lua_scripts,
+    asset_index: finalAssetIndex,
+    requires: folded,
+    module_background_embedding: bgEmbed,
+    modules_by_namespace: modulesByNamespace
+  };
+}
+function buildSyntheticStoredCard(characterId, data, risuai, attachedModules = []) {
+  const lumiDefaults = data.payload.scriptstate_defaults;
+  const cardDefaults = lumiDefaults && Object.keys(lumiDefaults).length > 0 ? lumiDefaults : parseScriptstateDefaults(typeof risuai.defaultVariables === "string" ? risuai.defaultVariables : null);
+  const overrides = data.user_overrides.default_variables_overrides ?? {};
+  const mergedDefaults = { ...cardDefaults, ...overrides };
+  const lumiUtilityBot = data.payload.utility_bot;
+  const cardUtilityBot = typeof lumiUtilityBot === "boolean" ? lumiUtilityBot : typeof risuai.utilityBot === "boolean" ? risuai.utilityBot : false;
+  const utilityBot = data.user_overrides.utility_bot_override ?? cardUtilityBot;
+  const lumiBg = data.payload.background_html;
+  const backgroundHtml = typeof lumiBg === "string" && lumiBg.length > 0 ? lumiBg : typeof risuai.backgroundHTML === "string" && risuai.backgroundHTML.length > 0 ? risuai.backgroundHTML : null;
+  const baseRequires = data.payload.requires;
+  const baseTrigCount = data.payload.triggers.length;
+  const baseLuaCount = data.payload.lua_scripts.length;
+  const merged = mergeAttachedModulesIntoPayload({
+    triggers: data.payload.triggers,
+    lua_scripts: data.payload.lua_scripts,
+    at_actions: data.payload.at_actions,
+    background_html: backgroundHtml,
+    virtualscript: null,
+    utility_bot: utilityBot,
+    scriptstate_defaults: mergedDefaults,
+    additional_assets: [],
+    emotion_images: [],
+    extra: {},
+    translator_version: data.translator_version,
+    risu_spec_version: SYNTHETIC_RISU_SPEC_VERSION,
+    requires: baseRequires
+  }, data.asset_index, attachedModules);
+  const risuPayload = {
+    triggers: merged.triggers,
+    lua_scripts: merged.lua_scripts,
+    at_actions: data.payload.at_actions,
+    background_html: backgroundHtml,
+    ...merged.module_background_embedding.length > 0 ? { module_background_embedding: merged.module_background_embedding } : {},
+    virtualscript: null,
+    utility_bot: utilityBot,
+    scriptstate_defaults: mergedDefaults,
+    additional_assets: [],
+    emotion_images: [],
+    extra: {
+      ...attachedModules.length > 0 ? {
+        attached_modules: attachedModules.map((m) => m.id),
+        base_trigger_count: baseTrigCount,
+        base_lua_count: baseLuaCount,
+        modules_by_namespace: merged.modules_by_namespace
+      } : {}
+    },
+    translator_version: data.translator_version,
+    risu_spec_version: SYNTHETIC_RISU_SPEC_VERSION,
+    requires: merged.requires,
+    ...data.payload.untranslated ? { untranslated: data.payload.untranslated } : {}
+  };
+  return {
+    schema_version: 1,
+    character_id: characterId,
+    stored_at: data.imported_at,
+    extension_version: data.extension_version,
+    risuPayload,
+    asset_index: merged.asset_index,
+    emotion_index: data.emotion_index,
+    ...data.regex_scripts.length > 0 ? { regex_scripts: data.regex_scripts } : {}
+  };
+}
+
+// src/state/migration-state.ts
+var MIGRATION_STATE_PATH = "lumirealm/migration-state.json";
+var EMPTY_MIGRATION_STATE = {
+  schema_version: 1,
+  last_swept_modules: 0,
+  last_swept_characters: 0
+};
+function parseMigrationState(raw) {
+  if (!raw || typeof raw !== "object")
+    return EMPTY_MIGRATION_STATE;
+  const obj = raw;
+  if (obj.schema_version !== 1)
+    return EMPTY_MIGRATION_STATE;
+  const legacy = typeof obj.last_swept_translator_version === "number" ? obj.last_swept_translator_version : 0;
+  return {
+    schema_version: 1,
+    last_swept_modules: typeof obj.last_swept_modules === "number" ? obj.last_swept_modules : legacy,
+    last_swept_characters: typeof obj.last_swept_characters === "number" ? obj.last_swept_characters : 0
+  };
+}
+async function readMigrationState(storage, userId) {
+  try {
+    const raw = await storage.getJson(MIGRATION_STATE_PATH, { userId });
+    return parseMigrationState(raw);
+  } catch {
+    return EMPTY_MIGRATION_STATE;
+  }
+}
+async function writeMigrationState(storage, userId, state) {
+  const out = {
+    schema_version: 1,
+    last_swept_modules: state.last_swept_modules,
+    last_swept_characters: state.last_swept_characters
+  };
+  await storage.setJson(MIGRATION_STATE_PATH, out, { indent: 2, userId });
+}
+
+// src/state/legacy-reimport-warnings.ts
+var LEGACY_REIMPORT_WARNED_PATH = "lumirealm/legacy-reimport-warned.json";
+function parseLegacyReimportWarned(raw) {
+  if (!raw || typeof raw !== "object")
+    return new Set;
+  const obj = raw;
+  if (obj.schema_version !== 1)
+    return new Set;
+  if (!Array.isArray(obj.character_ids))
+    return new Set;
+  return new Set(obj.character_ids.filter((x) => typeof x === "string"));
+}
+async function readLegacyReimportWarned(storage, userId) {
+  try {
+    const raw = await storage.getJson(LEGACY_REIMPORT_WARNED_PATH, { userId });
+    return parseLegacyReimportWarned(raw);
+  } catch {
+    return new Set;
+  }
+}
+async function markLegacyReimportWarned(storage, userId, characterId) {
+  const existing = await readLegacyReimportWarned(storage, userId);
+  if (existing.has(characterId))
+    return { alreadyWarned: true };
+  const next = {
+    schema_version: 1,
+    character_ids: [...existing, characterId]
+  };
+  await storage.setJson(LEGACY_REIMPORT_WARNED_PATH, next, { indent: 2, userId });
+  return { alreadyWarned: false };
 }
 
 // src/state/module-image-journal.ts
@@ -28750,517 +29515,6 @@ function makeSpindleHost(ctx) {
     };
   }
   return host;
-}
-// src/payload/import.ts
-init_cbs();
-init_risu_macros();
-var logger2 = makeSafeLogger("import");
-var logInfo2 = (msg) => logger2.info(msg);
-var logWarn2 = (msg) => logger2.warn(msg);
-var logError2 = (msg) => logger2.error(msg);
-var cachedCatalog = null;
-function loadCatalog() {
-  if (cachedCatalog)
-    return cachedCatalog;
-  cachedCatalog = new CatalogIndex(parseCatalog(risu_macros_default));
-  return cachedCatalog;
-}
-function makeLowLevelAccessConsentMessage(characterName) {
-  return `"${characterName}" requests low-level access. With this granted the card may:
-
-` + `  \u2022 Make additional LLM API calls (uses your tokens / billing)
-` + `  \u2022 Run helper / classifier prompts in the background
-` + `  \u2022 Trigger image generation (if your provider supports it)
-` + `  \u2022 Inspect message similarity / embeddings
-
-` + `Only grant access for cards from sources you trust. ` + `Decline to import the card without low-level features (some panels / ` + `auto-updates may not work).`;
-}
-function guessMimeType(path) {
-  const lower = path.toLowerCase();
-  if (lower.endsWith(".png"))
-    return "image/png";
-  if (lower.endsWith(".jpg") || lower.endsWith(".jpeg"))
-    return "image/jpeg";
-  if (lower.endsWith(".gif"))
-    return "image/gif";
-  if (lower.endsWith(".webp"))
-    return "image/webp";
-  if (lower.endsWith(".mp3"))
-    return "audio/mpeg";
-  if (lower.endsWith(".ogg"))
-    return "audio/ogg";
-  if (lower.endsWith(".wav"))
-    return "audio/wav";
-  if (lower.endsWith(".mp4"))
-    return "video/mp4";
-  if (lower.endsWith(".webm"))
-    return "video/webm";
-  return "application/octet-stream";
-}
-function pickAvatar(assets) {
-  const isImage = (p) => /\.(png|jpe?g|webp|gif)$/i.test(p);
-  for (const [path, data] of assets) {
-    if (/^assets\/icon\/main\.(png|jpe?g|webp|gif)$/i.test(path))
-      return { path, data };
-  }
-  for (const [path, data] of assets) {
-    if (/\/icon\//i.test(path) && isImage(path))
-      return { path, data };
-  }
-  for (const [path, data] of assets) {
-    if (isImage(path))
-      return { path, data };
-  }
-  return null;
-}
-function base64ToBytes2(b64) {
-  return new Uint8Array(Buffer.from(b64, "base64"));
-}
-async function importCard(args) {
-  const progress = args.onProgress ?? (() => {});
-  const tImport = Date.now();
-  logInfo2(`start file=${args.fileName} b64-bytes=${args.bytesB64.length} userId=${args.userId ?? "<none>"}`);
-  progress("decoding", `Decoding ${args.fileName}\u2026`, 0.05);
-  const tDecode = Date.now();
-  const bytes = base64ToBytes2(args.bytesB64);
-  logInfo2(`(1) decoded base64 -> ${bytes.byteLength} bytes in ${Date.now() - tDecode}ms`);
-  progress("translating", "Translating Risu card\u2026", 0.15);
-  const tTranslate = Date.now();
-  const catalog2 = loadCatalog();
-  logInfo2(`(2) translate: starting translateCharx bytes=${bytes.byteLength}`);
-  const charxBundle = readCharx(bytes);
-  const bundle = translateFromCharxBundle(charxBundle, {
-    sourceId: args.sourceId ?? `file:${args.fileName}`,
-    mode: "full",
-    catalog: catalog2,
-    emitPackScripts: false
-  });
-  logInfo2(`(2) translate: done in ${Date.now() - tTranslate}ms \u2014 char="${bundle.character.name}" ` + `lore=${bundle.worldBookEntries.length} regex=${bundle.regexScripts.length} ` + `assets=${bundle.assets.size} payload.triggers=${bundle.risuPayload?.triggers.length ?? 0} ` + `payload.lua=${bundle.risuPayload?.lua_scripts.length ?? 0}`);
-  if (bundle.decoratorStats.decorators_seen > 0) {
-    logInfo2(`(2.1) lorebook decorators: ` + `entries_with_decorators=${bundle.decoratorStats.entries_with_decorators}/${bundle.worldBookEntries.length} ` + `seen=${bundle.decoratorStats.decorators_seen} ` + `mapped=${bundle.decoratorStats.mapped} ` + `stashed=${bundle.decoratorStats.stashed} ` + `dropped=${bundle.decoratorStats.dropped}`);
-  }
-  const issues = bundle.manifest.issues;
-  if (issues.length > 0) {
-    logWarn2(`(2) translate produced ${issues.length} issue(s):`);
-    for (const iss of issues) {
-      logWarn2(`    - ${iss.path}: ${iss.message}`);
-    }
-  }
-  if (!bundle.risuPayload) {
-    logError2(`translator produced no risuPayload`);
-    throw new Error("risu-compat: translator produced no risuPayload");
-  }
-  progress("translating", "Validating compatibility\u2026", 0.22);
-  logInfo2(`(3) preValidate requires=${JSON.stringify(bundle.risuPayload.requires)}`);
-  const check = preValidateRequires(bundle.risuPayload.requires);
-  const warnings = [];
-  if (!check.ok) {
-    logError2(`(3) requires missing=[${check.missing.join(", ")}] \u2014 throwing RisuCompatVersionError`);
-    throw new RisuCompatVersionError(check.missing, args.extensionVersion);
-  }
-  if (check.degraded.length > 0) {
-    logWarn2(`(3) degraded=[${check.degraded.join(", ")}]`);
-    warnings.push(`Card uses degraded features: ${check.degraded.join(", ")}.`);
-  }
-  const svgTemplatedStripped = bundle.manifest.untranslated.svg_templated_stripped ?? 0;
-  const svgDangerousStripped = bundle.manifest.untranslated.svg_dangerous_stripped ?? 0;
-  if (svgTemplatedStripped > 0) {
-    logWarn2(`(3) svg_templated_stripped=${svgTemplatedStripped}`);
-    warnings.push(`${svgTemplatedStripped} dynamic SVG icon(s) on this card use template captures or macros and won't render \u2014 ` + `the rest were rasterized to PNG. Visual gap on these icons only.`);
-  }
-  if (svgDangerousStripped > 0) {
-    logWarn2(`(3) svg_dangerous_stripped=${svgDangerousStripped}`);
-    warnings.push(`${svgDangerousStripped} SVG(s) with external references or scripts were skipped for safety.`);
-  }
-  const userOverrides = {};
-  if (bundle.risuPayload.requires.lowLevelAccess === true) {
-    logInfo2(`(3.5) requires.lowLevelAccess=true \u2014 prompting user consent`);
-    const consentMessage = makeLowLevelAccessConsentMessage(bundle.character.name);
-    let confirmed = false;
-    if (args.spindle.requestConsent) {
-      try {
-        const res = await args.spindle.requestConsent({
-          title: `Risu card "${bundle.character.name}" requests low-level access`,
-          message: consentMessage,
-          confirmLabel: "Grant access",
-          cancelLabel: "Decline"
-        });
-        confirmed = !!res?.confirmed;
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        logError2(`(3.5) consent prompt threw: ${msg}`);
-        confirmed = false;
-      }
-    } else {
-      logWarn2(`(3.5) requestConsent callback missing \u2014 refusing low-level access`);
-      confirmed = false;
-    }
-    if (!confirmed) {
-      logInfo2(`(3.5) consent declined for "${bundle.character.name}" \u2014 aborting import`);
-      progress("error", `Import cancelled: low-level access declined`, null);
-      throw new RisuConsentDeclinedError(bundle.character.name);
-    }
-    userOverrides.low_level_access_granted = true;
-    userOverrides.consent_acknowledged_at = Date.now();
-    logInfo2(`(3.5) consent granted; flag set on user_overrides`);
-  }
-  let worldBookId = null;
-  if (bundle.worldBookEntries.length > 0 && args.spindle.world_books) {
-    progress("creating_character", `Creating world book with ${bundle.worldBookEntries.length} entries\u2026`, 0.3);
-    const tBook = Date.now();
-    try {
-      const wbName = bundle.worldBook?.name ?? `${bundle.character.name} \u2014 lore`;
-      logInfo2(`(4a) create world_book name="${wbName}" for ${bundle.worldBookEntries.length} entries`);
-      const book = await args.spindle.world_books.create({
-        name: wbName,
-        metadata: {
-          source: "character",
-          auto_managed_by_character: true
-        }
-      }, args.userId);
-      worldBookId = book.id;
-      logInfo2(`(4a) world_book created id=${worldBookId} in ${Date.now() - tBook}ms`);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      logError2(`(4a) world_book create failed: ${msg}`);
-      warnings.push(`Failed to create world book: ${msg}. Lorebook entries skipped.`);
-    }
-  } else {
-    logInfo2(`(4a) world_books: ${bundle.worldBookEntries.length === 0 ? "no entries" : "spindle.world_books unavailable"}`);
-  }
-  progress("creating_character", `Creating character "${bundle.character.name}"\u2026`, 0.4);
-  const tChar = Date.now();
-  const characterInput = {
-    name: bundle.character.name,
-    description: bundle.character.description,
-    personality: bundle.character.personality,
-    scenario: bundle.character.scenario,
-    first_mes: bundle.character.first_mes,
-    mes_example: bundle.character.mes_example,
-    creator: bundle.character.creator,
-    creator_notes: bundle.character.creator_notes,
-    system_prompt: bundle.character.system_prompt,
-    post_history_instructions: bundle.character.post_history_instructions,
-    tags: [...bundle.character.tags],
-    alternate_greetings: [...bundle.character.alternate_greetings]
-  };
-  if (worldBookId)
-    characterInput.world_book_ids = [worldBookId];
-  logInfo2(`(4b) spindle.characters.create name="${bundle.character.name}" tags=${bundle.character.tags.length} alts=${bundle.character.alternate_greetings.length} worldBookId=${worldBookId ?? "<none>"}`);
-  const created = await args.spindle.characters.create(characterInput, args.userId);
-  const characterId = created.id;
-  logInfo2(`(4b) spindle.characters.create -> id=${characterId} in ${Date.now() - tChar}ms`);
-  if (worldBookId && args.spindle.world_books) {
-    try {
-      await args.spindle.world_books.update(worldBookId, {
-        metadata: {
-          source: "character",
-          source_character_id: characterId,
-          auto_managed_by_character: true
-        }
-      }, args.userId);
-      logInfo2(`(4c) world_book metadata patched with source_character_id=${characterId}`);
-    } catch (err) {
-      logWarn2(`(4c) world_book metadata patch failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
-  let avatarImageId = null;
-  if (args.spindle.characters.setAvatar) {
-    const preferred = bundle.preferredAvatar;
-    const avatar = preferred ? { path: preferred.filename, data: preferred.data, filename: preferred.filename, mime: preferred.mime } : (() => {
-      const picked = pickAvatar(bundle.assets);
-      return picked ? { path: picked.path, data: picked.data, filename: picked.path.split("/").pop() ?? "avatar.png", mime: guessMimeType(picked.path) } : null;
-    })();
-    if (avatar) {
-      const tAvatar = Date.now();
-      try {
-        logInfo2(`(5a) setAvatar source=${preferred ? "preferred" : "asset-scan"} path=${avatar.path} bytes=${avatar.data.byteLength} mime=${avatar.mime}`);
-        const avatarResult = await args.spindle.characters.setAvatar(characterId, {
-          data: avatar.data,
-          filename: avatar.filename,
-          mime_type: avatar.mime
-        }, args.userId);
-        if (typeof avatarResult.image_id === "string" && avatarResult.image_id.length > 0) {
-          avatarImageId = avatarResult.image_id;
-        }
-        logInfo2(`(5a) setAvatar done in ${Date.now() - tAvatar}ms image_id=${avatarImageId ?? "<none>"}`);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        logWarn2(`(5a) setAvatar failed: ${msg}`);
-        warnings.push(`Failed to set character avatar: ${msg}`);
-      }
-    } else {
-      logInfo2(`(5a) setAvatar: no avatar candidate (no preferred avatar, no image in assets)`);
-    }
-  } else {
-    logInfo2(`(5a) setAvatar: API unavailable (spindle-types < 0.4.31) \u2014 skipping`);
-  }
-  progress("uploading_assets", "Uploading assets\u2026", 0.55);
-  const tAssets = Date.now();
-  const uploadConcurrency = 6;
-  const pathToImageId = {};
-  const imageIds = [];
-  const journalBuffer = [];
-  let journalChain = Promise.resolve();
-  const flushJournal = () => {
-    if (journalBuffer.length === 0)
-      return;
-    const ids = journalBuffer.splice(0);
-    journalChain = journalChain.then(async () => {
-      try {
-        await appendImageIdsToJournal(args.userStorage, args.userId, characterId, ids);
-      } catch (err) {
-        journalBuffer.unshift(...ids);
-        logWarn2(`image-journal flush failed: ${err instanceof Error ? err.message : String(err)}`);
-      }
-    });
-  };
-  if (avatarImageId) {
-    imageIds.push(avatarImageId);
-    journalBuffer.push(avatarImageId);
-    flushJournal();
-  }
-  const assetEntries = [...bundle.assets];
-  const totalAssetCount = assetEntries.length;
-  let totalAssetBytes = 0;
-  for (const [, data] of assetEntries)
-    totalAssetBytes += data.byteLength;
-  logInfo2(`(5b) uploading ${totalAssetCount} assets totalBytes=${totalAssetBytes} ` + `concurrency=${uploadConcurrency} via spindle.images.upload`);
-  const progressEvery = Math.max(1, Math.min(25, Math.floor(totalAssetCount / 20) || 1));
-  const PROGRESS_BASE = 0.55;
-  const PROGRESS_END = 0.9;
-  let processed = 0;
-  let assetUploadFailures = 0;
-  let nextIndex = 0;
-  const uploadWorker = async () => {
-    while (true) {
-      const i = nextIndex++;
-      if (i >= totalAssetCount)
-        break;
-      const entry = assetEntries[i];
-      if (!entry)
-        break;
-      const [path, data] = entry;
-      const filename = path.split("/").pop() ?? "asset.bin";
-      try {
-        const result = await args.spindle.images.upload({ data, mime_type: guessMimeType(path), filename, owner_character_id: characterId }, args.userId);
-        if (typeof result?.id !== "string" || result.id.length === 0) {
-          throw new Error("upload returned without an image id");
-        }
-        pathToImageId[path] = result.id;
-        imageIds.push(result.id);
-        journalBuffer.push(result.id);
-      } catch (err) {
-        assetUploadFailures += 1;
-        const msg = err instanceof Error ? err.message : String(err);
-        logWarn2(`(5b) upload failed path=${path}: ${msg}`);
-      }
-      processed += 1;
-      if (processed % progressEvery === 0 || processed === totalAssetCount) {
-        flushJournal();
-        const frac = totalAssetCount === 0 ? PROGRESS_END : PROGRESS_BASE + (PROGRESS_END - PROGRESS_BASE) * (processed / totalAssetCount);
-        progress("uploading_assets", `Uploading assets (${processed}/${totalAssetCount})\u2026`, frac);
-      }
-    }
-  };
-  if (totalAssetCount > 0) {
-    const workers = [];
-    for (let w = 0;w < Math.min(uploadConcurrency, totalAssetCount); w++) {
-      workers.push(uploadWorker());
-    }
-    await Promise.all(workers);
-  }
-  flushJournal();
-  await journalChain;
-  if (assetUploadFailures > 0) {
-    warnings.push(`${assetUploadFailures} of ${totalAssetCount} asset upload(s) failed; ` + `the card will work but may render fallback art.`);
-  }
-  logInfo2(`(5b) uploaded ${totalAssetCount - assetUploadFailures}/${totalAssetCount} assets ` + `failed=${assetUploadFailures} elapsed=${Date.now() - tAssets}ms`);
-  const builtIndexes = buildAssetIndexes({
-    additional_assets: bundle.risuPayload.additional_assets,
-    emotion_images: bundle.risuPayload.emotion_images
-  }, pathToImageId);
-  const assetIndex = builtIndexes.assetIndex;
-  const emotionIndex = builtIndexes.emotionIndex;
-  if (worldBookId && args.spindle.world_books) {
-    progress("uploading_assets", `Uploading ${bundle.worldBookEntries.length} world-info entries\u2026`, 0.6);
-    const tEntries = Date.now();
-    const entries = bundle.worldBookEntries;
-    let failed = 0;
-    for (let i = 0;i < entries.length; i++) {
-      const entry = entries[i];
-      try {
-        const entryInput = {
-          key: entry.key,
-          keysecondary: entry.keysecondary,
-          content: entry.content,
-          comment: entry.comment,
-          position: entry.position,
-          depth: entry.depth,
-          order_value: entry.order_value,
-          selective: entry.selective,
-          constant: entry.constant,
-          disabled: entry.disabled,
-          group_name: entry.group_name,
-          group_override: entry.group_override,
-          group_weight: entry.group_weight,
-          probability: entry.probability,
-          case_sensitive: entry.case_sensitive,
-          match_whole_words: entry.match_whole_words,
-          use_regex: entry.use_regex,
-          prevent_recursion: entry.prevent_recursion,
-          exclude_recursion: entry.exclude_recursion,
-          delay_until_recursion: entry.delay_until_recursion,
-          priority: entry.priority,
-          sticky: entry.sticky,
-          cooldown: entry.cooldown,
-          delay: entry.delay,
-          selective_logic: entry.selective_logic,
-          use_probability: entry.use_probability,
-          vectorized: entry.vectorized,
-          ...entry.role !== null ? { role: entry.role } : {},
-          ...entry.scan_depth !== null ? { scan_depth: entry.scan_depth } : {},
-          ...entry.automation_id !== null ? { automation_id: entry.automation_id } : {},
-          ...entry.extensions ? { extensions: entry.extensions } : {}
-        };
-        await args.spindle.world_books.entries.create(worldBookId, entryInput, args.userId);
-      } catch (err) {
-        failed += 1;
-        const emsg = err instanceof Error ? err.message : String(err);
-        logWarn2(`(6) entry "${entry.comment}" failed: ${emsg}`);
-        warnings.push(`Failed to create world info entry "${entry.comment}": ${emsg}`);
-      }
-      if (i % 10 === 0 || i === entries.length - 1) {
-        progress("uploading_assets", `Uploading world-info entries (${i + 1}/${entries.length})\u2026`, 0.55 + 0.35 * ((i + 1) / entries.length));
-      }
-    }
-    logInfo2(`(6) entries done ok=${entries.length - failed} failed=${failed} elapsed=${Date.now() - tEntries}ms`);
-  }
-  const folderLabel = `Risu \u2014 ${bundle.character.name}`.slice(0, 80);
-  const allRows = bundle.regexScripts.map((r) => ({
-    name: r.name,
-    script_id: r.script_id,
-    find_regex: r.find_regex,
-    replace_string: r.replace_string,
-    flags: r.flags,
-    placement: [...r.placement],
-    scope: r.scope,
-    scope_id: r.scope === "character" ? characterId : r.scope_id,
-    target: r.target,
-    min_depth: r.min_depth,
-    max_depth: r.max_depth,
-    trim_strings: [...r.trim_strings],
-    run_on_edit: r.run_on_edit,
-    substitute_macros: r.substitute_macros,
-    disabled: r.disabled,
-    sort_order: r.sort_order,
-    description: r.description,
-    folder: r.folder || folderLabel,
-    metadata: { ...r.metadata }
-  }));
-  const pendingRegexScripts = allRows.map((r) => ({
-    name: r.name,
-    script_id: r.script_id,
-    find_regex: r.find_regex,
-    replace_string: r.replace_string,
-    flags: r.flags,
-    placement: r.placement,
-    scope: r.scope,
-    scope_id: r.scope_id,
-    target: r.target,
-    min_depth: r.min_depth,
-    max_depth: r.max_depth,
-    trim_strings: r.trim_strings,
-    run_on_edit: r.run_on_edit,
-    substitute_macros: r.substitute_macros,
-    disabled: r.disabled,
-    sort_order: r.sort_order,
-    description: r.description,
-    folder: r.folder,
-    metadata: { ...r.metadata ?? {} }
-  }));
-  const partitionedOut = allRows.length - pendingRegexScripts.length;
-  logInfo2(`(8) pendingRegexScripts: total=${allRows.length} pushedToLumi=${pendingRegexScripts.length} ` + `extensionManaged=${partitionedOut} folder="${folderLabel}"`);
-  progress("saving_payload", "Saving lumirealm payload\u2026", 0.92);
-  const tSave = Date.now();
-  const storedRegexScripts = allRows.map((r) => ({
-    name: r.name,
-    script_id: r.script_id,
-    find_regex: r.find_regex,
-    replace_string: r.replace_string,
-    flags: r.flags,
-    placement: r.placement,
-    scope: r.scope,
-    scope_id: r.scope_id,
-    target: r.target,
-    min_depth: r.min_depth,
-    max_depth: r.max_depth,
-    trim_strings: r.trim_strings,
-    run_on_edit: r.run_on_edit,
-    substitute_macros: r.substitute_macros,
-    disabled: r.disabled,
-    sort_order: r.sort_order,
-    description: r.description,
-    folder: r.folder,
-    metadata: r.metadata
-  }));
-  const storedSource = {
-    schema_version: 1,
-    captured_at: Date.now(),
-    card: charxBundle.card,
-    module: charxBundle.moduleEnvelope?.module ?? null,
-    path_to_image_id: { ...pathToImageId }
-  };
-  const lumirealmData = buildLumirealmData(bundle.risuPayload, args.extensionVersion, storedRegexScripts, assetIndex, emotionIndex, Date.now(), userOverrides, storedSource, CURRENT_TRANSLATOR_SCHEMA_VERSION);
-  try {
-    await args.spindle.characters.update(characterId, { extensions: { [LUMIREALM_EXT_KEY]: lumirealmData } }, args.userId);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    logError2(`(9) characters.update extensions write failed: ${msg}`);
-    throw err;
-  }
-  logInfo2(`(9) writeLumirealm done in ${Date.now() - tSave}ms regex_scripts=${storedRegexScripts.length}`);
-  progress("saving_payload", `Saved ${bundle.character.name}`, 1);
-  logInfo2(`done file=${args.fileName} characterId=${characterId} total=${Date.now() - tImport}ms warnings=${warnings.length}`);
-  return {
-    characterId,
-    characterName: bundle.character.name,
-    lumirealm: lumirealmData,
-    imageIds,
-    pendingRegexScripts,
-    warnings,
-    createdWorldBookIds: worldBookId ? [worldBookId] : [],
-    pendingSvgRasters: bundle.pendingSvgRasters
-  };
-}
-function buildAssetIndexes(payload, uploads) {
-  const assetIndex = {};
-  const emotionIndex = {};
-  let mappedCount = 0;
-  for (const a of payload.additional_assets ?? []) {
-    const imageId = uploads[a.path];
-    if (!imageId)
-      continue;
-    const key = a.name;
-    let bucket = assetIndex[key];
-    if (!bucket) {
-      bucket = a.ext ? { imageIds: [], ext: a.ext } : { imageIds: [] };
-      assetIndex[key] = bucket;
-    }
-    if (bucket.ext === a.ext) {
-      bucket.imageIds.push(imageId);
-      mappedCount++;
-    }
-  }
-  for (const a of payload.emotion_images ?? []) {
-    const imageId = uploads[a.path];
-    if (!imageId)
-      continue;
-    const key = a.name;
-    emotionIndex[key] = a.ext ? { imageIds: [imageId], ext: a.ext } : { imageIds: [imageId] };
-    mappedCount++;
-  }
-  return { assetIndex, emotionIndex, mappedCount };
 }
 
 // src/payload/lorebook-direct-import.ts
@@ -33151,20 +33405,22 @@ async function ensureActiveCardForChat(chatId, characterId, userId) {
   return active;
 }
 var translatorMigrationChecked = new Set;
-var legacyReimportWarned = new Set;
-var massMigrationStartedThisBoot = new Set;
+var massModuleMigrationStartedThisBoot = new Set;
+var massCharacterMigrationStartedThisBoot = new Set;
 function maybeMigrateCharacterTranslator(characterId, characterName, userId, envelope) {
   if (translatorMigrationChecked.has(characterId))
     return;
   const stored = envelope.translator_schema_version ?? 1;
-  if (stored >= CURRENT_TRANSLATOR_SCHEMA_VERSION) {
+  if (stored >= CURRENT_CHARACTER_SCHEMA_VERSION) {
     translatorMigrationChecked.add(characterId);
     return;
   }
   translatorMigrationChecked.add(characterId);
-  runCharacterMigration(characterId, characterName, userId, envelope);
+  runCharacterMigration(characterId, characterName, userId, envelope, {
+    firePromptOnNeedsReimport: true
+  });
 }
-async function runCharacterMigration(characterId, characterName, userId, envelope) {
+async function runCharacterMigration(characterId, characterName, userId, envelope, opts) {
   const deps = {
     loadCatalog,
     extensionVersion: EXTENSION_VERSION,
@@ -33213,6 +33469,14 @@ async function runCharacterMigration(characterId, characterName, userId, envelop
     },
     writeEnvelope: async (charId, data, uid) => {
       await writeLumirealm(charactersApi(), charId, data, uid);
+    },
+    getAvatarImageId: async (charId, uid) => {
+      try {
+        const ch = await spindle.characters.get(charId, uid);
+        return typeof ch?.image_id === "string" && ch.image_id.length > 0 ? ch.image_id : null;
+      } catch {
+        return null;
+      }
     }
   };
   const result = await migrateCharacterIfNeeded({ characterId, characterName, userId, envelope }, deps);
@@ -33220,9 +33484,11 @@ async function runCharacterMigration(characterId, characterName, userId, envelop
     invalidateActiveForCharacter(characterId, userId);
     toastFor(userId, "success", `Updated ${characterName} for the latest LumiRealm fixes.`, { title: "lumirealm" });
   } else if (result.kind === "needs_reimport") {
-    if (legacyReimportWarned.has(characterId))
+    if (opts?.firePromptOnNeedsReimport !== true)
       return;
-    legacyReimportWarned.add(characterId);
+    const { alreadyWarned } = await markLegacyReimportWarned(spindle.userStorage, userId, characterId);
+    if (alreadyWarned)
+      return;
     send({
       type: "notify_legacy_card_needs_reimport",
       characterId,
@@ -33238,7 +33504,7 @@ async function runModuleMigration(moduleId, userId) {
   if (!env)
     return { ok: true };
   const stored = env.translator_schema_version ?? 1;
-  if (stored >= CURRENT_TRANSLATOR_SCHEMA_VERSION)
+  if (stored >= CURRENT_MODULE_SCHEMA_VERSION)
     return { ok: true };
   let archiveWbId = null;
   const deps = {
@@ -33280,29 +33546,13 @@ async function runModuleMigration(moduleId, userId) {
     return { ok: false };
   return { ok: true };
 }
-var MIGRATION_STATE_PATH = "lumirealm/migration-state.json";
-async function readMigrationState(userId) {
-  try {
-    const raw = await spindle.userStorage.getJson(MIGRATION_STATE_PATH, { userId });
-    if (!raw || typeof raw !== "object")
-      return null;
-    if (raw.schema_version !== 1)
-      return null;
-    return raw;
-  } catch {
-    return null;
-  }
-}
-async function writeMigrationState(userId, state) {
-  await spindle.userStorage.setJson(MIGRATION_STATE_PATH, state, { indent: 2, userId });
-}
 async function runMassModuleMigrationIfNeeded(userId) {
-  if (massMigrationStartedThisBoot.has(userId))
+  if (massModuleMigrationStartedThisBoot.has(userId))
     return;
-  massMigrationStartedThisBoot.add(userId);
-  const state = await readMigrationState(userId);
-  if (state && state.last_swept_translator_version >= CURRENT_TRANSLATOR_SCHEMA_VERSION) {
-    log7.info(`mass-migration: user=${userId} already swept to v${state.last_swept_translator_version}, skipping`);
+  massModuleMigrationStartedThisBoot.add(userId);
+  const state = await readMigrationState(spindle.userStorage, userId);
+  if (state.last_swept_modules >= CURRENT_MODULE_SCHEMA_VERSION) {
+    log7.info(`mass-migration(modules): user=${userId} already swept to v${state.last_swept_modules}, skipping`);
     return;
   }
   const allModules = await listModules(moduleStorage(), userId);
@@ -33311,22 +33561,22 @@ async function runMassModuleMigrationIfNeeded(userId) {
     const env = await readEnvelope(moduleStorage(), userId, m.id);
     if (!env)
       continue;
-    if ((env.translator_schema_version ?? 1) < CURRENT_TRANSLATOR_SCHEMA_VERSION) {
+    if ((env.translator_schema_version ?? 1) < CURRENT_MODULE_SCHEMA_VERSION) {
       candidates.push(m.id);
     }
   }
   if (candidates.length === 0) {
-    await writeMigrationState(userId, {
-      schema_version: 1,
-      last_swept_translator_version: CURRENT_TRANSLATOR_SCHEMA_VERSION
+    await writeMigrationState(spindle.userStorage, userId, {
+      ...state,
+      last_swept_modules: CURRENT_MODULE_SCHEMA_VERSION
     });
-    log7.info(`mass-migration: user=${userId} no modules below v${CURRENT_TRANSLATOR_SCHEMA_VERSION}, sweep marker bumped`);
+    log7.info(`mass-migration(modules): user=${userId} no modules below v${CURRENT_MODULE_SCHEMA_VERSION}, sweep marker bumped`);
     return;
   }
-  const opId = `mass-migration-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  const opId = `mass-migration-modules-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   const opTitle = "Updating module lorebooks";
   emitOperationProgress(userId, opId, "started", opTitle, `Updating ${candidates.length} module${candidates.length === 1 ? "" : "s"}\u2026`, 0);
-  log7.info(`mass-migration: user=${userId} starting count=${candidates.length} opId=${opId}`);
+  log7.info(`mass-migration(modules): user=${userId} starting count=${candidates.length} opId=${opId}`);
   let processed = 0;
   let failed = 0;
   for (const moduleId of candidates) {
@@ -33336,19 +33586,20 @@ async function runMassModuleMigrationIfNeeded(userId) {
         failed++;
     } catch (err) {
       failed++;
-      log7.warn(`mass-migration: module=${moduleId} threw: ${errMsg(err)}`);
+      log7.warn(`mass-migration(modules): module=${moduleId} threw: ${errMsg(err)}`);
     }
     processed++;
     emitOperationProgress(userId, opId, "progress", opTitle, `Updated ${processed}/${candidates.length} module${candidates.length === 1 ? "" : "s"}`, processed / candidates.length);
   }
   if (failed === 0) {
-    await writeMigrationState(userId, {
-      schema_version: 1,
-      last_swept_translator_version: CURRENT_TRANSLATOR_SCHEMA_VERSION
+    const after = await readMigrationState(spindle.userStorage, userId);
+    await writeMigrationState(spindle.userStorage, userId, {
+      ...after,
+      last_swept_modules: CURRENT_MODULE_SCHEMA_VERSION
     });
-    log7.info(`mass-migration: user=${userId} done processed=${processed} opId=${opId}`);
+    log7.info(`mass-migration(modules): user=${userId} done processed=${processed} opId=${opId}`);
   } else {
-    log7.warn(`mass-migration: user=${userId} done with failures processed=${processed} failed=${failed} (sweep marker NOT bumped, will retry next boot)`);
+    log7.warn(`mass-migration(modules): user=${userId} done with failures processed=${processed} failed=${failed} (sweep marker NOT bumped, will retry next boot)`);
   }
   emitOperationProgress(userId, opId, "done", opTitle, failed === 0 ? `Updated ${processed} module${processed === 1 ? "" : "s"}` : `Updated ${processed - failed}/${processed} (${failed} failed, will retry next start)`, 1);
   const existingTimer = archiveFlushTimerByUser.get(userId);
@@ -33357,6 +33608,64 @@ async function runMassModuleMigrationIfNeeded(userId) {
     archiveFlushTimerByUser.delete(userId);
   }
   await flushLorebookMigrationArchives(userId);
+}
+async function runMassCharacterMigrationIfNeeded(userId) {
+  if (massCharacterMigrationStartedThisBoot.has(userId))
+    return;
+  massCharacterMigrationStartedThisBoot.add(userId);
+  const state = await readMigrationState(spindle.userStorage, userId);
+  if (state.last_swept_characters >= CURRENT_CHARACTER_SCHEMA_VERSION) {
+    log7.info(`mass-migration(characters): user=${userId} already swept to v${state.last_swept_characters}, skipping`);
+    return;
+  }
+  const all = await listLumirealmCharacters(charactersApi(), userId, { paginate: true });
+  const candidates = [];
+  for (const entry of all) {
+    if ((entry.data.translator_schema_version ?? 1) < CURRENT_CHARACTER_SCHEMA_VERSION) {
+      candidates.push({ id: entry.character.id, name: entry.character.name ?? "(unnamed)", data: entry.data });
+    }
+  }
+  if (candidates.length === 0) {
+    await writeMigrationState(spindle.userStorage, userId, {
+      ...state,
+      last_swept_characters: CURRENT_CHARACTER_SCHEMA_VERSION
+    });
+    log7.info(`mass-migration(characters): user=${userId} no characters below v${CURRENT_CHARACTER_SCHEMA_VERSION}, sweep marker bumped`);
+    return;
+  }
+  const opId = `mass-migration-characters-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  const opTitle = "Updating Risu cards";
+  emitOperationProgress(userId, opId, "started", opTitle, `Updating ${candidates.length} card${candidates.length === 1 ? "" : "s"}\u2026`, 0);
+  log7.info(`mass-migration(characters): user=${userId} starting count=${candidates.length} opId=${opId}`);
+  let processed = 0;
+  let failed = 0;
+  for (const c of candidates) {
+    if (translatorMigrationChecked.has(c.id)) {
+      processed++;
+      continue;
+    }
+    translatorMigrationChecked.add(c.id);
+    try {
+      await runCharacterMigration(c.id, c.name, userId, c.data);
+    } catch (err) {
+      failed++;
+      translatorMigrationChecked.delete(c.id);
+      log7.warn(`mass-migration(characters): character=${c.id} threw: ${errMsg(err)}`);
+    }
+    processed++;
+    emitOperationProgress(userId, opId, "progress", opTitle, `Updated ${processed}/${candidates.length} card${candidates.length === 1 ? "" : "s"}`, processed / candidates.length);
+  }
+  if (failed === 0) {
+    const after = await readMigrationState(spindle.userStorage, userId);
+    await writeMigrationState(spindle.userStorage, userId, {
+      ...after,
+      last_swept_characters: CURRENT_CHARACTER_SCHEMA_VERSION
+    });
+    log7.info(`mass-migration(characters): user=${userId} done processed=${processed} opId=${opId}`);
+  } else {
+    log7.warn(`mass-migration(characters): user=${userId} done with failures processed=${processed} failed=${failed} (sweep marker NOT bumped, will retry next boot)`);
+  }
+  emitOperationProgress(userId, opId, "done", opTitle, failed === 0 ? `Updated ${processed} card${processed === 1 ? "" : "s"}` : `Updated ${processed - failed}/${processed} (${failed} failed, will retry next start)`, 1);
 }
 var pendingArchivesByUser = new Map;
 var archiveFlushTimerByUser = new Map;
@@ -34217,9 +34526,18 @@ function captureUserId(userId, where) {
     });
   }, 3000);
   setTimeout(() => {
-    runMassModuleMigrationIfNeeded(userId).catch((err) => {
-      log7.warn(`captureUserId: mass module migration failed: ${errMsg(err)}`);
-    });
+    (async () => {
+      try {
+        await runMassModuleMigrationIfNeeded(userId);
+      } catch (err) {
+        log7.warn(`captureUserId: mass module migration failed: ${errMsg(err)}`);
+      }
+      try {
+        await runMassCharacterMigrationIfNeeded(userId);
+      } catch (err) {
+        log7.warn(`captureUserId: mass character migration failed: ${errMsg(err)}`);
+      }
+    })();
   }, 3000);
 }
 function sendSetActiveChat(activeChatId, userId) {
@@ -34786,7 +35104,7 @@ Only accept if you trust the source of this module.
       uploaded_at: Date.now(),
       module: moduleBody,
       asset_index: moduleAssetIndex,
-      translator_schema_version: CURRENT_TRANSLATOR_SCHEMA_VERSION
+      translator_schema_version: CURRENT_MODULE_SCHEMA_VERSION
     };
     const wbId = await syncModuleWorldBook(baseEnvelope, userId).catch((err) => {
       log7.warn(`processModuleUpload: syncModuleWorldBook failed module=${moduleBody.id}: ${errMsg(err)}`);
@@ -34994,7 +35312,12 @@ async function refreshRisuAssetMap(characterId, userId) {
   expectCharacterEdit(characterId);
   try {
     await spindle.characters.update(characterId, { extensions: { risu_asset_map: map } }, userId);
-    log7.info(`refreshRisuAssetMap: char=${characterId} entries=${Object.keys(map).length}`);
+    const ids = Object.values(map);
+    const dist = {};
+    for (const id of ids)
+      dist[id] = (dist[id] ?? 0) + 1;
+    const top = Object.entries(dist).sort((a, b) => b[1] - a[1]).slice(0, 3);
+    log7.trace(`refreshRisuAssetMap: char=${characterId} entries=${ids.length} unique_image_ids=${new Set(ids).size} top3=${top.map(([id, n]) => `${id.slice(0, 8)}\u2026(${n})`).join(",")}`);
   } catch (err) {
     log7.warn(`refreshRisuAssetMap: char=${characterId} update failed: ${errMsg(err)}`);
   }

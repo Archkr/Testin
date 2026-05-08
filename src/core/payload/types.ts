@@ -123,8 +123,10 @@ export interface LumirealmStoredSource {
   readonly path_to_image_id: Readonly<Record<string, string>>;
 }
 
-// v4: Tier 2/3 decorators stay inline in content for runtime re-parsing.
-export const CURRENT_TRANSLATOR_SCHEMA_VERSION = 4;
+// Domain-specific versions live in `state/translator-migrations.ts` and
+// `state/module-migrations.ts`. This shared constant is kept as the max of
+// both for any caller that genuinely doesn't care which domain.
+export const CURRENT_TRANSLATOR_SCHEMA_VERSION = 5;
 
 export interface PortalCandidate {
   readonly id: string;

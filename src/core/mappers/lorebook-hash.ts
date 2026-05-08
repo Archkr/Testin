@@ -30,15 +30,22 @@ function stableStringify(value: unknown): string {
   return '{' + keys.map((k) => JSON.stringify(k) + ':' + stableStringify(obj[k])).join(',') + '}';
 }
 
+// System-managed keys injected post-stamp. `_risu_decorators` stays in the
+// hash because it's translator output, not system metadata.
+const SYSTEM_MANAGED_EXTENSION_KEYS: readonly string[] = [
+  '_risu_source_hash',
+  '_risu_module_id',
+];
+
 // Excludes id/uid/world_book_id (auto-generated), timestamps/vector_*
-// (Lumi-managed), and extensions._risu_source_hash (the field we're computing).
+// (Lumi-managed), and the system-managed extension keys above.
 export function computeEntrySourceHash(entry: Record<string, unknown>): string {
   const fields: Record<string, unknown> = {};
   for (const k of ENTRY_HASH_FIELDS) fields[k] = entry[k];
   const ext = entry['extensions'];
   if (ext && typeof ext === 'object' && !Array.isArray(ext)) {
     const cleaned: Record<string, unknown> = { ...(ext as Record<string, unknown>) };
-    delete cleaned['_risu_source_hash'];
+    for (const k of SYSTEM_MANAGED_EXTENSION_KEYS) delete cleaned[k];
     fields['extensions'] = cleaned;
   } else {
     fields['extensions'] = {};

@@ -9,7 +9,8 @@ import {
 } from './realm/backend.js';
 import type { RealmBackendToFrontend } from './realm/messages.js';
 import type { AssetIndexEntry, StoredRisuCard } from './payload/types.js';
-import { CURRENT_TRANSLATOR_SCHEMA_VERSION } from './payload/types.js';
+import { CURRENT_CHARACTER_SCHEMA_VERSION } from './state/translator-migrations.js';
+import { CURRENT_MODULE_SCHEMA_VERSION } from './state/module-migrations.js';
 import {
   type UserStorageLike,
 } from './payload/installer.js';
@@ -31,6 +32,11 @@ import {
   migrateCharacterIfNeeded,
   type MigrationDeps,
 } from './state/translator-migrations.js';
+import {
+  readMigrationState,
+  writeMigrationState,
+} from './state/migration-state.js';
+import { markLegacyReimportWarned } from './state/legacy-reimport-warnings.js';
 import {
   migrateModuleIfNeeded,
   type ModuleMigrationDeps,
@@ -2539,11 +2545,9 @@ async function ensureActiveCardForChat(
 
 // Dedupe per-character per-worker-boot. Set on first migration check fire.
 const translatorMigrationChecked = new Set<string>();
-// Tracks legacy-no-source warnings already issued per session so we don't
-// spam the same toast on every chat-open.
-const legacyReimportWarned = new Set<string>();
 // Per-userId per-boot dedupe so the mass walk runs once per worker boot.
-const massMigrationStartedThisBoot = new Set<string>();
+const massModuleMigrationStartedThisBoot = new Set<string>();
+const massCharacterMigrationStartedThisBoot = new Set<string>();
 
 function maybeMigrateCharacterTranslator(
   characterId: string,
@@ -2553,12 +2557,14 @@ function maybeMigrateCharacterTranslator(
 ): void {
   if (translatorMigrationChecked.has(characterId)) return;
   const stored = envelope.translator_schema_version ?? 1;
-  if (stored >= CURRENT_TRANSLATOR_SCHEMA_VERSION) {
+  if (stored >= CURRENT_CHARACTER_SCHEMA_VERSION) {
     translatorMigrationChecked.add(characterId);
     return;
   }
   translatorMigrationChecked.add(characterId);
-  void runCharacterMigration(characterId, characterName, userId, envelope);
+  void runCharacterMigration(characterId, characterName, userId, envelope, {
+    firePromptOnNeedsReimport: true,
+  });
 }
 
 async function runCharacterMigration(
@@ -2566,6 +2572,7 @@ async function runCharacterMigration(
   characterName: string,
   userId: string,
   envelope: import('./payload/types.js').LumirealmCharacterData,
+  opts?: { firePromptOnNeedsReimport?: boolean },
 ): Promise<void> {
   const deps: MigrationDeps = {
     loadCatalog,
@@ -2618,6 +2625,16 @@ async function runCharacterMigration(
     writeEnvelope: async (charId, data, uid) => {
       await writeLumirealm(charactersApi(), charId, data, uid);
     },
+    getAvatarImageId: async (charId, uid) => {
+      try {
+        const ch = await spindle.characters.get(charId, uid) as { image_id?: unknown };
+        return typeof ch?.image_id === 'string' && ch.image_id.length > 0
+          ? ch.image_id
+          : null;
+      } catch {
+        return null;
+      }
+    },
   };
   const result = await migrateCharacterIfNeeded(
     { characterId, characterName, userId, envelope },
@@ -2630,8 +2647,13 @@ async function runCharacterMigration(
       { title: 'lumirealm' },
     );
   } else if (result.kind === 'needs_reimport') {
-    if (legacyReimportWarned.has(characterId)) return;
-    legacyReimportWarned.add(characterId);
+    if (opts?.firePromptOnNeedsReimport !== true) return;
+    const { alreadyWarned } = await markLegacyReimportWarned(
+      spindle.userStorage,
+      userId,
+      characterId,
+    );
+    if (alreadyWarned) return;
     send({
       type: 'notify_legacy_card_needs_reimport',
       characterId,
@@ -2652,7 +2674,7 @@ async function runModuleMigration(
   const env = await readModuleEnvelope(moduleStorage(), userId, moduleId);
   if (!env) return { ok: true };
   const stored = env.translator_schema_version ?? 1;
-  if (stored >= CURRENT_TRANSLATOR_SCHEMA_VERSION) return { ok: true };
+  if (stored >= CURRENT_MODULE_SCHEMA_VERSION) return { ok: true };
   let archiveWbId: string | null = null;
   const deps: ModuleMigrationDeps = {
     syncWorldBook: async (e) => {
@@ -2694,34 +2716,13 @@ async function runModuleMigration(
   return { ok: true };
 }
 
-const MIGRATION_STATE_PATH = 'lumirealm/migration-state.json';
-
-interface MigrationState {
-  readonly schema_version: 1;
-  readonly last_swept_translator_version: number;
-}
-
-async function readMigrationState(userId: string): Promise<MigrationState | null> {
-  try {
-    const raw = await spindle.userStorage.getJson<MigrationState>(MIGRATION_STATE_PATH, { userId });
-    if (!raw || typeof raw !== 'object') return null;
-    if ((raw as { schema_version?: unknown }).schema_version !== 1) return null;
-    return raw;
-  } catch {
-    return null;
-  }
-}
-
-async function writeMigrationState(userId: string, state: MigrationState): Promise<void> {
-  await spindle.userStorage.setJson(MIGRATION_STATE_PATH, state, { indent: 2, userId });
-}
 
 async function runMassModuleMigrationIfNeeded(userId: string): Promise<void> {
-  if (massMigrationStartedThisBoot.has(userId)) return;
-  massMigrationStartedThisBoot.add(userId);
-  const state = await readMigrationState(userId);
-  if (state && state.last_swept_translator_version >= CURRENT_TRANSLATOR_SCHEMA_VERSION) {
-    log.info(`mass-migration: user=${userId} already swept to v${state.last_swept_translator_version}, skipping`);
+  if (massModuleMigrationStartedThisBoot.has(userId)) return;
+  massModuleMigrationStartedThisBoot.add(userId);
+  const state = await readMigrationState(spindle.userStorage, userId);
+  if (state.last_swept_modules >= CURRENT_MODULE_SCHEMA_VERSION) {
+    log.info(`mass-migration(modules): user=${userId} already swept to v${state.last_swept_modules}, skipping`);
     return;
   }
   const allModules = await listModuleStore(moduleStorage(), userId);
@@ -2729,19 +2730,19 @@ async function runMassModuleMigrationIfNeeded(userId: string): Promise<void> {
   for (const m of allModules) {
     const env = await readModuleEnvelope(moduleStorage(), userId, m.id);
     if (!env) continue;
-    if ((env.translator_schema_version ?? 1) < CURRENT_TRANSLATOR_SCHEMA_VERSION) {
+    if ((env.translator_schema_version ?? 1) < CURRENT_MODULE_SCHEMA_VERSION) {
       candidates.push(m.id);
     }
   }
   if (candidates.length === 0) {
-    await writeMigrationState(userId, {
-      schema_version: 1,
-      last_swept_translator_version: CURRENT_TRANSLATOR_SCHEMA_VERSION,
+    await writeMigrationState(spindle.userStorage, userId, {
+      ...state,
+      last_swept_modules: CURRENT_MODULE_SCHEMA_VERSION,
     });
-    log.info(`mass-migration: user=${userId} no modules below v${CURRENT_TRANSLATOR_SCHEMA_VERSION}, sweep marker bumped`);
+    log.info(`mass-migration(modules): user=${userId} no modules below v${CURRENT_MODULE_SCHEMA_VERSION}, sweep marker bumped`);
     return;
   }
-  const opId = `mass-migration-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  const opId = `mass-migration-modules-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   const opTitle = 'Updating module lorebooks';
   emitOperationProgress(
     userId,
@@ -2751,7 +2752,7 @@ async function runMassModuleMigrationIfNeeded(userId: string): Promise<void> {
     `Updating ${candidates.length} module${candidates.length === 1 ? '' : 's'}…`,
     0,
   );
-  log.info(`mass-migration: user=${userId} starting count=${candidates.length} opId=${opId}`);
+  log.info(`mass-migration(modules): user=${userId} starting count=${candidates.length} opId=${opId}`);
   let processed = 0;
   let failed = 0;
   for (const moduleId of candidates) {
@@ -2760,7 +2761,7 @@ async function runMassModuleMigrationIfNeeded(userId: string): Promise<void> {
       if (!r.ok) failed++;
     } catch (err) {
       failed++;
-      log.warn(`mass-migration: module=${moduleId} threw: ${errMsg(err)}`);
+      log.warn(`mass-migration(modules): module=${moduleId} threw: ${errMsg(err)}`);
     }
     processed++;
     emitOperationProgress(
@@ -2773,14 +2774,15 @@ async function runMassModuleMigrationIfNeeded(userId: string): Promise<void> {
     );
   }
   if (failed === 0) {
-    await writeMigrationState(userId, {
-      schema_version: 1,
-      last_swept_translator_version: CURRENT_TRANSLATOR_SCHEMA_VERSION,
+    const after = await readMigrationState(spindle.userStorage, userId);
+    await writeMigrationState(spindle.userStorage, userId, {
+      ...after,
+      last_swept_modules: CURRENT_MODULE_SCHEMA_VERSION,
     });
-    log.info(`mass-migration: user=${userId} done processed=${processed} opId=${opId}`);
+    log.info(`mass-migration(modules): user=${userId} done processed=${processed} opId=${opId}`);
   } else {
     log.warn(
-      `mass-migration: user=${userId} done with failures processed=${processed} failed=${failed} ` +
+      `mass-migration(modules): user=${userId} done with failures processed=${processed} failed=${failed} ` +
         `(sweep marker NOT bumped, will retry next boot)`,
     );
   }
@@ -2800,6 +2802,93 @@ async function runMassModuleMigrationIfNeeded(userId: string): Promise<void> {
     archiveFlushTimerByUser.delete(userId);
   }
   await flushLorebookMigrationArchives(userId);
+}
+
+async function runMassCharacterMigrationIfNeeded(userId: string): Promise<void> {
+  if (massCharacterMigrationStartedThisBoot.has(userId)) return;
+  massCharacterMigrationStartedThisBoot.add(userId);
+  const state = await readMigrationState(spindle.userStorage, userId);
+  if (state.last_swept_characters >= CURRENT_CHARACTER_SCHEMA_VERSION) {
+    log.info(`mass-migration(characters): user=${userId} already swept to v${state.last_swept_characters}, skipping`);
+    return;
+  }
+  const all = await listLumirealmCharacters(charactersApi(), userId, { paginate: true });
+  const candidates: { id: string; name: string; data: import('./payload/types.js').LumirealmCharacterData }[] = [];
+  for (const entry of all) {
+    if ((entry.data.translator_schema_version ?? 1) < CURRENT_CHARACTER_SCHEMA_VERSION) {
+      candidates.push({ id: entry.character.id, name: entry.character.name ?? '(unnamed)', data: entry.data });
+    }
+  }
+  if (candidates.length === 0) {
+    await writeMigrationState(spindle.userStorage, userId, {
+      ...state,
+      last_swept_characters: CURRENT_CHARACTER_SCHEMA_VERSION,
+    });
+    log.info(`mass-migration(characters): user=${userId} no characters below v${CURRENT_CHARACTER_SCHEMA_VERSION}, sweep marker bumped`);
+    return;
+  }
+  const opId = `mass-migration-characters-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  const opTitle = 'Updating Risu cards';
+  emitOperationProgress(
+    userId,
+    opId,
+    'started',
+    opTitle,
+    `Updating ${candidates.length} card${candidates.length === 1 ? '' : 's'}…`,
+    0,
+  );
+  log.info(`mass-migration(characters): user=${userId} starting count=${candidates.length} opId=${opId}`);
+  let processed = 0;
+  let failed = 0;
+  for (const c of candidates) {
+    // Per-character per-boot dedupe in `translatorMigrationChecked` would
+    // otherwise short-circuit if the chat opened first. Mark + run inline so
+    // both paths agree on completion ordering.
+    if (translatorMigrationChecked.has(c.id)) {
+      processed++;
+      continue;
+    }
+    translatorMigrationChecked.add(c.id);
+    try {
+      await runCharacterMigration(c.id, c.name, userId, c.data);
+    } catch (err) {
+      failed++;
+      translatorMigrationChecked.delete(c.id);
+      log.warn(`mass-migration(characters): character=${c.id} threw: ${errMsg(err)}`);
+    }
+    processed++;
+    emitOperationProgress(
+      userId,
+      opId,
+      'progress',
+      opTitle,
+      `Updated ${processed}/${candidates.length} card${candidates.length === 1 ? '' : 's'}`,
+      processed / candidates.length,
+    );
+  }
+  if (failed === 0) {
+    const after = await readMigrationState(spindle.userStorage, userId);
+    await writeMigrationState(spindle.userStorage, userId, {
+      ...after,
+      last_swept_characters: CURRENT_CHARACTER_SCHEMA_VERSION,
+    });
+    log.info(`mass-migration(characters): user=${userId} done processed=${processed} opId=${opId}`);
+  } else {
+    log.warn(
+      `mass-migration(characters): user=${userId} done with failures processed=${processed} failed=${failed} ` +
+        `(sweep marker NOT bumped, will retry next boot)`,
+    );
+  }
+  emitOperationProgress(
+    userId,
+    opId,
+    'done',
+    opTitle,
+    failed === 0
+      ? `Updated ${processed} card${processed === 1 ? '' : 's'}`
+      : `Updated ${processed - failed}/${processed} (${failed} failed, will retry next start)`,
+    1,
+  );
 }
 
 interface PendingArchiveNotification {
@@ -3995,12 +4084,20 @@ function captureUserId(userId: string | undefined, where: string): void {
       log.warn(`captureUserId: orphan-review prompt failed: ${errMsg(err)}`);
     });
   }, 3000);
-  // Translator schema sweep, also deferred. Sequential, non-cancellable, the
-  // last_swept_translator_version marker is bumped only on full success.
+  // Modules first since characters attach to them, then characters.
   setTimeout(() => {
-    void runMassModuleMigrationIfNeeded(userId).catch((err) => {
-      log.warn(`captureUserId: mass module migration failed: ${errMsg(err)}`);
-    });
+    void (async () => {
+      try {
+        await runMassModuleMigrationIfNeeded(userId);
+      } catch (err) {
+        log.warn(`captureUserId: mass module migration failed: ${errMsg(err)}`);
+      }
+      try {
+        await runMassCharacterMigrationIfNeeded(userId);
+      } catch (err) {
+        log.warn(`captureUserId: mass character migration failed: ${errMsg(err)}`);
+      }
+    })();
   }, 3000);
 }
 
@@ -4839,7 +4936,7 @@ async function processModuleUpload(
     uploaded_at: Date.now(),
     module: moduleBody,
     asset_index: moduleAssetIndex,
-    translator_schema_version: CURRENT_TRANSLATOR_SCHEMA_VERSION,
+    translator_schema_version: CURRENT_MODULE_SCHEMA_VERSION,
   };
   const wbId = await syncModuleWorldBook(baseEnvelope, userId).catch((err) => {
     log.warn(`processModuleUpload: syncModuleWorldBook failed module=${moduleBody.id}: ${errMsg(err)}`);
@@ -5099,7 +5196,15 @@ async function refreshRisuAssetMap(characterId: string, userId: string): Promise
       { extensions: { risu_asset_map: map } } as never,
       userId,
     );
-    log.info(`refreshRisuAssetMap: char=${characterId} entries=${Object.keys(map).length}`);
+    const ids = Object.values(map);
+    const dist: Record<string, number> = {};
+    for (const id of ids) dist[id] = (dist[id] ?? 0) + 1;
+    const top = Object.entries(dist).sort((a, b) => b[1] - a[1]).slice(0, 3);
+    log.trace(
+      `refreshRisuAssetMap: char=${characterId} entries=${ids.length} ` +
+        `unique_image_ids=${new Set(ids).size} ` +
+        `top3=${top.map(([id, n]) => `${id.slice(0, 8)}…(${n})`).join(',')}`,
+    );
   } catch (err) {
     log.warn(`refreshRisuAssetMap: char=${characterId} update failed: ${errMsg(err)}`);
   }

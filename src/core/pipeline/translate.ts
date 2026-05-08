@@ -81,6 +81,46 @@ export function translateFromStoredSource(
   return translateFromCharxBundle(bundle as ReturnType<typeof readCharx>, opts);
 }
 
+// Decode inline `data:` URIs in card.data.assets[] into ZIP-shaped entries so
+// the rest of the pipeline only sees `embeded://` references.
+const SYNTHETIC_DATA_URI_PREFIX = "__data_uri_";
+function expandInlineDataUriAssets(
+  card: unknown,
+  assets: Map<string, Uint8Array>,
+): number {
+  if (!card || typeof card !== "object") return 0;
+  const data = (card as { data?: unknown }).data;
+  if (!data || typeof data !== "object") return 0;
+  const list = (data as { assets?: unknown }).assets;
+  if (!Array.isArray(list)) return 0;
+  let synthesized = 0;
+  for (let i = 0; i < list.length; i++) {
+    const a = list[i];
+    if (!a || typeof a !== "object") continue;
+    const uri = (a as { uri?: unknown }).uri;
+    if (typeof uri !== "string" || !uri.startsWith("data:")) continue;
+    const comma = uri.indexOf(",");
+    if (comma < 0) continue;
+    const head = uri.slice(0, comma);
+    const body = uri.slice(comma + 1);
+    let bytes: Uint8Array;
+    try {
+      if (head.includes(";base64")) {
+        bytes = new Uint8Array(Buffer.from(body, "base64"));
+      } else {
+        bytes = new TextEncoder().encode(decodeURIComponent(body));
+      }
+    } catch {
+      continue;
+    }
+    const path = `${SYNTHETIC_DATA_URI_PREFIX}${i}`;
+    assets.set(path, bytes);
+    (a as { uri: string }).uri = `embeded://${path}`;
+    synthesized += 1;
+  }
+  return synthesized;
+}
+
 export function translateFromCharxBundle(
   bundle: ReturnType<typeof readCharx>,
   opts: TranslateCharxOptions = {},
@@ -88,6 +128,12 @@ export function translateFromCharxBundle(
   const now = opts.now ?? nowMs;
   const uuid = opts.uuid ?? newUuid;
   const issues: { path: string; message: string }[] = [];
+
+  // ReadonlyMap is a compile-time view of the underlying mutable Map.
+  expandInlineDataUriAssets(
+    bundle.card,
+    bundle.assets as Map<string, Uint8Array>,
+  );
 
   const mode: TranslateMode =
     opts.mode !== undefined

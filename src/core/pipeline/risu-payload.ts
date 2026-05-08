@@ -31,9 +31,12 @@ const KNOWN_RISUAI_FIELDS = new Set<string>([
 ]);
 
 const EMBEDED_PREFIX = "embeded://";
+const ASSET_PREFIX = "__asset:";
 
-function stripEmbededPrefix(uri: string): string {
+// PNG-export cards use `__asset:N`, .charx ZIP-export uses `embeded://`.
+function stripAssetUriPrefix(uri: string): string {
   if (uri.startsWith(EMBEDED_PREFIX)) return uri.slice(EMBEDED_PREFIX.length);
+  if (uri.startsWith(ASSET_PREFIX)) return uri.slice(ASSET_PREFIX.length);
   return uri;
 }
 
@@ -56,7 +59,28 @@ export function extractAdditionalAssets(
     const name = typeof a["name"] === "string" ? (a["name"] as string) : "";
     const uri = typeof a["uri"] === "string" ? (a["uri"] as string) : "";
     if (!name || !uri) continue;
-    const path = stripEmbededPrefix(uri);
+    const path = stripAssetUriPrefix(uri);
+    const explicitExt = typeof a["ext"] === "string" ? (a["ext"] as string).toLowerCase() : undefined;
+    const ext = explicitExt ?? extFromPath(path);
+    out.push({ name, path, ...(ext ? { ext } : {}) });
+  }
+  return out;
+}
+
+// CCSv3 cards put emotion images inline in `data.assets[]` with `type:emotion`.
+// Risu's reader emits these into the same emotion store as v2's risuai.emotions.
+export function extractV3EmotionAssets(
+  assets: readonly unknown[],
+): RisuAsset[] {
+  const out: RisuAsset[] = [];
+  for (const raw of assets) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+    const a = raw as Record<string, unknown>;
+    if (a["type"] !== "emotion") continue;
+    const name = typeof a["name"] === "string" ? (a["name"] as string) : "";
+    const uri = typeof a["uri"] === "string" ? (a["uri"] as string) : "";
+    if (!name || !uri) continue;
+    const path = stripAssetUriPrefix(uri);
     const explicitExt = typeof a["ext"] === "string" ? (a["ext"] as string).toLowerCase() : undefined;
     const ext = explicitExt ?? extFromPath(path);
     out.push({ name, path, ...(ext ? { ext } : {}) });
@@ -77,19 +101,21 @@ export function extractEmotionImages(
       // Risu rpack.ts legacy tuple form [name, src, ext?]
       const [n, s, e] = raw as unknown[];
       const name = typeof n === "string" ? n : "";
-      const path = typeof s === "string" ? s : "";
+      const rawSrc = typeof s === "string" ? s : "";
+      const path = stripAssetUriPrefix(rawSrc);
       const ext = typeof e === "string" ? e.toLowerCase() : undefined;
       if (!name || !path) continue;
       out.push({ name, path, ...(ext ?? extFromPath(path) ? { ext: ext ?? extFromPath(path)! } : {}) });
     } else if (raw && typeof raw === "object") {
       const o = raw as Record<string, unknown>;
       const name = typeof o["name"] === "string" ? (o["name"] as string) : "";
-      const path =
+      const rawPath =
         typeof o["path"] === "string"
           ? (o["path"] as string)
           : typeof o["src"] === "string"
             ? (o["src"] as string)
             : "";
+      const path = stripAssetUriPrefix(rawPath);
       const explicitExt = typeof o["ext"] === "string" ? (o["ext"] as string).toLowerCase() : undefined;
       if (!name || !path) continue;
       const ext = explicitExt ?? extFromPath(path);
@@ -158,7 +184,10 @@ export function buildRisuPayload(input: BuildRisuPayloadInput): RisuPayload {
       input.extracted.defaultVariables,
     ),
     additional_assets: extractAdditionalAssets(input.extracted.assets),
-    emotion_images: extractEmotionImages(input.characterExtensions),
+    emotion_images: [
+      ...extractEmotionImages(input.characterExtensions),
+      ...extractV3EmotionAssets(input.extracted.assets),
+    ],
     extra: extractRisuaiExtra(input.characterExtensions),
     translator_version: input.translatorVersion,
     risu_spec_version: input.risuSpecVersion,

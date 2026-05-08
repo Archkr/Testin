@@ -109,7 +109,6 @@ export function convertPngCardToCharx(bytes: Uint8Array): PngCardConversionResul
 
   for (const a of assets) {
     entries.push({ name: a.key, data: a.bytes });
-    entries.push({ name: `${ASSET_KEY_PREFIX}:${a.key}`, data: a.bytes });
   }
 
   const zip = writeStoredZip(entries);

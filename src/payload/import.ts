@@ -1,7 +1,7 @@
 import { translateFromCharxBundle } from '../core/pipeline/index.js';
 import { readCharx } from '../core/charx/reader.js';
 import type { LumiBundle } from '../core/pipeline/index.js';
-import { CURRENT_TRANSLATOR_SCHEMA_VERSION } from './types.js';
+import { CURRENT_CHARACTER_SCHEMA_VERSION } from '../state/translator-migrations.js';
 import type { LumirealmStoredSource } from './types.js';
 import { CatalogIndex, parseCatalog } from '../core/cbs/index.js';
 import {
@@ -519,6 +519,7 @@ export async function importCard(args: ImportCardArgs): Promise<ImportResult> {
       emotion_images: bundle.risuPayload.emotion_images,
     },
     pathToImageId,
+    avatarImageId,
   );
   const assetIndex = builtIndexes.assetIndex;
   const emotionIndex = builtIndexes.emotionIndex;
@@ -680,7 +681,7 @@ export async function importCard(args: ImportCardArgs): Promise<ImportResult> {
     Date.now(),
     userOverrides,
     storedSource,
-    CURRENT_TRANSLATOR_SCHEMA_VERSION,
+    CURRENT_CHARACTER_SCHEMA_VERSION,
   );
   try {
     await args.spindle.characters.update(
@@ -711,9 +712,12 @@ export async function importCard(args: ImportCardArgs): Promise<ImportResult> {
   };
 }
 
+export const CCDEFAULT_PATH_MARKER = "ccdefault:" as const;
+
 export function buildAssetIndexes(
   payload: Pick<RisuPayload, "additional_assets" | "emotion_images">,
   uploads: Readonly<Record<string, string>>,
+  ccdefaultImageId?: string | null,
 ): {
   assetIndex: Record<string, { imageIds: string[]; ext?: string }>;
   emotionIndex: Record<string, { imageIds: string[]; ext?: string }>;
@@ -722,8 +726,11 @@ export function buildAssetIndexes(
   const assetIndex: Record<string, { imageIds: string[]; ext?: string }> = {};
   const emotionIndex: Record<string, { imageIds: string[]; ext?: string }> = {};
   let mappedCount = 0;
+  // ccdefault: is Risu's "use the icon image as this asset" alias.
+  const resolveImageId = (path: string): string | undefined =>
+    path === CCDEFAULT_PATH_MARKER ? (ccdefaultImageId ?? undefined) : uploads[path];
   for (const a of payload.additional_assets ?? []) {
-    const imageId = uploads[a.path];
+    const imageId = resolveImageId(a.path);
     if (!imageId) continue;
     const key = a.name;
     let bucket = assetIndex[key];
@@ -738,7 +745,7 @@ export function buildAssetIndexes(
     }
   }
   for (const a of payload.emotion_images ?? []) {
-    const imageId = uploads[a.path];
+    const imageId = resolveImageId(a.path);
     if (!imageId) continue;
     const key = a.name;
     // Risu's getEmoSrc always overwrites; last-wins.
