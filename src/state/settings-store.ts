@@ -37,6 +37,8 @@ export interface RisuCompatSettings {
   readonly auxDebugCaptureRequest: boolean;
   readonly auxDebugCaptureResponse: boolean;
   readonly legacyMediaFindings: boolean;
+  /** Browser-translated module/lorebook display, ON by default. Display-only. */
+  readonly translateEnabled: boolean;
 }
 
 export const DEFAULT_SETTINGS: RisuCompatSettings = {
@@ -50,6 +52,7 @@ export const DEFAULT_SETTINGS: RisuCompatSettings = {
   auxDebugCaptureRequest: false,
   auxDebugCaptureResponse: false,
   legacyMediaFindings: false,
+  translateEnabled: true,
 };
 
 export const SETTINGS_PATH = "lumirealm/settings.json";
@@ -135,6 +138,9 @@ export function normalizeSettingsPatch(patch: unknown): Partial<RisuCompatSettin
   if ("legacyMediaFindings" in p) {
     out.legacyMediaFindings = !!p.legacyMediaFindings;
   }
+  if ("translateEnabled" in p) {
+    out.translateEnabled = !!p.translateEnabled;
+  }
   return out;
 }
 
@@ -162,6 +168,7 @@ export async function loadSettings(
       auxDebugCaptureRequest?: unknown;
       auxDebugCaptureResponse?: unknown;
       legacyMediaFindings?: unknown;
+      translateEnabled?: unknown;
     };
     return {
       schema_version: 1,
@@ -182,6 +189,7 @@ export async function loadSettings(
       auxDebugCaptureRequest: stored.auxDebugCaptureRequest === true,
       auxDebugCaptureResponse: stored.auxDebugCaptureResponse === true,
       legacyMediaFindings: stored.legacyMediaFindings === true,
+      translateEnabled: stored.translateEnabled === undefined ? true : stored.translateEnabled === true,
     };
   } catch {
     return DEFAULT_SETTINGS;

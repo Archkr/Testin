@@ -63,7 +63,7 @@ const CHANNEL_DEFS: readonly ChannelDef[] = [
     samplerField: 'auxSamplers',
     title: 'Auxiliary Model (axLLMMain)',
     description:
-      "Routes Lua's axLLMMain / axLLM calls through this connection. The model field overrides the connection's default model when set — useful for aggregator providers (OpenRouter, NanoGPT) where one connection can serve many models.",
+      "Routes auxiliary LLM calls through this connection. Low-level access cards usually use this to generate status panels and background-info.",
     idPrefix: 'rs-aux',
   },
   {
@@ -73,7 +73,7 @@ const CHANNEL_DEFS: readonly ChannelDef[] = [
     samplerField: 'submodelSamplers',
     title: 'Submodel (V2 runLLM submodel channel)',
     description:
-      "Routes V2-effect runLLM(model='submodel') calls through this connection. Cards use this for lightweight classifiers / status updaters separate from the main and aux models. Empty → falls back to Aux above, then to your default.",
+      "Cards use this for lightweight classifiers / status updaters separate from the main and aux models.",
     idPrefix: 'rs-submodel',
   },
 ];
@@ -856,14 +856,7 @@ export function mountSettingsPanel(
     } else {
       parts.push('Model: (use connection default)');
     }
-    if (lastSavedTs > 0) {
-      const ts = new Date(lastSavedTs);
-      const hh = String(ts.getHours()).padStart(2, '0');
-      const mm = String(ts.getMinutes()).padStart(2, '0');
-      const ss = String(ts.getSeconds()).padStart(2, '0');
-      parts.push(`saved ${hh}:${mm}:${ss}`);
-    }
-    status.textContent = parts.join(' · ');
+    status.textContent = parts.join('\n');
     status.classList.add('rs-status-ok');
     status.classList.remove('rs-status-warn');
   }

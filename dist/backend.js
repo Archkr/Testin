@@ -26992,7 +26992,8 @@ var DEFAULT_SETTINGS = {
   submodelSamplers: DEFAULT_SAMPLERS,
   auxDebugCaptureRequest: false,
   auxDebugCaptureResponse: false,
-  legacyMediaFindings: false
+  legacyMediaFindings: false,
+  translateEnabled: true
 };
 var SETTINGS_PATH = "lumirealm/settings.json";
 function isStoredSettings(v) {
@@ -27089,6 +27090,9 @@ function normalizeSettingsPatch(patch) {
   if ("legacyMediaFindings" in p) {
     out.legacyMediaFindings = !!p.legacyMediaFindings;
   }
+  if ("translateEnabled" in p) {
+    out.translateEnabled = !!p.translateEnabled;
+  }
   return out;
 }
 async function loadSettings(storage, userId) {
@@ -27110,7 +27114,8 @@ async function loadSettings(storage, userId) {
       submodelSamplers: stored.submodelSamplers !== undefined ? normalizeSamplers(stored.submodelSamplers) : DEFAULT_SAMPLERS,
       auxDebugCaptureRequest: stored.auxDebugCaptureRequest === true,
       auxDebugCaptureResponse: stored.auxDebugCaptureResponse === true,
-      legacyMediaFindings: stored.legacyMediaFindings === true
+      legacyMediaFindings: stored.legacyMediaFindings === true,
+      translateEnabled: stored.translateEnabled === undefined ? true : stored.translateEnabled === true
     };
   } catch {
     return DEFAULT_SETTINGS;
@@ -31243,6 +31248,20 @@ function envelopePath(moduleId) {
 }
 function summarizeEnvelope(env) {
   const m = env.module;
+  const translatedName = {};
+  const translatedDescription = {};
+  if (env.translations) {
+    for (const lang of Object.keys(env.translations)) {
+      const t = env.translations[lang];
+      if (!t)
+        continue;
+      if (typeof t.name === "string" && t.name.length > 0)
+        translatedName[lang] = t.name;
+      if (typeof t.description === "string" && t.description.length > 0) {
+        translatedDescription[lang] = t.description;
+      }
+    }
+  }
   return {
     id: env.id,
     filename: env.filename,
@@ -31254,7 +31273,9 @@ function summarizeEnvelope(env) {
     trigger_count: Array.isArray(m.trigger) ? m.trigger.length : 0,
     asset_count: Object.keys(env.asset_index).length,
     low_level_access: m.lowLevelAccess === true,
-    has_cjs: typeof m.cjs === "string" && m.cjs.length > 0
+    has_cjs: typeof m.cjs === "string" && m.cjs.length > 0,
+    ...Object.keys(translatedName).length > 0 ? { translatedName } : {},
+    ...Object.keys(translatedDescription).length > 0 ? { translatedDescription } : {}
   };
 }
 function upsertIndex(index, entry) {
@@ -31635,6 +31656,9 @@ function buildCharacterViewerData(input) {
       const risuFolderRaw = ext["risu_folder"];
       const risuFolderRef = typeof risuFolderRaw === "string" && risuFolderRaw.length > 0 ? risuFolderRaw : undefined;
       const risuFolderKey = risuMode === "folder" && e.key.length > 0 && e.key[0].length > 0 ? e.key[0] : undefined;
+      const sourceHashRaw = ext["_risu_source_hash"];
+      const sourceHash = typeof sourceHashRaw === "string" ? sourceHashRaw : undefined;
+      const translatedComment = sourceHash !== undefined ? input.translatedCommentBySourceHash?.get(sourceHash) : undefined;
       const built = {
         id: e.id,
         key: e.key,
@@ -31650,7 +31674,9 @@ function buildCharacterViewerData(input) {
         fromRisu,
         ...risuMode !== undefined ? { risuMode } : {},
         ...risuFolderKey !== undefined ? { risuFolderKey } : {},
-        ...risuFolderRef !== undefined ? { risuFolderRef } : {}
+        ...risuFolderRef !== undefined ? { risuFolderRef } : {},
+        ...sourceHash !== undefined ? { sourceHash } : {},
+        ...translatedComment !== undefined ? { translatedComment } : {}
       };
       return built;
     });
@@ -31713,6 +31739,33 @@ function buildModuleViewerData(input) {
   const env = input.envelope;
   const m = env.module;
   const moduleName = typeof m.name === "string" && m.name.length > 0 ? m.name : env.id;
+  const projectedHashByIndex = new Map;
+  if (Array.isArray(m.lorebook)) {
+    const valid = [];
+    const validIndexes = [];
+    for (let i = 0;i < m.lorebook.length; i++) {
+      const parsed = loreBookSchema.safeParse(m.lorebook[i]);
+      if (!parsed.success)
+        continue;
+      const lb = parsed.data;
+      if (lb.key.length === 0 && lb.content.length === 0)
+        continue;
+      valid.push(lb);
+      validIndexes.push(i);
+    }
+    if (valid.length > 0) {
+      const projected = mapLoreBookWithStats(valid, { worldBookId: "module-viewer" }).entries;
+      for (let j = 0;j < projected.length; j++) {
+        const ext = projected[j].extensions;
+        const hash = ext?.["_risu_source_hash"];
+        if (typeof hash === "string") {
+          projectedHashByIndex.set(validIndexes[j], hash);
+        }
+      }
+    }
+  }
+  const lang = "en";
+  const moduleLore = env.translations?.[lang]?.lorebook;
   const lorebookEntries = [];
   if (Array.isArray(m.lorebook)) {
     for (let i = 0;i < m.lorebook.length; i++) {
@@ -31722,13 +31775,17 @@ function buildModuleViewerData(input) {
       const eo = e;
       const keyRaw = eo["key"];
       const key3 = Array.isArray(keyRaw) ? keyRaw.filter((x) => typeof x === "string") : typeof keyRaw === "string" ? [keyRaw] : [];
+      const sourceHash = projectedHashByIndex.get(i);
+      const translatedComment = sourceHash !== undefined && moduleLore ? moduleLore[sourceHash]?.comment : undefined;
       lorebookEntries.push({
         id: `mod-lore-${i}`,
         key: key3,
         content: typeof eo["content"] === "string" ? eo["content"] : "",
         ...typeof eo["comment"] === "string" ? { comment: eo["comment"] } : {},
         ...typeof eo["disabled"] === "boolean" ? { disabled: eo["disabled"] } : {},
-        ...typeof eo["constant"] === "boolean" ? { constant: eo["constant"] } : {}
+        ...typeof eo["constant"] === "boolean" ? { constant: eo["constant"] } : {},
+        ...sourceHash !== undefined ? { sourceHash, fromRisu: true } : {},
+        ...translatedComment !== undefined ? { translatedComment } : {}
       });
     }
   }
@@ -35378,7 +35435,11 @@ async function buildAttachedByCharacter(userId, libraryById) {
     for (const id of ids) {
       const sum = libraryById.get(id);
       if (sum) {
-        list.push({ id: sum.id, name: sum.name });
+        list.push({
+          id: sum.id,
+          name: sum.name,
+          ...sum.translatedName !== undefined ? { translatedName: sum.translatedName } : {}
+        });
       } else {
         list.push({ id, name: "(missing \u2014 module deleted from library)" });
       }
@@ -35389,22 +35450,93 @@ async function buildAttachedByCharacter(userId, libraryById) {
 }
 async function pushModules(userId) {
   const indexEntries = await listModules(moduleStorage(), userId);
-  const wire = indexEntries.map((e) => ({
-    id: e.id,
-    name: e.name,
-    description: e.description,
-    filename: e.filename,
-    uploaded_at: e.uploaded_at,
-    lorebook_count: e.lorebook_count,
-    regex_count: e.regex_count,
-    trigger_count: e.trigger_count,
-    asset_count: e.asset_count,
-    low_level_access: e.low_level_access,
-    has_cjs: e.has_cjs
-  }));
+  const lang = TRANSLATE_TARGET_LANG;
+  const wire = indexEntries.map((e) => {
+    const translatedName = e.translatedName?.[lang];
+    const translatedDescription = e.translatedDescription?.[lang];
+    return {
+      id: e.id,
+      name: e.name,
+      description: e.description,
+      ...translatedName !== undefined ? { translatedName } : {},
+      ...translatedDescription !== undefined ? { translatedDescription } : {},
+      filename: e.filename,
+      uploaded_at: e.uploaded_at,
+      lorebook_count: e.lorebook_count,
+      regex_count: e.regex_count,
+      trigger_count: e.trigger_count,
+      asset_count: e.asset_count,
+      low_level_access: e.low_level_access,
+      has_cjs: e.has_cjs
+    };
+  });
   const byId = new Map(wire.map((w) => [w.id, w]));
   const attached = await buildAttachedByCharacter(userId, byId);
   send({ type: "modules_pushed", modules: wire, attached_by_character: attached }, userId);
+}
+var TRANSLATE_TARGET_LANG = "en";
+async function persistModuleTranslation(userId, msg) {
+  const env = await readEnvelope(moduleStorage(), userId, msg.moduleId);
+  if (!env) {
+    log7.warn(`cache_module_translation: module=${msg.moduleId} not found`);
+    return;
+  }
+  const lang = msg.lang || TRANSLATE_TARGET_LANG;
+  const existing = env.translations?.[lang] ?? {};
+  const existingLore = existing.lorebook ?? {};
+  const nextLore = { ...existingLore };
+  if (msg.lorebook) {
+    for (const item of msg.lorebook) {
+      if (!item.sourceHash)
+        continue;
+      const prior = nextLore[item.sourceHash] ?? {};
+      nextLore[item.sourceHash] = {
+        ...prior,
+        ...item.comment !== undefined ? { comment: item.comment } : {}
+      };
+    }
+  }
+  const nextLang = {
+    ...existing,
+    ...msg.name !== undefined ? { name: msg.name } : {},
+    ...msg.description !== undefined ? { description: msg.description } : {},
+    ...Object.keys(nextLore).length > 0 ? { lorebook: nextLore } : {}
+  };
+  const next = {
+    ...env,
+    translations: { ...env.translations ?? {}, [lang]: nextLang }
+  };
+  await writeEnvelope(moduleStorage(), userId, next);
+  await pushModules(userId);
+}
+async function persistCharacterTranslation(userId, msg) {
+  const fetched = await readLumirealm(charactersApi(), msg.characterId, userId);
+  if (!fetched || !fetched.data) {
+    log7.warn(`cache_character_translation: character=${msg.characterId} not lumirealm`);
+    return;
+  }
+  const lang = msg.lang || TRANSLATE_TARGET_LANG;
+  const existing = fetched.data.translations?.[lang] ?? {};
+  const existingLore = existing.lorebook ?? {};
+  const nextLore = { ...existingLore };
+  for (const item of msg.lorebook) {
+    if (!item.sourceHash)
+      continue;
+    const prior = nextLore[item.sourceHash] ?? {};
+    nextLore[item.sourceHash] = {
+      ...prior,
+      ...item.comment !== undefined ? { comment: item.comment } : {}
+    };
+  }
+  const nextData = {
+    ...fetched.data,
+    translations: {
+      ...fetched.data.translations ?? {},
+      [lang]: { ...existing, lorebook: nextLore }
+    }
+  };
+  expectCharacterEdit(msg.characterId);
+  await writeLumirealm(charactersApi(), msg.characterId, nextData, userId);
 }
 async function pushAttachedForCharacter(characterId, userId) {
   const fetched = await readLumirealm(charactersApi(), characterId, userId);
@@ -35419,9 +35551,13 @@ async function pushAttachedForCharacter(characterId, userId) {
   const ids = fetched.data.user_overrides.attached_module_ids ?? [];
   const indexEntries = await listModules(moduleStorage(), userId);
   const byId = new Map(indexEntries.map((e) => [e.id, e]));
+  const lang = TRANSLATE_TARGET_LANG;
   const list = ids.map((id) => {
     const e = byId.get(id);
-    return e ? { id, name: e.name } : { id, name: "(missing \u2014 module deleted from library)" };
+    if (!e)
+      return { id, name: "(missing \u2014 module deleted from library)" };
+    const tx = e.translatedName?.[lang];
+    return { id, name: e.name, ...tx !== undefined ? { translatedName: tx } : {} };
   });
   send({ type: "attached_modules_pushed", characterId, attached: list }, userId);
 }
@@ -36116,13 +36252,41 @@ async function assembleCharacterViewerData(characterId, userId) {
     return null;
   const fetchWarnings = [];
   const worldBooks = await fetchCharacterWorldBooksForViewer(characterId, userId, fetchWarnings);
+  const translatedCommentBySourceHash = await collectTranslationsForCharacter(fetched.data, userId, TRANSLATE_TARGET_LANG);
   return buildCharacterViewerData({
     characterId,
     characterName: fetched.character.name,
     data: fetched.data,
     worldBooks,
-    fetchWarnings
+    fetchWarnings,
+    translatedCommentBySourceHash
   });
+}
+async function collectTranslationsForCharacter(data, userId, lang) {
+  const out = new Map;
+  const charLore = data.translations?.[lang]?.lorebook;
+  if (charLore) {
+    for (const [hash, t] of Object.entries(charLore)) {
+      if (typeof t?.comment === "string")
+        out.set(hash, t.comment);
+    }
+  }
+  const attachedIds = data.user_overrides.attached_module_ids ?? [];
+  for (const moduleId of attachedIds) {
+    try {
+      const env = await readEnvelope(moduleStorage(), userId, moduleId);
+      const modLore = env?.translations?.[lang]?.lorebook;
+      if (!modLore)
+        continue;
+      for (const [hash, t] of Object.entries(modLore)) {
+        if (typeof t?.comment === "string")
+          out.set(hash, t.comment);
+      }
+    } catch (err) {
+      log7.warn(`collectTranslationsForCharacter: module=${moduleId} read failed: ${errMsg(err)}`);
+    }
+  }
+  return out;
 }
 async function fetchCharacterWorldBooksForViewer(characterId, userId, warnings) {
   let wbIds;
@@ -36599,7 +36763,8 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
             submodelSamplers: settings.submodelSamplers,
             auxDebugCaptureRequest: settings.auxDebugCaptureRequest,
             auxDebugCaptureResponse: settings.auxDebugCaptureResponse,
-            legacyMediaFindings: settings.legacyMediaFindings
+            legacyMediaFindings: settings.legacyMediaFindings,
+            translateEnabled: settings.translateEnabled
           }
         }, userId);
         break;
@@ -36623,9 +36788,26 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
             submodelSamplers: merged.submodelSamplers,
             auxDebugCaptureRequest: merged.auxDebugCaptureRequest,
             auxDebugCaptureResponse: merged.auxDebugCaptureResponse,
-            legacyMediaFindings: merged.legacyMediaFindings
+            legacyMediaFindings: merged.legacyMediaFindings,
+            translateEnabled: merged.translateEnabled
           }
         }, userId);
+        break;
+      }
+      case "cache_module_translation": {
+        if (!userId) {
+          send({ type: "error", message: "cache_module_translation: no userId" }, userId);
+          break;
+        }
+        await persistModuleTranslation(userId, msg);
+        break;
+      }
+      case "cache_character_translation": {
+        if (!userId) {
+          send({ type: "error", message: "cache_character_translation: no userId" }, userId);
+          break;
+        }
+        await persistCharacterTranslation(userId, msg);
         break;
       }
       case "request_connections_list": {

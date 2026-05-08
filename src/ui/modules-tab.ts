@@ -7,6 +7,9 @@ import type {
 } from '../types/messages.js';
 import type { FrontendLog } from './drawer.js';
 import { errMsg } from '../util/coerce.js';
+import { getTranslateEnabled, subscribeTranslateEnabled } from './translate-toggle.js';
+import { translateModuleName, translateModuleDescription, setModuleScopeLang } from './translate-orchestrator.js';
+import { dominantScriptLang } from './browser-translator.js';
 
 // Mounts into a host element provided by ui/sidebar.ts.
 
@@ -213,6 +216,19 @@ export function mountModulesPanel(opts: MountModulesPanelOptions): ModulesPanelH
     }
   }
 
+  function pickModuleDisplayName(m: ModuleSummary): string {
+    if (getTranslateEnabled() && m.translatedName) return m.translatedName;
+    return m.name;
+  }
+  function pickModuleDisplayDescription(m: ModuleSummary): string {
+    if (getTranslateEnabled() && m.translatedDescription) return m.translatedDescription;
+    return m.description;
+  }
+  function pickAttachedDisplayName(a: AttachedModuleSummary): string {
+    if (getTranslateEnabled() && a.translatedName) return a.translatedName;
+    return a.name;
+  }
+
   function renderModuleRow(m: ModuleSummary): HTMLDetailsElement {
     const det = document.createElement('details');
     det.className = 'lrm-module';
@@ -226,9 +242,17 @@ export function mountModulesPanel(opts: MountModulesPanelOptions): ModulesPanelH
     sum.className = 'lrm-module-summary';
     const nameEl = document.createElement('span');
     nameEl.className = 'lrm-module-name';
-    nameEl.textContent = m.name || '(unnamed)';
+    const displayName = pickModuleDisplayName(m);
+    nameEl.textContent = displayName || '(unnamed)';
     nameEl.title = `${m.name}\nid: ${m.id}\nfilename: ${m.filename}`;
     sum.appendChild(nameEl);
+    if (getTranslateEnabled() && !m.translatedName && m.name) {
+      void translateModuleName(m.id, m.name).then((tx) => {
+        if (tx && tx !== m.name && nameEl.isConnected) {
+          nameEl.textContent = tx;
+        }
+      });
+    }
     const attachedTo = countAttachments(m.id);
     if (attachedTo > 0) {
       const badge = document.createElement('span');
@@ -254,8 +278,16 @@ export function mountModulesPanel(opts: MountModulesPanelOptions): ModulesPanelH
     if (m.description) {
       const desc = document.createElement('div');
       desc.className = 'lrm-module-desc';
-      desc.textContent = m.description;
+      const displayDesc = pickModuleDisplayDescription(m);
+      desc.textContent = displayDesc || m.description;
       body.appendChild(desc);
+      if (getTranslateEnabled() && !m.translatedDescription) {
+        void translateModuleDescription(m.id, m.description).then((tx) => {
+          if (tx && tx !== m.description && desc.isConnected) {
+            desc.textContent = tx;
+          }
+        });
+      }
     }
 
     const actions = document.createElement('div');
@@ -264,9 +296,9 @@ export function mountModulesPanel(opts: MountModulesPanelOptions): ModulesPanelH
     del.type = 'button';
     del.className = 'lrm-btn lrm-btn-danger';
     del.textContent = 'Delete';
-    del.title = `Remove "${m.name}" and detach from all characters.`;
+    del.title = `Remove "${displayName}" and detach from all characters.`;
     del.addEventListener('click', () => {
-      if (!window.confirm(`Delete module "${m.name}"?`)) return;
+      if (!window.confirm(`Delete module "${displayName}"?`)) return;
       log.info(`modules-panel: delete_module id=${m.id}`);
       sendToBackend({ type: 'delete_module', moduleId: m.id });
     });
@@ -341,13 +373,21 @@ export function mountModulesPanel(opts: MountModulesPanelOptions): ModulesPanelH
         li.className = 'lrm-attached-row';
         const label = document.createElement('span');
         label.className = 'lrm-attached-name';
-        label.textContent = a.name || a.id;
+        const displayAttached = pickAttachedDisplayName(a);
+        label.textContent = displayAttached || a.id;
         li.appendChild(label);
+        if (getTranslateEnabled() && !a.translatedName && a.name) {
+          void translateModuleName(a.id, a.name).then((tx) => {
+            if (tx && tx !== a.name && label.isConnected) {
+              label.textContent = tx;
+            }
+          });
+        }
         const detach = document.createElement('button');
         detach.type = 'button';
         detach.className = 'lrm-btn-mini lrm-btn-danger';
         detach.textContent = 'Detach';
-        detach.title = `Detach "${a.name}" from this character.`;
+        detach.title = `Detach "${displayAttached || a.name}" from this character.`;
         detach.addEventListener('click', () => {
           log.info(`modules-panel: detach_module char=${card.character_id} module=${a.id}`);
           sendToBackend({
@@ -383,10 +423,14 @@ export function mountModulesPanel(opts: MountModulesPanelOptions): ModulesPanelH
       datalist.id = listId;
       for (const m of attachable) {
         const o = document.createElement('option');
-        o.value = m.name || m.id;
+        o.value = pickModuleDisplayName(m) || m.id;
         o.label = m.id;
         o.setAttribute('data-module-id', m.id);
         datalist.appendChild(o);
+        // Kick off translation so the next render shows the translated option.
+        if (getTranslateEnabled() && !m.translatedName && m.name) {
+          void translateModuleName(m.id, m.name);
+        }
       }
       attachWrap.appendChild(input);
       attachWrap.appendChild(datalist);
@@ -402,7 +446,13 @@ export function mountModulesPanel(opts: MountModulesPanelOptions): ModulesPanelH
         const byId = attachable.find((m) => m.id === t);
         if (byId) return byId.id;
         const lower = t.toLowerCase();
-        const byName = attachable.find((m) => (m.name || '').toLowerCase() === lower);
+        // Match against both the original name and the translated one so the
+        // user can type either form and resolve to the same module.
+        const byName = attachable.find((m) => {
+          if ((m.name || '').toLowerCase() === lower) return true;
+          if ((m.translatedName || '').toLowerCase() === lower) return true;
+          return false;
+        });
         if (byName) return byName.id;
         return null;
       };
@@ -447,6 +497,8 @@ export function mountModulesPanel(opts: MountModulesPanelOptions): ModulesPanelH
     renderCharacterList();
     if (lastError) setStatus(lastError, true);
   }
+
+  const unsubTranslate = subscribeTranslateEnabled(() => render());
 
   uploadBtn.addEventListener('click', () => { void onUploadClicked(); });
   refreshBtn.addEventListener('click', () => {
@@ -661,6 +713,9 @@ export function mountModulesPanel(opts: MountModulesPanelOptions): ModulesPanelH
         break;
       case 'modules_pushed':
         modules = msg.modules;
+        for (const m of modules) {
+          setModuleScopeLang(m.id, dominantScriptLang([m.name, m.description]));
+        }
         if (msg.attached_by_character) {
           for (const [charId, list] of Object.entries(msg.attached_by_character)) {
             attachedByCharacter.set(charId, list);
@@ -710,6 +765,7 @@ export function mountModulesPanel(opts: MountModulesPanelOptions): ModulesPanelH
     if (charHeaderHandle) {
       try { charHeaderHandle.destroy(); } catch { void 0; }
     }
+    try { unsubTranslate(); } catch { void 0; }
     try { root.replaceChildren(); } catch { /* ignore */ }
   }
 

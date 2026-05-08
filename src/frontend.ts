@@ -13,6 +13,8 @@ import { setupImportOverlay } from './ui/import-overlay.js';
 import { setupBgmPlayer } from './audio/bgm.js';
 import { setupSvgRasterizer } from './svg-raster.js';
 import { setupRealmModal, isRealmBackendMessage } from './realm/frontend.js';
+import { setupTranslateToggle } from './ui/translate-toggle.js';
+import { initTranslateOrchestrator } from './ui/translate-orchestrator.js';
 import { setupAlertModal } from './ui/alert-modal.js';
 import { setupPickModal } from './ui/pick-modal.js';
 import { setupLegacyReimportModal } from './ui/legacy-reimport-modal.js';
@@ -371,6 +373,16 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     flog.error('setupRealmModal failed:', err);
   }
 
+  const translateToggle = setupTranslateToggle({
+    mountTarget: sidebar.headerRoot,
+    sendToBackend,
+    log: flog,
+  });
+  cleanups.push(() => translateToggle.destroy());
+
+  const translateOrchestrator = initTranslateOrchestrator({ sendToBackend, log: flog });
+  cleanups.push(() => translateOrchestrator.destroy());
+
   const svgRasterizer = setupSvgRasterizer({ log: flog, sendToBackend });
 
   // Risu Chat.svelte:206-231: clicks on [risu-trigger] call runTrigger(char,'manual',{manualName}).
@@ -646,6 +658,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     // phase / asset upload / done / error). Fire BEFORE the sidebar fan-out
     // so the overlay state stays consistent with the cards-panel status UI.
     try { importOverlay.handleBackendMessage(msg); } catch (err) { flog.warn('importOverlay dispatch threw:', err); }
+    try { translateToggle.handleBackendMessage(msg); } catch (err) { flog.warn('translateToggle dispatch threw:', err); }
     // All other messages fan out to sidebar panels; each panel filters by msg.type.
     sidebar?.handleBackendMessage(msg);
   });

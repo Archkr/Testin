@@ -2573,6 +2573,19 @@ var styles_default = `.risu-compat-drawer {\r
   line-height: 1.5;\r
 }\r
 \r
+.lr-translate-toggle.lr-translate-toggle-on {\r
+  border-color: var(--lumiverse-accent, #5b8cff);\r
+  color: var(--lumiverse-accent, #5b8cff);\r
+}\r
+.lr-translate-toggle.lr-translate-toggle-disabled,\r
+.lr-translate-toggle.lr-translate-toggle-disabled:hover {\r
+  cursor: not-allowed;\r
+  opacity: 0.45;\r
+  transform: none;\r
+  background: var(--lumiverse-fill-subtle, rgba(255, 255, 255, 0.04));\r
+  border-color: var(--lumiverse-border, #2a2a2a);\r
+}\r
+\r
 /* Folder group: collapsible <details> wrapping its children. */\r
 .lr-viewer-drawer .lrv-lb-folder-group {\r
   border-top: 1px solid var(--lumiverse-border, rgba(255, 255, 255, 0.08));\r
@@ -5450,14 +5463,8 @@ owner: ${o.ownerCharacterId}` : ""}`;
     } else {
       parts.push("Model: (use connection default)");
     }
-    if (lastSavedTs > 0) {
-      const ts = new Date(lastSavedTs);
-      const hh = String(ts.getHours()).padStart(2, "0");
-      const mm = String(ts.getMinutes()).padStart(2, "0");
-      const ss = String(ts.getSeconds()).padStart(2, "0");
-      parts.push(`saved ${hh}:${mm}:${ss}`);
-    }
-    status.textContent = parts.join(" · ");
+    status.textContent = parts.join(`
+`);
     status.classList.add("rs-status-ok");
     status.classList.remove("rs-status-warn");
   }
@@ -5731,6 +5738,396 @@ owner: ${o.ownerCharacterId}` : ""}`;
   };
 }
 
+// src/ui/browser-translator.ts
+var TARGET = "en";
+var translatorByPair = null;
+var detectorPromise = null;
+var resultCache = new Map;
+var unavailableLogged = false;
+function chromeTranslator() {
+  const tr = globalThis.Translator;
+  if (tr && typeof tr.create === "function") {
+    return tr;
+  }
+  return null;
+}
+function chromeLanguageDetector() {
+  const d = globalThis.LanguageDetector;
+  if (d && typeof d.create === "function") {
+    return d;
+  }
+  return null;
+}
+async function getDetector() {
+  if (detectorPromise)
+    return detectorPromise;
+  detectorPromise = (async () => {
+    const ctor = chromeLanguageDetector();
+    if (!ctor)
+      return null;
+    try {
+      const avail = ctor.availability ? await ctor.availability() : "available";
+      if (avail === "unavailable")
+        return null;
+      return await ctor.create();
+    } catch {
+      return null;
+    }
+  })();
+  return detectorPromise;
+}
+async function getTranslatorForPair(src, tgt) {
+  if (!translatorByPair)
+    translatorByPair = new Map;
+  const key = `${src}|${tgt}`;
+  const existing = translatorByPair.get(key);
+  if (existing)
+    return existing;
+  const promise = (async () => {
+    const ctor = chromeTranslator();
+    if (!ctor)
+      return null;
+    try {
+      if (ctor.availability) {
+        const avail = await ctor.availability({ sourceLanguage: src, targetLanguage: tgt });
+        console.info(`[lumirealm] translator ${src}->${tgt} availability=${avail}`);
+        if (avail === "unavailable")
+          return null;
+      }
+      const inst = await ctor.create({ sourceLanguage: src, targetLanguage: tgt });
+      console.info(`[lumirealm] translator ${src}->${tgt} created`);
+      return inst;
+    } catch (err) {
+      console.warn(`[lumirealm] translator ${src}->${tgt} create failed:`, err);
+      return null;
+    }
+  })();
+  translatorByPair.set(key, promise);
+  return promise;
+}
+function isTranslationAvailable() {
+  return chromeTranslator() !== null;
+}
+function getTranslator() {
+  if (!isTranslationAvailable()) {
+    if (!unavailableLogged) {
+      unavailableLogged = true;
+      console.info("[lumirealm] browser Translator API unavailable (Chrome 138+ required)");
+    }
+    return null;
+  }
+  return {
+    translateOne: async (text, srcHint) => {
+      const trimmed = (text ?? "").trim();
+      if (trimmed.length === 0)
+        return text;
+      const src = srcHint ?? await detectLang(trimmed) ?? "ko";
+      if (src === TARGET)
+        return text;
+      const cacheKey = `${src}|${TARGET}|${text}`;
+      const cached = resultCache.get(cacheKey);
+      if (cached !== undefined)
+        return cached;
+      const tr = await getTranslatorForPair(src, TARGET);
+      if (!tr) {
+        resultCache.set(cacheKey, text);
+        return text;
+      }
+      try {
+        const out = await tr.translate(text);
+        resultCache.set(cacheKey, out);
+        return out;
+      } catch {
+        resultCache.set(cacheKey, text);
+        return text;
+      }
+    }
+  };
+}
+async function detectLang(text) {
+  const script = scriptLangFromText(text);
+  if (script !== null)
+    return script;
+  try {
+    const det = await getDetector();
+    if (!det)
+      return null;
+    const results = await det.detect(text);
+    if (results.length === 0)
+      return null;
+    const best = results[0].detectedLanguage;
+    if (best === "und" || best === "unknown" || best === TARGET)
+      return null;
+    return best;
+  } catch {
+    return null;
+  }
+}
+function scriptLangFromText(text) {
+  const counts = countForeignScript(text);
+  if (counts.hangul > 0)
+    return "ko";
+  if (counts.kana > 0)
+    return "ja";
+  if (counts.han > 0)
+    return "zh";
+  return null;
+}
+function dominantScriptLang(texts) {
+  let hangul = 0, kana = 0, han = 0;
+  for (const t of texts) {
+    const c = countForeignScript(t);
+    hangul += c.hangul;
+    kana += c.kana;
+    han += c.han;
+  }
+  if (hangul > 0)
+    return "ko";
+  if (kana > 0)
+    return "ja";
+  if (han > 0)
+    return "zh";
+  return null;
+}
+function countForeignScript(text) {
+  let hangul = 0, kana = 0, han = 0;
+  for (let i = 0;i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (code >= 44032 && code <= 55203 || code >= 4352 && code <= 4607 || code >= 43360 && code <= 43391 || code >= 55216 && code <= 55295)
+      hangul++;
+    else if (code >= 12352 && code <= 12447 || code >= 12448 && code <= 12543 || code >= 12784 && code <= 12799)
+      kana++;
+    else if (code >= 19968 && code <= 40959 || code >= 13312 && code <= 19903)
+      han++;
+  }
+  return { hangul, kana, han };
+}
+
+// src/ui/translate-toggle.ts
+var lastTranslateEnabled = true;
+var subscribers = new Set;
+function getTranslateEnabled() {
+  return lastTranslateEnabled;
+}
+function subscribeTranslateEnabled(cb) {
+  subscribers.add(cb);
+  return () => subscribers.delete(cb);
+}
+function setupTranslateToggle(opts) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "lr-realm-launcher lr-translate-toggle";
+  let enabled = lastTranslateEnabled;
+  const apiAvailable = isTranslationAvailable();
+  function paint() {
+    btn.textContent = `Translate: ${enabled && apiAvailable ? "On" : "Off"}`;
+    btn.classList.toggle("lr-translate-toggle-on", enabled && apiAvailable);
+    btn.classList.toggle("lr-translate-toggle-disabled", !apiAvailable);
+    if (!apiAvailable) {
+      btn.title = "Non-Chrome browser support comming soon.";
+    } else {
+      btn.title = enabled ? "Display module + lorebook names in browser-translated form (English)." : "Display original names.";
+    }
+  }
+  function applyEnabled(next, source) {
+    if (next === enabled && next === lastTranslateEnabled)
+      return;
+    enabled = next;
+    lastTranslateEnabled = next;
+    paint();
+    opts.log.info(`translate-toggle: -> ${enabled ? "on" : "off"} (via ${source})`);
+    for (const cb of subscribers) {
+      try {
+        cb(next);
+      } catch (err) {
+        opts.log.error("translate-toggle: subscriber threw", err);
+      }
+    }
+  }
+  paint();
+  btn.addEventListener("click", () => {
+    if (!apiAvailable)
+      return;
+    applyEnabled(!enabled, "click");
+    opts.sendToBackend({
+      type: "update_settings",
+      patch: { translateEnabled: enabled }
+    });
+  });
+  if (!apiAvailable) {
+    btn.setAttribute("aria-disabled", "true");
+    btn.disabled = true;
+  }
+  opts.mountTarget.appendChild(btn);
+  opts.sendToBackend({ type: "request_settings" });
+  function handleBackendMessage(msg) {
+    if (msg.type !== "settings_pushed")
+      return;
+    const settings = msg.settings;
+    if (!("translateEnabled" in settings))
+      return;
+    applyEnabled(settings.translateEnabled === true, "settings_pushed");
+  }
+  function destroy() {
+    try {
+      btn.remove();
+    } catch {}
+  }
+  return { handleBackendMessage, destroy };
+}
+
+// src/ui/translate-orchestrator.ts
+var FLUSH_INTERVAL_MS = 250;
+var singleton = null;
+function initTranslateOrchestrator(opts) {
+  if (singleton !== null)
+    return singleton;
+  singleton = setupTranslateOrchestrator(opts);
+  return singleton;
+}
+async function translateModuleName(moduleId, name) {
+  return singleton?.request({ kind: "module", moduleId }, "name", name, "name") ?? name;
+}
+async function translateModuleDescription(moduleId, desc) {
+  return singleton?.request({ kind: "module", moduleId }, "description", desc, "description") ?? desc;
+}
+async function translateLorebookComment(scope, sourceHash, comment) {
+  return singleton?.request(scope, sourceHash, comment, "comment") ?? comment;
+}
+function setModuleScopeLang(moduleId, lang) {
+  singleton?.setScopeLang({ kind: "module", moduleId }, lang);
+}
+function setCharacterScopeLang(characterId, lang) {
+  singleton?.setScopeLang({ kind: "character", characterId }, lang);
+}
+function setupTranslateOrchestrator(opts) {
+  const inFlight = new Map;
+  const scopeLangs = new Map;
+  const moduleBatches = new Map;
+  const characterBatches = new Map;
+  let timer = null;
+  let destroyed = false;
+  function scopeBatchKey(scope) {
+    return scope.kind === "module" ? `m:${scope.moduleId}` : `c:${scope.characterId}`;
+  }
+  function inFlightKey(scope, key, original) {
+    return `${scopeBatchKey(scope)}|${key}|${original}`;
+  }
+  function setScopeLang(scope, lang) {
+    scopeLangs.set(scopeBatchKey(scope), lang);
+  }
+  function scheduleFlush() {
+    if (destroyed)
+      return;
+    if (timer !== null)
+      return;
+    timer = setTimeout(flush, FLUSH_INTERVAL_MS);
+  }
+  function flush() {
+    if (timer !== null) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    for (const [moduleId, batch] of moduleBatches.entries()) {
+      const lorebook = [];
+      for (const [hash, comment] of batch.lorebook.entries()) {
+        lorebook.push({ sourceHash: hash, comment });
+      }
+      const msg = {
+        type: "cache_module_translation",
+        moduleId,
+        lang: "en",
+        ...batch.name !== undefined ? { name: batch.name.translated } : {},
+        ...batch.description !== undefined ? { description: batch.description.translated } : {},
+        ...lorebook.length > 0 ? { lorebook } : {}
+      };
+      opts.sendToBackend(msg);
+    }
+    moduleBatches.clear();
+    for (const [characterId, batch] of characterBatches.entries()) {
+      if (batch.lorebook.size === 0)
+        continue;
+      const lorebook = [];
+      for (const [hash, comment] of batch.lorebook.entries()) {
+        lorebook.push({ sourceHash: hash, comment });
+      }
+      opts.sendToBackend({
+        type: "cache_character_translation",
+        characterId,
+        lang: "en",
+        lorebook
+      });
+    }
+    characterBatches.clear();
+  }
+  function enqueue(scope, key, kind, translated) {
+    if (scope.kind === "module") {
+      let batch = moduleBatches.get(scope.moduleId);
+      if (!batch) {
+        batch = { lorebook: new Map };
+        moduleBatches.set(scope.moduleId, batch);
+      }
+      if (kind === "name")
+        batch.name = { translated };
+      else if (kind === "description")
+        batch.description = { translated };
+      else
+        batch.lorebook.set(key, translated);
+    } else {
+      let batch = characterBatches.get(scope.characterId);
+      if (!batch) {
+        batch = { lorebook: new Map };
+        characterBatches.set(scope.characterId, batch);
+      }
+      batch.lorebook.set(key, translated);
+    }
+    scheduleFlush();
+  }
+  async function request(scope, key, original, kind) {
+    if (!original || original.trim().length === 0)
+      return original;
+    const flightKey = inFlightKey(scope, key, original);
+    const existing = inFlight.get(flightKey);
+    if (existing)
+      return existing;
+    const translator = getTranslator();
+    if (!translator)
+      return original;
+    const scopeLang = scopeLangs.get(scopeBatchKey(scope));
+    if (scopeLang === null)
+      return original;
+    const promise = (async () => {
+      try {
+        const translated = await translator.translateOne(original, scopeLang ?? undefined);
+        if (translated && translated !== original) {
+          enqueue(scope, key, kind, translated);
+        }
+        return translated;
+      } catch (err) {
+        opts.log.warn(`translate-orchestrator: ${kind} ${flightKey} threw: ${err instanceof Error ? err.message : String(err)}`);
+        return original;
+      }
+    })();
+    inFlight.set(flightKey, promise);
+    return promise;
+  }
+  return {
+    request,
+    setScopeLang,
+    flush,
+    destroy: () => {
+      destroyed = true;
+      if (timer !== null) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      flush();
+      inFlight.clear();
+      scopeLangs.clear();
+    }
+  };
+}
+
 // src/ui/modules-tab.ts
 var CHUNK_BYTES2 = 40 * 1024;
 var CHUNK_WIRE_WARN_BYTES2 = 60000;
@@ -5868,6 +6265,21 @@ function mountModulesPanel(opts) {
       libList.appendChild(renderModuleRow(m));
     }
   }
+  function pickModuleDisplayName(m) {
+    if (getTranslateEnabled() && m.translatedName)
+      return m.translatedName;
+    return m.name;
+  }
+  function pickModuleDisplayDescription(m) {
+    if (getTranslateEnabled() && m.translatedDescription)
+      return m.translatedDescription;
+    return m.description;
+  }
+  function pickAttachedDisplayName(a) {
+    if (getTranslateEnabled() && a.translatedName)
+      return a.translatedName;
+    return a.name;
+  }
   function renderModuleRow(m) {
     const det = document.createElement("details");
     det.className = "lrm-module";
@@ -5882,11 +6294,19 @@ function mountModulesPanel(opts) {
     sum.className = "lrm-module-summary";
     const nameEl = document.createElement("span");
     nameEl.className = "lrm-module-name";
-    nameEl.textContent = m.name || "(unnamed)";
+    const displayName = pickModuleDisplayName(m);
+    nameEl.textContent = displayName || "(unnamed)";
     nameEl.title = `${m.name}
 id: ${m.id}
 filename: ${m.filename}`;
     sum.appendChild(nameEl);
+    if (getTranslateEnabled() && !m.translatedName && m.name) {
+      translateModuleName(m.id, m.name).then((tx) => {
+        if (tx && tx !== m.name && nameEl.isConnected) {
+          nameEl.textContent = tx;
+        }
+      });
+    }
     const attachedTo = countAttachments(m.id);
     if (attachedTo > 0) {
       const badge = document.createElement("span");
@@ -5913,8 +6333,16 @@ filename: ${m.filename}`;
     if (m.description) {
       const desc = document.createElement("div");
       desc.className = "lrm-module-desc";
-      desc.textContent = m.description;
+      const displayDesc = pickModuleDisplayDescription(m);
+      desc.textContent = displayDesc || m.description;
       body.appendChild(desc);
+      if (getTranslateEnabled() && !m.translatedDescription) {
+        translateModuleDescription(m.id, m.description).then((tx) => {
+          if (tx && tx !== m.description && desc.isConnected) {
+            desc.textContent = tx;
+          }
+        });
+      }
     }
     const actions = document.createElement("div");
     actions.className = "lrm-module-actions";
@@ -5922,9 +6350,9 @@ filename: ${m.filename}`;
     del.type = "button";
     del.className = "lrm-btn lrm-btn-danger";
     del.textContent = "Delete";
-    del.title = `Remove "${m.name}" and detach from all characters.`;
+    del.title = `Remove "${displayName}" and detach from all characters.`;
     del.addEventListener("click", () => {
-      if (!window.confirm(`Delete module "${m.name}"?`))
+      if (!window.confirm(`Delete module "${displayName}"?`))
         return;
       log.info(`modules-panel: delete_module id=${m.id}`);
       sendToBackend({ type: "delete_module", moduleId: m.id });
@@ -5993,13 +6421,21 @@ filename: ${m.filename}`;
         li.className = "lrm-attached-row";
         const label = document.createElement("span");
         label.className = "lrm-attached-name";
-        label.textContent = a.name || a.id;
+        const displayAttached = pickAttachedDisplayName(a);
+        label.textContent = displayAttached || a.id;
         li.appendChild(label);
+        if (getTranslateEnabled() && !a.translatedName && a.name) {
+          translateModuleName(a.id, a.name).then((tx) => {
+            if (tx && tx !== a.name && label.isConnected) {
+              label.textContent = tx;
+            }
+          });
+        }
         const detach = document.createElement("button");
         detach.type = "button";
         detach.className = "lrm-btn-mini lrm-btn-danger";
         detach.textContent = "Detach";
-        detach.title = `Detach "${a.name}" from this character.`;
+        detach.title = `Detach "${displayAttached || a.name}" from this character.`;
         detach.addEventListener("click", () => {
           log.info(`modules-panel: detach_module char=${card.character_id} module=${a.id}`);
           sendToBackend({
@@ -6033,10 +6469,13 @@ filename: ${m.filename}`;
       datalist.id = listId;
       for (const m of attachable) {
         const o = document.createElement("option");
-        o.value = m.name || m.id;
+        o.value = pickModuleDisplayName(m) || m.id;
         o.label = m.id;
         o.setAttribute("data-module-id", m.id);
         datalist.appendChild(o);
+        if (getTranslateEnabled() && !m.translatedName && m.name) {
+          translateModuleName(m.id, m.name);
+        }
       }
       attachWrap.appendChild(input);
       attachWrap.appendChild(datalist);
@@ -6054,7 +6493,13 @@ filename: ${m.filename}`;
         if (byId)
           return byId.id;
         const lower = t.toLowerCase();
-        const byName = attachable.find((m) => (m.name || "").toLowerCase() === lower);
+        const byName = attachable.find((m) => {
+          if ((m.name || "").toLowerCase() === lower)
+            return true;
+          if ((m.translatedName || "").toLowerCase() === lower)
+            return true;
+          return false;
+        });
         if (byName)
           return byName.id;
         return null;
@@ -6100,6 +6545,7 @@ filename: ${m.filename}`;
     if (lastError)
       setStatus(lastError, true);
   }
+  const unsubTranslate = subscribeTranslateEnabled(() => render());
   uploadBtn.addEventListener("click", () => {
     onUploadClicked();
   });
@@ -6304,6 +6750,9 @@ filename: ${m.filename}`;
         break;
       case "modules_pushed":
         modules = msg.modules;
+        for (const m of modules) {
+          setModuleScopeLang(m.id, dominantScriptLang([m.name, m.description]));
+        }
         if (msg.attached_by_character) {
           for (const [charId, list] of Object.entries(msg.attached_by_character)) {
             attachedByCharacter.set(charId, list);
@@ -6349,6 +6798,9 @@ filename: ${m.filename}`;
         charHeaderHandle.destroy();
       } catch {}
     }
+    try {
+      unsubTranslate();
+    } catch {}
     try {
       root.replaceChildren();
     } catch {}
@@ -6500,12 +6952,17 @@ function mountViewerPanel(opts) {
         label: `[Character] ${c.character_name ?? "(missing)"}${suffix}`
       });
     }
+    const translate = getTranslateEnabled();
     for (const m of modules) {
+      const display = translate && m.translatedName ? m.translatedName : m.name;
       options.push({
         kind: "module",
         id: m.id,
-        label: `[Module] ${m.name || "(unnamed)"}`
+        label: `[Module] ${display || "(unnamed)"}`
       });
+      if (translate && !m.translatedName && m.name) {
+        translateModuleName(m.id, m.name);
+      }
     }
     if (options.length === 0) {
       const empty = document.createElement("option");
@@ -7432,8 +7889,10 @@ function mountViewerPanel(opts) {
     sum.appendChild(icon);
     const name = document.createElement("span");
     name.className = "lrv-lb-folder-name";
-    name.textContent = folder.comment && folder.comment.length > 0 ? folder.comment : "(unnamed folder)";
+    const display = lorebookDisplayComment(folder);
+    name.textContent = display && display.length > 0 ? display : "(unnamed folder)";
     sum.appendChild(name);
+    kickoffEntryTranslation(folder, name);
     const count = document.createElement("span");
     count.className = "lrv-lb-folder-count";
     count.textContent = `(${children.length})`;
@@ -7467,6 +7926,7 @@ function mountViewerPanel(opts) {
     sum.appendChild(name);
     row.appendChild(sum);
     row.appendChild(renderLorebookRowDetail(e));
+    kickoffEntryTranslation(e, name);
     return row;
   }
   function renderLorebookFolderHeader(e) {
@@ -7478,8 +7938,10 @@ function mountViewerPanel(opts) {
     row.appendChild(icon);
     const name = document.createElement("span");
     name.className = "lrv-lb-folder-name";
-    name.textContent = e.comment && e.comment.length > 0 ? e.comment : "(unnamed folder)";
+    const display = lorebookDisplayComment(e);
+    name.textContent = display && display.length > 0 ? display : "(unnamed folder)";
     row.appendChild(name);
+    kickoffEntryTranslation(e, name);
     return row;
   }
   function renderLorebookChildLink(e) {
@@ -7487,13 +7949,60 @@ function mountViewerPanel(opts) {
     row.className = "lrv-lb-child";
     const name = document.createElement("span");
     name.className = "lrv-lb-child-name";
-    name.textContent = e.comment && e.comment.length > 0 ? e.comment : "(linked entry)";
+    const display = lorebookDisplayComment(e);
+    name.textContent = display && display.length > 0 ? display : "(linked entry)";
     row.appendChild(name);
+    kickoffEntryTranslation(e, name);
     return row;
   }
+  function lorebookDisplayComment(e) {
+    if (getTranslateEnabled() && e.translatedComment)
+      return e.translatedComment;
+    return e.comment;
+  }
+  function classifyViewerScope(d) {
+    const corpus = [];
+    for (const g of d.lorebook) {
+      corpus.push(g.groupName);
+      for (const e of g.entries) {
+        if (e.comment)
+          corpus.push(e.comment);
+      }
+    }
+    const lang = dominantScriptLang(corpus);
+    if (d.source.kind === "character") {
+      setCharacterScopeLang(d.source.characterId, lang);
+    } else {
+      setModuleScopeLang(d.source.moduleId, lang);
+    }
+  }
+  function viewerScopeForTranslate() {
+    const src = viewerData?.source;
+    if (!src)
+      return null;
+    return src.kind === "module" ? { kind: "module", moduleId: src.moduleId } : { kind: "character", characterId: src.characterId };
+  }
+  function kickoffEntryTranslation(e, nameEl) {
+    if (!getTranslateEnabled())
+      return;
+    if (e.translatedComment)
+      return;
+    if (!e.sourceHash || !e.comment)
+      return;
+    const scope = viewerScopeForTranslate();
+    if (!scope)
+      return;
+    const original = e.comment;
+    translateLorebookComment(scope, e.sourceHash, original).then((tx) => {
+      if (tx && tx !== original && nameEl.isConnected && getTranslateEnabled()) {
+        nameEl.textContent = tx;
+      }
+    });
+  }
   function lorebookEntryName(e) {
-    if (e.comment && e.comment.length > 0)
-      return e.comment;
+    const display = lorebookDisplayComment(e);
+    if (display && display.length > 0)
+      return display;
     if (e.key.length > 0)
       return e.key.join(", ");
     return "(unnamed)";
@@ -7574,6 +8083,10 @@ function mountViewerPanel(opts) {
     renderStatus();
     renderSurfaces();
   }
+  const unsubTranslate = subscribeTranslateEnabled(() => {
+    rebuildSourceSelect();
+    render();
+  });
   sourceSelect.addEventListener("change", () => {
     selectedSourceKey = sourceSelect.value;
     const o = parseSourceKey(selectedSourceKey);
@@ -7622,6 +8135,7 @@ function mountViewerPanel(opts) {
         if (assetUploadStatus !== null && assetUploadStatus.kind === "info") {
           assetUploadStatus = null;
         }
+        classifyViewerScope(d);
         render();
         break;
       }
@@ -7639,6 +8153,9 @@ function mountViewerPanel(opts) {
   }
   function destroy() {
     log.info("viewer-panel: destroy");
+    try {
+      unsubTranslate();
+    } catch {}
     try {
       root.replaceChildren();
     } catch {}
@@ -13459,6 +13976,14 @@ function setup(ctx) {
   } catch (err) {
     flog2.error("setupRealmModal failed:", err);
   }
+  const translateToggle = setupTranslateToggle({
+    mountTarget: sidebar.headerRoot,
+    sendToBackend,
+    log: flog2
+  });
+  cleanups.push(() => translateToggle.destroy());
+  const translateOrchestrator = initTranslateOrchestrator({ sendToBackend, log: flog2 });
+  cleanups.push(() => translateOrchestrator.destroy());
   const svgRasterizer = setupSvgRasterizer({ log: flog2, sendToBackend });
   let activeRisuChatId = null;
   const onClickCapture = (e) => {
@@ -13711,6 +14236,11 @@ function setup(ctx) {
       importOverlay.handleBackendMessage(msg);
     } catch (err) {
       flog2.warn("importOverlay dispatch threw:", err);
+    }
+    try {
+      translateToggle.handleBackendMessage(msg);
+    } catch (err) {
+      flog2.warn("translateToggle dispatch threw:", err);
     }
     sidebar?.handleBackendMessage(msg);
   });

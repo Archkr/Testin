@@ -5067,7 +5067,11 @@ async function buildAttachedByCharacter(
     for (const id of ids) {
       const sum = libraryById.get(id);
       if (sum) {
-        list.push({ id: sum.id, name: sum.name });
+        list.push({
+          id: sum.id,
+          name: sum.name,
+          ...(sum.translatedName !== undefined ? { translatedName: sum.translatedName } : {}),
+        });
       } else {
         // Module was deleted from the library while still referenced.
         // Surface so the user can see + clean up.
@@ -5081,22 +5085,100 @@ async function buildAttachedByCharacter(
 
 async function pushModules(userId: string): Promise<void> {
   const indexEntries = await listModuleStore(moduleStorage(), userId);
-  const wire: ModuleSummary[] = indexEntries.map((e) => ({
-    id: e.id,
-    name: e.name,
-    description: e.description,
-    filename: e.filename,
-    uploaded_at: e.uploaded_at,
-    lorebook_count: e.lorebook_count,
-    regex_count: e.regex_count,
-    trigger_count: e.trigger_count,
-    asset_count: e.asset_count,
-    low_level_access: e.low_level_access,
-    has_cjs: e.has_cjs,
-  }));
+  const lang = TRANSLATE_TARGET_LANG;
+  const wire: ModuleSummary[] = indexEntries.map((e) => {
+    const translatedName = e.translatedName?.[lang];
+    const translatedDescription = e.translatedDescription?.[lang];
+    return {
+      id: e.id,
+      name: e.name,
+      description: e.description,
+      ...(translatedName !== undefined ? { translatedName } : {}),
+      ...(translatedDescription !== undefined ? { translatedDescription } : {}),
+      filename: e.filename,
+      uploaded_at: e.uploaded_at,
+      lorebook_count: e.lorebook_count,
+      regex_count: e.regex_count,
+      trigger_count: e.trigger_count,
+      asset_count: e.asset_count,
+      low_level_access: e.low_level_access,
+      has_cjs: e.has_cjs,
+    };
+  });
   const byId = new Map(wire.map((w) => [w.id, w]));
   const attached = await buildAttachedByCharacter(userId, byId);
   send({ type: 'modules_pushed', modules: wire, attached_by_character: attached }, userId);
+}
+
+const TRANSLATE_TARGET_LANG = 'en';
+
+async function persistModuleTranslation(
+  userId: string,
+  msg: Extract<import('./types/messages.js').FrontendToBackend, { type: 'cache_module_translation' }>,
+): Promise<void> {
+  const env = await readModuleEnvelope(moduleStorage(), userId, msg.moduleId);
+  if (!env) {
+    log.warn(`cache_module_translation: module=${msg.moduleId} not found`);
+    return;
+  }
+  const lang = msg.lang || TRANSLATE_TARGET_LANG;
+  const existing = env.translations?.[lang] ?? {};
+  const existingLore = existing.lorebook ?? {};
+  const nextLore: Record<string, { comment?: string }> = { ...existingLore };
+  if (msg.lorebook) {
+    for (const item of msg.lorebook) {
+      if (!item.sourceHash) continue;
+      const prior = nextLore[item.sourceHash] ?? {};
+      nextLore[item.sourceHash] = {
+        ...prior,
+        ...(item.comment !== undefined ? { comment: item.comment } : {}),
+      };
+    }
+  }
+  const nextLang = {
+    ...existing,
+    ...(msg.name !== undefined ? { name: msg.name } : {}),
+    ...(msg.description !== undefined ? { description: msg.description } : {}),
+    ...(Object.keys(nextLore).length > 0 ? { lorebook: nextLore } : {}),
+  };
+  const next: typeof env = {
+    ...env,
+    translations: { ...(env.translations ?? {}), [lang]: nextLang },
+  };
+  await writeModuleEnvelope(moduleStorage(), userId, next);
+  await pushModules(userId);
+}
+
+async function persistCharacterTranslation(
+  userId: string,
+  msg: Extract<import('./types/messages.js').FrontendToBackend, { type: 'cache_character_translation' }>,
+): Promise<void> {
+  const fetched = await readLumirealm(charactersApi(), msg.characterId, userId);
+  if (!fetched || !fetched.data) {
+    log.warn(`cache_character_translation: character=${msg.characterId} not lumirealm`);
+    return;
+  }
+  const lang = msg.lang || TRANSLATE_TARGET_LANG;
+  const existing = fetched.data.translations?.[lang] ?? {};
+  const existingLore = existing.lorebook ?? {};
+  const nextLore: Record<string, { comment?: string }> = { ...existingLore };
+  for (const item of msg.lorebook) {
+    if (!item.sourceHash) continue;
+    const prior = nextLore[item.sourceHash] ?? {};
+    nextLore[item.sourceHash] = {
+      ...prior,
+      ...(item.comment !== undefined ? { comment: item.comment } : {}),
+    };
+  }
+  const nextData = {
+    ...fetched.data,
+    translations: {
+      ...(fetched.data.translations ?? {}),
+      [lang]: { ...existing, lorebook: nextLore },
+    },
+  };
+  expectCharacterEdit(msg.characterId);
+  await writeLumirealm(charactersApi(), msg.characterId, nextData, userId);
 }
 
 async function pushAttachedForCharacter(
@@ -5115,9 +5197,12 @@ async function pushAttachedForCharacter(
   const ids = fetched.data.user_overrides.attached_module_ids ?? [];
   const indexEntries = await listModuleStore(moduleStorage(), userId);
   const byId = new Map(indexEntries.map((e) => [e.id, e]));
+  const lang = TRANSLATE_TARGET_LANG;
   const list: AttachedModuleSummary[] = ids.map((id) => {
     const e = byId.get(id);
-    return e ? { id, name: e.name } : { id, name: '(missing — module deleted from library)' };
+    if (!e) return { id, name: '(missing — module deleted from library)' };
+    const tx = e.translatedName?.[lang];
+    return { id, name: e.name, ...(tx !== undefined ? { translatedName: tx } : {}) };
   });
   send({ type: 'attached_modules_pushed', characterId, attached: list }, userId);
 }
@@ -5985,13 +6070,48 @@ async function assembleCharacterViewerData(
   if (!fetched || !fetched.data) return null;
   const fetchWarnings: string[] = [];
   const worldBooks = await fetchCharacterWorldBooksForViewer(characterId, userId, fetchWarnings);
+  const translatedCommentBySourceHash = await collectTranslationsForCharacter(
+    fetched.data,
+    userId,
+    TRANSLATE_TARGET_LANG,
+  );
   return buildCharacterViewerData({
     characterId,
     characterName: fetched.character.name,
     data: fetched.data,
     worldBooks,
     fetchWarnings,
+    translatedCommentBySourceHash,
   });
+}
+
+// Merge character + attached-module translation maps for the active language.
+async function collectTranslationsForCharacter(
+  data: import('./payload/types.js').LumirealmCharacterData,
+  userId: string,
+  lang: string,
+): Promise<ReadonlyMap<string, string>> {
+  const out = new Map<string, string>();
+  const charLore = data.translations?.[lang]?.lorebook;
+  if (charLore) {
+    for (const [hash, t] of Object.entries(charLore)) {
+      if (typeof t?.comment === 'string') out.set(hash, t.comment);
+    }
+  }
+  const attachedIds = data.user_overrides.attached_module_ids ?? [];
+  for (const moduleId of attachedIds) {
+    try {
+      const env = await readModuleEnvelope(moduleStorage(), userId, moduleId);
+      const modLore = env?.translations?.[lang]?.lorebook;
+      if (!modLore) continue;
+      for (const [hash, t] of Object.entries(modLore)) {
+        if (typeof t?.comment === 'string') out.set(hash, t.comment);
+      }
+    } catch (err) {
+      log.warn(`collectTranslationsForCharacter: module=${moduleId} read failed: ${errMsg(err)}`);
+    }
+  }
+  return out;
 }
 
 async function fetchCharacterWorldBooksForViewer(
@@ -6531,6 +6651,7 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
             auxDebugCaptureRequest: settings.auxDebugCaptureRequest,
             auxDebugCaptureResponse: settings.auxDebugCaptureResponse,
             legacyMediaFindings: settings.legacyMediaFindings,
+            translateEnabled: settings.translateEnabled,
           },
         }, userId);
         break;
@@ -6555,8 +6676,25 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
             auxDebugCaptureRequest: merged.auxDebugCaptureRequest,
             auxDebugCaptureResponse: merged.auxDebugCaptureResponse,
             legacyMediaFindings: merged.legacyMediaFindings,
+            translateEnabled: merged.translateEnabled,
           },
         }, userId);
+        break;
+      }
+      case 'cache_module_translation': {
+        if (!userId) {
+          send({ type: 'error', message: 'cache_module_translation: no userId' }, userId);
+          break;
+        }
+        await persistModuleTranslation(userId, msg);
+        break;
+      }
+      case 'cache_character_translation': {
+        if (!userId) {
+          send({ type: 'error', message: 'cache_character_translation: no userId' }, userId);
+          break;
+        }
+        await persistCharacterTranslation(userId, msg);
         break;
       }
       case 'request_connections_list': {

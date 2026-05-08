@@ -113,6 +113,21 @@ export interface LumirealmCharacterData {
   readonly regex_scripts: readonly StoredRegexScript[];
   readonly portal_candidates?: readonly PortalCandidate[];
   readonly user_overrides: LumirealmUserOverrides;
+  readonly translations?: CharacterTranslations;
+}
+
+// Outer key = target language code, display-only browser-translated cache.
+export interface CharacterTranslations {
+  readonly [lang: string]: CharacterLangTranslation | undefined;
+}
+
+export interface CharacterLangTranslation {
+  // Lorebook entry translations keyed by extensions._risu_source_hash.
+  readonly lorebook?: Readonly<Record<string, CharacterEntryTranslation>>;
+}
+
+export interface CharacterEntryTranslation {
+  readonly comment?: string;
 }
 
 export interface LumirealmStoredSource {

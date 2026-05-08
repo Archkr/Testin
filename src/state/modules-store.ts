@@ -49,6 +49,23 @@ export interface ModuleEnvelope {
   readonly installed_world_book_id?: string;
   // Lazy retranslation on attach fires when stored < current.
   readonly translator_schema_version?: number;
+  readonly translations?: ModuleTranslations;
+}
+
+// Outer key = target language code, display-only browser-translated cache.
+export interface ModuleTranslations {
+  readonly [lang: string]: ModuleLangTranslation | undefined;
+}
+
+export interface ModuleLangTranslation {
+  readonly name?: string;
+  readonly description?: string;
+  // Lorebook entry translations keyed by extensions._risu_source_hash.
+  readonly lorebook?: Readonly<Record<string, EntryTranslation>>;
+}
+
+export interface EntryTranslation {
+  readonly comment?: string;
 }
 
 export interface AssetRef {
@@ -71,6 +88,10 @@ export interface ModuleIndexEntry {
   readonly asset_count: number;
   readonly low_level_access: boolean;
   readonly has_cjs: boolean;
+  /** Per-language display-translation cache snapshot for name + description.
+   *  Lorebook entry translations stay on the envelope (size). */
+  readonly translatedName?: Readonly<Record<string, string>>;
+  readonly translatedDescription?: Readonly<Record<string, string>>;
 }
 
 export interface ModuleIndex {
@@ -104,6 +125,18 @@ export function envelopePath(moduleId: string): string {
 /** Build a `ModuleIndexEntry` from an envelope. Pure. */
 export function summarizeEnvelope(env: ModuleEnvelope): ModuleIndexEntry {
   const m = env.module;
+  const translatedName: Record<string, string> = {};
+  const translatedDescription: Record<string, string> = {};
+  if (env.translations) {
+    for (const lang of Object.keys(env.translations)) {
+      const t = env.translations[lang];
+      if (!t) continue;
+      if (typeof t.name === 'string' && t.name.length > 0) translatedName[lang] = t.name;
+      if (typeof t.description === 'string' && t.description.length > 0) {
+        translatedDescription[lang] = t.description;
+      }
+    }
+  }
   return {
     id: env.id,
     filename: env.filename,
@@ -116,6 +149,8 @@ export function summarizeEnvelope(env: ModuleEnvelope): ModuleIndexEntry {
     asset_count: Object.keys(env.asset_index).length,
     low_level_access: m.lowLevelAccess === true,
     has_cjs: typeof m.cjs === 'string' && m.cjs.length > 0,
+    ...(Object.keys(translatedName).length > 0 ? { translatedName } : {}),
+    ...(Object.keys(translatedDescription).length > 0 ? { translatedDescription } : {}),
   };
 }
 

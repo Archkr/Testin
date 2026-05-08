@@ -174,7 +174,23 @@ export type FrontendToBackend =
         readonly auxDebugCaptureRequest?: boolean;
         readonly auxDebugCaptureResponse?: boolean;
         readonly legacyMediaFindings?: boolean;
+        readonly translateEnabled?: boolean;
       };
+    }
+  // Browser-translated cache writeback, one message per scope per language.
+  | {
+      type: 'cache_module_translation';
+      moduleId: string;
+      lang: string;
+      name?: string;
+      description?: string;
+      lorebook?: ReadonlyArray<{ readonly sourceHash: string; readonly comment?: string }>;
+    }
+  | {
+      type: 'cache_character_translation';
+      characterId: string;
+      lang: string;
+      lorebook: ReadonlyArray<{ readonly sourceHash: string; readonly comment?: string }>;
     }
   | {
       type: 'request_connections_list';
@@ -457,6 +473,7 @@ export type BackendToFrontend =
         readonly auxDebugCaptureRequest: boolean;
         readonly auxDebugCaptureResponse: boolean;
         readonly legacyMediaFindings: boolean;
+        readonly translateEnabled: boolean;
       };
     }
   // Emitted when the user enables request/response capture toggles in Settings → Debug.
@@ -736,6 +753,9 @@ export interface ModuleSummary {
   readonly id: string;
   readonly name: string;
   readonly description: string;
+  /** Browser-translated cache (target language). Display-only. */
+  readonly translatedName?: string;
+  readonly translatedDescription?: string;
   readonly filename: string;
   readonly uploaded_at: number;
   readonly lorebook_count: number;
@@ -824,6 +844,10 @@ export interface ViewerLorebookEntry {
   readonly risuFolderKey?: string;
   /** For child entries, the parent folder's key (matches a folder row's risuFolderKey). */
   readonly risuFolderRef?: string;
+  /** Browser-translated comment (target language). Display-only. */
+  readonly translatedComment?: string;
+  /** Source hash that the translation cache uses to address this entry. */
+  readonly sourceHash?: string;
 }
 
 export interface ViewerRegexEntry {
@@ -886,5 +910,7 @@ export interface ModuleLorebookEntry {
 export interface AttachedModuleSummary {
   readonly id: string;
   readonly name: string;
+  /** Browser-translated cache (target language). Display-only. */
+  readonly translatedName?: string;
 }
 

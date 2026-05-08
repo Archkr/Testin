@@ -14,6 +14,8 @@ import type { LumirealmCharacterData, StoredRegexScript } from '../payload/types
 import type { ModuleEnvelope } from './modules-store.js';
 import { imageUrlFromId } from '../interpreter/image-cache.js';
 import { summarizeEffect } from './viewer-effects.js';
+import { loreBookSchema } from '../core/schemas/lorebook.js';
+import { mapLoreBookWithStats } from '../core/mappers/lorebook.js';
 
 const imageUrl = (imageId: string) => imageUrlFromId(imageId);
 
@@ -46,6 +48,9 @@ export function buildCharacterViewerData(input: {
   extraCharacterRegex?: readonly LumiSideRegex[];
   fetchWarnings?: readonly string[];
   ts?: number;
+  /** Per-source-hash translation map from envelope.translations[lang].lorebook
+   *  AND any module-attached envelopes' translations[lang].lorebook merged. */
+  translatedCommentBySourceHash?: ReadonlyMap<string, string>;
 }): ViewerData {
   const triggers: ViewerTriggerEntry[] = [];
   const trArr = input.data.payload.triggers;
@@ -118,6 +123,11 @@ export function buildCharacterViewerData(input: {
       const risuFolderKey = risuMode === 'folder' && e.key.length > 0 && e.key[0]!.length > 0
         ? e.key[0]!
         : undefined;
+      const sourceHashRaw = ext['_risu_source_hash'];
+      const sourceHash = typeof sourceHashRaw === 'string' ? sourceHashRaw : undefined;
+      const translatedComment = sourceHash !== undefined
+        ? input.translatedCommentBySourceHash?.get(sourceHash)
+        : undefined;
       const built: ViewerLorebookEntry = {
         id: e.id,
         key: e.key,
@@ -134,6 +144,8 @@ export function buildCharacterViewerData(input: {
         ...(risuMode !== undefined ? { risuMode } : {}),
         ...(risuFolderKey !== undefined ? { risuFolderKey } : {}),
         ...(risuFolderRef !== undefined ? { risuFolderRef } : {}),
+        ...(sourceHash !== undefined ? { sourceHash } : {}),
+        ...(translatedComment !== undefined ? { translatedComment } : {}),
       };
       return built;
     });
@@ -234,6 +246,33 @@ export function buildModuleViewerData(input: {
     ? m.name
     : env.id;
 
+  // Project raw module entries through the same mapper used at install time
+  // so source-hashes match the persisted translation cache (envelope.translations[lang].lorebook).
+  const projectedHashByIndex = new Map<number, string>();
+  if (Array.isArray(m.lorebook)) {
+    const valid: import('../core/schemas/lorebook.js').LoreBook[] = [];
+    const validIndexes: number[] = [];
+    for (let i = 0; i < m.lorebook.length; i++) {
+      const parsed = loreBookSchema.safeParse(m.lorebook[i]);
+      if (!parsed.success) continue;
+      const lb = parsed.data;
+      if (lb.key.length === 0 && lb.content.length === 0) continue;
+      valid.push(lb);
+      validIndexes.push(i);
+    }
+    if (valid.length > 0) {
+      const projected = mapLoreBookWithStats(valid, { worldBookId: 'module-viewer' }).entries;
+      for (let j = 0; j < projected.length; j++) {
+        const ext = projected[j]!.extensions as Record<string, unknown> | undefined;
+        const hash = ext?.['_risu_source_hash'];
+        if (typeof hash === 'string') {
+          projectedHashByIndex.set(validIndexes[j]!, hash);
+        }
+      }
+    }
+  }
+  const lang = 'en';
+  const moduleLore = env.translations?.[lang]?.lorebook;
   const lorebookEntries: ViewerLorebookEntry[] = [];
   if (Array.isArray(m.lorebook)) {
     for (let i = 0; i < m.lorebook.length; i++) {
@@ -246,6 +285,10 @@ export function buildModuleViewerData(input: {
         : typeof keyRaw === 'string'
           ? [keyRaw]
           : [];
+      const sourceHash = projectedHashByIndex.get(i);
+      const translatedComment = sourceHash !== undefined && moduleLore
+        ? moduleLore[sourceHash]?.comment
+        : undefined;
       lorebookEntries.push({
         id: `mod-lore-${i}`,
         key,
@@ -253,6 +296,8 @@ export function buildModuleViewerData(input: {
         ...(typeof eo['comment'] === 'string' ? { comment: eo['comment'] } : {}),
         ...(typeof eo['disabled'] === 'boolean' ? { disabled: eo['disabled'] } : {}),
         ...(typeof eo['constant'] === 'boolean' ? { constant: eo['constant'] } : {}),
+        ...(sourceHash !== undefined ? { sourceHash, fromRisu: true } : {}),
+        ...(translatedComment !== undefined ? { translatedComment } : {}),
       });
     }
   }

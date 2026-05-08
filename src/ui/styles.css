@@ -2572,6 +2572,19 @@
   line-height: 1.5;
 }
 
+.lr-translate-toggle.lr-translate-toggle-on {
+  border-color: var(--lumiverse-accent, #5b8cff);
+  color: var(--lumiverse-accent, #5b8cff);
+}
+.lr-translate-toggle.lr-translate-toggle-disabled,
+.lr-translate-toggle.lr-translate-toggle-disabled:hover {
+  cursor: not-allowed;
+  opacity: 0.45;
+  transform: none;
+  background: var(--lumiverse-fill-subtle, rgba(255, 255, 255, 0.04));
+  border-color: var(--lumiverse-border, #2a2a2a);
+}
+
 /* Folder group: collapsible <details> wrapping its children. */
 .lr-viewer-drawer .lrv-lb-folder-group {
   border-top: 1px solid var(--lumiverse-border, rgba(255, 255, 255, 0.08));

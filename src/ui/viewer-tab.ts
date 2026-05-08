@@ -12,6 +12,14 @@ import type {
 } from '../types/messages.js';
 import type { FrontendLog } from './drawer.js';
 import { createVirtualGrid } from './virtual-grid.js';
+import { getTranslateEnabled, subscribeTranslateEnabled } from './translate-toggle.js';
+import {
+  translateModuleName,
+  translateLorebookComment,
+  setModuleScopeLang,
+  setCharacterScopeLang,
+} from './translate-orchestrator.js';
+import { dominantScriptLang } from './browser-translator.js';
 
 // Viewer for both characters and standalone .risum modules.
 // Mounts into a host element provided by ui/sidebar.ts.
@@ -128,12 +136,18 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
         label: `[Character] ${c.character_name ?? '(missing)'}${suffix}`,
       });
     }
+    const translate = getTranslateEnabled();
     for (const m of modules) {
+      const display = translate && m.translatedName ? m.translatedName : m.name;
       options.push({
         kind: 'module',
         id: m.id,
-        label: `[Module] ${m.name || '(unnamed)'}`,
+        label: `[Module] ${display || '(unnamed)'}`,
       });
+      // Kick off translation on miss, the next pushModules will carry it.
+      if (translate && !m.translatedName && m.name) {
+        void translateModuleName(m.id, m.name);
+      }
     }
     if (options.length === 0) {
       const empty = document.createElement('option');
@@ -1103,10 +1117,10 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
     sum.appendChild(icon);
     const name = document.createElement('span');
     name.className = 'lrv-lb-folder-name';
-    name.textContent = folder.comment && folder.comment.length > 0
-      ? folder.comment
-      : '(unnamed folder)';
+    const display = lorebookDisplayComment(folder);
+    name.textContent = display && display.length > 0 ? display : '(unnamed folder)';
     sum.appendChild(name);
+    kickoffEntryTranslation(folder, name);
     const count = document.createElement('span');
     count.className = 'lrv-lb-folder-count';
     count.textContent = `(${children.length})`;
@@ -1141,6 +1155,7 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
     sum.appendChild(name);
     row.appendChild(sum);
     row.appendChild(renderLorebookRowDetail(e));
+    kickoffEntryTranslation(e, name);
     return row;
   }
 
@@ -1155,8 +1170,10 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
     row.appendChild(icon);
     const name = document.createElement('span');
     name.className = 'lrv-lb-folder-name';
-    name.textContent = e.comment && e.comment.length > 0 ? e.comment : '(unnamed folder)';
+    const display = lorebookDisplayComment(e);
+    name.textContent = display && display.length > 0 ? display : '(unnamed folder)';
     row.appendChild(name);
+    kickoffEntryTranslation(e, name);
     return row;
   }
 
@@ -1167,13 +1184,65 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
     row.className = 'lrv-lb-child';
     const name = document.createElement('span');
     name.className = 'lrv-lb-child-name';
-    name.textContent = e.comment && e.comment.length > 0 ? e.comment : '(linked entry)';
+    const display = lorebookDisplayComment(e);
+    name.textContent = display && display.length > 0 ? display : '(linked entry)';
     row.appendChild(name);
+    kickoffEntryTranslation(e, name);
     return row;
   }
 
+  function lorebookDisplayComment(e: import('../types/messages.js').ViewerLorebookEntry): string | undefined {
+    if (getTranslateEnabled() && e.translatedComment) return e.translatedComment;
+    return e.comment;
+  }
+
+  function classifyViewerScope(d: import('../types/messages.js').ViewerData): void {
+    const corpus: string[] = [];
+    for (const g of d.lorebook) {
+      corpus.push(g.groupName);
+      for (const e of g.entries) {
+        if (e.comment) corpus.push(e.comment);
+      }
+    }
+    const lang = dominantScriptLang(corpus);
+    if (d.source.kind === 'character') {
+      setCharacterScopeLang(d.source.characterId, lang);
+    } else {
+      setModuleScopeLang(d.source.moduleId, lang);
+    }
+  }
+
+  function viewerScopeForTranslate():
+    | { kind: 'module'; moduleId: string }
+    | { kind: 'character'; characterId: string }
+    | null {
+    const src = viewerData?.source;
+    if (!src) return null;
+    return src.kind === 'module'
+      ? { kind: 'module', moduleId: src.moduleId }
+      : { kind: 'character', characterId: src.characterId };
+  }
+
+  function kickoffEntryTranslation(
+    e: import('../types/messages.js').ViewerLorebookEntry,
+    nameEl: HTMLElement,
+  ): void {
+    if (!getTranslateEnabled()) return;
+    if (e.translatedComment) return;
+    if (!e.sourceHash || !e.comment) return;
+    const scope = viewerScopeForTranslate();
+    if (!scope) return;
+    const original = e.comment;
+    void translateLorebookComment(scope, e.sourceHash, original).then((tx) => {
+      if (tx && tx !== original && nameEl.isConnected && getTranslateEnabled()) {
+        nameEl.textContent = tx;
+      }
+    });
+  }
+
   function lorebookEntryName(e: import('../types/messages.js').ViewerLorebookEntry): string {
-    if (e.comment && e.comment.length > 0) return e.comment;
+    const display = lorebookDisplayComment(e);
+    if (display && display.length > 0) return display;
     if (e.key.length > 0) return e.key.join(', ');
     return '(unnamed)';
   }
@@ -1253,6 +1322,11 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
     renderSurfaces();
   }
 
+  const unsubTranslate = subscribeTranslateEnabled(() => {
+    rebuildSourceSelect();
+    render();
+  });
+
   sourceSelect.addEventListener('change', () => {
     selectedSourceKey = sourceSelect.value;
     const o = parseSourceKey(selectedSourceKey);
@@ -1304,6 +1378,7 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
         if (assetUploadStatus !== null && assetUploadStatus.kind === 'info') {
           assetUploadStatus = null;
         }
+        classifyViewerScope(d);
         render();
         break;
       }
@@ -1325,6 +1400,7 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
 
   function destroy(): void {
     log.info('viewer-panel: destroy');
+    try { unsubTranslate(); } catch { /* */ }
     try { root.replaceChildren(); } catch { /* */ }
   }
 
