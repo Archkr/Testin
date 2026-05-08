@@ -159,6 +159,164 @@ var styles_default = `.risu-compat-drawer {\r
   font-size: 12px;\r
 }\r
 \r
+/* Native text-input cosmetics. Selects across the drawer use the\r
+ * searchable-select component below, not native <select>. */\r
+.risu-settings-drawer .rs-input,\r
+.lr-modules-drawer .lrm-attach-input {\r
+  appearance: none;\r
+  background: var(--lumiverse-fill-subtle, rgba(255, 255, 255, 0.05));\r
+  border: 1px solid var(--lumiverse-border, rgba(255, 255, 255, 0.15));\r
+  color: var(--lumiverse-text, inherit);\r
+  border-radius: 4px;\r
+  font: inherit;\r
+  min-width: 0;\r
+  transition: background 120ms, border-color 120ms;\r
+}\r
+.risu-settings-drawer .rs-input:focus,\r
+.lr-modules-drawer .lrm-attach-input:focus {\r
+  outline: none;\r
+  border-color: var(--lumiverse-primary, rgba(120, 160, 255, 0.7));\r
+  background: var(--lumiverse-fill, rgba(255, 255, 255, 0.08));\r
+}\r
+\r
+/* Shared searchable-select component. Trigger sits in-flow, panel is\r
+ * portaled to <body> with position:fixed. */\r
+.lr-ss-trigger {\r
+  display: inline-flex;\r
+  align-items: center;\r
+  justify-content: space-between;\r
+  gap: 8px;\r
+  appearance: none;\r
+  background: var(--lumiverse-fill-subtle, rgba(255, 255, 255, 0.05));\r
+  border: 1px solid var(--lumiverse-border, rgba(255, 255, 255, 0.15));\r
+  color: var(--lumiverse-text, inherit);\r
+  border-radius: 4px;\r
+  padding: 5px 8px;\r
+  font: inherit;\r
+  font-size: 12px;\r
+  min-width: 0;\r
+  cursor: pointer;\r
+  text-align: left;\r
+  transition: background 120ms, border-color 120ms;\r
+}\r
+.lr-ss-trigger:hover:not([disabled]) {\r
+  border-color: var(--lumiverse-primary, rgba(120, 160, 255, 0.45));\r
+}\r
+.lr-ss-trigger:focus,\r
+.lr-ss-trigger[aria-expanded="true"] {\r
+  outline: none;\r
+  border-color: var(--lumiverse-primary, rgba(120, 160, 255, 0.7));\r
+  background: var(--lumiverse-fill, rgba(255, 255, 255, 0.08));\r
+}\r
+.lr-ss-trigger[disabled] {\r
+  opacity: 0.55;\r
+  cursor: not-allowed;\r
+}\r
+.lr-ss-trigger-label {\r
+  flex: 1 1 auto;\r
+  min-width: 0;\r
+  white-space: nowrap;\r
+  overflow: hidden;\r
+  text-overflow: ellipsis;\r
+}\r
+.lr-ss-trigger-label.lr-ss-placeholder {\r
+  color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.55));\r
+}\r
+.lr-ss-chevron {\r
+  flex: 0 0 auto;\r
+  font-size: 10px;\r
+  opacity: 0.7;\r
+  pointer-events: none;\r
+}\r
+\r
+.lr-ss-panel {\r
+  position: fixed;\r
+  z-index: 9000;\r
+  display: none;\r
+  flex-direction: column;\r
+  min-width: 200px;\r
+  max-width: min(480px, 90vw);\r
+  background: var(--lumiverse-bg-elevated, #1f1f23);\r
+  border: 1px solid var(--lumiverse-border, rgba(255, 255, 255, 0.18));\r
+  border-radius: 6px;\r
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);\r
+  font: inherit;\r
+  font-size: 12px;\r
+  color: var(--lumiverse-text, inherit);\r
+  overflow: hidden;\r
+}\r
+.lr-ss-search-wrap {\r
+  flex: 0 0 auto;\r
+  padding: 6px;\r
+  border-bottom: 1px solid var(--lumiverse-border, rgba(255, 255, 255, 0.08));\r
+}\r
+.lr-ss-search {\r
+  width: 100%;\r
+  appearance: none;\r
+  background: var(--lumiverse-fill-subtle, rgba(255, 255, 255, 0.04));\r
+  border: 1px solid var(--lumiverse-border, rgba(255, 255, 255, 0.12));\r
+  border-radius: 4px;\r
+  padding: 5px 8px;\r
+  font: inherit;\r
+  font-size: 12px;\r
+  color: inherit;\r
+  min-width: 0;\r
+}\r
+.lr-ss-search:focus {\r
+  outline: none;\r
+  border-color: var(--lumiverse-primary, rgba(120, 160, 255, 0.7));\r
+}\r
+.lr-ss-list {\r
+  flex: 1 1 auto;\r
+  margin: 0;\r
+  padding: 4px 0;\r
+  list-style: none;\r
+  overflow-y: auto;\r
+  scrollbar-width: thin;\r
+}\r
+.lr-ss-empty {\r
+  padding: 8px 12px;\r
+  color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.55));\r
+  font-style: italic;\r
+}\r
+.lr-ss-group {\r
+  padding: 6px 12px 2px 12px;\r
+  font-size: 10.5px;\r
+  text-transform: uppercase;\r
+  letter-spacing: 0.04em;\r
+  color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.45));\r
+}\r
+.lr-ss-option {\r
+  display: flex;\r
+  flex-direction: column;\r
+  gap: 2px;\r
+  padding: 6px 12px;\r
+  cursor: pointer;\r
+  border-left: 2px solid transparent;\r
+}\r
+.lr-ss-option[aria-disabled="true"] {\r
+  opacity: 0.45;\r
+  cursor: not-allowed;\r
+}\r
+.lr-ss-option-active:not([aria-disabled="true"]) {\r
+  background: var(--lumiverse-fill, rgba(255, 255, 255, 0.07));\r
+}\r
+.lr-ss-option-selected {\r
+  border-left-color: var(--lumiverse-primary, rgba(120, 160, 255, 0.7));\r
+}\r
+.lr-ss-option-label {\r
+  white-space: nowrap;\r
+  overflow: hidden;\r
+  text-overflow: ellipsis;\r
+}\r
+.lr-ss-option-secondary {\r
+  font-size: 10.5px;\r
+  color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.55));\r
+  white-space: nowrap;\r
+  overflow: hidden;\r
+  text-overflow: ellipsis;\r
+}\r
+\r
 /* ─── Variables tab ───────────────────────────────────────────────────── */\r
 \r
 .risu-vars-drawer {\r
@@ -790,31 +948,16 @@ var styles_default = `.risu-compat-drawer {\r
   font-weight: 500;\r
   color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.7));\r
 }\r
-.risu-settings-drawer .rs-select,\r
 .risu-settings-drawer .rs-input {\r
-  appearance: none;\r
-  background: var(--lumiverse-fill-subtle, rgba(255, 255, 255, 0.05));\r
-  border: 1px solid var(--lumiverse-border, rgba(255, 255, 255, 0.15));\r
-  color: var(--lumiverse-text, inherit);\r
-  border-radius: 4px;\r
-  padding: 6px 8px;\r
-  font: inherit;\r
-  font-size: 12px;\r
   width: 100%;\r
-  min-width: 0;\r
-}\r
-.risu-settings-drawer .rs-select {\r
-  /* Native chevron from the system. Force visible text contrast. */\r
-  cursor: pointer;\r
-}\r
-.risu-settings-drawer .rs-input {\r
+  padding: 6px 8px;\r
+  font-size: 12px;\r
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;\r
 }\r
-.risu-settings-drawer .rs-select:focus,\r
-.risu-settings-drawer .rs-input:focus {\r
-  outline: none;\r
-  border-color: var(--lumiverse-primary, rgba(120, 160, 255, 0.7));\r
-  background: var(--lumiverse-fill, rgba(255, 255, 255, 0.08));\r
+.risu-settings-drawer .rs-trigger {\r
+  width: 100%;\r
+  padding: 6px 8px;\r
+  font-size: 12px;\r
 }\r
 \r
 .risu-settings-drawer .rs-btn {\r
@@ -1713,6 +1856,34 @@ var styles_default = `.risu-compat-drawer {\r
   align-items: center;\r
   flex-wrap: wrap;\r
 }\r
+.lr-modules-drawer .lrm-list-filter {\r
+  display: flex;\r
+  gap: 8px;\r
+  align-items: center;\r
+  padding: 6px 0 4px 0;\r
+}\r
+.lr-modules-drawer .lrm-list-search {\r
+  flex: 1 1 auto;\r
+  appearance: none;\r
+  background: var(--lumiverse-bg-input, rgba(0, 0, 0, 0.25));\r
+  border: 1px solid var(--lumiverse-border, rgba(255, 255, 255, 0.08));\r
+  color: var(--lumiverse-text, inherit);\r
+  font: inherit;\r
+  font-size: 12px;\r
+  padding: 4px 8px;\r
+  border-radius: 4px;\r
+  min-width: 100px;\r
+}\r
+.lr-modules-drawer .lrm-list-search:focus {\r
+  outline: none;\r
+  border-color: var(--lumiverse-primary, #6c9cff);\r
+  background: var(--lumiverse-bg-input-focus, rgba(0, 0, 0, 0.35));\r
+}\r
+.lr-modules-drawer .lrm-list-filter-count {\r
+  font-size: 11px;\r
+  color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.55));\r
+  font-variant-numeric: tabular-nums;\r
+}\r
 .lrm-btn,\r
 .lrm-btn-mini {\r
   appearance: none;\r
@@ -1932,22 +2103,11 @@ var styles_default = `.risu-compat-drawer {\r
   font-size: 11px;\r
   color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.55));\r
 }\r
-.lr-modules-drawer .lrm-attach-select,\r
-.lr-modules-drawer .lrm-attach-input {\r
-  flex: 1 1 120px;\r
-  appearance: none;\r
-  background: var(--lumiverse-fill-subtle, rgba(255, 255, 255, 0.05));\r
-  border: 1px solid var(--lumiverse-border, rgba(255, 255, 255, 0.15));\r
-  color: inherit;\r
-  border-radius: 4px;\r
-  padding: 4px 6px;\r
-  font-size: 11.5px;\r
-  min-width: 0;\r
-}\r
-.lr-modules-drawer .lrm-attach-input:focus {\r
-  outline: none;\r
-  border-color: var(--lumiverse-primary, rgba(120, 160, 255, 0.7));\r
-  background: var(--lumiverse-fill, rgba(255, 255, 255, 0.08));\r
+.lr-modules-drawer .lrm-attach-input,\r
+.lr-modules-drawer .lrm-attach-trigger {\r
+  flex: 1 1 160px;\r
+  padding: 5px 8px;\r
+  font-size: 12px;\r
 }\r
 \r
 /* ─── Viewer panel ───────────────────────────────────────────────────── */\r
@@ -1977,16 +2137,10 @@ var styles_default = `.risu-compat-drawer {\r
   font-size: 11px;\r
   color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.65));\r
 }\r
-.lr-viewer-drawer .lrv-source-select {\r
+.lr-viewer-drawer .lrv-source-trigger {\r
   flex: 1 1 200px;\r
-  appearance: none;\r
-  background: var(--lumiverse-fill-subtle, rgba(255, 255, 255, 0.05));\r
-  border: 1px solid var(--lumiverse-border, rgba(255, 255, 255, 0.15));\r
-  color: inherit;\r
-  border-radius: 4px;\r
   padding: 4px 8px;\r
   font-size: 12px;\r
-  min-width: 0;\r
 }\r
 .lr-viewer-drawer .lrv-btn {\r
   appearance: none;\r
@@ -2930,19 +3084,10 @@ var styles_default = `.risu-compat-drawer {\r
   opacity: 0.5;\r
   cursor: not-allowed;\r
 }\r
-.lr-logs-select {\r
+.lr-logs-trigger {\r
   flex: 1;\r
-  min-width: 0;\r
   padding: 4px 8px;\r
-  background: var(--lumiverse-fill, rgba(255, 255, 255, 0.04));\r
-  color: var(--lumiverse-text, #e5e7eb);\r
-  border: 1px solid var(--lumiverse-border, rgba(255, 255, 255, 0.12));\r
-  border-radius: 4px;\r
-  font: inherit;\r
-  cursor: pointer;\r
-}\r
-.lr-logs-select:focus {\r
-  outline: 1px solid var(--lumiverse-primary, #7fbfff);\r
+  font-size: 12px;\r
 }\r
 .lr-logs-status {\r
   font-size: 12px;\r
@@ -3206,9 +3351,9 @@ function errMsg(err) {
 }
 
 // src/ui/drawer.ts
-var ACCEPT_EXTENSIONS = [".charx", ".png", ".json"];
-var CHUNK_BYTES = 40 * 1024;
-var CHUNK_WIRE_WARN_BYTES = 60000;
+var ACCEPT_EXTENSIONS = [".charx", ".png", ".json", ".jpg", ".jpeg"];
+var CHUNK_BYTES = 2500 * 1024;
+var CHUNK_WIRE_WARN_BYTES = 3800000;
 var INIT_ACK_TIMEOUT_MS = 15000;
 var CHUNK_ACK_TIMEOUT_MS = 20000;
 var COMMIT_FIRST_PROGRESS_TIMEOUT_MS = 60000;
@@ -3223,7 +3368,7 @@ function mountCardsPanel(opts) {
   importBtn.type = "button";
   importBtn.className = "lrm-btn lrm-btn-primary";
   importBtn.textContent = "Upload card";
-  importBtn.title = "Pick a .charx, .png, or .json character file.";
+  importBtn.title = "Pick a .charx, .png, .json, or .jpg/.jpeg character file.";
   actionRow.appendChild(importBtn);
   root.appendChild(actionRow);
   const state = {
@@ -4443,6 +4588,372 @@ function countTotals(snap) {
   };
 }
 
+// src/ui/searchable-select.ts
+var PANEL_GAP = 4;
+var PANEL_MAX_HEIGHT = 320;
+var nextId = 0;
+function createSearchableSelect(opts) {
+  const componentId = `lr-ss-${++nextId}`;
+  let items = opts.items.slice();
+  let value = opts.value ?? null;
+  let disabled = false;
+  let isOpen = false;
+  let activeIndex = -1;
+  let searchQuery = "";
+  let filtered = items.slice();
+  let destroyed = false;
+  const root = document.createElement("button");
+  root.type = "button";
+  root.className = "lr-ss-trigger" + (opts.className ? " " + opts.className : "");
+  root.setAttribute("aria-haspopup", "listbox");
+  root.setAttribute("aria-expanded", "false");
+  root.setAttribute("aria-controls", componentId + "-panel");
+  if (opts.id)
+    root.id = opts.id;
+  const triggerLabel = document.createElement("span");
+  triggerLabel.className = "lr-ss-trigger-label";
+  root.appendChild(triggerLabel);
+  const chevron = document.createElement("span");
+  chevron.className = "lr-ss-chevron";
+  chevron.setAttribute("aria-hidden", "true");
+  chevron.textContent = "▾";
+  root.appendChild(chevron);
+  const panel = document.createElement("div");
+  panel.className = "lr-ss-panel";
+  panel.id = componentId + "-panel";
+  panel.style.display = "none";
+  panel.setAttribute("role", "dialog");
+  const searchWrap = document.createElement("div");
+  searchWrap.className = "lr-ss-search-wrap";
+  const searchInput = document.createElement("input");
+  searchInput.type = "text";
+  searchInput.className = "lr-ss-search";
+  searchInput.placeholder = opts.searchPlaceholder ?? "Search…";
+  searchInput.autocomplete = "off";
+  searchInput.spellcheck = false;
+  searchInput.setAttribute("role", "combobox");
+  searchInput.setAttribute("aria-autocomplete", "list");
+  searchInput.setAttribute("aria-controls", componentId + "-list");
+  searchWrap.appendChild(searchInput);
+  panel.appendChild(searchWrap);
+  const listEl = document.createElement("ul");
+  listEl.className = "lr-ss-list";
+  listEl.id = componentId + "-list";
+  listEl.setAttribute("role", "listbox");
+  panel.appendChild(listEl);
+  document.body.appendChild(panel);
+  function selectedItem() {
+    if (value === null)
+      return null;
+    return items.find((it) => it.value === value) ?? null;
+  }
+  function renderTrigger() {
+    const sel = selectedItem();
+    if (sel) {
+      triggerLabel.textContent = sel.label;
+      triggerLabel.classList.remove("lr-ss-placeholder");
+      if (sel.title)
+        root.title = sel.title;
+      else
+        root.removeAttribute("title");
+    } else {
+      triggerLabel.textContent = opts.placeholder ?? "Select…";
+      triggerLabel.classList.add("lr-ss-placeholder");
+      root.removeAttribute("title");
+    }
+  }
+  function applyFilter() {
+    const q = searchQuery.trim().toLocaleLowerCase();
+    if (q.length === 0) {
+      filtered = items.slice();
+    } else {
+      filtered = items.filter((it) => {
+        if (it.label.toLocaleLowerCase().includes(q))
+          return true;
+        if (it.secondary && it.secondary.toLocaleLowerCase().includes(q))
+          return true;
+        if (it.group && it.group.toLocaleLowerCase().includes(q))
+          return true;
+        if (it.value.toLocaleLowerCase().includes(q))
+          return true;
+        if (it.searchTerms) {
+          for (const t of it.searchTerms) {
+            if (t.toLocaleLowerCase().includes(q))
+              return true;
+          }
+        }
+        return false;
+      });
+    }
+    activeIndex = filtered.length > 0 ? 0 : -1;
+  }
+  function renderList() {
+    listEl.replaceChildren();
+    if (filtered.length === 0) {
+      const empty = document.createElement("li");
+      empty.className = "lr-ss-empty";
+      empty.textContent = opts.emptyMessage ?? "No matches";
+      listEl.appendChild(empty);
+      return;
+    }
+    let lastGroup;
+    for (let i = 0;i < filtered.length; i++) {
+      const it = filtered[i];
+      if (it.group !== undefined && it.group !== lastGroup) {
+        const header = document.createElement("li");
+        header.className = "lr-ss-group";
+        header.setAttribute("role", "presentation");
+        header.textContent = it.group;
+        listEl.appendChild(header);
+        lastGroup = it.group;
+      }
+      const li = document.createElement("li");
+      li.className = "lr-ss-option";
+      li.setAttribute("role", "option");
+      li.setAttribute("data-value", it.value);
+      li.setAttribute("data-index", String(i));
+      if (it.disabled)
+        li.setAttribute("aria-disabled", "true");
+      if (it.value === value) {
+        li.classList.add("lr-ss-option-selected");
+        li.setAttribute("aria-selected", "true");
+      }
+      if (i === activeIndex)
+        li.classList.add("lr-ss-option-active");
+      if (it.title)
+        li.title = it.title;
+      const labelEl = document.createElement("span");
+      labelEl.className = "lr-ss-option-label";
+      labelEl.textContent = it.label;
+      li.appendChild(labelEl);
+      if (it.secondary) {
+        const sec = document.createElement("span");
+        sec.className = "lr-ss-option-secondary";
+        sec.textContent = it.secondary;
+        li.appendChild(sec);
+      }
+      li.addEventListener("mouseenter", () => {
+        if (!it.disabled) {
+          activeIndex = i;
+          updateActiveHighlight();
+        }
+      });
+      li.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+      });
+      li.addEventListener("click", () => {
+        if (it.disabled)
+          return;
+        commitSelection(i);
+      });
+      listEl.appendChild(li);
+    }
+  }
+  function updateActiveHighlight() {
+    const options = listEl.querySelectorAll(".lr-ss-option");
+    options.forEach((el) => {
+      const idx = Number(el.getAttribute("data-index"));
+      el.classList.toggle("lr-ss-option-active", idx === activeIndex);
+    });
+    if (activeIndex >= 0) {
+      const target = listEl.querySelector(`.lr-ss-option[data-index="${activeIndex}"]`);
+      if (target) {
+        const lt = target.offsetTop;
+        const lb = lt + target.offsetHeight;
+        if (lt < listEl.scrollTop)
+          listEl.scrollTop = lt;
+        else if (lb > listEl.scrollTop + listEl.clientHeight)
+          listEl.scrollTop = lb - listEl.clientHeight;
+      }
+    }
+  }
+  function commitSelection(idx) {
+    const it = filtered[idx];
+    if (!it || it.disabled)
+      return;
+    value = it.value;
+    renderTrigger();
+    close();
+    opts.onChange(value, it);
+  }
+  function moveActive(delta) {
+    if (filtered.length === 0)
+      return;
+    let i = activeIndex < 0 ? 0 : activeIndex + delta;
+    if (i < 0)
+      i = filtered.length - 1;
+    if (i >= filtered.length)
+      i = 0;
+    while (filtered[i] && filtered[i].disabled) {
+      i = (i + (delta >= 0 ? 1 : -1) + filtered.length) % filtered.length;
+      if (i === activeIndex)
+        break;
+    }
+    activeIndex = i;
+    updateActiveHighlight();
+  }
+  function positionPanel() {
+    const r = root.getBoundingClientRect();
+    const vh = window.innerHeight;
+    const desiredTop = r.bottom + PANEL_GAP;
+    const spaceBelow = vh - desiredTop - 8;
+    const spaceAbove = r.top - PANEL_GAP - 8;
+    const maxH = Math.min(PANEL_MAX_HEIGHT, Math.max(spaceBelow, spaceAbove));
+    panel.style.maxHeight = `${maxH}px`;
+    panel.style.minWidth = `${r.width}px`;
+    panel.style.left = `${r.left}px`;
+    if (spaceBelow >= PANEL_MAX_HEIGHT || spaceBelow >= spaceAbove) {
+      panel.style.top = `${desiredTop}px`;
+      panel.style.bottom = "";
+    } else {
+      panel.style.top = "";
+      panel.style.bottom = `${vh - r.top + PANEL_GAP}px`;
+    }
+  }
+  function open() {
+    if (isOpen || disabled)
+      return;
+    isOpen = true;
+    root.setAttribute("aria-expanded", "true");
+    searchQuery = "";
+    searchInput.value = "";
+    applyFilter();
+    if (value !== null) {
+      const idx = filtered.findIndex((it) => it.value === value);
+      if (idx >= 0)
+        activeIndex = idx;
+    }
+    renderList();
+    panel.style.display = "flex";
+    positionPanel();
+    requestAnimationFrame(() => {
+      searchInput.focus();
+      updateActiveHighlight();
+    });
+    window.addEventListener("resize", positionPanel, true);
+    window.addEventListener("scroll", positionPanel, true);
+    document.addEventListener("mousedown", onOutsidePointer, true);
+    document.addEventListener("keydown", onDocKeydown, true);
+  }
+  function close() {
+    if (!isOpen)
+      return;
+    isOpen = false;
+    root.setAttribute("aria-expanded", "false");
+    panel.style.display = "none";
+    window.removeEventListener("resize", positionPanel, true);
+    window.removeEventListener("scroll", positionPanel, true);
+    document.removeEventListener("mousedown", onOutsidePointer, true);
+    document.removeEventListener("keydown", onDocKeydown, true);
+    if (document.activeElement === searchInput)
+      root.focus({ preventScroll: true });
+  }
+  function onOutsidePointer(e) {
+    const target = e.target;
+    if (!target)
+      return;
+    if (panel.contains(target) || root.contains(target))
+      return;
+    close();
+  }
+  function onDocKeydown(e) {
+    if (!isOpen)
+      return;
+    if (e.key === "Escape") {
+      e.preventDefault();
+      close();
+    }
+  }
+  searchInput.addEventListener("input", () => {
+    searchQuery = searchInput.value;
+    applyFilter();
+    renderList();
+  });
+  searchInput.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      moveActive(1);
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      moveActive(-1);
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      if (activeIndex < 0 && filtered.length > 0)
+        activeIndex = 0;
+      if (activeIndex >= 0)
+        commitSelection(activeIndex);
+    } else if (e.key === "Tab") {
+      close();
+    } else if (e.key === "Home") {
+      e.preventDefault();
+      if (filtered.length > 0) {
+        activeIndex = 0;
+        updateActiveHighlight();
+      }
+    } else if (e.key === "End") {
+      e.preventDefault();
+      if (filtered.length > 0) {
+        activeIndex = filtered.length - 1;
+        updateActiveHighlight();
+      }
+    }
+  });
+  root.addEventListener("click", (e) => {
+    e.preventDefault();
+    if (isOpen)
+      close();
+    else
+      open();
+  });
+  root.addEventListener("keydown", (e) => {
+    if (disabled)
+      return;
+    if (e.key === "ArrowDown" || e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      open();
+    }
+  });
+  renderTrigger();
+  return {
+    root,
+    setItems(next) {
+      items = next.slice();
+      if (value !== null && !items.some((it) => it.value === value))
+        value = null;
+      renderTrigger();
+      if (isOpen) {
+        applyFilter();
+        renderList();
+      }
+    },
+    setValue(next) {
+      value = next ?? null;
+      if (value !== null && !items.some((it) => it.value === value))
+        value = null;
+      renderTrigger();
+      if (isOpen)
+        renderList();
+    },
+    getValue() {
+      return value;
+    },
+    setDisabled(d) {
+      disabled = d;
+      if (d && isOpen)
+        close();
+      root.toggleAttribute("disabled", d);
+      root.setAttribute("aria-disabled", d ? "true" : "false");
+    },
+    destroy() {
+      if (destroyed)
+        return;
+      destroyed = true;
+      close();
+      panel.remove();
+    }
+  };
+}
+
 // src/ui/logs-tab.ts
 var LEVEL_OPTIONS = [
   { value: "silent", label: "Silent", title: "Drop everything, including errors. Same as logging off but the master switch stays on." },
@@ -4506,28 +5017,32 @@ function mountLogsPanel(opts) {
   levelLabel.htmlFor = "lr-logs-level";
   levelLabel.textContent = "Verbosity";
   levelLabel.title = "Threshold for which logs are recorded. Higher levels include lower ones.";
-  const levelSelect = document.createElement("select");
-  levelSelect.id = "lr-logs-level";
-  levelSelect.className = "lr-logs-select";
-  for (const opt of LEVEL_OPTIONS) {
-    const o = document.createElement("option");
-    o.value = opt.value;
-    o.textContent = opt.label;
-    o.title = opt.title;
-    levelSelect.appendChild(o);
-  }
-  levelSelect.addEventListener("change", () => {
-    const next = levelSelect.value;
-    log.info(`logs-tab: level set to ${next}`);
-    sendToBackend({
-      type: "log_set_state",
-      enabled: state.enabled,
-      includeChatData: state.includeChatData,
-      level: next
-    });
+  const levelSelect = createSearchableSelect({
+    id: "lr-logs-level",
+    className: "lr-logs-trigger",
+    placeholder: "Verbosity",
+    searchPlaceholder: "Search levels…",
+    items: LEVEL_OPTIONS.map((opt) => ({
+      value: opt.value,
+      label: opt.label,
+      title: opt.title,
+      secondary: opt.title
+    })),
+    onChange(value) {
+      if (value === null)
+        return;
+      const next = value;
+      log.info(`logs-tab: level set to ${next}`);
+      sendToBackend({
+        type: "log_set_state",
+        enabled: state.enabled,
+        includeChatData: state.includeChatData,
+        level: next
+      });
+    }
   });
   levelRow.appendChild(levelLabel);
-  levelRow.appendChild(levelSelect);
+  levelRow.appendChild(levelSelect.root);
   wrap.appendChild(levelRow);
   const status = document.createElement("div");
   status.className = "lr-logs-status";
@@ -4573,8 +5088,8 @@ function mountLogsPanel(opts) {
     chatRow.input.checked = state.includeChatData;
     chatRow.input.disabled = !state.enabled;
     chatRow.row.classList.toggle("lr-logs-row-disabled", !state.enabled);
-    if (levelSelect.value !== state.level)
-      levelSelect.value = state.level;
+    if (levelSelect.getValue() !== state.level)
+      levelSelect.setValue(state.level);
     const kb = (state.bufferBytes / 1024).toFixed(1);
     const levelTxt = `level=${state.level}`;
     status.textContent = state.enabled ? `${state.eventCount} events, ${kb} KB · ${levelTxt}` : `Off. ${state.eventCount} events, ${kb} KB · ${levelTxt}.`;
@@ -4602,6 +5117,7 @@ function mountLogsPanel(opts) {
     log.info("logs-tab: destroy");
     if (flashTimer !== undefined)
       window.clearTimeout(flashTimer);
+    levelSelect.destroy();
     while (root.firstChild)
       root.removeChild(root.firstChild);
   }
@@ -4832,10 +5348,22 @@ function mountSettingsPanel(opts) {
   connLabel.textContent = "Connection";
   connLabel.htmlFor = "rs-aux-conn";
   connRow.appendChild(connLabel);
-  const connSelect = document.createElement("select");
-  connSelect.id = "rs-aux-conn";
-  connSelect.className = "rs-select";
-  connRow.appendChild(connSelect);
+  const connSelect = createSearchableSelect({
+    id: "rs-aux-conn",
+    className: "rs-trigger",
+    placeholder: "Loading connections…",
+    searchPlaceholder: "Search connections…",
+    emptyMessage: "No matching connections",
+    items: [],
+    onChange(value) {
+      log.info(`settings-tab: connection changed to "${value ?? "<default>"}"`);
+      sendToBackend({
+        type: "update_settings",
+        patch: { auxConnectionId: value }
+      });
+    }
+  });
+  connRow.appendChild(connSelect.root);
   auxBody.appendChild(connRow);
   const modelRow = document.createElement("div");
   modelRow.className = "rs-row";
@@ -4900,10 +5428,22 @@ function mountSettingsPanel(opts) {
   submodelConnLabel.textContent = "Connection";
   submodelConnLabel.htmlFor = "rs-submodel-conn";
   submodelConnRow.appendChild(submodelConnLabel);
-  const submodelConnSelect = document.createElement("select");
-  submodelConnSelect.id = "rs-submodel-conn";
-  submodelConnSelect.className = "rs-select";
-  submodelConnRow.appendChild(submodelConnSelect);
+  const submodelConnSelect = createSearchableSelect({
+    id: "rs-submodel-conn",
+    className: "rs-trigger",
+    placeholder: "Loading connections…",
+    searchPlaceholder: "Search connections…",
+    emptyMessage: "No matching connections",
+    items: [],
+    onChange(value) {
+      log.info(`settings-tab: submodel connection changed to "${value ?? "<inherit-aux>"}"`);
+      sendToBackend({
+        type: "update_settings",
+        patch: { submodelConnectionId: value }
+      });
+    }
+  });
+  submodelConnRow.appendChild(submodelConnSelect.root);
   subBody.appendChild(submodelConnRow);
   const submodelModelRow = document.createElement("div");
   submodelModelRow.className = "rs-row";
@@ -5231,30 +5771,38 @@ owner: ${o.ownerCharacterId}` : ""}`;
     cleanupBody.hidden = id !== "cleanup";
   }
   activateSubTab(activeSubTab);
-  function renderConnectionSelect() {
-    connSelect.innerHTML = "";
-    const defaultOpt = document.createElement("option");
-    defaultOpt.value = "";
-    defaultOpt.textContent = connections === null ? "Loading connections…" : connections.length === 0 ? "No connections. Set one up in Lumi." : "Use default connection";
-    connSelect.appendChild(defaultOpt);
+  function buildConnectionItems(inheritLabel) {
+    const items = [];
+    items.push({
+      value: "",
+      label: connections === null ? "Loading connections…" : connections.length === 0 ? "No connections. Set one up in Lumi." : inheritLabel,
+      disabled: connections === null || connections.length === 0
+    });
     if (connections) {
       for (const c of connections) {
-        const opt = document.createElement("option");
-        opt.value = c.id;
         const modelSuffix = c.model ? ` / ${c.model}` : "";
         const defaultTag = c.is_default ? " [default]" : "";
-        opt.textContent = `${c.name} (${c.provider}${modelSuffix})${defaultTag}`;
-        connSelect.appendChild(opt);
+        items.push({
+          value: c.id,
+          label: `${c.name}${defaultTag}`,
+          secondary: `${c.provider}${modelSuffix}`,
+          searchTerms: [c.provider, c.model].filter((s) => !!s)
+        });
       }
     }
+    return items;
+  }
+  function renderConnectionSelect() {
+    const items = buildConnectionItems("Use default connection");
     const current = settings?.auxConnectionId ?? "";
     if (current && connections && !connections.find((c) => c.id === current)) {
-      const opt = document.createElement("option");
-      opt.value = current;
-      opt.textContent = `${current.slice(0, 8)}… (deleted? unknown)`;
-      connSelect.appendChild(opt);
+      items.push({
+        value: current,
+        label: `${current.slice(0, 8)}… (deleted? unknown)`
+      });
     }
-    connSelect.value = current;
+    connSelect.setItems(items);
+    connSelect.setValue(current);
   }
   function renderModelInput() {
     if (!isModelInputFocused()) {
@@ -5262,29 +5810,16 @@ owner: ${o.ownerCharacterId}` : ""}`;
     }
   }
   function renderSubmodelConnectionSelect() {
-    submodelConnSelect.innerHTML = "";
-    const defaultOpt = document.createElement("option");
-    defaultOpt.value = "";
-    defaultOpt.textContent = connections === null ? "Loading connections…" : connections.length === 0 ? "No connections. Set one up in Lumi." : "Inherit from Aux Model";
-    submodelConnSelect.appendChild(defaultOpt);
-    if (connections) {
-      for (const c of connections) {
-        const opt = document.createElement("option");
-        opt.value = c.id;
-        const modelSuffix = c.model ? ` / ${c.model}` : "";
-        const defaultTag = c.is_default ? " [default]" : "";
-        opt.textContent = `${c.name} (${c.provider}${modelSuffix})${defaultTag}`;
-        submodelConnSelect.appendChild(opt);
-      }
-    }
+    const items = buildConnectionItems("Inherit from Aux Model");
     const current = settings?.submodelConnectionId ?? "";
     if (current && connections && !connections.find((c) => c.id === current)) {
-      const opt = document.createElement("option");
-      opt.value = current;
-      opt.textContent = `${current.slice(0, 8)}… (deleted? unknown)`;
-      submodelConnSelect.appendChild(opt);
+      items.push({
+        value: current,
+        label: `${current.slice(0, 8)}… (deleted? unknown)`
+      });
     }
-    submodelConnSelect.value = current;
+    submodelConnSelect.setItems(items);
+    submodelConnSelect.setValue(current);
   }
   function renderSubmodelModelInput() {
     if (document.activeElement !== submodelModelInput) {
@@ -5486,14 +6021,6 @@ owner: ${o.ownerCharacterId}` : ""}`;
     renderParityChecks();
     renderStatus();
   }
-  connSelect.addEventListener("change", () => {
-    const value = connSelect.value;
-    log.info(`settings-tab: connection changed to "${value || "<default>"}"`);
-    sendToBackend({
-      type: "update_settings",
-      patch: { auxConnectionId: value === "" ? null : value }
-    });
-  });
   saveModelBtn.addEventListener("click", () => {
     const raw = modelInput.value.trim();
     log.info(`settings-tab: model override saved as "${raw}"`);
@@ -5541,14 +6068,6 @@ owner: ${o.ownerCharacterId}` : ""}`;
     connections = null;
     renderConnectionSelect();
     sendToBackend({ type: "request_connections_list" });
-  });
-  submodelConnSelect.addEventListener("change", () => {
-    const value = submodelConnSelect.value;
-    log.info(`settings-tab: submodel connection changed to "${value || "<inherit-aux>"}"`);
-    sendToBackend({
-      type: "update_settings",
-      patch: { submodelConnectionId: value === "" ? null : value }
-    });
   });
   submodelSaveModelBtn.addEventListener("click", () => {
     const raw = submodelModelInput.value.trim();
@@ -5725,6 +6244,12 @@ owner: ${o.ownerCharacterId}` : ""}`;
     handleBackendMessage,
     destroy() {
       log.info("settings-panel: destroy");
+      try {
+        connSelect.destroy();
+      } catch {}
+      try {
+        submodelConnSelect.destroy();
+      } catch {}
       try {
         logsHandle.destroy();
       } catch {}
@@ -6093,6 +6618,9 @@ function initTranslateOrchestrator(opts) {
 async function translateModuleName(moduleId, name) {
   return singleton?.request({ kind: "module", moduleId }, "name", name, "name") ?? name;
 }
+async function translateCharacterName(characterId, name) {
+  return singleton?.request({ kind: "character", characterId }, "name", name, "name") ?? name;
+}
 async function translateModuleDescription(moduleId, desc) {
   return singleton?.request({ kind: "module", moduleId }, "description", desc, "description") ?? desc;
 }
@@ -6150,7 +6678,7 @@ function setupTranslateOrchestrator(opts) {
     }
     moduleBatches.clear();
     for (const [characterId, batch] of characterBatches.entries()) {
-      if (batch.lorebook.size === 0)
+      if (batch.name === undefined && batch.lorebook.size === 0)
         continue;
       const lorebook = [];
       for (const [hash, comment] of batch.lorebook.entries()) {
@@ -6160,7 +6688,8 @@ function setupTranslateOrchestrator(opts) {
         type: "cache_character_translation",
         characterId,
         lang: "en",
-        lorebook
+        ...batch.name !== undefined ? { name: batch.name.translated } : {},
+        ...lorebook.length > 0 ? { lorebook } : {}
       });
     }
     characterBatches.clear();
@@ -6184,7 +6713,10 @@ function setupTranslateOrchestrator(opts) {
         batch = { lorebook: new Map };
         characterBatches.set(scope.characterId, batch);
       }
-      batch.lorebook.set(key, translated);
+      if (kind === "name")
+        batch.name = { translated };
+      else
+        batch.lorebook.set(key, translated);
     }
     scheduleFlush();
   }
@@ -6234,8 +6766,8 @@ function setupTranslateOrchestrator(opts) {
 }
 
 // src/ui/modules-tab.ts
-var CHUNK_BYTES2 = 40 * 1024;
-var CHUNK_WIRE_WARN_BYTES2 = 60000;
+var CHUNK_BYTES2 = 2500 * 1024;
+var CHUNK_WIRE_WARN_BYTES2 = 3800000;
 var INIT_ACK_TIMEOUT_MS2 = 15000;
 var CHUNK_ACK_TIMEOUT_MS2 = 20000;
 var COMMIT_FIRST_PROGRESS_TIMEOUT_MS2 = 60000;
@@ -6280,21 +6812,30 @@ function mountModulesPanel(opts) {
   charBody.className = "lrm-section-body lrm-tab-body";
   const charDesc = document.createElement("div");
   charDesc.className = "lrm-section-desc";
-  charDesc.textContent = "Upload Risu character cards (.charx, .png, .json). Click any row to manage attached modules. Delete characters through Lumiverse.";
+  charDesc.textContent = "Upload Risu character cards (.charx, .png, .json, .jpg/.jpeg). Click any row to manage attached modules. Delete characters through Lumiverse.";
   charBody.appendChild(charDesc);
   const charHeaderSlot = document.createElement("div");
   charHeaderSlot.className = "lrm-character-header-slot";
   charBody.appendChild(charHeaderSlot);
   const charHeaderHandle = opts.mountCharactersHeader ? opts.mountCharactersHeader(charHeaderSlot) : null;
+  let charSearchTerm = "";
+  const charFilterRow = document.createElement("div");
+  charFilterRow.className = "lrm-list-filter";
+  const charSearch = document.createElement("input");
+  charSearch.type = "search";
+  charSearch.className = "lrm-list-search";
+  charSearch.placeholder = "Search characters…";
+  charSearch.spellcheck = false;
+  charFilterRow.appendChild(charSearch);
+  const charFilterCount = document.createElement("span");
+  charFilterCount.className = "lrm-list-filter-count";
+  charFilterRow.appendChild(charFilterCount);
+  charBody.appendChild(charFilterRow);
   const charList = document.createElement("div");
   charList.className = "lrm-characters-list";
   charBody.appendChild(charList);
   const libBody = document.createElement("section");
   libBody.className = "lrm-section-body lrm-tab-body";
-  const libDesc = document.createElement("div");
-  libDesc.className = "lrm-section-desc";
-  libDesc.textContent = "Upload .risum modules. Click a row for details + delete.";
-  libBody.appendChild(libDesc);
   const libToolbar = document.createElement("div");
   libToolbar.className = "lrm-toolbar";
   const uploadBtn = document.createElement("button");
@@ -6310,15 +6851,24 @@ function mountModulesPanel(opts) {
   refreshBtn.title = "Re-fetch the module list.";
   libToolbar.appendChild(refreshBtn);
   libBody.appendChild(libToolbar);
+  let moduleSearchTerm = "";
+  const libFilterRow = document.createElement("div");
+  libFilterRow.className = "lrm-list-filter";
+  const moduleSearch = document.createElement("input");
+  moduleSearch.type = "search";
+  moduleSearch.className = "lrm-list-search";
+  moduleSearch.placeholder = "Search modules…";
+  moduleSearch.spellcheck = false;
+  libFilterRow.appendChild(moduleSearch);
+  const libFilterCount = document.createElement("span");
+  libFilterCount.className = "lrm-list-filter-count";
+  libFilterRow.appendChild(libFilterCount);
+  libBody.appendChild(libFilterRow);
   const libList = document.createElement("div");
   libList.className = "lrm-modules-list";
   libBody.appendChild(libList);
   const lorebooksBody = document.createElement("section");
   lorebooksBody.className = "lrm-section-body lrm-tab-body";
-  const lbDesc = document.createElement("div");
-  lbDesc.className = "lrm-section-desc";
-  lbDesc.textContent = "Upload a standalone lorebook (Risu native or CCSv3 JSON). Lumiverse stores it as an unattached world_book. Attach to characters via Lumiverse's UI.";
-  lorebooksBody.appendChild(lbDesc);
   const lbToolbar = document.createElement("div");
   lbToolbar.className = "lrm-toolbar";
   const lbUploadBtn = document.createElement("button");
@@ -6353,6 +6903,7 @@ function mountModulesPanel(opts) {
   function renderModuleList() {
     libList.replaceChildren();
     if (modules === null) {
+      libFilterCount.textContent = "";
       const loading = document.createElement("div");
       loading.className = "lrm-empty";
       loading.textContent = "Loading…";
@@ -6360,13 +6911,23 @@ function mountModulesPanel(opts) {
       return;
     }
     if (modules.length === 0) {
+      libFilterCount.textContent = "";
       const empty = document.createElement("div");
       empty.className = "lrm-empty";
       empty.textContent = "No modules uploaded yet.";
       libList.appendChild(empty);
       return;
     }
-    for (const m of modules) {
+    const filtered = moduleSearchTerm.trim().length === 0 ? modules.slice() : modules.filter((m) => matchesSearch(moduleSearchTerm, m.name, m.translatedName, m.id, m.filename));
+    libFilterCount.textContent = moduleSearchTerm.trim().length > 0 ? `${filtered.length} of ${modules.length}` : "";
+    if (filtered.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "lrm-empty";
+      empty.textContent = `No matches for "${moduleSearchTerm}".`;
+      libList.appendChild(empty);
+      return;
+    }
+    for (const m of filtered) {
       libList.appendChild(renderModuleRow(m));
     }
   }
@@ -6475,16 +7036,43 @@ filename: ${m.filename}`;
     }
     return n;
   }
+  const attachSelectHandles = [];
+  function destroyAttachSelects() {
+    for (const h of attachSelectHandles)
+      h.destroy();
+    attachSelectHandles.length = 0;
+  }
+  function matchesSearch(term, ...parts) {
+    const q = term.trim().toLocaleLowerCase();
+    if (q.length === 0)
+      return true;
+    for (const p of parts) {
+      if (p && p.toLocaleLowerCase().includes(q))
+        return true;
+    }
+    return false;
+  }
   function renderCharacterList() {
+    destroyAttachSelects();
     charList.replaceChildren();
     if (cards.length === 0) {
+      charFilterCount.textContent = "";
       const empty = document.createElement("div");
       empty.className = "lrm-empty";
       empty.textContent = "No Risu cards imported yet.";
       charList.appendChild(empty);
       return;
     }
-    for (const c of cards) {
+    const filtered = charSearchTerm.trim().length === 0 ? cards.slice() : cards.filter((c) => matchesSearch(charSearchTerm, c.character_name, c.translated_character_name, c.character_id));
+    charFilterCount.textContent = charSearchTerm.trim().length > 0 ? `${filtered.length} of ${cards.length}` : "";
+    if (filtered.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "lrm-empty";
+      empty.textContent = `No matches for "${charSearchTerm}".`;
+      charList.appendChild(empty);
+      return;
+    }
+    for (const c of filtered) {
       charList.appendChild(renderCharacterRow(c));
     }
   }
@@ -6502,8 +7090,21 @@ filename: ${m.filename}`;
     summary.className = "lrm-character-summary";
     const summaryName = document.createElement("span");
     summaryName.className = "lrm-character-name";
-    summaryName.textContent = card.character_name ?? "(character missing)";
+    const original = card.character_name ?? "(character missing)";
+    const useTranslated = getTranslateEnabled() && card.translated_character_name;
+    summaryName.textContent = useTranslated ? card.translated_character_name : original;
+    if (useTranslated)
+      summaryName.title = original;
     summary.appendChild(summaryName);
+    if (getTranslateEnabled() && !card.translated_character_name && card.character_name) {
+      setCharacterScopeLang(card.character_id, dominantScriptLang([card.character_name]));
+      translateCharacterName(card.character_id, card.character_name).then((tx) => {
+        if (tx && tx !== card.character_name && summaryName.isConnected) {
+          summaryName.textContent = tx;
+          summaryName.title = card.character_name ?? "";
+        }
+      });
+    }
     const attachedList = attachedByCharacter.get(card.character_id) ?? [];
     const summaryCount = document.createElement("span");
     summaryCount.className = "lrm-character-count";
@@ -6554,75 +7155,60 @@ filename: ${m.filename}`;
       }
       body.appendChild(ul);
     }
-    const attachable = (modules ?? []).filter((m) => !attachedList.some((a) => a.id === m.id));
+    const attachable = (modules ?? []).filter((m) => !attachedList.some((a) => a.id === m.id)).slice().sort((a, b) => {
+      const an = (pickModuleDisplayName(a) || a.id).toLocaleLowerCase();
+      const bn = (pickModuleDisplayName(b) || b.id).toLocaleLowerCase();
+      return an.localeCompare(bn);
+    });
     if (attachable.length > 0) {
       const attachWrap = document.createElement("div");
       attachWrap.className = "lrm-attach-wrap";
-      const label = document.createElement("span");
+      const label = document.createElement("label");
       label.className = "lrm-attach-label";
       label.textContent = "Attach module:";
+      const selectId = `lrm-attach-select-${card.character_id}`;
+      label.htmlFor = selectId;
       attachWrap.appendChild(label);
-      const listId = `lrm-attach-list-${card.character_id}`;
-      const input = document.createElement("input");
-      input.type = "text";
-      input.className = "lrm-attach-input";
-      input.placeholder = "Search modules…";
-      input.autocomplete = "off";
-      input.spellcheck = false;
-      input.setAttribute("list", listId);
-      const datalist = document.createElement("datalist");
-      datalist.id = listId;
       for (const m of attachable) {
-        const o = document.createElement("option");
-        o.value = pickModuleDisplayName(m) || m.id;
-        o.label = m.id;
-        o.setAttribute("data-module-id", m.id);
-        datalist.appendChild(o);
         if (getTranslateEnabled() && !m.translatedName && m.name) {
           translateModuleName(m.id, m.name);
         }
       }
-      attachWrap.appendChild(input);
-      attachWrap.appendChild(datalist);
       const attachBtn = document.createElement("button");
       attachBtn.type = "button";
       attachBtn.className = "lrm-btn-mini lrm-btn-primary";
       attachBtn.textContent = "Attach";
       attachBtn.title = "Attach the selected module.";
       attachBtn.disabled = true;
-      const resolveModuleId = (typed) => {
-        const t = typed.trim();
-        if (t.length === 0)
-          return null;
-        const byId = attachable.find((m) => m.id === t);
-        if (byId)
-          return byId.id;
-        const lower = t.toLowerCase();
-        const byName = attachable.find((m) => {
-          if ((m.name || "").toLowerCase() === lower)
-            return true;
-          if ((m.translatedName || "").toLowerCase() === lower)
-            return true;
-          return false;
-        });
-        if (byName)
-          return byName.id;
-        return null;
-      };
-      const refreshButton = () => {
-        attachBtn.disabled = resolveModuleId(input.value) === null;
-      };
-      input.addEventListener("input", refreshButton);
-      input.addEventListener("change", refreshButton);
-      input.addEventListener("keydown", (e) => {
-        if (e.key === "Enter" && !attachBtn.disabled) {
-          e.preventDefault();
-          attachBtn.click();
+      const ss = createSearchableSelect({
+        id: selectId,
+        className: "lrm-attach-trigger",
+        placeholder: `Select a module… (${attachable.length})`,
+        searchPlaceholder: "Search modules…",
+        emptyMessage: "No matching modules",
+        items: attachable.map((m) => {
+          const display = pickModuleDisplayName(m) || m.id;
+          const aliases = [];
+          if (m.name && m.name !== display)
+            aliases.push(m.name);
+          if (m.translatedName && m.translatedName !== display)
+            aliases.push(m.translatedName);
+          return {
+            value: m.id,
+            label: display,
+            ...m.translatedName && m.name && m.translatedName !== m.name ? { secondary: m.name } : {},
+            ...aliases.length > 0 ? { searchTerms: aliases } : {}
+          };
+        }),
+        onChange(selected) {
+          attachBtn.disabled = selected === null;
         }
       });
+      attachSelectHandles.push(ss);
+      attachWrap.appendChild(ss.root);
       attachBtn.addEventListener("click", () => {
-        const moduleId = resolveModuleId(input.value);
-        if (moduleId === null)
+        const moduleId = ss.getValue();
+        if (!moduleId)
           return;
         log.info(`modules-panel: attach_module char=${card.character_id} module=${moduleId}`);
         sendToBackend({
@@ -6630,7 +7216,7 @@ filename: ${m.filename}`;
           characterId: card.character_id,
           moduleId
         });
-        input.value = "";
+        ss.setValue(null);
         attachBtn.disabled = true;
       });
       attachWrap.appendChild(attachBtn);
@@ -6651,6 +7237,24 @@ filename: ${m.filename}`;
       setStatus(lastError, true);
   }
   const unsubTranslate = subscribeTranslateEnabled(() => render());
+  let charSearchTimer;
+  charSearch.addEventListener("input", () => {
+    if (charSearchTimer !== undefined)
+      window.clearTimeout(charSearchTimer);
+    charSearchTimer = window.setTimeout(() => {
+      charSearchTerm = charSearch.value;
+      renderCharacterList();
+    }, 80);
+  });
+  let moduleSearchTimer;
+  moduleSearch.addEventListener("input", () => {
+    if (moduleSearchTimer !== undefined)
+      window.clearTimeout(moduleSearchTimer);
+    moduleSearchTimer = window.setTimeout(() => {
+      moduleSearchTerm = moduleSearch.value;
+      renderModuleList();
+    }, 80);
+  });
   uploadBtn.addEventListener("click", () => {
     onUploadClicked();
   });
@@ -6898,6 +7502,7 @@ filename: ${m.filename}`;
   }
   function destroy() {
     log.info("modules-panel: destroy");
+    destroyAttachSelects();
     if (charHeaderHandle) {
       try {
         charHeaderHandle.destroy();
@@ -7026,11 +7631,24 @@ function mountViewerPanel(opts) {
   sourceLabel.className = "lrv-source-label";
   sourceLabel.textContent = "Source:";
   toolbar.appendChild(sourceLabel);
-  const sourceSelect = document.createElement("select");
-  sourceSelect.className = "lrv-source-select";
   sourceLabel.htmlFor = "lrv-source-select";
-  sourceSelect.id = "lrv-source-select";
-  toolbar.appendChild(sourceSelect);
+  const sourceSelect = createSearchableSelect({
+    id: "lrv-source-select",
+    className: "lrv-source-trigger",
+    placeholder: "(no characters or modules)",
+    searchPlaceholder: "Search characters and modules…",
+    emptyMessage: "No matches",
+    items: [],
+    onChange(next) {
+      if (next === null)
+        return;
+      selectedSourceKey = next;
+      const o = parseSourceKey(next);
+      if (o)
+        requestForSelection(o);
+    }
+  });
+  toolbar.appendChild(sourceSelect.root);
   const refreshBtn = document.createElement("button");
   refreshBtn.type = "button";
   refreshBtn.className = "lrm-btn";
@@ -7046,51 +7664,73 @@ function mountViewerPanel(opts) {
   root.appendChild(surfaceHost);
   function rebuildSourceSelect() {
     const prev = selectedSourceKey;
-    sourceSelect.replaceChildren();
     const options = [];
+    const items = [];
+    const translate = getTranslateEnabled();
     for (const c of cards) {
       const attached = attachedByCharacter.get(c.character_id) ?? [];
       const suffix = attached.length > 0 ? ` (+${attached.length} module${attached.length === 1 ? "" : "s"})` : "";
-      options.push({
+      const display = translate && c.translated_character_name ? c.translated_character_name : c.character_name ?? "(missing)";
+      const o = {
         kind: "character",
         id: c.character_id,
-        label: `[Character] ${c.character_name ?? "(missing)"}${suffix}`
+        label: `${display}${suffix}`
+      };
+      options.push(o);
+      const charAliases = [];
+      if (c.character_name && c.character_name !== display)
+        charAliases.push(c.character_name);
+      if (c.translated_character_name && c.translated_character_name !== display)
+        charAliases.push(c.translated_character_name);
+      items.push({
+        value: sourceKey(o),
+        label: `${display}${suffix}`,
+        group: "Characters",
+        ...translate && c.translated_character_name && c.character_name && c.translated_character_name !== c.character_name ? { secondary: c.character_name } : {},
+        ...charAliases.length > 0 ? { searchTerms: charAliases } : {}
       });
+      if (translate && !c.translated_character_name && c.character_name) {
+        setCharacterScopeLang(c.character_id, dominantScriptLang([c.character_name]));
+        translateCharacterName(c.character_id, c.character_name);
+      }
     }
-    const translate = getTranslateEnabled();
     for (const m of modules) {
       const display = translate && m.translatedName ? m.translatedName : m.name;
-      options.push({
+      const o = {
         kind: "module",
         id: m.id,
-        label: `[Module] ${display || "(unnamed)"}`
+        label: display || "(unnamed)"
+      };
+      options.push(o);
+      const modAliases = [];
+      if (m.name && m.name !== display)
+        modAliases.push(m.name);
+      if (m.translatedName && m.translatedName !== display)
+        modAliases.push(m.translatedName);
+      items.push({
+        value: sourceKey(o),
+        label: display || "(unnamed)",
+        group: "Modules",
+        ...translate && m.translatedName && m.name && m.translatedName !== m.name ? { secondary: m.name } : {},
+        ...modAliases.length > 0 ? { searchTerms: modAliases } : {}
       });
       if (translate && !m.translatedName && m.name) {
         translateModuleName(m.id, m.name);
       }
     }
+    sourceSelect.setItems(items);
     if (options.length === 0) {
-      const empty = document.createElement("option");
-      empty.value = "";
-      empty.textContent = "(no characters or modules)";
-      empty.disabled = true;
-      sourceSelect.appendChild(empty);
-      sourceSelect.disabled = true;
+      sourceSelect.setDisabled(true);
+      sourceSelect.setValue(null);
       return;
     }
-    sourceSelect.disabled = false;
-    for (const o of options) {
-      const el = document.createElement("option");
-      el.value = sourceKey(o);
-      el.textContent = o.label;
-      sourceSelect.appendChild(el);
-    }
+    sourceSelect.setDisabled(false);
     if (prev && options.some((o) => sourceKey(o) === prev)) {
-      sourceSelect.value = prev;
+      sourceSelect.setValue(prev);
     } else {
       const first = options[0];
       selectedSourceKey = sourceKey(first);
-      sourceSelect.value = selectedSourceKey;
+      sourceSelect.setValue(selectedSourceKey);
       requestForSelection(first);
     }
   }
@@ -7109,7 +7749,10 @@ function mountViewerPanel(opts) {
       return null;
     if (kind === "character") {
       const c = cards.find((x) => x.character_id === id);
-      return c ? { kind, id, label: c.character_name ?? id } : { kind, id, label: id };
+      if (!c)
+        return { kind, id, label: id };
+      const display = getTranslateEnabled() && c.translated_character_name ? c.translated_character_name : c.character_name ?? id;
+      return { kind, id, label: display };
     }
     const m = modules.find((x) => x.id === id);
     return m ? { kind, id, label: m.name } : { kind, id, label: id };
@@ -7922,6 +8565,43 @@ function mountViewerPanel(opts) {
     wrap.textContent = "⚠️ This is a legacy card imported before 0.3.0. Please reimport this card to unlock the lorebook viewer.";
     return wrap;
   }
+  function findGroupModule(g) {
+    if (g.moduleId) {
+      const byId = modules.find((x) => x.id === g.moduleId);
+      if (byId)
+        return byId;
+    }
+    if (g.groupId === "module")
+      return;
+    return modules.find((x) => {
+      if (!x.name)
+        return false;
+      return g.groupName === x.name || g.groupName === `Module: ${x.name}` || g.groupName.includes(x.name);
+    });
+  }
+  function pickLoreGroupDisplay(g) {
+    if (!getTranslateEnabled())
+      return g.groupName;
+    const m = findGroupModule(g);
+    if (m && m.name) {
+      if (m.translatedName && m.translatedName !== m.name) {
+        return g.groupName.includes(m.name) ? g.groupName.replace(m.name, m.translatedName) : m.translatedName;
+      }
+      translateModuleName(m.id, m.name);
+      return g.translatedGroupName ?? g.groupName;
+    }
+    const src = viewerData?.source;
+    if (src && src.kind === "character") {
+      const c = cards.find((x) => x.character_id === src.characterId);
+      if (c && c.character_name) {
+        if (c.translated_character_name && c.translated_character_name !== c.character_name) {
+          return g.groupName.includes(c.character_name) ? g.groupName.replace(c.character_name, c.translated_character_name) : c.translated_character_name;
+        }
+        translateCharacterName(c.character_id, c.character_name);
+      }
+    }
+    return g.translatedGroupName ?? g.groupName;
+  }
   function renderLorebookSection(groups) {
     const det = document.createElement("section");
     det.className = "lrv-section lrv-lb-section";
@@ -7946,7 +8626,11 @@ function mountViewerPanel(opts) {
       grpDet.open = true;
       const grpSum = document.createElement("summary");
       grpSum.className = "lrv-lb-group-summary";
-      grpSum.textContent = `${g.groupName} (${g.entries.length})`;
+      const display = pickLoreGroupDisplay(g);
+      const isTranslated = display !== g.groupName;
+      grpSum.textContent = `${display} (${g.entries.length})`;
+      if (isTranslated)
+        grpSum.title = g.groupName;
       grpDet.appendChild(grpSum);
       renderLorebookEntriesWithFolders(grpDet, risuEntries);
       if (userAdditions.length > 0) {
@@ -8192,12 +8876,6 @@ function mountViewerPanel(opts) {
     rebuildSourceSelect();
     render();
   });
-  sourceSelect.addEventListener("change", () => {
-    selectedSourceKey = sourceSelect.value;
-    const o = parseSourceKey(selectedSourceKey);
-    if (o)
-      requestForSelection(o);
-  });
   refreshBtn.addEventListener("click", () => {
     if (!selectedSourceKey)
       return;
@@ -8211,6 +8889,11 @@ function mountViewerPanel(opts) {
         cards = msg.cards;
         rebuildSourceSelect();
         render();
+        if (selectedSourceKey !== null) {
+          const o = parseSourceKey(selectedSourceKey);
+          if (o?.kind === "character")
+            requestForSelection(o);
+        }
         break;
       case "modules_pushed":
         modules = msg.modules;
@@ -8258,6 +8941,9 @@ function mountViewerPanel(opts) {
   }
   function destroy() {
     log.info("viewer-panel: destroy");
+    try {
+      sourceSelect.destroy();
+    } catch {}
     try {
       unsubTranslate();
     } catch {}

@@ -1,5 +1,6 @@
 import type { BackendToFrontend, FrontendToBackend, LogLevelWire } from '../types/messages.js';
 import type { FrontendLog } from './drawer.js';
+import { createSearchableSelect } from './searchable-select.js';
 
 interface LevelOption {
   readonly value: LogLevelWire;
@@ -98,28 +99,31 @@ export function mountLogsPanel(opts: MountOpts): LogsPanelHandle {
   levelLabel.htmlFor = 'lr-logs-level';
   levelLabel.textContent = 'Verbosity';
   levelLabel.title = 'Threshold for which logs are recorded. Higher levels include lower ones.';
-  const levelSelect = document.createElement('select');
-  levelSelect.id = 'lr-logs-level';
-  levelSelect.className = 'lr-logs-select';
-  for (const opt of LEVEL_OPTIONS) {
-    const o = document.createElement('option');
-    o.value = opt.value;
-    o.textContent = opt.label;
-    o.title = opt.title;
-    levelSelect.appendChild(o);
-  }
-  levelSelect.addEventListener('change', () => {
-    const next = levelSelect.value as LogLevelWire;
-    log.info(`logs-tab: level set to ${next}`);
-    sendToBackend({
-      type: 'log_set_state',
-      enabled: state.enabled,
-      includeChatData: state.includeChatData,
-      level: next,
-    });
+  const levelSelect = createSearchableSelect({
+    id: 'lr-logs-level',
+    className: 'lr-logs-trigger',
+    placeholder: 'Verbosity',
+    searchPlaceholder: 'Search levels…',
+    items: LEVEL_OPTIONS.map((opt) => ({
+      value: opt.value,
+      label: opt.label,
+      title: opt.title,
+      secondary: opt.title,
+    })),
+    onChange(value) {
+      if (value === null) return;
+      const next = value as LogLevelWire;
+      log.info(`logs-tab: level set to ${next}`);
+      sendToBackend({
+        type: 'log_set_state',
+        enabled: state.enabled,
+        includeChatData: state.includeChatData,
+        level: next,
+      });
+    },
   });
   levelRow.appendChild(levelLabel);
-  levelRow.appendChild(levelSelect);
+  levelRow.appendChild(levelSelect.root);
   wrap.appendChild(levelRow);
 
   const status = document.createElement('div');
@@ -168,7 +172,7 @@ export function mountLogsPanel(opts: MountOpts): LogsPanelHandle {
     chatRow.input.checked = state.includeChatData;
     chatRow.input.disabled = !state.enabled;
     chatRow.row.classList.toggle('lr-logs-row-disabled', !state.enabled);
-    if (levelSelect.value !== state.level) levelSelect.value = state.level;
+    if (levelSelect.getValue() !== state.level) levelSelect.setValue(state.level);
 
     const kb = (state.bufferBytes / 1024).toFixed(1);
     const levelTxt = `level=${state.level}`;
@@ -202,6 +206,7 @@ export function mountLogsPanel(opts: MountOpts): LogsPanelHandle {
   function destroy(): void {
     log.info('logs-tab: destroy');
     if (flashTimer !== undefined) window.clearTimeout(flashTimer);
+    levelSelect.destroy();
     while (root.firstChild) root.removeChild(root.firstChild);
   }
 

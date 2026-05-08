@@ -21,6 +21,7 @@ import {
   setCharacterScopeLang,
 } from './translate-orchestrator.js';
 import { dominantScriptLang } from './browser-translator.js';
+import { createSearchableSelect, type SearchableSelectItem } from './searchable-select.js';
 
 // Viewer for both characters and standalone .risum modules.
 // Mounts into a host element provided by ui/sidebar.ts.
@@ -101,11 +102,22 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
   sourceLabel.textContent = 'Source:';
   toolbar.appendChild(sourceLabel);
 
-  const sourceSelect = document.createElement('select');
-  sourceSelect.className = 'lrv-source-select';
   sourceLabel.htmlFor = 'lrv-source-select';
-  sourceSelect.id = 'lrv-source-select';
-  toolbar.appendChild(sourceSelect);
+  const sourceSelect = createSearchableSelect({
+    id: 'lrv-source-select',
+    className: 'lrv-source-trigger',
+    placeholder: '(no characters or modules)',
+    searchPlaceholder: 'Search characters and modules…',
+    emptyMessage: 'No matches',
+    items: [],
+    onChange(next) {
+      if (next === null) return;
+      selectedSourceKey = next;
+      const o = parseSourceKey(next);
+      if (o) requestForSelection(o);
+    },
+  });
+  toolbar.appendChild(sourceSelect.root);
 
   const refreshBtn = document.createElement('button');
   refreshBtn.type = 'button';
@@ -126,17 +138,30 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
 
   function rebuildSourceSelect(): void {
     const prev = selectedSourceKey;
-    sourceSelect.replaceChildren();
     const options: SourceOption[] = [];
+    const items: SearchableSelectItem[] = [];
     const translate = getTranslateEnabled();
     for (const c of cards) {
       const attached = attachedByCharacter.get(c.character_id) ?? [];
       const suffix = attached.length > 0 ? ` (+${attached.length} module${attached.length === 1 ? '' : 's'})` : '';
       const display = translate && c.translated_character_name ? c.translated_character_name : (c.character_name ?? '(missing)');
-      options.push({
+      const o: SourceOption = {
         kind: 'character',
         id: c.character_id,
-        label: `[Character] ${display}${suffix}`,
+        label: `${display}${suffix}`,
+      };
+      options.push(o);
+      const charAliases: string[] = [];
+      if (c.character_name && c.character_name !== display) charAliases.push(c.character_name);
+      if (c.translated_character_name && c.translated_character_name !== display) charAliases.push(c.translated_character_name);
+      items.push({
+        value: sourceKey(o),
+        label: `${display}${suffix}`,
+        group: 'Characters',
+        ...(translate && c.translated_character_name && c.character_name && c.translated_character_name !== c.character_name
+          ? { secondary: c.character_name }
+          : {}),
+        ...(charAliases.length > 0 ? { searchTerms: charAliases } : {}),
       });
       if (translate && !c.translated_character_name && c.character_name) {
         setCharacterScopeLang(c.character_id, dominantScriptLang([c.character_name]));
@@ -145,38 +170,41 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
     }
     for (const m of modules) {
       const display = translate && m.translatedName ? m.translatedName : m.name;
-      options.push({
+      const o: SourceOption = {
         kind: 'module',
         id: m.id,
-        label: `[Module] ${display || '(unnamed)'}`,
+        label: display || '(unnamed)',
+      };
+      options.push(o);
+      const modAliases: string[] = [];
+      if (m.name && m.name !== display) modAliases.push(m.name);
+      if (m.translatedName && m.translatedName !== display) modAliases.push(m.translatedName);
+      items.push({
+        value: sourceKey(o),
+        label: display || '(unnamed)',
+        group: 'Modules',
+        ...(translate && m.translatedName && m.name && m.translatedName !== m.name
+          ? { secondary: m.name }
+          : {}),
+        ...(modAliases.length > 0 ? { searchTerms: modAliases } : {}),
       });
-      // Kick off translation on miss, the next pushModules will carry it.
       if (translate && !m.translatedName && m.name) {
         void translateModuleName(m.id, m.name);
       }
     }
+    sourceSelect.setItems(items);
     if (options.length === 0) {
-      const empty = document.createElement('option');
-      empty.value = '';
-      empty.textContent = '(no characters or modules)';
-      empty.disabled = true;
-      sourceSelect.appendChild(empty);
-      sourceSelect.disabled = true;
+      sourceSelect.setDisabled(true);
+      sourceSelect.setValue(null);
       return;
     }
-    sourceSelect.disabled = false;
-    for (const o of options) {
-      const el = document.createElement('option');
-      el.value = sourceKey(o);
-      el.textContent = o.label;
-      sourceSelect.appendChild(el);
-    }
+    sourceSelect.setDisabled(false);
     if (prev && options.some((o) => sourceKey(o) === prev)) {
-      sourceSelect.value = prev;
+      sourceSelect.setValue(prev);
     } else {
       const first = options[0]!;
       selectedSourceKey = sourceKey(first);
-      sourceSelect.value = selectedSourceKey;
+      sourceSelect.setValue(selectedSourceKey);
       requestForSelection(first);
     }
   }
@@ -1382,12 +1410,6 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
     render();
   });
 
-  sourceSelect.addEventListener('change', () => {
-    selectedSourceKey = sourceSelect.value;
-    const o = parseSourceKey(selectedSourceKey);
-    if (o) requestForSelection(o);
-  });
-
   refreshBtn.addEventListener('click', () => {
     if (!selectedSourceKey) return;
     const o = parseSourceKey(selectedSourceKey);
@@ -1459,6 +1481,7 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
 
   function destroy(): void {
     log.info('viewer-panel: destroy');
+    try { sourceSelect.destroy(); } catch { /* */ }
     try { unsubTranslate(); } catch { /* */ }
     try { root.replaceChildren(); } catch { /* */ }
   }

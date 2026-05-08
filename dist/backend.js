@@ -25002,7 +25002,7 @@ async function importCard(args) {
   }
   progress("uploading_assets", "Uploading assets\u2026", 0.55);
   const tAssets = Date.now();
-  const uploadConcurrency = 6;
+  const uploadConcurrency = 12;
   const pathToImageId = {};
   const imageIds = [];
   const journalBuffer = [];
@@ -25030,45 +25030,99 @@ async function importCard(args) {
   let totalAssetBytes = 0;
   for (const [, data] of assetEntries)
     totalAssetBytes += data.byteLength;
-  logInfo(`(5b) uploading ${totalAssetCount} assets totalBytes=${totalAssetBytes} ` + `concurrency=${uploadConcurrency} via spindle.images.upload`);
-  const progressEvery = Math.max(1, Math.min(25, Math.floor(totalAssetCount / 20) || 1));
   const PROGRESS_BASE = 0.55;
   const PROGRESS_END = 0.9;
   let processed = 0;
   let assetUploadFailures = 0;
-  let nextIndex = 0;
-  const uploadWorker = async () => {
-    while (true) {
-      const i = nextIndex++;
-      if (i >= totalAssetCount)
-        break;
-      const entry = assetEntries[i];
-      if (!entry)
-        break;
-      const [path, data] = entry;
-      const filename = path.split("/").pop() ?? "asset.bin";
-      try {
-        const result = await args.spindle.images.upload({ data, mime_type: guessMimeType(path), filename, owner_character_id: characterId }, args.userId);
-        if (typeof result?.id !== "string" || result.id.length === 0) {
-          throw new Error("upload returned without an image id");
+  const uploadMany = args.spindle.images.uploadMany?.bind(args.spindle.images);
+  if (typeof uploadMany === "function" && totalAssetCount > 0) {
+    logInfo(`(5b) uploading ${totalAssetCount} assets totalBytes=${totalAssetBytes} ` + `via spindle.images.uploadMany (batched)`);
+    const BATCH_MAX_ITEMS = 64;
+    const BATCH_MAX_BYTES = 16 * 1024 * 1024;
+    let i = 0;
+    while (i < totalAssetCount) {
+      const batchItems = [];
+      const batchPaths = [];
+      let batchBytes = 0;
+      while (i < totalAssetCount && batchItems.length < BATCH_MAX_ITEMS) {
+        const entry = assetEntries[i];
+        if (!entry) {
+          i += 1;
+          continue;
         }
-        pathToImageId[path] = result.id;
-        imageIds.push(result.id);
-        journalBuffer.push(result.id);
+        const [path, data] = entry;
+        if (batchItems.length > 0 && batchBytes + data.byteLength > BATCH_MAX_BYTES)
+          break;
+        batchItems.push({
+          data,
+          mime_type: guessMimeType(path),
+          filename: path.split("/").pop() ?? "asset.bin",
+          owner_character_id: characterId
+        });
+        batchPaths.push(path);
+        batchBytes += data.byteLength;
+        i += 1;
+      }
+      let results = [];
+      try {
+        results = await uploadMany(batchItems, args.userId !== undefined ? { userId: args.userId } : {});
       } catch (err) {
-        assetUploadFailures += 1;
         const msg = err instanceof Error ? err.message : String(err);
-        logWarn(`(5b) upload failed path=${path}: ${msg}`);
+        logWarn(`(5b) uploadMany batch failed (${batchItems.length} items): ${msg}`);
+        results = batchItems.map(() => ({ error: msg }));
       }
-      processed += 1;
-      if (processed % progressEvery === 0 || processed === totalAssetCount) {
-        flushJournal();
-        const frac = totalAssetCount === 0 ? PROGRESS_END : PROGRESS_BASE + (PROGRESS_END - PROGRESS_BASE) * (processed / totalAssetCount);
-        progress("uploading_assets", `Uploading assets (${processed}/${totalAssetCount})\u2026`, frac);
+      for (let k = 0;k < results.length; k++) {
+        const r = results[k];
+        const path = batchPaths[k];
+        if (typeof r.id === "string" && r.id.length > 0) {
+          pathToImageId[path] = r.id;
+          imageIds.push(r.id);
+          journalBuffer.push(r.id);
+        } else {
+          assetUploadFailures += 1;
+          logWarn(`(5b) upload failed path=${path}: ${r.error ?? "unknown error"}`);
+        }
       }
+      processed += batchItems.length;
+      flushJournal();
+      const frac = PROGRESS_BASE + (PROGRESS_END - PROGRESS_BASE) * (processed / totalAssetCount);
+      progress("uploading_assets", `Uploading assets (${processed}/${totalAssetCount})\u2026`, frac);
     }
-  };
-  if (totalAssetCount > 0) {
+  } else if (totalAssetCount > 0) {
+    logInfo(`(5b) uploading ${totalAssetCount} assets totalBytes=${totalAssetBytes} ` + `concurrency=${uploadConcurrency} via spindle.images.upload (single, fallback)`);
+    const progressEvery = Math.max(1, Math.min(25, Math.floor(totalAssetCount / 20) || 1));
+    let nextIndex = 0;
+    const uploadWorker = async () => {
+      while (true) {
+        const i = nextIndex++;
+        if (i >= totalAssetCount)
+          break;
+        const entry = assetEntries[i];
+        if (!entry)
+          break;
+        const [path, data] = entry;
+        const filename = path.split("/").pop() ?? "asset.bin";
+        try {
+          const result = await args.spindle.images.upload({ data, mime_type: guessMimeType(path), filename, owner_character_id: characterId }, args.userId);
+          if (typeof result?.id !== "string" || result.id.length === 0) {
+            throw new Error("upload returned without an image id");
+          }
+          pathToImageId[path] = result.id;
+          imageIds.push(result.id);
+          journalBuffer.push(result.id);
+        } catch (err) {
+          assetUploadFailures += 1;
+          const msg = err instanceof Error ? err.message : String(err);
+          logWarn(`(5b) upload failed path=${path}: ${msg}`);
+        }
+        processed += 1;
+        if (processed % progressEvery === 0 || processed === totalAssetCount) {
+          flushJournal();
+          const frac = PROGRESS_BASE + (PROGRESS_END - PROGRESS_BASE) * (processed / totalAssetCount);
+          progress("uploading_assets", `Uploading assets (${processed}/${totalAssetCount})\u2026`, frac);
+        }
+      }
+    };
     const workers = [];
     for (let w = 0;w < Math.min(uploadConcurrency, totalAssetCount); w++) {
       workers.push(uploadWorker());
@@ -31681,7 +31735,15 @@ function buildCharacterViewerData(input) {
       return built;
     });
     sortLorebookEntries(entries);
-    lorebook2.push({ groupName: wb.name, groupId: wb.id, entries });
+    const tx = input.translatedGroupNameByWbId?.get(wb.id);
+    const moduleId = input.moduleIdByWbId?.get(wb.id);
+    lorebook2.push({
+      groupName: wb.name,
+      ...tx !== undefined ? { translatedGroupName: tx } : {},
+      groupId: wb.id,
+      ...moduleId !== undefined ? { moduleId } : {},
+      entries
+    });
   }
   return {
     source: { kind: "character", characterId: input.characterId, name: input.characterName },
@@ -31789,7 +31851,14 @@ function buildModuleViewerData(input) {
       });
     }
   }
-  const lorebook2 = lorebookEntries.length > 0 ? [{ groupName: moduleName, groupId: "module", entries: lorebookEntries }] : [];
+  const translatedModuleName = env.translations?.[lang]?.name;
+  const lorebook2 = lorebookEntries.length > 0 ? [{
+    groupName: moduleName,
+    ...translatedModuleName !== undefined && translatedModuleName !== moduleName ? { translatedGroupName: translatedModuleName } : {},
+    groupId: "module",
+    moduleId: env.id,
+    entries: lorebookEntries
+  }] : [];
   const regex2 = [];
   if (Array.isArray(m.regex)) {
     for (let i = 0;i < m.regex.length; i++) {
@@ -33359,13 +33428,18 @@ async function listCards(userId) {
   const entries = await listLumirealmCharacters(charactersApi(), userId, {
     paginate: true
   });
-  const summaries = entries.map((e) => ({
-    character_id: e.character.id,
-    character_name: e.character.name,
-    translator_version: e.data.translator_version,
-    uses_lua: e.data.payload.requires.lua,
-    stored_at: e.data.imported_at
-  }));
+  const lang = TRANSLATE_TARGET_LANG;
+  const summaries = entries.map((e) => {
+    const tx = e.data.translations?.[lang]?.name;
+    return {
+      character_id: e.character.id,
+      character_name: e.character.name,
+      ...tx !== undefined ? { translated_character_name: tx } : {},
+      translator_version: e.data.translator_version,
+      uses_lua: e.data.payload.requires.lua,
+      stored_at: e.data.imported_at
+    };
+  });
   summaries.sort((a, b) => b.stored_at - a.stored_at);
   log7.info(`listCards: done count=${summaries.length} elapsed=${Date.now() - t0}ms`);
   return summaries;
@@ -33417,7 +33491,10 @@ async function importCardFromBytes(bytesB64, fileName, userId) {
       }
     } : undefined,
     images: {
-      upload: (input, uid) => spindleImagesApi.upload(input, uid).then((img) => ({ id: img.id }))
+      upload: (input, uid) => spindleImagesApi.upload(input, uid).then((img) => ({ id: img.id })),
+      ...typeof spindleImagesApi.uploadMany === "function" ? {
+        uploadMany: (items, options) => spindleImagesApi.uploadMany(items, options)
+      } : {}
     },
     requestConsent: (opts) => requestConsent(opts, userId)
   };
@@ -35317,15 +35394,12 @@ Only accept if you trust the source of this module.
       if (pending3.length < decoded.assets.length) {
         log7.warn(`processModuleUpload: ${decoded.assets.length - pending3.length} asset(s) ` + `couldn't be paired with a module.assets[] name \u2014 dropped. ` + `(decoded.assets index out of bounds vs module.assets list.)`);
       }
-      log7.info(`processModuleUpload: uploading ${pending3.length} asset(s) via spindle.images.upload (module=${moduleBody.id})`);
       const tUpload = Date.now();
-      const uploadConcurrency = 6;
+      const uploadConcurrency = 12;
       const totalCount = pending3.length;
-      const progressEvery = Math.max(1, Math.min(25, Math.floor(totalCount / 20) || 1));
       const PROGRESS_BASE = 0.35;
       const PROGRESS_END = 0.92;
       let processed = 0;
-      let nextIndex = 0;
       const moduleNameForProgress = typeof moduleBody.name === "string" && moduleBody.name.length > 0 ? moduleBody.name : moduleBody.id;
       const journalBuffer = [];
       let journalChain = Promise.resolve();
@@ -35342,44 +35416,99 @@ Only accept if you trust the source of this module.
           }
         });
       };
-      const uploadWorker = async () => {
-        while (true) {
-          const i = nextIndex++;
-          if (i >= pending3.length)
-            break;
-          const meta = pending3[i];
-          const bytes2 = decoded.assets[i];
-          if (!meta || !bytes2)
-            continue;
-          const fileName2 = meta.path;
-          try {
-            const result = await spindleImagesApi.upload({ data: bytes2, mime_type: meta.mimeType, filename: fileName2 }, userId);
-            if (typeof result?.id !== "string" || result.id.length === 0) {
-              throw new Error("upload returned without an image id");
-            }
-            const lastDot = fileName2.lastIndexOf(".");
-            const ext = lastDot > 0 ? fileName2.slice(lastDot + 1).toLowerCase() : undefined;
-            moduleAssetIndex[fileName2] = ext !== undefined ? { imageId: result.id, ext } : { imageId: result.id };
-            journalBuffer.push(result.id);
-          } catch (err) {
-            assetUploadFailures += 1;
-            const errMessage2 = err instanceof Error ? err.message : String(err);
-            log7.warn(`processModuleUpload: upload failed name=${fileName2}: ${errMessage2}`);
-          }
-          processed += 1;
-          if (processed % progressEvery === 0 || processed === totalCount) {
-            flushModuleJournal();
-            const frac = totalCount === 0 ? PROGRESS_END : PROGRESS_BASE + (PROGRESS_END - PROGRESS_BASE) * (processed / totalCount);
-            send({
-              type: "import_progress",
-              phase: "uploading_assets",
-              message: `Uploading module assets for ${moduleNameForProgress} (${processed}/${totalCount})\u2026`,
-              fraction: frac
-            }, userId);
-          }
-        }
+      const recordUploaded = (fileName2, imageId) => {
+        const lastDot = fileName2.lastIndexOf(".");
+        const ext = lastDot > 0 ? fileName2.slice(lastDot + 1).toLowerCase() : undefined;
+        moduleAssetIndex[fileName2] = ext !== undefined ? { imageId, ext } : { imageId };
+        journalBuffer.push(imageId);
       };
-      if (pending3.length > 0) {
+      const emitProgress = () => {
+        const frac = totalCount === 0 ? PROGRESS_END : PROGRESS_BASE + (PROGRESS_END - PROGRESS_BASE) * (processed / totalCount);
+        send({
+          type: "import_progress",
+          phase: "uploading_assets",
+          message: `Uploading module assets for ${moduleNameForProgress} (${processed}/${totalCount})\u2026`,
+          fraction: frac
+        }, userId);
+      };
+      const uploadMany = spindleImagesApi.uploadMany?.bind(spindleImagesApi);
+      if (typeof uploadMany === "function" && totalCount > 0) {
+        log7.info(`processModuleUpload: uploading ${totalCount} asset(s) via spindle.images.uploadMany (module=${moduleBody.id}, batched)`);
+        const BATCH_MAX_ITEMS = 64;
+        const BATCH_MAX_BYTES = 16777216;
+        let i = 0;
+        while (i < pending3.length) {
+          const batchItems = [];
+          const batchPaths = [];
+          let batchBytes = 0;
+          while (i < pending3.length && batchItems.length < BATCH_MAX_ITEMS) {
+            const meta = pending3[i];
+            const bytes2 = decoded.assets[i];
+            if (!meta || !bytes2) {
+              i += 1;
+              continue;
+            }
+            if (batchItems.length > 0 && batchBytes + bytes2.byteLength > BATCH_MAX_BYTES)
+              break;
+            batchItems.push({ data: bytes2, mime_type: meta.mimeType, filename: meta.path });
+            batchPaths.push(meta.path);
+            batchBytes += bytes2.byteLength;
+            i += 1;
+          }
+          let results = [];
+          try {
+            results = await uploadMany(batchItems, { userId });
+          } catch (err) {
+            const msg = errMsg(err);
+            log7.warn(`processModuleUpload: uploadMany batch failed (${batchItems.length} items): ${msg}`);
+            results = batchItems.map(() => ({ error: msg }));
+          }
+          for (let k = 0;k < results.length; k++) {
+            const r = results[k];
+            const path = batchPaths[k];
+            if (typeof r.id === "string" && r.id.length > 0) {
+              recordUploaded(path, r.id);
+            } else {
+              assetUploadFailures += 1;
+              log7.warn(`processModuleUpload: upload failed name=${path}: ${r.error ?? "unknown error"}`);
+            }
+          }
+          processed += batchItems.length;
+          flushModuleJournal();
+          emitProgress();
+        }
+      } else if (totalCount > 0) {
+        log7.info(`processModuleUpload: uploading ${totalCount} asset(s) via spindle.images.upload (module=${moduleBody.id}, single, fallback)`);
+        const progressEvery = Math.max(1, Math.min(25, Math.floor(totalCount / 20) || 1));
+        let nextIndex = 0;
+        const uploadWorker = async () => {
+          while (true) {
+            const i = nextIndex++;
+            if (i >= pending3.length)
+              break;
+            const meta = pending3[i];
+            const bytes2 = decoded.assets[i];
+            if (!meta || !bytes2)
+              continue;
+            const fileName2 = meta.path;
+            try {
+              const result = await spindleImagesApi.upload({ data: bytes2, mime_type: meta.mimeType, filename: fileName2 }, userId);
+              if (typeof result?.id !== "string" || result.id.length === 0) {
+                throw new Error("upload returned without an image id");
+              }
+              recordUploaded(fileName2, result.id);
+            } catch (err) {
+              assetUploadFailures += 1;
+              const errMessage2 = err instanceof Error ? err.message : String(err);
+              log7.warn(`processModuleUpload: upload failed name=${fileName2}: ${errMessage2}`);
+            }
+            processed += 1;
+            if (processed % progressEvery === 0 || processed === totalCount) {
+              flushModuleJournal();
+              emitProgress();
+            }
+          }
+        };
         const workers = [];
         for (let w = 0;w < Math.min(uploadConcurrency, pending3.length); w++) {
           workers.push(uploadWorker());
@@ -35519,24 +35648,35 @@ async function persistCharacterTranslation(userId, msg) {
   const existing = fetched.data.translations?.[lang] ?? {};
   const existingLore = existing.lorebook ?? {};
   const nextLore = { ...existingLore };
-  for (const item of msg.lorebook) {
-    if (!item.sourceHash)
-      continue;
-    const prior = nextLore[item.sourceHash] ?? {};
-    nextLore[item.sourceHash] = {
-      ...prior,
-      ...item.comment !== undefined ? { comment: item.comment } : {}
-    };
+  if (msg.lorebook) {
+    for (const item of msg.lorebook) {
+      if (!item.sourceHash)
+        continue;
+      const prior = nextLore[item.sourceHash] ?? {};
+      nextLore[item.sourceHash] = {
+        ...prior,
+        ...item.comment !== undefined ? { comment: item.comment } : {}
+      };
+    }
   }
+  const nameChanged = msg.name !== undefined && msg.name !== existing.name;
+  const nextLang = {
+    ...existing,
+    ...msg.name !== undefined ? { name: msg.name } : {},
+    ...Object.keys(nextLore).length > 0 ? { lorebook: nextLore } : {}
+  };
   const nextData = {
     ...fetched.data,
     translations: {
       ...fetched.data.translations ?? {},
-      [lang]: { ...existing, lorebook: nextLore }
+      [lang]: nextLang
     }
   };
   expectCharacterEdit(msg.characterId);
   await writeLumirealm(charactersApi(), msg.characterId, nextData, userId);
+  if (nameChanged) {
+    pushCards(await listCards(userId), userId);
+  }
 }
 async function pushAttachedForCharacter(characterId, userId) {
   const fetched = await readLumirealm(charactersApi(), characterId, userId);
@@ -36253,14 +36393,53 @@ async function assembleCharacterViewerData(characterId, userId) {
   const fetchWarnings = [];
   const worldBooks = await fetchCharacterWorldBooksForViewer(characterId, userId, fetchWarnings);
   const translatedCommentBySourceHash = await collectTranslationsForCharacter(fetched.data, userId, TRANSLATE_TARGET_LANG);
+  const translatedGroupNameByWbId = await buildTranslatedGroupNameByWbId(fetched.character.name, fetched.data, worldBooks, userId, TRANSLATE_TARGET_LANG);
+  const moduleIdByWbId = new Map;
+  const wbMap = fetched.data.user_overrides.attached_module_world_books ?? {};
+  for (const [moduleId, wbId] of Object.entries(wbMap)) {
+    if (typeof wbId === "string")
+      moduleIdByWbId.set(wbId, moduleId);
+  }
   return buildCharacterViewerData({
     characterId,
     characterName: fetched.character.name,
     data: fetched.data,
     worldBooks,
     fetchWarnings,
-    translatedCommentBySourceHash
+    translatedCommentBySourceHash,
+    translatedGroupNameByWbId,
+    moduleIdByWbId
   });
+}
+async function buildTranslatedGroupNameByWbId(characterName, data, worldBooks, userId, lang) {
+  const out = new Map;
+  const moduleWbMap = data.user_overrides.attached_module_world_books ?? {};
+  const wbIdToModuleId = new Map;
+  for (const [moduleId, wbId] of Object.entries(moduleWbMap)) {
+    if (typeof wbId === "string")
+      wbIdToModuleId.set(wbId, moduleId);
+  }
+  const txCharName = data.translations?.[lang]?.name;
+  for (const wb of worldBooks) {
+    const moduleId = wbIdToModuleId.get(wb.id);
+    if (moduleId !== undefined) {
+      try {
+        const env = await readEnvelope(moduleStorage(), userId, moduleId);
+        const txMod = env?.translations?.[lang]?.name;
+        const origMod = env?.module?.name;
+        if (txMod !== undefined && typeof origMod === "string" && origMod.length > 0 && origMod !== txMod) {
+          out.set(wb.id, wb.name.includes(origMod) ? wb.name.replace(origMod, txMod) : txMod);
+        }
+      } catch (err) {
+        log7.warn(`buildTranslatedGroupNameByWbId: module=${moduleId} read failed: ${errMsg(err)}`);
+      }
+      continue;
+    }
+    if (txCharName !== undefined && txCharName !== characterName) {
+      out.set(wb.id, wb.name.includes(characterName) ? wb.name.replace(characterName, txCharName) : txCharName);
+    }
+  }
+  return out;
 }
 async function collectTranslationsForCharacter(data, userId, lang) {
   const out = new Map;

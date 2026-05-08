@@ -6,6 +6,7 @@ import type {
 import type { FrontendLog } from './drawer.js';
 import { mountLogsPanel } from './logs-tab.js';
 import { createVirtualGrid, type VirtualGridHandle } from './virtual-grid.js';
+import { createSearchableSelect, type SearchableSelectItem } from './searchable-select.js';
 
 // Settings UI for aux/submodel LLM connections.
 // Every change is sent as update_settings; state is reflected back via settings_pushed.
@@ -172,10 +173,22 @@ export function mountSettingsPanel(
   connLabel.textContent = 'Connection';
   connLabel.htmlFor = 'rs-aux-conn';
   connRow.appendChild(connLabel);
-  const connSelect = document.createElement('select');
-  connSelect.id = 'rs-aux-conn';
-  connSelect.className = 'rs-select';
-  connRow.appendChild(connSelect);
+  const connSelect = createSearchableSelect({
+    id: 'rs-aux-conn',
+    className: 'rs-trigger',
+    placeholder: 'Loading connections…',
+    searchPlaceholder: 'Search connections…',
+    emptyMessage: 'No matching connections',
+    items: [],
+    onChange(value) {
+      log.info(`settings-tab: connection changed to "${value ?? '<default>'}"`);
+      sendToBackend({
+        type: 'update_settings',
+        patch: { auxConnectionId: value },
+      });
+    },
+  });
+  connRow.appendChild(connSelect.root);
   auxBody.appendChild(connRow);
 
   const modelRow = document.createElement('div');
@@ -247,10 +260,22 @@ export function mountSettingsPanel(
   submodelConnLabel.textContent = 'Connection';
   submodelConnLabel.htmlFor = 'rs-submodel-conn';
   submodelConnRow.appendChild(submodelConnLabel);
-  const submodelConnSelect = document.createElement('select');
-  submodelConnSelect.id = 'rs-submodel-conn';
-  submodelConnSelect.className = 'rs-select';
-  submodelConnRow.appendChild(submodelConnSelect);
+  const submodelConnSelect = createSearchableSelect({
+    id: 'rs-submodel-conn',
+    className: 'rs-trigger',
+    placeholder: 'Loading connections…',
+    searchPlaceholder: 'Search connections…',
+    emptyMessage: 'No matching connections',
+    items: [],
+    onChange(value) {
+      log.info(`settings-tab: submodel connection changed to "${value ?? '<inherit-aux>'}"`);
+      sendToBackend({
+        type: 'update_settings',
+        patch: { submodelConnectionId: value },
+      });
+    },
+  });
+  submodelConnRow.appendChild(submodelConnSelect.root);
   subBody.appendChild(submodelConnRow);
 
   const submodelModelRow = document.createElement('div');
@@ -607,37 +632,43 @@ export function mountSettingsPanel(
   }
   activateSubTab(activeSubTab);
 
-  function renderConnectionSelect(): void {
-    connSelect.innerHTML = '';
-    const defaultOpt = document.createElement('option');
-    defaultOpt.value = '';
-    defaultOpt.textContent = connections === null
-      ? 'Loading connections…'
-      : connections.length === 0
-        ? 'No connections. Set one up in Lumi.'
-        : 'Use default connection';
-    connSelect.appendChild(defaultOpt);
-
+  function buildConnectionItems(inheritLabel: string): SearchableSelectItem[] {
+    const items: SearchableSelectItem[] = [];
+    items.push({
+      value: '',
+      label: connections === null
+        ? 'Loading connections…'
+        : connections.length === 0
+          ? 'No connections. Set one up in Lumi.'
+          : inheritLabel,
+      disabled: connections === null || connections.length === 0,
+    });
     if (connections) {
       for (const c of connections) {
-        const opt = document.createElement('option');
-        opt.value = c.id;
         const modelSuffix = c.model ? ` / ${c.model}` : '';
         const defaultTag = c.is_default ? ' [default]' : '';
-        opt.textContent = `${c.name} (${c.provider}${modelSuffix})${defaultTag}`;
-        connSelect.appendChild(opt);
+        items.push({
+          value: c.id,
+          label: `${c.name}${defaultTag}`,
+          secondary: `${c.provider}${modelSuffix}`,
+          searchTerms: [c.provider, c.model].filter((s): s is string => !!s),
+        });
       }
     }
+    return items;
+  }
 
+  function renderConnectionSelect(): void {
+    const items = buildConnectionItems('Use default connection');
     const current = settings?.auxConnectionId ?? '';
     if (current && connections && !connections.find((c) => c.id === current)) {
-      // Saved ID no longer exists; surface it so the user knows to repick.
-      const opt = document.createElement('option');
-      opt.value = current;
-      opt.textContent = `${current.slice(0, 8)}… (deleted? unknown)`;
-      connSelect.appendChild(opt);
+      items.push({
+        value: current,
+        label: `${current.slice(0, 8)}… (deleted? unknown)`,
+      });
     }
-    connSelect.value = current;
+    connSelect.setItems(items);
+    connSelect.setValue(current);
   }
 
   function renderModelInput(): void {
@@ -647,34 +678,16 @@ export function mountSettingsPanel(
   }
 
   function renderSubmodelConnectionSelect(): void {
-    submodelConnSelect.innerHTML = '';
-    const defaultOpt = document.createElement('option');
-    defaultOpt.value = '';
-    defaultOpt.textContent = connections === null
-      ? 'Loading connections…'
-      : connections.length === 0
-        ? 'No connections. Set one up in Lumi.'
-        : 'Inherit from Aux Model';
-    submodelConnSelect.appendChild(defaultOpt);
-
-    if (connections) {
-      for (const c of connections) {
-        const opt = document.createElement('option');
-        opt.value = c.id;
-        const modelSuffix = c.model ? ` / ${c.model}` : '';
-        const defaultTag = c.is_default ? ' [default]' : '';
-        opt.textContent = `${c.name} (${c.provider}${modelSuffix})${defaultTag}`;
-        submodelConnSelect.appendChild(opt);
-      }
-    }
+    const items = buildConnectionItems('Inherit from Aux Model');
     const current = settings?.submodelConnectionId ?? '';
     if (current && connections && !connections.find((c) => c.id === current)) {
-      const opt = document.createElement('option');
-      opt.value = current;
-      opt.textContent = `${current.slice(0, 8)}… (deleted? unknown)`;
-      submodelConnSelect.appendChild(opt);
+      items.push({
+        value: current,
+        label: `${current.slice(0, 8)}… (deleted? unknown)`,
+      });
     }
-    submodelConnSelect.value = current;
+    submodelConnSelect.setItems(items);
+    submodelConnSelect.setValue(current);
   }
 
   function renderSubmodelModelInput(): void {
@@ -882,15 +895,6 @@ export function mountSettingsPanel(
     renderStatus();
   }
 
-  connSelect.addEventListener('change', () => {
-    const value = connSelect.value;
-    log.info(`settings-tab: connection changed to "${value || '<default>'}"`);
-    sendToBackend({
-      type: 'update_settings',
-      patch: { auxConnectionId: value === '' ? null : value },
-    });
-  });
-
   saveModelBtn.addEventListener('click', () => {
     const raw = modelInput.value.trim();
     log.info(`settings-tab: model override saved as "${raw}"`);
@@ -934,15 +938,6 @@ export function mountSettingsPanel(
     connections = null;
     renderConnectionSelect();
     sendToBackend({ type: 'request_connections_list' });
-  });
-
-  submodelConnSelect.addEventListener('change', () => {
-    const value = submodelConnSelect.value;
-    log.info(`settings-tab: submodel connection changed to "${value || '<inherit-aux>'}"`);
-    sendToBackend({
-      type: 'update_settings',
-      patch: { submodelConnectionId: value === '' ? null : value },
-    });
   });
 
   submodelSaveModelBtn.addEventListener('click', () => {
@@ -1134,6 +1129,8 @@ export function mountSettingsPanel(
     handleBackendMessage,
     destroy(): void {
       log.info('settings-panel: destroy');
+      try { connSelect.destroy(); } catch { /* */ }
+      try { submodelConnSelect.destroy(); } catch { /* */ }
       try { logsHandle.destroy(); } catch { /* */ }
       try { cleanupGrid?.destroy(); } catch { /* */ }
       try { root.replaceChildren(); } catch { /* */ }

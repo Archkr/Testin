@@ -10,6 +10,7 @@ import { errMsg } from '../util/coerce.js';
 import { getTranslateEnabled, subscribeTranslateEnabled } from './translate-toggle.js';
 import { translateModuleName, translateModuleDescription, translateCharacterName, setModuleScopeLang, setCharacterScopeLang } from './translate-orchestrator.js';
 import { dominantScriptLang } from './browser-translator.js';
+import { createSearchableSelect, type SearchableSelectHandle } from './searchable-select.js';
 
 // Mounts into a host element provided by ui/sidebar.ts.
 
@@ -114,6 +115,20 @@ export function mountModulesPanel(opts: MountModulesPanelOptions): ModulesPanelH
     ? opts.mountCharactersHeader(charHeaderSlot)
     : null;
 
+  let charSearchTerm = '';
+  const charFilterRow = document.createElement('div');
+  charFilterRow.className = 'lrm-list-filter';
+  const charSearch = document.createElement('input');
+  charSearch.type = 'search';
+  charSearch.className = 'lrm-list-search';
+  charSearch.placeholder = 'Search characters…';
+  charSearch.spellcheck = false;
+  charFilterRow.appendChild(charSearch);
+  const charFilterCount = document.createElement('span');
+  charFilterCount.className = 'lrm-list-filter-count';
+  charFilterRow.appendChild(charFilterCount);
+  charBody.appendChild(charFilterRow);
+
   const charList = document.createElement('div');
   charList.className = 'lrm-characters-list';
   charBody.appendChild(charList);
@@ -121,11 +136,6 @@ export function mountModulesPanel(opts: MountModulesPanelOptions): ModulesPanelH
   // ---- Modules subtab ------------------------------------------------------
   const libBody = document.createElement('section');
   libBody.className = 'lrm-section-body lrm-tab-body';
-
-  const libDesc = document.createElement('div');
-  libDesc.className = 'lrm-section-desc';
-  libDesc.textContent = 'Upload .risum modules. Click a row for details + delete.';
-  libBody.appendChild(libDesc);
 
   const libToolbar = document.createElement('div');
   libToolbar.className = 'lrm-toolbar';
@@ -143,6 +153,20 @@ export function mountModulesPanel(opts: MountModulesPanelOptions): ModulesPanelH
   libToolbar.appendChild(refreshBtn);
   libBody.appendChild(libToolbar);
 
+  let moduleSearchTerm = '';
+  const libFilterRow = document.createElement('div');
+  libFilterRow.className = 'lrm-list-filter';
+  const moduleSearch = document.createElement('input');
+  moduleSearch.type = 'search';
+  moduleSearch.className = 'lrm-list-search';
+  moduleSearch.placeholder = 'Search modules…';
+  moduleSearch.spellcheck = false;
+  libFilterRow.appendChild(moduleSearch);
+  const libFilterCount = document.createElement('span');
+  libFilterCount.className = 'lrm-list-filter-count';
+  libFilterRow.appendChild(libFilterCount);
+  libBody.appendChild(libFilterRow);
+
   const libList = document.createElement('div');
   libList.className = 'lrm-modules-list';
   libBody.appendChild(libList);
@@ -150,12 +174,6 @@ export function mountModulesPanel(opts: MountModulesPanelOptions): ModulesPanelH
   // ---- Lorebooks subtab ----------------------------------------------------
   const lorebooksBody = document.createElement('section');
   lorebooksBody.className = 'lrm-section-body lrm-tab-body';
-
-  const lbDesc = document.createElement('div');
-  lbDesc.className = 'lrm-section-desc';
-  lbDesc.textContent =
-    "Upload a standalone lorebook (Risu native or CCSv3 JSON). Lumiverse stores it as an unattached world_book. Attach to characters via Lumiverse's UI.";
-  lorebooksBody.appendChild(lbDesc);
 
   const lbToolbar = document.createElement('div');
   lbToolbar.className = 'lrm-toolbar';
@@ -197,6 +215,7 @@ export function mountModulesPanel(opts: MountModulesPanelOptions): ModulesPanelH
   function renderModuleList(): void {
     libList.replaceChildren();
     if (modules === null) {
+      libFilterCount.textContent = '';
       const loading = document.createElement('div');
       loading.className = 'lrm-empty';
       loading.textContent = 'Loading…';
@@ -204,13 +223,27 @@ export function mountModulesPanel(opts: MountModulesPanelOptions): ModulesPanelH
       return;
     }
     if (modules.length === 0) {
+      libFilterCount.textContent = '';
       const empty = document.createElement('div');
       empty.className = 'lrm-empty';
       empty.textContent = 'No modules uploaded yet.';
       libList.appendChild(empty);
       return;
     }
-    for (const m of modules) {
+    const filtered = moduleSearchTerm.trim().length === 0
+      ? modules.slice()
+      : modules.filter((m) => matchesSearch(moduleSearchTerm, m.name, m.translatedName, m.id, m.filename));
+    libFilterCount.textContent = moduleSearchTerm.trim().length > 0
+      ? `${filtered.length} of ${modules.length}`
+      : '';
+    if (filtered.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'lrm-empty';
+      empty.textContent = `No matches for "${moduleSearchTerm}".`;
+      libList.appendChild(empty);
+      return;
+    }
+    for (const m of filtered) {
       libList.appendChild(renderModuleRow(m));
     }
   }
@@ -316,16 +349,46 @@ export function mountModulesPanel(opts: MountModulesPanelOptions): ModulesPanelH
     return n;
   }
 
+  const attachSelectHandles: SearchableSelectHandle[] = [];
+  function destroyAttachSelects(): void {
+    for (const h of attachSelectHandles) h.destroy();
+    attachSelectHandles.length = 0;
+  }
+
+  function matchesSearch(term: string, ...parts: ReadonlyArray<string | undefined | null>): boolean {
+    const q = term.trim().toLocaleLowerCase();
+    if (q.length === 0) return true;
+    for (const p of parts) {
+      if (p && p.toLocaleLowerCase().includes(q)) return true;
+    }
+    return false;
+  }
+
   function renderCharacterList(): void {
+    destroyAttachSelects();
     charList.replaceChildren();
     if (cards.length === 0) {
+      charFilterCount.textContent = '';
       const empty = document.createElement('div');
       empty.className = 'lrm-empty';
       empty.textContent = 'No Risu cards imported yet.';
       charList.appendChild(empty);
       return;
     }
-    for (const c of cards) {
+    const filtered = charSearchTerm.trim().length === 0
+      ? cards.slice()
+      : cards.filter((c) => matchesSearch(charSearchTerm, c.character_name, c.translated_character_name, c.character_id));
+    charFilterCount.textContent = charSearchTerm.trim().length > 0
+      ? `${filtered.length} of ${cards.length}`
+      : '';
+    if (filtered.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'lrm-empty';
+      empty.textContent = `No matches for "${charSearchTerm}".`;
+      charList.appendChild(empty);
+      return;
+    }
+    for (const c of filtered) {
       charList.appendChild(renderCharacterRow(c));
     }
   }
@@ -413,81 +476,74 @@ export function mountModulesPanel(opts: MountModulesPanelOptions): ModulesPanelH
       body.appendChild(ul);
     }
 
-    const attachable = (modules ?? []).filter((m) => !attachedList.some((a) => a.id === m.id));
+    const attachable = (modules ?? [])
+      .filter((m) => !attachedList.some((a) => a.id === m.id))
+      .slice()
+      .sort((a, b) => {
+        const an = (pickModuleDisplayName(a) || a.id).toLocaleLowerCase();
+        const bn = (pickModuleDisplayName(b) || b.id).toLocaleLowerCase();
+        return an.localeCompare(bn);
+      });
     if (attachable.length > 0) {
       const attachWrap = document.createElement('div');
       attachWrap.className = 'lrm-attach-wrap';
-      const label = document.createElement('span');
+      const label = document.createElement('label');
       label.className = 'lrm-attach-label';
       label.textContent = 'Attach module:';
+      const selectId = `lrm-attach-select-${card.character_id}`;
+      label.htmlFor = selectId;
       attachWrap.appendChild(label);
-      // Per-character id prevents datalist collisions (datalist is global by id).
-      const listId = `lrm-attach-list-${card.character_id}`;
-      const input = document.createElement('input');
-      input.type = 'text';
-      input.className = 'lrm-attach-input';
-      input.placeholder = 'Search modules…';
-      input.autocomplete = 'off';
-      input.spellcheck = false;
-      input.setAttribute('list', listId);
-      const datalist = document.createElement('datalist');
-      datalist.id = listId;
+
       for (const m of attachable) {
-        const o = document.createElement('option');
-        o.value = pickModuleDisplayName(m) || m.id;
-        o.label = m.id;
-        o.setAttribute('data-module-id', m.id);
-        datalist.appendChild(o);
-        // Kick off translation so the next render shows the translated option.
         if (getTranslateEnabled() && !m.translatedName && m.name) {
           void translateModuleName(m.id, m.name);
         }
       }
-      attachWrap.appendChild(input);
-      attachWrap.appendChild(datalist);
+
       const attachBtn = document.createElement('button');
       attachBtn.type = 'button';
       attachBtn.className = 'lrm-btn-mini lrm-btn-primary';
       attachBtn.textContent = 'Attach';
       attachBtn.title = 'Attach the selected module.';
       attachBtn.disabled = true;
-      const resolveModuleId = (typed: string): string | null => {
-        const t = typed.trim();
-        if (t.length === 0) return null;
-        const byId = attachable.find((m) => m.id === t);
-        if (byId) return byId.id;
-        const lower = t.toLowerCase();
-        // Match against both the original name and the translated one so the
-        // user can type either form and resolve to the same module.
-        const byName = attachable.find((m) => {
-          if ((m.name || '').toLowerCase() === lower) return true;
-          if ((m.translatedName || '').toLowerCase() === lower) return true;
-          return false;
-        });
-        if (byName) return byName.id;
-        return null;
-      };
-      const refreshButton = (): void => {
-        attachBtn.disabled = resolveModuleId(input.value) === null;
-      };
-      input.addEventListener('input', refreshButton);
-      input.addEventListener('change', refreshButton);
-      input.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' && !attachBtn.disabled) {
-          e.preventDefault();
-          attachBtn.click();
-        }
+
+      const ss = createSearchableSelect({
+        id: selectId,
+        className: 'lrm-attach-trigger',
+        placeholder: `Select a module… (${attachable.length})`,
+        searchPlaceholder: 'Search modules…',
+        emptyMessage: 'No matching modules',
+        items: attachable.map((m) => {
+          const display = pickModuleDisplayName(m) || m.id;
+          const aliases: string[] = [];
+          if (m.name && m.name !== display) aliases.push(m.name);
+          if (m.translatedName && m.translatedName !== display) aliases.push(m.translatedName);
+          return {
+            value: m.id,
+            label: display,
+            ...(m.translatedName && m.name && m.translatedName !== m.name
+              ? { secondary: m.name }
+              : {}),
+            ...(aliases.length > 0 ? { searchTerms: aliases } : {}),
+          };
+        }),
+        onChange(selected) {
+          attachBtn.disabled = selected === null;
+        },
       });
+      attachSelectHandles.push(ss);
+      attachWrap.appendChild(ss.root);
+
       attachBtn.addEventListener('click', () => {
-        const moduleId = resolveModuleId(input.value);
-        if (moduleId === null) return;
+        const moduleId = ss.getValue();
+        if (!moduleId) return;
         log.info(`modules-panel: attach_module char=${card.character_id} module=${moduleId}`);
         sendToBackend({
           type: 'attach_module',
           characterId: card.character_id,
           moduleId,
         });
-        input.value = '';
+        ss.setValue(null);
         attachBtn.disabled = true;
       });
       attachWrap.appendChild(attachBtn);
@@ -510,6 +566,24 @@ export function mountModulesPanel(opts: MountModulesPanelOptions): ModulesPanelH
   }
 
   const unsubTranslate = subscribeTranslateEnabled(() => render());
+
+  let charSearchTimer: number | undefined;
+  charSearch.addEventListener('input', () => {
+    if (charSearchTimer !== undefined) window.clearTimeout(charSearchTimer);
+    charSearchTimer = window.setTimeout(() => {
+      charSearchTerm = charSearch.value;
+      renderCharacterList();
+    }, 80);
+  });
+
+  let moduleSearchTimer: number | undefined;
+  moduleSearch.addEventListener('input', () => {
+    if (moduleSearchTimer !== undefined) window.clearTimeout(moduleSearchTimer);
+    moduleSearchTimer = window.setTimeout(() => {
+      moduleSearchTerm = moduleSearch.value;
+      renderModuleList();
+    }, 80);
+  });
 
   uploadBtn.addEventListener('click', () => { void onUploadClicked(); });
   refreshBtn.addEventListener('click', () => {
@@ -773,6 +847,7 @@ export function mountModulesPanel(opts: MountModulesPanelOptions): ModulesPanelH
 
   function destroy(): void {
     log.info('modules-panel: destroy');
+    destroyAttachSelects();
     if (charHeaderHandle) {
       try { charHeaderHandle.destroy(); } catch { void 0; }
     }
