@@ -13,9 +13,8 @@ import { dominantScriptLang } from './browser-translator.js';
 
 // Mounts into a host element provided by ui/sidebar.ts.
 
-// 40 KB raw per chunk, stays under Lumi's 64 KB inbound guard.
-const CHUNK_BYTES = 40 * 1024;
-const CHUNK_WIRE_WARN_BYTES = 60_000;
+const CHUNK_BYTES = 700 * 1024;
+const CHUNK_WIRE_WARN_BYTES = 1_000_000;
 const INIT_ACK_TIMEOUT_MS = 15_000;
 const CHUNK_ACK_TIMEOUT_MS = 20_000;
 const COMMIT_FIRST_PROGRESS_TIMEOUT_MS = 60_000;

@@ -6,11 +6,8 @@ import { errMsg } from '../util/coerce.js';
 
 const ACCEPT_EXTENSIONS = ['.charx', '.png', '.json'];
 
-// 40 KB raw per chunk keeps the base64-expanded wire size under Lumi's
-// 64 KB inbound guard (commit 0480c54 src/ws/handler.ts).
-const CHUNK_BYTES = 40 * 1024;
-// Log threshold: warn before the 64 KB guard silently drops a chunk.
-const CHUNK_WIRE_WARN_BYTES = 60_000;
+const CHUNK_BYTES = 700 * 1024;
+const CHUNK_WIRE_WARN_BYTES = 1_000_000;
 // Commit timeout is long because translation + world-book creation can
 // take many seconds on a large card.
 const INIT_ACK_TIMEOUT_MS = 15_000;
