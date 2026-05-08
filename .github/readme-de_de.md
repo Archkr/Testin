@@ -35,7 +35,7 @@ Die vollständige Anleitung findest du im **[Wiki](https://github.com/AMousePad/
 LumiRealm wird als Lumiverse-Erweiterung installiert. Lumiverse muss in Version **0.9.7 oder höher (STAGING-BRANCH)** vorliegen.
 
 1. Öffne deine Lumiverse-Instanz.
-2. Gehe zu **Settings → Extensions** und füge hinzu:
+2. Gehe zur **Seitenleiste → Nach unten scrollen → Erweiterungs-Tab** und füge hinzu:
 
    ```txt
    https://github.com/AMousePad/LumiRealm

@@ -35,7 +35,7 @@ LumiRealm — это расширение [Lumiverse](https://github.com/prolix-
 LumiRealm устанавливается как расширение Lumiverse. Требуется Lumiverse версии **0.9.7 или новее (ветка STAGING)**.
 
 1. Откройте свой инстанс Lumiverse.
-2. Перейдите в **Settings → Extensions** и добавьте:
+2. Перейдите в **Боковую панель → Прокрутите вниз → Вкладка расширений** и добавьте:
 
    ```txt
    https://github.com/AMousePad/LumiRealm

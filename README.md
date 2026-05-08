@@ -35,7 +35,7 @@ Full guide on the **[Wiki](https://github.com/AMousePad/LumiRealm/wiki)**.
 LumiRealm installs as a Lumiverse extension. Lumiverse must be at version **0.9.7 or later (STAGING BRANCH).**
 
 1. Open your Lumiverse instance.
-2. Go to **Settings → Extensions** and add:
+2. Go to the **Sidebar → Scroll Down → Extensions Tab** and add:
 
    ```txt
    https://github.com/AMousePad/LumiRealm
