@@ -79,9 +79,16 @@ export function setupBgHtmlRenderer(
   return {
     handleMessage(msg: BgHtmlMessage | BgHtmlClearMessage): void {
       if (msg.type === "clear_bg_html") {
-        if (activeChatId === msg.chatId || activeChatId === null) {
-          dismount();
+        // Chat-switch to a card with empty bg-html sends clear for the new
+        // chatId. activeChatId still points at the old chat, so the old guard
+        // `activeChatId === msg.chatId` skipped dismount and the old chat's
+        // chat-scope style leaked onto the new chat's content.
+        if (activeChatId !== null && activeChatId !== msg.chatId) {
+          flog.info(
+            `bg-html renderer: chat-switch to empty bg, dismounting prior chat=${activeChatId}`,
+          );
         }
+        dismount();
         return;
       }
       // render_bg_html

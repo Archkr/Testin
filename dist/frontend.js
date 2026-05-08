@@ -8706,9 +8706,10 @@ function setupBgHtmlRenderer(ctx, flog, islandStyles) {
   return {
     handleMessage(msg) {
       if (msg.type === "clear_bg_html") {
-        if (activeChatId === msg.chatId || activeChatId === null) {
-          dismount();
+        if (activeChatId !== null && activeChatId !== msg.chatId) {
+          flog.info(`bg-html renderer: chat-switch to empty bg, dismounting prior chat=${activeChatId}`);
         }
+        dismount();
         return;
       }
       if (msg.chatId !== activeChatId) {
