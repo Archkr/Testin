@@ -13,8 +13,8 @@ import { dominantScriptLang } from './browser-translator.js';
 
 // Mounts into a host element provided by ui/sidebar.ts.
 
-const CHUNK_BYTES = 700 * 1024;
-const CHUNK_WIRE_WARN_BYTES = 1_000_000;
+const CHUNK_BYTES = 2500 * 1024;
+const CHUNK_WIRE_WARN_BYTES = 3_800_000;
 const INIT_ACK_TIMEOUT_MS = 15_000;
 const CHUNK_ACK_TIMEOUT_MS = 20_000;
 const COMMIT_FIRST_PROGRESS_TIMEOUT_MS = 60_000;
@@ -104,7 +104,7 @@ export function mountModulesPanel(opts: MountModulesPanelOptions): ModulesPanelH
   const charDesc = document.createElement('div');
   charDesc.className = 'lrm-section-desc';
   charDesc.textContent =
-    'Upload Risu character cards (.charx, .png, .json). Click any row to manage attached modules. Delete characters through Lumiverse.';
+    'Upload Risu character cards (.charx, .png, .json, .jpg/.jpeg). Click any row to manage attached modules. Delete characters through Lumiverse.';
   charBody.appendChild(charDesc);
 
   const charHeaderSlot = document.createElement('div');

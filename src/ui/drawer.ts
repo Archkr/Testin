@@ -4,10 +4,12 @@ import { errMsg } from '../util/coerce.js';
 
 // Mounts into a host element provided by ui/sidebar.ts.
 
-const ACCEPT_EXTENSIONS = ['.charx', '.png', '.json'];
+const ACCEPT_EXTENSIONS = ['.charx', '.png', '.json', '.jpg', '.jpeg'];
 
-const CHUNK_BYTES = 700 * 1024;
-const CHUNK_WIRE_WARN_BYTES = 1_000_000;
+// 2.5 MB raw base64s to ~3.34 MB, fits under Lumi's 4 MB SPINDLE_BACKEND_MSG
+// ceiling with envelope room. 3 MB raw alone base64s to exactly 4 MB.
+const CHUNK_BYTES = 2500 * 1024;
+const CHUNK_WIRE_WARN_BYTES = 3_800_000;
 // Commit timeout is long because translation + world-book creation can
 // take many seconds on a large card.
 const INIT_ACK_TIMEOUT_MS = 15_000;
@@ -74,7 +76,7 @@ export function mountCardsPanel(opts: MountCardsPanelOptions): DrawerHandle {
   importBtn.type = 'button';
   importBtn.className = 'lrm-btn lrm-btn-primary';
   importBtn.textContent = 'Upload card';
-  importBtn.title = 'Pick a .charx, .png, or .json character file.';
+  importBtn.title = 'Pick a .charx, .png, .json, or .jpg/.jpeg character file.';
   actionRow.appendChild(importBtn);
   root.appendChild(actionRow);
 
