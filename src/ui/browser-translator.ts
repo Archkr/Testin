@@ -29,6 +29,24 @@ let detectorPromise: Promise<{ detect(t: string): Promise<Array<{ detectedLangua
 const resultCache = new Map<string, string>();
 let unavailableLogged = false;
 
+let fallbackDisabled = false;
+const fallbackDisabledSubscribers = new Set<(reason: string) => void>();
+
+export function subscribeFallbackDisabled(cb: (reason: string) => void): () => void {
+  fallbackDisabledSubscribers.add(cb);
+  return () => fallbackDisabledSubscribers.delete(cb);
+}
+
+function disableFallback(reason: string): void {
+  if (fallbackDisabled) return;
+  fallbackDisabled = true;
+  // eslint-disable-next-line no-console
+  console.warn(`[lumirealm] google-translate fallback disabled: ${reason}`);
+  for (const cb of fallbackDisabledSubscribers) {
+    try { cb(reason); } catch { /* swallow */ }
+  }
+}
+
 function chromeTranslator(): ChromeTranslatorCtor | null {
   const tr = (globalThis as { Translator?: unknown }).Translator;
   if (tr && typeof (tr as ChromeTranslatorCtor).create === 'function') {
@@ -94,15 +112,57 @@ async function getTranslatorForPair(
 }
 
 export function isTranslationAvailable(): boolean {
-  return chromeTranslator() !== null;
+  if (chromeTranslator() !== null) return true;
+  return !fallbackDisabled;
+}
+
+export function isUsingFallback(): boolean {
+  return chromeTranslator() === null && !fallbackDisabled;
+}
+
+// Unofficial gtx endpoint, no auth. 429 disables and surfaces to UI.
+async function googleTranslateFallback(text: string, src: string): Promise<string | null> {
+  const url =
+    'https://translate.googleapis.com/translate_a/single?client=gtx' +
+    `&sl=${encodeURIComponent(src)}&tl=${TARGET}&dt=t&q=${encodeURIComponent(text)}`;
+  let res: Response;
+  try {
+    res = await fetch(url);
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('[lumirealm] google-translate fetch failed:', err);
+    return null;
+  }
+  if (res.status === 429) {
+    disableFallback('rate limited (429)');
+    return null;
+  }
+  if (!res.ok) {
+    // eslint-disable-next-line no-console
+    console.warn(`[lumirealm] google-translate http ${res.status}`);
+    return null;
+  }
+  let data: unknown;
+  try {
+    data = await res.json();
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(data) || !Array.isArray(data[0])) return null;
+  let out = '';
+  for (const seg of data[0] as unknown[]) {
+    if (Array.isArray(seg) && typeof seg[0] === 'string') out += seg[0];
+  }
+  return out;
 }
 
 export function getTranslator(): TranslatorHandle | null {
-  if (!isTranslationAvailable()) {
+  const haveLocal = chromeTranslator() !== null;
+  if (!haveLocal && fallbackDisabled) {
     if (!unavailableLogged) {
       unavailableLogged = true;
       // eslint-disable-next-line no-console
-      console.info('[lumirealm] browser Translator API unavailable (Chrome 138+ required)');
+      console.info('[lumirealm] browser Translator API unavailable and fallback disabled');
     }
     return null;
   }
@@ -115,19 +175,25 @@ export function getTranslator(): TranslatorHandle | null {
       const cacheKey = `${src}|${TARGET}|${text}`;
       const cached = resultCache.get(cacheKey);
       if (cached !== undefined) return cached;
-      const tr = await getTranslatorForPair(src, TARGET);
-      if (!tr) {
+      if (haveLocal) {
+        const tr = await getTranslatorForPair(src, TARGET);
+        if (tr) {
+          try {
+            const out = await tr.translate(text);
+            resultCache.set(cacheKey, out);
+            return out;
+          } catch {
+            resultCache.set(cacheKey, text);
+            return text;
+          }
+        }
         resultCache.set(cacheKey, text);
         return text;
       }
-      try {
-        const out = await tr.translate(text);
-        resultCache.set(cacheKey, out);
-        return out;
-      } catch {
-        resultCache.set(cacheKey, text);
-        return text;
-      }
+      const out = await googleTranslateFallback(text, src);
+      if (out === null) return text;
+      resultCache.set(cacheKey, out);
+      return out;
     },
   };
 }

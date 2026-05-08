@@ -1,9 +1,12 @@
 .lr-realm-launcher {
+  box-sizing: border-box;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
-  padding: 8px 12px;
-  margin: 8px;
+  height: 32px;
+  padding: 0 12px;
+  margin: 0;
   border: 1px solid var(--lumiverse-border, #2a2a2a);
   border-radius: 999px;
   background: var(--lumiverse-fill-subtle, rgba(255, 255, 255, 0.04));
@@ -11,15 +14,23 @@
   font-family: inherit;
   font-size: 12px;
   font-weight: 500;
+  line-height: 1;
   cursor: pointer;
   transition: transform var(--lumiverse-transition-fast, 120ms) ease,
     background var(--lumiverse-transition-fast, 120ms) ease,
     border-color var(--lumiverse-transition-fast, 120ms) ease;
 }
 
+.lr-sidebar-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+}
+
 .lr-realm-launcher:hover {
   background: var(--lumiverse-fill, rgba(255, 255, 255, 0.06));
-  border-color: var(--lumiverse-accent, #5b8cff);
+  border-color: var(--lumiverse-primary, #5b8cff);
   transform: translateY(-1px);
 }
 
@@ -106,13 +117,13 @@
 }
 
 .lr-realm-pill:hover {
-  border-color: var(--lumiverse-border-hover, var(--lumiverse-accent, #5b8cff));
+  border-color: var(--lumiverse-border-hover, var(--lumiverse-primary, #5b8cff));
 }
 
 .lr-realm-pill.active {
-  border-color: var(--lumiverse-accent, #5b8cff);
-  background: color-mix(in srgb, var(--lumiverse-accent, #5b8cff) 18%, transparent);
-  color: var(--lumiverse-accent-fg, #b3c7ff);
+  border-color: var(--lumiverse-primary, #5b8cff);
+  background: color-mix(in srgb, var(--lumiverse-primary, #5b8cff) 18%, transparent);
+  color: var(--lumiverse-primary-text, #b3c7ff);
 }
 
 .lr-realm-pill.danger {
@@ -160,7 +171,7 @@
 
 .lr-realm-card:hover {
   background: var(--lumiverse-fill, rgba(255, 255, 255, 0.06));
-  border-color: var(--lumiverse-border-hover, var(--lumiverse-accent, #5b8cff));
+  border-color: var(--lumiverse-border-hover, var(--lumiverse-primary, #5b8cff));
 }
 
 .lr-realm-thumb {
@@ -220,10 +231,10 @@
 
 .lr-realm-tag {
   font-size: 10px;
-  color: var(--lumiverse-accent, #6ea6ff);
+  color: var(--lumiverse-primary, #6ea6ff);
   padding: 1px 6px;
   border-radius: 4px;
-  background: color-mix(in srgb, var(--lumiverse-accent, #5b8cff) 8%, transparent);
+  background: color-mix(in srgb, var(--lumiverse-primary, #5b8cff) 8%, transparent);
 }
 
 .lr-realm-card-stats {
@@ -255,7 +266,7 @@
 }
 
 .lr-realm-pager button:hover:not(:disabled) {
-  border-color: var(--lumiverse-accent, #5b8cff);
+  border-color: var(--lumiverse-primary, #5b8cff);
 }
 
 .lr-realm-pager button:disabled {
@@ -414,7 +425,7 @@
 .lr-realm-popup-desc del,
 .lr-realm-popup-desc s { text-decoration: line-through; opacity: 0.75; }
 .lr-realm-popup-desc a {
-  color: var(--lumiverse-accent, #5b8cff);
+  color: var(--lumiverse-primary, #5b8cff);
   text-decoration: underline;
   text-underline-offset: 2px;
 }
@@ -471,8 +482,8 @@
 }
 
 .lr-realm-primary {
-  background: var(--lumiverse-accent, #5b8cff);
-  color: var(--lumiverse-accent-fg, #ffffff);
+  background: var(--lumiverse-primary, #5b8cff);
+  color: var(--lumiverse-primary-text, #ffffff);
   border: 0;
   padding: 9px 16px;
   border-radius: var(--lumiverse-radius, 8px);
@@ -506,7 +517,7 @@
 }
 
 .lr-realm-secondary:hover {
-  border-color: var(--lumiverse-accent, #5b8cff);
+  border-color: var(--lumiverse-primary, #5b8cff);
 }
 
 .lr-realm-toast {
@@ -580,7 +591,7 @@
 }
 
 .lr-realm-prompt input:focus {
-  border-color: var(--lumiverse-accent, #5b8cff);
+  border-color: var(--lumiverse-primary, #5b8cff);
 }
 
 .lr-realm-prompt-actions {
@@ -594,7 +605,7 @@
   height: 14px;
   border-radius: 50%;
   border: 2px solid rgba(255, 255, 255, 0.2);
-  border-top-color: var(--lumiverse-accent, #5b8cff);
+  border-top-color: var(--lumiverse-primary, #5b8cff);
   animation: lr-realm-spin 800ms linear infinite;
   display: inline-block;
 }

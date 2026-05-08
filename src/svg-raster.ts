@@ -28,7 +28,7 @@ function snapshotTheme(): ThemeContext {
   const cs = getComputedStyle(root);
   return {
     color: cs.color || "#000",
-    accent: cs.getPropertyValue("--lumiverse-accent").trim(),
+    accent: cs.getPropertyValue("--lumiverse-primary").trim(),
     text: cs.getPropertyValue("--lumiverse-text").trim(),
   };
 }
@@ -41,7 +41,7 @@ function prepareSvgForRaster(
   if (classification !== "theme-reactive") return svg;
   const declarations = [
     `color:${theme.color}`,
-    ...(theme.accent ? [`--lumiverse-accent:${theme.accent}`] : []),
+    ...(theme.accent ? [`--lumiverse-primary:${theme.accent}`] : []),
     ...(theme.text ? [`--lumiverse-text:${theme.text}`] : []),
   ].join(";");
   if (!declarations) return svg;

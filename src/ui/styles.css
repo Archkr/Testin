@@ -2573,8 +2573,8 @@
 }
 
 .lr-translate-toggle.lr-translate-toggle-on {
-  border-color: var(--lumiverse-accent, #5b8cff);
-  color: var(--lumiverse-accent, #5b8cff);
+  border-color: var(--lumiverse-primary, #5b8cff);
+  color: var(--lumiverse-primary, #5b8cff);
 }
 .lr-translate-toggle.lr-translate-toggle-disabled,
 .lr-translate-toggle.lr-translate-toggle-disabled:hover {
@@ -2941,7 +2941,7 @@
   cursor: pointer;
 }
 .lr-logs-select:focus {
-  outline: 1px solid var(--lumiverse-accent, #7fbfff);
+  outline: 1px solid var(--lumiverse-primary, #7fbfff);
 }
 .lr-logs-status {
   font-size: 12px;
@@ -2966,7 +2966,7 @@
 }
 .lr-logs-flash {
   font-size: 12px;
-  color: var(--lumiverse-accent, #7fbfff);
+  color: var(--lumiverse-primary, #7fbfff);
   min-height: 1.4em;
 }
 

@@ -2574,8 +2574,8 @@ var styles_default = `.risu-compat-drawer {\r
 }\r
 \r
 .lr-translate-toggle.lr-translate-toggle-on {\r
-  border-color: var(--lumiverse-accent, #5b8cff);\r
-  color: var(--lumiverse-accent, #5b8cff);\r
+  border-color: var(--lumiverse-primary, #5b8cff);\r
+  color: var(--lumiverse-primary, #5b8cff);\r
 }\r
 .lr-translate-toggle.lr-translate-toggle-disabled,\r
 .lr-translate-toggle.lr-translate-toggle-disabled:hover {\r
@@ -2942,7 +2942,7 @@ var styles_default = `.risu-compat-drawer {\r
   cursor: pointer;\r
 }\r
 .lr-logs-select:focus {\r
-  outline: 1px solid var(--lumiverse-accent, #7fbfff);\r
+  outline: 1px solid var(--lumiverse-primary, #7fbfff);\r
 }\r
 .lr-logs-status {\r
   font-size: 12px;\r
@@ -2967,7 +2967,7 @@ var styles_default = `.risu-compat-drawer {\r
 }\r
 .lr-logs-flash {\r
   font-size: 12px;\r
-  color: var(--lumiverse-accent, #7fbfff);\r
+  color: var(--lumiverse-primary, #7fbfff);\r
   min-height: 1.4em;\r
 }\r
 \r
@@ -5744,6 +5744,23 @@ var translatorByPair = null;
 var detectorPromise = null;
 var resultCache = new Map;
 var unavailableLogged = false;
+var fallbackDisabled = false;
+var fallbackDisabledSubscribers = new Set;
+function subscribeFallbackDisabled(cb) {
+  fallbackDisabledSubscribers.add(cb);
+  return () => fallbackDisabledSubscribers.delete(cb);
+}
+function disableFallback(reason) {
+  if (fallbackDisabled)
+    return;
+  fallbackDisabled = true;
+  console.warn(`[lumirealm] google-translate fallback disabled: ${reason}`);
+  for (const cb of fallbackDisabledSubscribers) {
+    try {
+      cb(reason);
+    } catch {}
+  }
+}
 function chromeTranslator() {
   const tr = globalThis.Translator;
   if (tr && typeof tr.create === "function") {
@@ -5806,13 +5823,51 @@ async function getTranslatorForPair(src, tgt) {
   return promise;
 }
 function isTranslationAvailable() {
-  return chromeTranslator() !== null;
+  if (chromeTranslator() !== null)
+    return true;
+  return !fallbackDisabled;
+}
+function isUsingFallback() {
+  return chromeTranslator() === null && !fallbackDisabled;
+}
+async function googleTranslateFallback(text, src) {
+  const url = "https://translate.googleapis.com/translate_a/single?client=gtx" + `&sl=${encodeURIComponent(src)}&tl=${TARGET}&dt=t&q=${encodeURIComponent(text)}`;
+  let res;
+  try {
+    res = await fetch(url);
+  } catch (err) {
+    console.warn("[lumirealm] google-translate fetch failed:", err);
+    return null;
+  }
+  if (res.status === 429) {
+    disableFallback("rate limited (429)");
+    return null;
+  }
+  if (!res.ok) {
+    console.warn(`[lumirealm] google-translate http ${res.status}`);
+    return null;
+  }
+  let data;
+  try {
+    data = await res.json();
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(data) || !Array.isArray(data[0]))
+    return null;
+  let out = "";
+  for (const seg of data[0]) {
+    if (Array.isArray(seg) && typeof seg[0] === "string")
+      out += seg[0];
+  }
+  return out;
 }
 function getTranslator() {
-  if (!isTranslationAvailable()) {
+  const haveLocal = chromeTranslator() !== null;
+  if (!haveLocal && fallbackDisabled) {
     if (!unavailableLogged) {
       unavailableLogged = true;
-      console.info("[lumirealm] browser Translator API unavailable (Chrome 138+ required)");
+      console.info("[lumirealm] browser Translator API unavailable and fallback disabled");
     }
     return null;
   }
@@ -5828,19 +5883,26 @@ function getTranslator() {
       const cached = resultCache.get(cacheKey);
       if (cached !== undefined)
         return cached;
-      const tr = await getTranslatorForPair(src, TARGET);
-      if (!tr) {
+      if (haveLocal) {
+        const tr = await getTranslatorForPair(src, TARGET);
+        if (tr) {
+          try {
+            const out2 = await tr.translate(text);
+            resultCache.set(cacheKey, out2);
+            return out2;
+          } catch {
+            resultCache.set(cacheKey, text);
+            return text;
+          }
+        }
         resultCache.set(cacheKey, text);
         return text;
       }
-      try {
-        const out = await tr.translate(text);
-        resultCache.set(cacheKey, out);
-        return out;
-      } catch {
-        resultCache.set(cacheKey, text);
+      const out = await googleTranslateFallback(text, src);
+      if (out === null)
         return text;
-      }
+      resultCache.set(cacheKey, out);
+      return out;
     }
   };
 }
@@ -5917,17 +5979,46 @@ function setupTranslateToggle(opts) {
   const btn = document.createElement("button");
   btn.type = "button";
   btn.className = "lr-realm-launcher lr-translate-toggle";
+  const label = document.createElement("span");
+  btn.appendChild(label);
   let enabled = lastTranslateEnabled;
-  const apiAvailable = isTranslationAvailable();
+  let apiAvailable = isTranslationAvailable();
   function paint() {
-    btn.textContent = `Translate: ${enabled && apiAvailable ? "On" : "Off"}`;
+    label.textContent = `Translate: ${enabled && apiAvailable ? "On" : "Off"}`;
     btn.classList.toggle("lr-translate-toggle-on", enabled && apiAvailable);
     btn.classList.toggle("lr-translate-toggle-disabled", !apiAvailable);
     if (!apiAvailable) {
-      btn.title = "Non-Chrome browser support comming soon.";
+      btn.title = "Unavaliable. Blame Google Translate.";
+    } else if (isUsingFallback()) {
+      btn.title = enabled ? "Display module + lorebook names translated via Google Translate." : "Display original names.";
     } else {
       btn.title = enabled ? "Display module + lorebook names in browser-translated form (English)." : "Display original names.";
     }
+  }
+  function showToast(message) {
+    const t = document.createElement("div");
+    t.className = "lr-translate-toast";
+    t.textContent = message;
+    Object.assign(t.style, {
+      position: "fixed",
+      bottom: "16px",
+      left: "50%",
+      transform: "translateX(-50%)",
+      background: "rgba(20,20,20,0.92)",
+      color: "#fff",
+      padding: "10px 16px",
+      borderRadius: "8px",
+      fontSize: "13px",
+      zIndex: "99999",
+      maxWidth: "90vw",
+      boxShadow: "0 4px 16px rgba(0,0,0,0.3)"
+    });
+    document.body.appendChild(t);
+    setTimeout(() => {
+      try {
+        t.remove();
+      } catch {}
+    }, 5000);
   }
   function applyEnabled(next, source) {
     if (next === enabled && next === lastTranslateEnabled)
@@ -5959,6 +6050,17 @@ function setupTranslateToggle(opts) {
     btn.disabled = true;
   }
   opts.mountTarget.appendChild(btn);
+  const unsubscribeFallback = subscribeFallbackDisabled((reason) => {
+    apiAvailable = false;
+    btn.setAttribute("aria-disabled", "true");
+    btn.disabled = true;
+    if (enabled)
+      applyEnabled(false, "click");
+    else
+      paint();
+    opts.log.warn(`translate-toggle: fallback disabled (${reason})`);
+    showToast("Translation rate-limited. Translator turned off.");
+  });
   opts.sendToBackend({ type: "request_settings" });
   function handleBackendMessage(msg) {
     if (msg.type !== "settings_pushed")
@@ -5969,6 +6071,9 @@ function setupTranslateToggle(opts) {
     applyEnabled(settings.translateEnabled === true, "settings_pushed");
   }
   function destroy() {
+    try {
+      unsubscribeFallback();
+    } catch {}
     try {
       btn.remove();
     } catch {}
@@ -11475,7 +11580,7 @@ function snapshotTheme() {
   const cs = getComputedStyle(root);
   return {
     color: cs.color || "#000",
-    accent: cs.getPropertyValue("--lumiverse-accent").trim(),
+    accent: cs.getPropertyValue("--lumiverse-primary").trim(),
     text: cs.getPropertyValue("--lumiverse-text").trim()
   };
 }
@@ -11484,7 +11589,7 @@ function prepareSvgForRaster(svg, classification, theme) {
     return svg;
   const declarations = [
     `color:${theme.color}`,
-    ...theme.accent ? [`--lumiverse-accent:${theme.accent}`] : [],
+    ...theme.accent ? [`--lumiverse-primary:${theme.accent}`] : [],
     ...theme.text ? [`--lumiverse-text:${theme.text}`] : []
   ].join(";");
   if (!declarations)
@@ -11647,11 +11752,14 @@ function extractRealmId(input) {
 
 // src/realm/styles.css
 var styles_default2 = `.lr-realm-launcher {\r
+  box-sizing: border-box;\r
   display: inline-flex;\r
   align-items: center;\r
+  justify-content: center;\r
   gap: 6px;\r
-  padding: 8px 12px;\r
-  margin: 8px;\r
+  height: 32px;\r
+  padding: 0 12px;\r
+  margin: 0;\r
   border: 1px solid var(--lumiverse-border, #2a2a2a);\r
   border-radius: 999px;\r
   background: var(--lumiverse-fill-subtle, rgba(255, 255, 255, 0.04));\r
@@ -11659,15 +11767,23 @@ var styles_default2 = `.lr-realm-launcher {\r
   font-family: inherit;\r
   font-size: 12px;\r
   font-weight: 500;\r
+  line-height: 1;\r
   cursor: pointer;\r
   transition: transform var(--lumiverse-transition-fast, 120ms) ease,\r
     background var(--lumiverse-transition-fast, 120ms) ease,\r
     border-color var(--lumiverse-transition-fast, 120ms) ease;\r
 }\r
 \r
+.lr-sidebar-header {\r
+  display: flex;\r
+  align-items: center;\r
+  gap: 8px;\r
+  padding: 8px;\r
+}\r
+\r
 .lr-realm-launcher:hover {\r
   background: var(--lumiverse-fill, rgba(255, 255, 255, 0.06));\r
-  border-color: var(--lumiverse-accent, #5b8cff);\r
+  border-color: var(--lumiverse-primary, #5b8cff);\r
   transform: translateY(-1px);\r
 }\r
 \r
@@ -11754,13 +11870,13 @@ var styles_default2 = `.lr-realm-launcher {\r
 }\r
 \r
 .lr-realm-pill:hover {\r
-  border-color: var(--lumiverse-border-hover, var(--lumiverse-accent, #5b8cff));\r
+  border-color: var(--lumiverse-border-hover, var(--lumiverse-primary, #5b8cff));\r
 }\r
 \r
 .lr-realm-pill.active {\r
-  border-color: var(--lumiverse-accent, #5b8cff);\r
-  background: color-mix(in srgb, var(--lumiverse-accent, #5b8cff) 18%, transparent);\r
-  color: var(--lumiverse-accent-fg, #b3c7ff);\r
+  border-color: var(--lumiverse-primary, #5b8cff);\r
+  background: color-mix(in srgb, var(--lumiverse-primary, #5b8cff) 18%, transparent);\r
+  color: var(--lumiverse-primary-text, #b3c7ff);\r
 }\r
 \r
 .lr-realm-pill.danger {\r
@@ -11808,7 +11924,7 @@ var styles_default2 = `.lr-realm-launcher {\r
 \r
 .lr-realm-card:hover {\r
   background: var(--lumiverse-fill, rgba(255, 255, 255, 0.06));\r
-  border-color: var(--lumiverse-border-hover, var(--lumiverse-accent, #5b8cff));\r
+  border-color: var(--lumiverse-border-hover, var(--lumiverse-primary, #5b8cff));\r
 }\r
 \r
 .lr-realm-thumb {\r
@@ -11868,10 +11984,10 @@ var styles_default2 = `.lr-realm-launcher {\r
 \r
 .lr-realm-tag {\r
   font-size: 10px;\r
-  color: var(--lumiverse-accent, #6ea6ff);\r
+  color: var(--lumiverse-primary, #6ea6ff);\r
   padding: 1px 6px;\r
   border-radius: 4px;\r
-  background: color-mix(in srgb, var(--lumiverse-accent, #5b8cff) 8%, transparent);\r
+  background: color-mix(in srgb, var(--lumiverse-primary, #5b8cff) 8%, transparent);\r
 }\r
 \r
 .lr-realm-card-stats {\r
@@ -11903,7 +12019,7 @@ var styles_default2 = `.lr-realm-launcher {\r
 }\r
 \r
 .lr-realm-pager button:hover:not(:disabled) {\r
-  border-color: var(--lumiverse-accent, #5b8cff);\r
+  border-color: var(--lumiverse-primary, #5b8cff);\r
 }\r
 \r
 .lr-realm-pager button:disabled {\r
@@ -12062,7 +12178,7 @@ var styles_default2 = `.lr-realm-launcher {\r
 .lr-realm-popup-desc del,\r
 .lr-realm-popup-desc s { text-decoration: line-through; opacity: 0.75; }\r
 .lr-realm-popup-desc a {\r
-  color: var(--lumiverse-accent, #5b8cff);\r
+  color: var(--lumiverse-primary, #5b8cff);\r
   text-decoration: underline;\r
   text-underline-offset: 2px;\r
 }\r
@@ -12119,8 +12235,8 @@ var styles_default2 = `.lr-realm-launcher {\r
 }\r
 \r
 .lr-realm-primary {\r
-  background: var(--lumiverse-accent, #5b8cff);\r
-  color: var(--lumiverse-accent-fg, #ffffff);\r
+  background: var(--lumiverse-primary, #5b8cff);\r
+  color: var(--lumiverse-primary-text, #ffffff);\r
   border: 0;\r
   padding: 9px 16px;\r
   border-radius: var(--lumiverse-radius, 8px);\r
@@ -12154,7 +12270,7 @@ var styles_default2 = `.lr-realm-launcher {\r
 }\r
 \r
 .lr-realm-secondary:hover {\r
-  border-color: var(--lumiverse-accent, #5b8cff);\r
+  border-color: var(--lumiverse-primary, #5b8cff);\r
 }\r
 \r
 .lr-realm-toast {\r
@@ -12228,7 +12344,7 @@ var styles_default2 = `.lr-realm-launcher {\r
 }\r
 \r
 .lr-realm-prompt input:focus {\r
-  border-color: var(--lumiverse-accent, #5b8cff);\r
+  border-color: var(--lumiverse-primary, #5b8cff);\r
 }\r
 \r
 .lr-realm-prompt-actions {\r
@@ -12242,7 +12358,7 @@ var styles_default2 = `.lr-realm-launcher {\r
   height: 14px;\r
   border-radius: 50%;\r
   border: 2px solid rgba(255, 255, 255, 0.2);\r
-  border-top-color: var(--lumiverse-accent, #5b8cff);\r
+  border-top-color: var(--lumiverse-primary, #5b8cff);\r
   animation: lr-realm-spin 800ms linear infinite;\r
   display: inline-block;\r
 }\r
