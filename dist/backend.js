@@ -21604,7 +21604,38 @@ function mapRegex(scripts, opts) {
     const s = scripts[i];
     const path = `${origin === "character" ? "customscript" : "module.regex"}[${i}]`;
     if (typeof s.in !== "string" || s.in.length === 0) {
-      issues.push({ path, message: "empty `in` field, skipped" });
+      const dividerLabel = typeof s.comment === "string" ? s.comment : "";
+      if (dividerLabel.length === 0) {
+        issues.push({ path, message: "empty `in` and `comment`, skipped" });
+        continue;
+      }
+      const id = opts.uuid ? opts.uuid() : newUuid();
+      rows.push({
+        id,
+        user_id: opts.userId ?? "",
+        name: dividerLabel,
+        script_id: opts.uuid ? opts.uuid() : newUuid(),
+        find_regex: "(?!)",
+        replace_string: "",
+        flags: "g",
+        placement: ["ai_output"],
+        scope: "character",
+        scope_id: opts.characterId,
+        target: "display",
+        min_depth: null,
+        max_depth: null,
+        trim_strings: [],
+        run_on_edit: false,
+        substitute_macros: "none",
+        disabled: true,
+        sort_order: i * 10,
+        description: dividerLabel,
+        folder: "",
+        pack_id: null,
+        metadata: { _risu: { phase: s.type, origin, order_index: i, source_type: "divider" } },
+        created_at: now,
+        updated_at: now
+      });
       continue;
     }
     if (typeof s.out !== "string") {
@@ -21619,7 +21650,7 @@ function mapRegex(scripts, opts) {
       });
     }
     const effectivePhase = phase ?? UNKNOWN_PHASE_FALLBACK;
-    const normalised = normaliseFlag(s, i);
+    const normalised = normaliseRisuFlag(s.flag, !!s.ableFlag);
     const hasNoEndNl = normalised.actions.includes("no_end_nl");
     const baseSortOrder = (normalised.order ?? i) * 10;
     const outNormalised = s.out.replaceAll("$n", `
@@ -21820,11 +21851,11 @@ var UNKNOWN_PHASE_FALLBACK = {
   target: "display",
   disabled: true
 };
-function normaliseFlag(s, index) {
-  let raw = s.ableFlag ? s.flag ?? "g" : "g";
+function normaliseRisuFlag(rawFlag, ableFlag) {
+  let raw = ableFlag ? rawFlag ?? "g" : "g";
   const actions = [];
   let order;
-  if (s.ableFlag && raw.indexOf("<") >= 0) {
+  if (ableFlag && raw.indexOf("<") >= 0) {
     const acc = [];
     let i = 0;
     while (i < raw.length) {
@@ -24802,6 +24833,42 @@ function guessMimeType(path) {
     return "video/webm";
   return "application/octet-stream";
 }
+function sniffImageMime(bytes) {
+  if (bytes.byteLength < 12)
+    return null;
+  const b = bytes;
+  if (b[0] === 137 && b[1] === 80 && b[2] === 78 && b[3] === 71) {
+    return { ext: "png", mime: "image/png" };
+  }
+  if (b[0] === 255 && b[1] === 216 && b[2] === 255) {
+    return { ext: "jpg", mime: "image/jpeg" };
+  }
+  if (b[0] === 71 && b[1] === 73 && b[2] === 70 && b[3] === 56) {
+    return { ext: "gif", mime: "image/gif" };
+  }
+  if (b[0] === 82 && b[1] === 73 && b[2] === 70 && b[3] === 70 && b[8] === 87 && b[9] === 69 && b[10] === 66 && b[11] === 80) {
+    return { ext: "webp", mime: "image/webp" };
+  }
+  if (b[0] === 82 && b[1] === 73 && b[2] === 70 && b[3] === 70 && b[8] === 87 && b[9] === 65 && b[10] === 86 && b[11] === 69) {
+    return { ext: "wav", mime: "audio/wav" };
+  }
+  if (b[0] === 73 && b[1] === 68 && b[2] === 51) {
+    return { ext: "mp3", mime: "audio/mpeg" };
+  }
+  if (b[0] === 255 && (b[1] === 251 || b[1] === 243 || b[1] === 242)) {
+    return { ext: "mp3", mime: "audio/mpeg" };
+  }
+  if (b[0] === 79 && b[1] === 103 && b[2] === 103 && b[3] === 83) {
+    return { ext: "ogg", mime: "audio/ogg" };
+  }
+  if (b[4] === 102 && b[5] === 116 && b[6] === 121 && b[7] === 112) {
+    return { ext: "mp4", mime: "video/mp4" };
+  }
+  if (b[0] === 26 && b[1] === 69 && b[2] === 223 && b[3] === 163) {
+    return { ext: "webm", mime: "video/webm" };
+  }
+  return null;
+}
 function pickAvatar(assets) {
   const isImage = (p) => /\.(png|jpe?g|webp|gif)$/i.test(p);
   for (const [path, data] of assets) {
@@ -25371,6 +25438,38 @@ async function applyV5AssetIndexRebuild(args, deps) {
     ]
   };
 }
+async function applyV7ReinstallRegex(args, deps) {
+  const stored = args.newBundle.regexScripts.map((r) => ({
+    name: r.name,
+    script_id: r.script_id,
+    find_regex: r.find_regex,
+    replace_string: r.replace_string,
+    flags: r.flags,
+    placement: [...r.placement],
+    scope: r.scope,
+    scope_id: r.scope === "character" ? args.characterId : r.scope_id,
+    target: r.target,
+    min_depth: r.min_depth,
+    max_depth: r.max_depth,
+    trim_strings: [...r.trim_strings],
+    run_on_edit: r.run_on_edit,
+    substitute_macros: r.substitute_macros,
+    disabled: r.disabled,
+    sort_order: r.sort_order,
+    description: r.description,
+    folder: r.folder,
+    metadata: { ...r.metadata ?? {} }
+  }));
+  await deps.installCharacterRegexScripts(args.characterId, args.characterName, stored);
+  const dividerCount = stored.filter((s) => {
+    const m = s.metadata;
+    return m?._risu?.source_type === "divider";
+  }).length;
+  return {
+    nextEnvelope: args.envelope,
+    notes: [`reinstalled ${stored.length} regex_script(s), dividers=${dividerCount}`]
+  };
+}
 async function applyV6BackfillArrayIndex(args, deps) {
   const indexBySourceHash = new Map;
   for (const e of args.newBundle.worldBookEntries) {
@@ -25461,6 +25560,12 @@ var CHARACTER_MIGRATIONS = [
     description: "Backfill extensions._risu_array_index on existing WB entries for the Risu-faithful viewer order.",
     touches: ["world_book_entries"],
     apply: applyV6BackfillArrayIndex
+  },
+  {
+    version: 7,
+    description: "Reinstall regex_scripts with new shape (Risu-comment names + dividers as never-match disabled rows).",
+    touches: ["regex_scripts"],
+    apply: applyV7ReinstallRegex
   }
 ];
 var CURRENT_CHARACTER_SCHEMA_VERSION = CHARACTER_MIGRATIONS.length > 0 ? Math.max(...CHARACTER_MIGRATIONS.map((m) => m.version)) : 1;
@@ -25545,7 +25650,28 @@ function stampEnvelope(envelope, extensionVersion, version) {
 }
 
 // src/state/module-migrations.ts
-var MODULE_MIGRATIONS = [];
+async function applyV5RefreshAttachedRegex(args, deps) {
+  const notes = [];
+  if (deps.refreshArtifactsForAttached) {
+    try {
+      const refreshed = await deps.refreshArtifactsForAttached(args.env.id);
+      notes.push(`refreshed ${refreshed} attached char(s)`);
+    } catch (err) {
+      deps.log.warn(`migrate-module(${args.env.id}) v5: refreshArtifactsForAttached threw: ` + (err instanceof Error ? err.message : String(err)));
+    }
+  } else {
+    notes.push("refreshArtifactsForAttached dep missing, skipping refresh");
+  }
+  return { nextEnv: args.env, notes };
+}
+var MODULE_MIGRATIONS = [
+  {
+    version: 5,
+    description: "Refresh attached-character regex artifacts to pick up new projection shape (Risu-comment names, no module-name prefix, flag-meta strip, dividers).",
+    touches: ["regex_scripts_attached_chars"],
+    apply: applyV5RefreshAttachedRegex
+  }
+];
 var CURRENT_MODULE_SCHEMA_VERSION = MODULE_MIGRATIONS.length > 0 ? Math.max(...MODULE_MIGRATIONS.map((m) => m.version)) : 4;
 async function migrateModuleIfNeeded(env, deps) {
   const stored = env.translator_schema_version ?? 1;
@@ -31444,25 +31570,57 @@ function projectModuleRegexEntries(moduleId, moduleName, characterId, raw, idGen
     const eo = e;
     const findRegex = typeof eo["in"] === "string" ? eo["in"] : "";
     let replaceString2 = typeof eo["out"] === "string" ? eo["out"] : "";
-    if (findRegex.length === 0)
+    const comment = typeof eo["comment"] === "string" ? eo["comment"] : "";
+    if (findRegex.length === 0) {
+      if (comment.length === 0)
+        continue;
+      out.push({
+        name: comment,
+        script_id: idGen(),
+        find_regex: "(?!)",
+        replace_string: "",
+        flags: "g",
+        placement: ["ai_output"],
+        scope: "character",
+        scope_id: characterId,
+        target: "display",
+        min_depth: null,
+        max_depth: null,
+        trim_strings: [],
+        run_on_edit: false,
+        substitute_macros: "none",
+        disabled: true,
+        sort_order: 1000 + sortBase,
+        description: `Divider from .risum module: ${moduleName}`,
+        folder: `Module: ${moduleName}`,
+        metadata: {
+          _risu: {
+            module_id: moduleId,
+            source_type: "divider"
+          }
+        }
+      });
+      sortBase += 1;
       continue;
+    }
     const ruleType = typeof eo["type"] === "string" ? eo["type"] : "editdisplay";
     const { placement, target, disabled } = riskCustomScriptTypeToLumi(ruleType);
     if (target === "display" && replaceString2.length > 0) {
       replaceString2 = unprefixHtmlClasses(replaceString2);
       replaceString2 = normalizeIncompleteHtmlEntities(replaceString2);
     }
-    let flags = typeof eo["flag"] === "string" ? eo["flag"] : "";
-    flags = flags.replace(/[^dgimsuvy]/g, "");
-    flags = [...new Set(flags.split(""))].join("");
-    if (flags.length === 0)
-      flags = "g";
+    const ableFlagRaw = eo["ableFlag"];
+    const ableFlag = ableFlagRaw === undefined || ableFlagRaw === null ? true : !!ableFlagRaw;
+    const rawFlag = typeof eo["flag"] === "string" ? eo["flag"] : undefined;
+    let flags = normaliseRisuFlag(rawFlag, ableFlag).flag;
     const findHasCbs = findRegex.indexOf("{{") >= 0;
     if (findHasCbs)
       flags = flags.replace(/u/g, "");
-    const ruleNameRaw = typeof eo["name"] === "string" && eo["name"].length > 0 ? eo["name"] : `rule_${sortBase + 1}`;
+    if (flags.length === 0)
+      flags = "g";
+    const ruleNameRaw = comment.length > 0 ? comment : `rule_${sortBase + 1}`;
     out.push({
-      name: `[${moduleName}] ${ruleNameRaw}`,
+      name: ruleNameRaw,
       script_id: idGen(),
       find_regex: findRegex,
       replace_string: replaceString2,
@@ -31868,12 +32026,27 @@ function buildModuleViewerData(input) {
       const ro = r;
       const find = typeof ro["in"] === "string" ? ro["in"] : "";
       const replace = typeof ro["out"] === "string" ? ro["out"] : "";
-      if (find.length === 0)
+      const comment = typeof ro["comment"] === "string" ? ro["comment"] : "";
+      if (find.length === 0) {
+        if (comment.length === 0)
+          continue;
+        regex2.push({
+          id: `mod-regex-${i}`,
+          name: comment,
+          find: "",
+          replace: "",
+          placement: "",
+          target: "",
+          disabled: false,
+          moduleId: env.id,
+          divider: true
+        });
         continue;
+      }
       const ruleType = typeof ro["type"] === "string" ? ro["type"] : "editdisplay";
       regex2.push({
         id: `mod-regex-${i}`,
-        name: typeof ro["name"] === "string" && ro["name"].length > 0 ? ro["name"] : `rule_${i + 1}`,
+        name: comment.length > 0 ? comment : `rule_${i + 1}`,
         find,
         replace,
         placement: "(see attach)",
@@ -32942,6 +33115,22 @@ async function detectDeletedWhileOff(userId) {
   }
   return { characterIds, moduleIds };
 }
+var modalChainByUser = new Map;
+function queueModalConfirm(userId, options) {
+  const modalApi = spindle.modal;
+  if (!modalApi?.confirm)
+    return Promise.resolve(null);
+  const run = () => modalApi.confirm({ ...options, userId }).catch((err) => {
+    log7.warn(`queueModalConfirm: modal.confirm threw: ${errMsg(err)}`);
+    return null;
+  });
+  const prior = modalChainByUser.get(userId) ?? Promise.resolve();
+  const next = prior.then(run, run);
+  modalChainByUser.set(userId, next.catch(() => {
+    return;
+  }));
+  return next;
+}
 var orphanReviewPromptedFor = new Set;
 async function promptOrphanReviewIfAny(userId) {
   if (orphanReviewPromptedFor.has(userId))
@@ -32967,23 +33156,16 @@ async function promptOrphanReviewIfAny(userId) {
     parts.push(`${moduleCount} module${moduleCount === 1 ? "" : "s"}`);
   const summarySubject = parts.join(" and ");
   const message = `Found leftover image journals for ${summarySubject} whose Lumi entries ` + `are gone. This includes anything deleted while LumiRealm wasn't running ` + `and incomplete cleanups from earlier sessions. Open Cleanup to review ` + `the actual image assets?`;
-  const modalApi = spindle.modal;
-  let result = null;
-  if (modalApi?.confirm) {
-    log7.info(`orphan-review: opening confirm modal`);
-    try {
-      result = await modalApi.confirm({
-        title: "Leftover RisuAI image entries detected",
-        message,
-        variant: "info",
-        confirmLabel: "Review",
-        cancelLabel: "Dismiss",
-        userId
-      });
-    } catch (err) {
-      log7.warn(`orphan-review: modal.confirm threw: ${errMsg(err)}`);
-    }
-  } else {
+  log7.info(`orphan-review: opening confirm modal`);
+  const queued = await queueModalConfirm(userId, {
+    title: "Leftover RisuAI image entries detected",
+    message,
+    variant: "info",
+    confirmLabel: "Review",
+    cancelLabel: "Dismiss"
+  });
+  let result = queued;
+  if (queued === null) {
     log7.warn(`orphan-review: spindle.modal.confirm unavailable, falling back to toast`);
   }
   if (result === null) {
@@ -33157,6 +33339,7 @@ async function scanOrphanedImages(userId) {
   const totalOrphans = orphans.length;
   const truncated = totalOrphans > MAX_RETURNED;
   const shown = truncated ? orphans.slice(0, MAX_RETURNED) : orphans;
+  const orphanRegexCleaned = await sweepOrphanModuleRegex(userId);
   return {
     orphans: shown,
     summary: {
@@ -33168,9 +33351,68 @@ async function scanOrphanedImages(userId) {
       modulesScanned: live.modulesScanned,
       elapsedMs: Date.now() - tStart,
       totalOrphans,
-      truncated
+      truncated,
+      orphanRegexCleaned
     }
   };
+}
+async function sweepOrphanModuleRegex(userId) {
+  const regexApi = spindle.regex_scripts;
+  if (!regexApi?.list || !regexApi?.delete) {
+    log7.warn(`sweepOrphanModuleRegex: spindle.regex_scripts unavailable, skipping`);
+    return 0;
+  }
+  let liveModuleIds;
+  try {
+    const modules = await listModules(moduleStorage(), userId);
+    liveModuleIds = new Set(modules.map((m) => m.id));
+  } catch (err) {
+    log7.warn(`sweepOrphanModuleRegex: listModules failed: ${errMsg(err)}`);
+    return 0;
+  }
+  const orphanIds = [];
+  let offset = 0;
+  const PAGE_SIZE = 200;
+  while (true) {
+    let page;
+    try {
+      page = await regexApi.list({ userId, limit: PAGE_SIZE, offset });
+    } catch (err) {
+      log7.warn(`sweepOrphanModuleRegex: regex_scripts.list offset=${offset} failed: ${errMsg(err)}`);
+      break;
+    }
+    if (!Array.isArray(page.data) || page.data.length === 0)
+      break;
+    for (const r of page.data) {
+      const row = r;
+      const moduleId = row.metadata?._risu?.module_id;
+      if (typeof moduleId !== "string" || moduleId.length === 0)
+        continue;
+      if (liveModuleIds.has(moduleId))
+        continue;
+      if (typeof row.id === "string")
+        orphanIds.push(row.id);
+    }
+    offset += page.data.length;
+    if (typeof page.total === "number" && offset >= page.total)
+      break;
+  }
+  if (orphanIds.length === 0) {
+    log7.info(`sweepOrphanModuleRegex: user=${userId} none orphaned`);
+    return 0;
+  }
+  let deleted = 0;
+  for (const id of orphanIds) {
+    try {
+      const ok = await regexApi.delete(id, userId);
+      if (ok)
+        deleted++;
+    } catch (err) {
+      log7.warn(`sweepOrphanModuleRegex: delete id=${id} failed: ${errMsg(err)}`);
+    }
+  }
+  log7.info(`sweepOrphanModuleRegex: user=${userId} deleted ${deleted}/${orphanIds.length} orphan module regex`);
+  return deleted;
 }
 var pendingImportCompletions = new Map;
 var assetUploadsInFlight = 0;
@@ -33895,6 +34137,19 @@ async function runModuleMigration(moduleId, userId) {
       }
       return count;
     },
+    refreshArtifactsForAttached: async (mid) => {
+      const charIds = await charactersAttachedTo(mid, userId);
+      let count = 0;
+      for (const charId of charIds) {
+        try {
+          await refreshAttachedModule(charId, env, userId);
+          count++;
+        } catch (err) {
+          log7.warn(`runModuleMigration: refresh char=${charId} module=${mid} threw: ${errMsg(err)}`);
+        }
+      }
+      return count;
+    },
     writeEnvelope: async (next) => {
       await writeEnvelope(moduleStorage(), userId, next);
     },
@@ -34086,23 +34341,16 @@ async function flushLorebookMigrationArchives(userId) {
 ${bullets}${overflowSuffix}
 
 Copy any edits from these backups into the updated lorebooks if you want to keep them.`;
-  const modalApi = spindle.modal;
-  if (modalApi?.confirm) {
-    try {
-      await modalApi.confirm({
-        title,
-        message,
-        variant: "info",
-        confirmLabel: "Got it",
-        cancelLabel: "Dismiss",
-        userId
-      });
-      return;
-    } catch (err) {
-      log7.warn(`flushLorebookMigrationArchives: modal.confirm threw: ${errMsg(err)}`);
-    }
+  const result = await queueModalConfirm(userId, {
+    title,
+    message,
+    variant: "info",
+    confirmLabel: "Got it",
+    cancelLabel: "Dismiss"
+  });
+  if (result === null) {
+    toastFor(userId, "info", message, { title });
   }
-  toastFor(userId, "info", message, { title });
 }
 async function seedAuthorsNoteFromDepthPrompt(chatId, userId, characterExtensions) {
   let chat;
@@ -35416,10 +35664,14 @@ Only accept if you trust the source of this module.
           }
         });
       };
-      const recordUploaded = (fileName2, imageId) => {
-        const lastDot = fileName2.lastIndexOf(".");
-        const ext = lastDot > 0 ? fileName2.slice(lastDot + 1).toLowerCase() : undefined;
-        moduleAssetIndex[fileName2] = ext !== undefined ? { imageId, ext } : { imageId };
+      const recordUploaded = (assetName, imageId, sniffedExt) => {
+        let ext = sniffedExt;
+        if (ext === undefined) {
+          const lastDot = assetName.lastIndexOf(".");
+          if (lastDot > 0)
+            ext = assetName.slice(lastDot + 1).toLowerCase();
+        }
+        moduleAssetIndex[assetName] = ext !== undefined ? { imageId, ext } : { imageId };
         journalBuffer.push(imageId);
       };
       const emitProgress = () => {
@@ -35439,7 +35691,8 @@ Only accept if you trust the source of this module.
         let i = 0;
         while (i < pending3.length) {
           const batchItems = [];
-          const batchPaths = [];
+          const batchAssetNames = [];
+          const batchSniffedExts = [];
           let batchBytes = 0;
           while (i < pending3.length && batchItems.length < BATCH_MAX_ITEMS) {
             const meta = pending3[i];
@@ -35450,8 +35703,12 @@ Only accept if you trust the source of this module.
             }
             if (batchItems.length > 0 && batchBytes + bytes2.byteLength > BATCH_MAX_BYTES)
               break;
-            batchItems.push({ data: bytes2, mime_type: meta.mimeType, filename: meta.path });
-            batchPaths.push(meta.path);
+            const sniff = sniffImageMime(bytes2);
+            const uploadFilename = sniff ? `${meta.path}.${sniff.ext}` : meta.path;
+            const uploadMime = sniff?.mime ?? meta.mimeType;
+            batchItems.push({ data: bytes2, mime_type: uploadMime, filename: uploadFilename });
+            batchAssetNames.push(meta.path);
+            batchSniffedExts.push(sniff?.ext);
             batchBytes += bytes2.byteLength;
             i += 1;
           }
@@ -35465,12 +35722,12 @@ Only accept if you trust the source of this module.
           }
           for (let k = 0;k < results.length; k++) {
             const r = results[k];
-            const path = batchPaths[k];
+            const name = batchAssetNames[k];
             if (typeof r.id === "string" && r.id.length > 0) {
-              recordUploaded(path, r.id);
+              recordUploaded(name, r.id, batchSniffedExts[k]);
             } else {
               assetUploadFailures += 1;
-              log7.warn(`processModuleUpload: upload failed name=${path}: ${r.error ?? "unknown error"}`);
+              log7.warn(`processModuleUpload: upload failed name=${name}: ${r.error ?? "unknown error"}`);
             }
           }
           processed += batchItems.length;
@@ -35490,17 +35747,20 @@ Only accept if you trust the source of this module.
             const bytes2 = decoded.assets[i];
             if (!meta || !bytes2)
               continue;
-            const fileName2 = meta.path;
+            const assetName = meta.path;
+            const sniff = sniffImageMime(bytes2);
+            const uploadFilename = sniff ? `${assetName}.${sniff.ext}` : assetName;
+            const uploadMime = sniff?.mime ?? meta.mimeType;
             try {
-              const result = await spindleImagesApi.upload({ data: bytes2, mime_type: meta.mimeType, filename: fileName2 }, userId);
+              const result = await spindleImagesApi.upload({ data: bytes2, mime_type: uploadMime, filename: uploadFilename }, userId);
               if (typeof result?.id !== "string" || result.id.length === 0) {
                 throw new Error("upload returned without an image id");
               }
-              recordUploaded(fileName2, result.id);
+              recordUploaded(assetName, result.id, sniff?.ext);
             } catch (err) {
               assetUploadFailures += 1;
               const errMessage2 = err instanceof Error ? err.message : String(err);
-              log7.warn(`processModuleUpload: upload failed name=${fileName2}: ${errMessage2}`);
+              log7.warn(`processModuleUpload: upload failed name=${assetName}: ${errMessage2}`);
             }
             processed += 1;
             if (processed % progressEvery === 0 || processed === totalCount) {

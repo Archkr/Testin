@@ -7,6 +7,9 @@ export interface ModuleMigrationDeps {
   // syncWorldBook re-runs lorebook projection and rewrites the world_book in place.
   syncWorldBook: (env: ModuleEnvelope) => Promise<string | null>;
   reinstallArtifactsForAttached: (moduleId: string) => Promise<number>;
+  // refreshArtifactsForAttached: detach + reattach for every attached character,
+  // so the new projection (regex names, flags, etc.) replaces the old rows.
+  refreshArtifactsForAttached?: (moduleId: string) => Promise<number>;
   writeEnvelope: (env: ModuleEnvelope) => Promise<void>;
   log: {
     info: (s: string) => void;
@@ -50,8 +53,41 @@ export type ModuleMigrationResult =
     }
   | { kind: 'failed'; moduleId: string; from: number; to: number; error: string; partialAt?: number };
 
-// No module-side data changes warrant a migration step yet.
-export const MODULE_MIGRATIONS: readonly ModuleMigrationStep[] = [];
+// v5: pre-fix uploads projected regex with name='rule_N' (instead of Risu's
+// `comment` field), prefixed with [ModuleName], and didn't strip <move_top> /
+// <order N> brackets from flag (causing Lumi to reject those rules entirely).
+// Detach + reattach every attached character so regex artifacts pick up the
+// new projection shape.
+async function applyV5RefreshAttachedRegex(
+  args: ModuleMigrationStepArgs,
+  deps: ModuleMigrationDeps,
+): Promise<ModuleMigrationStepResult> {
+  const notes: string[] = [];
+  if (deps.refreshArtifactsForAttached) {
+    try {
+      const refreshed = await deps.refreshArtifactsForAttached(args.env.id);
+      notes.push(`refreshed ${refreshed} attached char(s)`);
+    } catch (err) {
+      deps.log.warn(
+        `migrate-module(${args.env.id}) v5: refreshArtifactsForAttached threw: ` +
+          (err instanceof Error ? err.message : String(err)),
+      );
+    }
+  } else {
+    notes.push('refreshArtifactsForAttached dep missing, skipping refresh');
+  }
+  return { nextEnv: args.env, notes };
+}
+
+export const MODULE_MIGRATIONS: readonly ModuleMigrationStep[] = [
+  {
+    version: 5,
+    description:
+      'Refresh attached-character regex artifacts to pick up new projection shape (Risu-comment names, no module-name prefix, flag-meta strip, dividers).',
+    touches: ['regex_scripts_attached_chars'],
+    apply: applyV5RefreshAttachedRegex,
+  },
+];
 
 // Bumping requires writing a step or the walker silently no-ops.
 export const CURRENT_MODULE_SCHEMA_VERSION: number =

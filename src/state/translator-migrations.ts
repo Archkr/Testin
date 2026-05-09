@@ -167,6 +167,42 @@ async function applyV5AssetIndexRebuild(
   };
 }
 
+async function applyV7ReinstallRegex(
+  args: CharacterMigrationStepArgs,
+  deps: MigrationDeps,
+): Promise<CharacterMigrationStepResult> {
+  const stored: StoredRegexScript[] = args.newBundle.regexScripts.map((r) => ({
+    name: r.name,
+    script_id: r.script_id,
+    find_regex: r.find_regex,
+    replace_string: r.replace_string,
+    flags: r.flags,
+    placement: [...r.placement],
+    scope: r.scope,
+    scope_id: r.scope === 'character' ? args.characterId : r.scope_id,
+    target: r.target,
+    min_depth: r.min_depth,
+    max_depth: r.max_depth,
+    trim_strings: [...r.trim_strings],
+    run_on_edit: r.run_on_edit,
+    substitute_macros: r.substitute_macros,
+    disabled: r.disabled,
+    sort_order: r.sort_order,
+    description: r.description,
+    folder: r.folder,
+    metadata: { ...(r.metadata ?? {}) },
+  }));
+  await deps.installCharacterRegexScripts(args.characterId, args.characterName, stored);
+  const dividerCount = stored.filter((s) => {
+    const m = s.metadata as { _risu?: { source_type?: string } } | undefined;
+    return m?._risu?.source_type === 'divider';
+  }).length;
+  return {
+    nextEnvelope: args.envelope,
+    notes: [`reinstalled ${stored.length} regex_script(s), dividers=${dividerCount}`],
+  };
+}
+
 async function applyV6BackfillArrayIndex(
   args: CharacterMigrationStepArgs,
   deps: MigrationDeps,
@@ -275,6 +311,13 @@ export const CHARACTER_MIGRATIONS: readonly CharacterMigrationStep[] = [
       'Backfill extensions._risu_array_index on existing WB entries for the Risu-faithful viewer order.',
     touches: ['world_book_entries'],
     apply: applyV6BackfillArrayIndex,
+  },
+  {
+    version: 7,
+    description:
+      'Reinstall regex_scripts with new shape (Risu-comment names + dividers as never-match disabled rows).',
+    touches: ['regex_scripts'],
+    apply: applyV7ReinstallRegex,
   },
 ];
 

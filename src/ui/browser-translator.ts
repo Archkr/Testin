@@ -95,7 +95,9 @@ async function getTranslatorForPair(
         const avail = await ctor.availability({ sourceLanguage: src, targetLanguage: tgt });
         // eslint-disable-next-line no-console
         console.info(`[lumirealm] translator ${src}->${tgt} availability=${avail}`);
-        if (avail === 'unavailable') return null;
+        // 'downloadable' or 'downloading' need a user gesture to trigger
+        // create(), we're called from paint code so let the fallback handle.
+        if (avail !== 'available') return null;
       }
       const inst = await ctor.create({ sourceLanguage: src, targetLanguage: tgt });
       // eslint-disable-next-line no-console

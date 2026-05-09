@@ -656,6 +656,8 @@ export type BackendToFrontend =
         /** True when `orphans.length < totalOrphans`. UI should advise the
          *  user to delete the shown batch then re-scan to see the rest. */
         readonly truncated: boolean;
+        /** Module regex rows whose envelope is gone, swept inline by the scan. */
+        readonly orphanRegexCleaned?: number;
       };
       error?: string;
     }
@@ -865,12 +867,15 @@ export interface ViewerRegexEntry {
   readonly name: string;
   readonly find: string;
   readonly replace: string;
-  /** "ai_output", "user_input", etc. — joined when multiple. */
+  /** "ai_output", "user_input", etc. , joined when multiple. */
   readonly placement: string;
   readonly target: string;
   readonly disabled: boolean;
   /** Non-null for module-sourced rules pushed into Lumi's table at attach time. */
   readonly moduleId: string | null;
+  /** Risu authors use rules with empty `in` as section headers, render as a
+   *  divider row. Find/replace are empty for dividers. */
+  readonly divider?: boolean;
 }
 
 export interface ViewerTriggerEntry {

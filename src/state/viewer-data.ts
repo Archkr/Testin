@@ -337,13 +337,26 @@ export function buildModuleViewerData(input: {
       const ro = r as Record<string, unknown>;
       const find = typeof ro['in'] === 'string' ? ro['in'] : '';
       const replace = typeof ro['out'] === 'string' ? ro['out'] : '';
-      if (find.length === 0) continue;
+      const comment = typeof ro['comment'] === 'string' ? ro['comment'] : '';
+      if (find.length === 0) {
+        if (comment.length === 0) continue;
+        regex.push({
+          id: `mod-regex-${i}`,
+          name: comment,
+          find: '',
+          replace: '',
+          placement: '',
+          target: '',
+          disabled: false,
+          moduleId: env.id,
+          divider: true,
+        });
+        continue;
+      }
       const ruleType = typeof ro['type'] === 'string' ? ro['type'] : 'editdisplay';
       regex.push({
         id: `mod-regex-${i}`,
-        name: typeof ro['name'] === 'string' && ro['name'].length > 0
-          ? ro['name']
-          : `rule_${i + 1}`,
+        name: comment.length > 0 ? comment : `rule_${i + 1}`,
         find,
         replace,
         placement: '(see attach)',

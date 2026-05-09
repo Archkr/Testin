@@ -1501,6 +1501,32 @@ interface SpindleModalConfirmLike {
   }) => Promise<{ confirmed: boolean }>;
 }
 
+// Lumi caps each extension at 2 concurrent modals, two boot-time prompts can
+// race (orphan review, lorebook archive). Serialize per-user.
+const modalChainByUser = new Map<string, Promise<unknown>>();
+function queueModalConfirm(
+  userId: string,
+  options: {
+    title: string;
+    message: string;
+    variant?: 'info' | 'warning' | 'danger' | 'success';
+    confirmLabel?: string;
+    cancelLabel?: string;
+  },
+): Promise<{ confirmed: boolean } | null> {
+  const modalApi = (spindle as unknown as { modal?: SpindleModalConfirmLike }).modal;
+  if (!modalApi?.confirm) return Promise.resolve(null);
+  const run = (): Promise<{ confirmed: boolean } | null> =>
+    modalApi.confirm!({ ...options, userId }).catch((err) => {
+      log.warn(`queueModalConfirm: modal.confirm threw: ${errMsg(err)}`);
+      return null;
+    });
+  const prior = modalChainByUser.get(userId) ?? Promise.resolve();
+  const next = prior.then(run, run);
+  modalChainByUser.set(userId, next.catch(() => undefined));
+  return next;
+}
+
 const orphanReviewPromptedFor = new Set<string>();
 async function promptOrphanReviewIfAny(userId: string): Promise<void> {
   if (orphanReviewPromptedFor.has(userId)) return;
@@ -1534,23 +1560,16 @@ async function promptOrphanReviewIfAny(userId: string): Promise<void> {
     `are gone. This includes anything deleted while LumiRealm wasn't running ` +
     `and incomplete cleanups from earlier sessions. Open Cleanup to review ` +
     `the actual image assets?`;
-  const modalApi = (spindle as unknown as { modal?: SpindleModalConfirmLike }).modal;
-  let result: { confirmed: boolean } | null = null;
-  if (modalApi?.confirm) {
-    log.info(`orphan-review: opening confirm modal`);
-    try {
-      result = await modalApi.confirm({
-        title: 'Leftover RisuAI image entries detected',
-        message,
-        variant: 'info',
-        confirmLabel: 'Review',
-        cancelLabel: 'Dismiss',
-        userId,
-      });
-    } catch (err) {
-      log.warn(`orphan-review: modal.confirm threw: ${errMsg(err)}`);
-    }
-  } else {
+  log.info(`orphan-review: opening confirm modal`);
+  const queued = await queueModalConfirm(userId, {
+    title: 'Leftover RisuAI image entries detected',
+    message,
+    variant: 'info',
+    confirmLabel: 'Review',
+    cancelLabel: 'Dismiss',
+  });
+  let result: { confirmed: boolean } | null = queued;
+  if (queued === null) {
     log.warn(`orphan-review: spindle.modal.confirm unavailable, falling back to toast`);
   }
   // Toast fallback when the modal API is unavailable or threw. The user still
@@ -1617,6 +1636,7 @@ interface OrphanScanReport {
     readonly elapsedMs: number;
     readonly totalOrphans: number;
     readonly truncated: boolean;
+    readonly orphanRegexCleaned: number;
   };
 }
 
@@ -1784,6 +1804,8 @@ async function scanOrphanedImages(userId: string): Promise<OrphanScanReport> {
   const truncated = totalOrphans > MAX_RETURNED;
   const shown = truncated ? orphans.slice(0, MAX_RETURNED) : orphans;
 
+  const orphanRegexCleaned = await sweepOrphanModuleRegex(userId);
+
   return {
     orphans: shown,
     summary: {
@@ -1796,8 +1818,69 @@ async function scanOrphanedImages(userId: string): Promise<OrphanScanReport> {
       elapsedMs: Date.now() - tStart,
       totalOrphans,
       truncated,
+      orphanRegexCleaned,
     },
   };
+}
+
+// Module regex carry `metadata._risu.module_id`. Envelope-gone rows are dead
+// by definition, safe to delete unconditionally.
+async function sweepOrphanModuleRegex(userId: string): Promise<number> {
+  const regexApi = (spindle as unknown as {
+    regex_scripts?: {
+      list?: (opts: { userId?: string; limit?: number; offset?: number }) => Promise<{ data: readonly unknown[]; total: number }>;
+      delete?: (id: string, userId?: string) => Promise<boolean>;
+    };
+  }).regex_scripts;
+  if (!regexApi?.list || !regexApi?.delete) {
+    log.warn(`sweepOrphanModuleRegex: spindle.regex_scripts unavailable, skipping`);
+    return 0;
+  }
+  let liveModuleIds: Set<string>;
+  try {
+    const modules = await listModuleStore(moduleStorage(), userId);
+    liveModuleIds = new Set(modules.map((m) => m.id));
+  } catch (err) {
+    log.warn(`sweepOrphanModuleRegex: listModules failed: ${errMsg(err)}`);
+    return 0;
+  }
+  const orphanIds: string[] = [];
+  let offset = 0;
+  const PAGE_SIZE = 200;
+  while (true) {
+    let page: { data: readonly unknown[]; total: number };
+    try {
+      page = await regexApi.list({ userId, limit: PAGE_SIZE, offset });
+    } catch (err) {
+      log.warn(`sweepOrphanModuleRegex: regex_scripts.list offset=${offset} failed: ${errMsg(err)}`);
+      break;
+    }
+    if (!Array.isArray(page.data) || page.data.length === 0) break;
+    for (const r of page.data) {
+      const row = r as { id?: unknown; metadata?: { _risu?: { module_id?: unknown } } };
+      const moduleId = row.metadata?._risu?.module_id;
+      if (typeof moduleId !== 'string' || moduleId.length === 0) continue;
+      if (liveModuleIds.has(moduleId)) continue;
+      if (typeof row.id === 'string') orphanIds.push(row.id);
+    }
+    offset += page.data.length;
+    if (typeof page.total === 'number' && offset >= page.total) break;
+  }
+  if (orphanIds.length === 0) {
+    log.info(`sweepOrphanModuleRegex: user=${userId} none orphaned`);
+    return 0;
+  }
+  let deleted = 0;
+  for (const id of orphanIds) {
+    try {
+      const ok = await regexApi.delete(id, userId);
+      if (ok) deleted++;
+    } catch (err) {
+      log.warn(`sweepOrphanModuleRegex: delete id=${id} failed: ${errMsg(err)}`);
+    }
+  }
+  log.info(`sweepOrphanModuleRegex: user=${userId} deleted ${deleted}/${orphanIds.length} orphan module regex`);
+  return deleted;
 }
 
 interface PendingImportCompletion {
@@ -2767,6 +2850,21 @@ async function runModuleMigration(
       }
       return count;
     },
+    refreshArtifactsForAttached: async (mid) => {
+      const charIds = await charactersAttachedTo(mid, userId);
+      let count = 0;
+      for (const charId of charIds) {
+        try {
+          await refreshAttachedModule(charId, env, userId);
+          count++;
+        } catch (err) {
+          log.warn(
+            `runModuleMigration: refresh char=${charId} module=${mid} threw: ${errMsg(err)}`,
+          );
+        }
+      }
+      return count;
+    },
     writeEnvelope: async (next) => {
       await writeModuleEnvelope(moduleStorage(), userId, next);
     },
@@ -3019,23 +3117,16 @@ async function flushLorebookMigrationArchives(userId: string): Promise<void> {
     `Your manual edits were saved as separate backup lorebooks in the Lorebook tab:\n\n` +
     `${bullets}${overflowSuffix}\n\n` +
     `Copy any edits from these backups into the updated lorebooks if you want to keep them.`;
-  const modalApi = (spindle as unknown as { modal?: SpindleModalConfirmLike }).modal;
-  if (modalApi?.confirm) {
-    try {
-      await modalApi.confirm({
-        title,
-        message,
-        variant: 'info',
-        confirmLabel: 'Got it',
-        cancelLabel: 'Dismiss',
-        userId,
-      });
-      return;
-    } catch (err) {
-      log.warn(`flushLorebookMigrationArchives: modal.confirm threw: ${errMsg(err)}`);
-    }
+  const result = await queueModalConfirm(userId, {
+    title,
+    message,
+    variant: 'info',
+    confirmLabel: 'Got it',
+    cancelLabel: 'Dismiss',
+  });
+  if (result === null) {
+    toastFor(userId, 'info', message, { title });
   }
-  toastFor(userId, 'info', message, { title });
 }
 
 async function seedAuthorsNoteFromDepthPrompt(
@@ -4764,7 +4855,7 @@ spindle.on('CHARACTER_DUPLICATED', userScoped(async (raw, userId) => {
 
 import { decodeRisum } from './core/risum/index.js';
 import { risuModuleSchema } from './core/schemas/module.js';
-import { guessMimeType } from './payload/import.js';
+import { guessMimeType, sniffImageMime } from './payload/import.js';
 import {
   type ModuleEnvelope,
   type ModuleIndexEntry,
@@ -4937,10 +5028,13 @@ async function processModuleUpload(
         }
       });
     };
-    const recordUploaded = (fileName: string, imageId: string): void => {
-      const lastDot = fileName.lastIndexOf('.');
-      const ext = lastDot > 0 ? fileName.slice(lastDot + 1).toLowerCase() : undefined;
-      moduleAssetIndex[fileName] = ext !== undefined
+    const recordUploaded = (assetName: string, imageId: string, sniffedExt?: string): void => {
+      let ext = sniffedExt;
+      if (ext === undefined) {
+        const lastDot = assetName.lastIndexOf('.');
+        if (lastDot > 0) ext = assetName.slice(lastDot + 1).toLowerCase();
+      }
+      moduleAssetIndex[assetName] = ext !== undefined
         ? { imageId, ext }
         : { imageId };
       journalBuffer.push(imageId);
@@ -4969,15 +5063,20 @@ async function processModuleUpload(
       let i = 0;
       while (i < pending.length) {
         const batchItems: Array<{ data: Uint8Array; mime_type: string; filename: string }> = [];
-        const batchPaths: string[] = [];
+        const batchAssetNames: string[] = [];
+        const batchSniffedExts: Array<string | undefined> = [];
         let batchBytes = 0;
         while (i < pending.length && batchItems.length < BATCH_MAX_ITEMS) {
           const meta = pending[i];
           const bytes = decoded.assets[i];
           if (!meta || !bytes) { i += 1; continue; }
           if (batchItems.length > 0 && batchBytes + bytes.byteLength > BATCH_MAX_BYTES) break;
-          batchItems.push({ data: bytes, mime_type: meta.mimeType, filename: meta.path });
-          batchPaths.push(meta.path);
+          const sniff = sniffImageMime(bytes);
+          const uploadFilename = sniff ? `${meta.path}.${sniff.ext}` : meta.path;
+          const uploadMime = sniff?.mime ?? meta.mimeType;
+          batchItems.push({ data: bytes, mime_type: uploadMime, filename: uploadFilename });
+          batchAssetNames.push(meta.path);
+          batchSniffedExts.push(sniff?.ext);
           batchBytes += bytes.byteLength;
           i += 1;
         }
@@ -4991,12 +5090,12 @@ async function processModuleUpload(
         }
         for (let k = 0; k < results.length; k++) {
           const r = results[k]!;
-          const path = batchPaths[k]!;
+          const name = batchAssetNames[k]!;
           if (typeof r.id === 'string' && r.id.length > 0) {
-            recordUploaded(path, r.id);
+            recordUploaded(name, r.id, batchSniffedExts[k]);
           } else {
             assetUploadFailures += 1;
-            log.warn(`processModuleUpload: upload failed name=${path}: ${r.error ?? 'unknown error'}`);
+            log.warn(`processModuleUpload: upload failed name=${name}: ${r.error ?? 'unknown error'}`);
           }
         }
         processed += batchItems.length;
@@ -5017,20 +5116,23 @@ async function processModuleUpload(
           const meta = pending[i];
           const bytes = decoded.assets[i];
           if (!meta || !bytes) continue;
-          const fileName = meta.path;
+          const assetName = meta.path;
+          const sniff = sniffImageMime(bytes);
+          const uploadFilename = sniff ? `${assetName}.${sniff.ext}` : assetName;
+          const uploadMime = sniff?.mime ?? meta.mimeType;
           try {
             const result = await spindleImagesApi.upload(
-              { data: bytes, mime_type: meta.mimeType, filename: fileName },
+              { data: bytes, mime_type: uploadMime, filename: uploadFilename },
               userId,
             );
             if (typeof result?.id !== 'string' || result.id.length === 0) {
               throw new Error('upload returned without an image id');
             }
-            recordUploaded(fileName, result.id);
+            recordUploaded(assetName, result.id, sniff?.ext);
           } catch (err) {
             assetUploadFailures += 1;
             const errMessage = err instanceof Error ? err.message : String(err);
-            log.warn(`processModuleUpload: upload failed name=${fileName}: ${errMessage}`);
+            log.warn(`processModuleUpload: upload failed name=${assetName}: ${errMessage}`);
           }
           processed += 1;
           if (processed % progressEvery === 0 || processed === totalCount) {

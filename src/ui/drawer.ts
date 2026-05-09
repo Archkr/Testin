@@ -315,16 +315,28 @@ export function mountCardsPanel(opts: MountCardsPanelOptions): DrawerHandle {
     const t0 = performance.now();
 
     // Pre-clean: Lumi has no FK cascade on character delete, so re-imports
-    // stack duplicate rules unless we evict the old ones first.
+    // stack duplicate rules unless we evict the old ones first. Skip module-
+    // owned rows (those have their own attach/detach lifecycle).
     try {
       const existingResp = await fetch(
         `/api/v1/regex-scripts?scope=character&character_id=${encodeURIComponent(msg.characterId)}&limit=1000`,
         { credentials: 'include' },
       );
       if (existingResp.ok) {
-        const body = (await existingResp.json()) as { data?: Array<{ id: string; scope?: string; scope_id?: string }> };
+        const body = (await existingResp.json()) as {
+          data?: Array<{
+            id: string;
+            scope?: string;
+            scope_id?: string;
+            metadata?: { _risu?: { module_id?: string } };
+          }>;
+        };
         const existingIds = (body.data ?? [])
-          .filter((r) => r.scope === 'character' && r.scope_id === msg.characterId)
+          .filter((r) =>
+            r.scope === 'character'
+              && r.scope_id === msg.characterId
+              && !r.metadata?._risu?.module_id,
+          )
           .map((r) => r.id);
         if (existingIds.length > 0) {
           log.info(`drawer: pre-clean removing ${existingIds.length} existing character-scoped rule(s) for char=${msg.characterId}`);
@@ -652,18 +664,54 @@ export function mountCardsPanel(opts: MountCardsPanelOptions): DrawerHandle {
         log.warn(`drawer.uninstallModuleArtifacts: world_book pipeline threw`, err);
       }
     }
-    if (msg.regexScriptIds.length > 0) {
+    // Metadata-keyed delete catches stale stashed IDs + orphans from prior
+    // install/refresh races. Falls back to stashed IDs if listing fails.
+    const idsToDelete = new Set<string>(msg.regexScriptIds);
+    try {
+      const listResp = await fetch(
+        `/api/v1/regex-scripts?scope=character&character_id=${encodeURIComponent(msg.characterId)}&limit=2000`,
+        { credentials: 'include' },
+      );
+      if (listResp.ok) {
+        const body = (await listResp.json()) as {
+          data?: Array<{
+            id: string;
+            scope?: string;
+            scope_id?: string;
+            metadata?: { _risu?: { module_id?: string } };
+          }>;
+        };
+        for (const r of body.data ?? []) {
+          if (
+            r.scope === 'character'
+              && r.scope_id === msg.characterId
+              && r.metadata?._risu?.module_id === msg.moduleId
+          ) {
+            idsToDelete.add(r.id);
+          }
+        }
+      } else {
+        log.warn(`drawer.uninstallModuleArtifacts: list HTTP ${listResp.status}, falling back to stashed IDs only`);
+      }
+    } catch (err) {
+      log.warn(`drawer.uninstallModuleArtifacts: list threw, falling back to stashed IDs only`, err);
+    }
+    if (idsToDelete.size > 0) {
       try {
         const resp = await fetch('/api/v1/regex-scripts/bulk-delete', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ ids: msg.regexScriptIds }),
+          body: JSON.stringify({ ids: [...idsToDelete] }),
           credentials: 'include',
         });
         if (!resp.ok) {
           ok = false;
           log.warn(
-            `drawer.uninstallModuleArtifacts: regex bulk-delete HTTP ${resp.status} (sent ${msg.regexScriptIds.length})`,
+            `drawer.uninstallModuleArtifacts: regex bulk-delete HTTP ${resp.status} (sent ${idsToDelete.size})`,
+          );
+        } else {
+          log.info(
+            `drawer.uninstallModuleArtifacts: regex bulk-deleted ${idsToDelete.size} (stashed=${msg.regexScriptIds.length})`,
           );
         }
       } catch (err) {

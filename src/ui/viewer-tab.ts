@@ -1022,6 +1022,16 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
       return det;
     }
     for (const r of regex) {
+      if (r.divider) {
+        const div = document.createElement('div');
+        div.className = 'lrv-regex-divider';
+        const label = document.createElement('span');
+        label.className = 'lrv-regex-divider-label';
+        label.textContent = r.name;
+        div.appendChild(label);
+        det.appendChild(div);
+        continue;
+      }
       const row = document.createElement('div');
       row.className = 'lrv-regex-row';
       if (r.disabled) row.classList.add('lrv-regex-row-disabled');

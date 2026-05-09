@@ -6,6 +6,7 @@ import type {
   PendingRegexScriptMsg,
 } from '../types/messages.js';
 import { unprefixHtmlClasses, normalizeIncompleteHtmlEntities } from '../bghtml/rewriter.js';
+import { normaliseRisuFlag } from '../core/mappers/regex.js';
 
 export function projectModuleLorebookEntries(
   moduleId: string,
@@ -81,25 +82,56 @@ export function projectModuleRegexEntries(
     const eo = e as Record<string, unknown>;
     const findRegex = typeof eo['in'] === 'string' ? eo['in'] : '';
     let replaceString = typeof eo['out'] === 'string' ? eo['out'] : '';
-    if (findRegex.length === 0) continue;
+    const comment = typeof eo['comment'] === 'string' ? eo['comment'] : '';
+    if (findRegex.length === 0) {
+      if (comment.length === 0) continue;
+      out.push({
+        name: comment,
+        script_id: idGen(),
+        find_regex: '(?!)',
+        replace_string: '',
+        flags: 'g',
+        placement: ['ai_output'],
+        scope: 'character',
+        scope_id: characterId,
+        target: 'display',
+        min_depth: null,
+        max_depth: null,
+        trim_strings: [],
+        run_on_edit: false,
+        substitute_macros: 'none',
+        disabled: true,
+        sort_order: 1000 + sortBase,
+        description: `Divider from .risum module: ${moduleName}`,
+        folder: `Module: ${moduleName}`,
+        metadata: {
+          _risu: {
+            module_id: moduleId,
+            source_type: 'divider',
+          },
+        },
+      });
+      sortBase += 1;
+      continue;
+    }
     const ruleType = typeof eo['type'] === 'string' ? eo['type'] : 'editdisplay';
     const { placement, target, disabled } = riskCustomScriptTypeToLumi(ruleType);
     if (target === 'display' && replaceString.length > 0) {
       replaceString = unprefixHtmlClasses(replaceString);
       replaceString = normalizeIncompleteHtmlEntities(replaceString);
     }
-    let flags = typeof eo['flag'] === 'string' ? eo['flag'] : '';
-    flags = flags.replace(/[^dgimsuvy]/g, '');
-    flags = [...new Set(flags.split(''))].join('');
-    if (flags.length === 0) flags = 'g';
+    const ableFlagRaw = eo['ableFlag'];
+    const ableFlag = ableFlagRaw === undefined || ableFlagRaw === null
+      ? true
+      : !!ableFlagRaw;
+    const rawFlag = typeof eo['flag'] === 'string' ? eo['flag'] : undefined;
+    let flags = normaliseRisuFlag(rawFlag, ableFlag).flag;
     const findHasCbs = findRegex.indexOf('{{') >= 0;
     if (findHasCbs) flags = flags.replace(/u/g, '');
-    const ruleNameRaw =
-      typeof eo['name'] === 'string' && eo['name'].length > 0
-        ? eo['name']
-        : `rule_${sortBase + 1}`;
+    if (flags.length === 0) flags = 'g';
+    const ruleNameRaw = comment.length > 0 ? comment : `rule_${sortBase + 1}`;
     out.push({
-      name: `[${moduleName}] ${ruleNameRaw}`,
+      name: ruleNameRaw,
       script_id: idGen(),
       find_regex: findRegex,
       replace_string: replaceString,

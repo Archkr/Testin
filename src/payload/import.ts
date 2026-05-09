@@ -93,6 +93,50 @@ export function guessMimeType(path: string): string {
   return 'application/octet-stream';
 }
 
+// Risu module asset names lack extensions, so Lumi stores files as `<uuid>.bin`
+// and serves Content-Type: octet-stream + nosniff, blocking <img> render.
+export function sniffImageMime(bytes: Uint8Array): { ext: string; mime: string } | null {
+  if (bytes.byteLength < 12) return null;
+  const b = bytes;
+  if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) {
+    return { ext: 'png', mime: 'image/png' };
+  }
+  if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) {
+    return { ext: 'jpg', mime: 'image/jpeg' };
+  }
+  if (b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x38) {
+    return { ext: 'gif', mime: 'image/gif' };
+  }
+  if (
+    b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 &&
+    b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50
+  ) {
+    return { ext: 'webp', mime: 'image/webp' };
+  }
+  if (
+    b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 &&
+    b[8] === 0x57 && b[9] === 0x41 && b[10] === 0x56 && b[11] === 0x45
+  ) {
+    return { ext: 'wav', mime: 'audio/wav' };
+  }
+  if (b[0] === 0x49 && b[1] === 0x44 && b[2] === 0x33) {
+    return { ext: 'mp3', mime: 'audio/mpeg' };
+  }
+  if (b[0] === 0xff && (b[1] === 0xfb || b[1] === 0xf3 || b[1] === 0xf2)) {
+    return { ext: 'mp3', mime: 'audio/mpeg' };
+  }
+  if (b[0] === 0x4f && b[1] === 0x67 && b[2] === 0x67 && b[3] === 0x53) {
+    return { ext: 'ogg', mime: 'audio/ogg' };
+  }
+  if (b[4] === 0x66 && b[5] === 0x74 && b[6] === 0x79 && b[7] === 0x70) {
+    return { ext: 'mp4', mime: 'video/mp4' };
+  }
+  if (b[0] === 0x1a && b[1] === 0x45 && b[2] === 0xdf && b[3] === 0xa3) {
+    return { ext: 'webm', mime: 'video/webm' };
+  }
+  return null;
+}
+
 function pickAvatar(
   assets: ReadonlyMap<string, Uint8Array>,
 ): { path: string; data: Uint8Array } | null {

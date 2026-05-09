@@ -91,7 +91,38 @@ export function mapRegex(
     const path = `${origin === "character" ? "customscript" : "module.regex"}[${i}]`;
 
     if (typeof s.in !== "string" || s.in.length === 0) {
-      issues.push({ path, message: "empty `in` field, skipped" });
+      const dividerLabel = typeof s.comment === "string" ? s.comment : "";
+      if (dividerLabel.length === 0) {
+        issues.push({ path, message: "empty `in` and `comment`, skipped" });
+        continue;
+      }
+      const id = opts.uuid ? opts.uuid() : newUuid();
+      rows.push({
+        id,
+        user_id: opts.userId ?? "",
+        name: dividerLabel,
+        script_id: opts.uuid ? opts.uuid() : newUuid(),
+        find_regex: "(?!)",
+        replace_string: "",
+        flags: "g",
+        placement: ["ai_output"] as LumiRegexPlacement[],
+        scope: "character",
+        scope_id: opts.characterId,
+        target: "display",
+        min_depth: null,
+        max_depth: null,
+        trim_strings: [],
+        run_on_edit: false,
+        substitute_macros: "none",
+        disabled: true,
+        sort_order: i * 10,
+        description: dividerLabel,
+        folder: "",
+        pack_id: null,
+        metadata: { _risu: { phase: s.type, origin, order_index: i, source_type: "divider" } },
+        created_at: now,
+        updated_at: now,
+      });
       continue;
     }
     if (typeof s.out !== "string") {
@@ -108,7 +139,7 @@ export function mapRegex(
     }
     const effectivePhase = phase ?? UNKNOWN_PHASE_FALLBACK;
 
-    const normalised = normaliseFlag(s, i);
+    const normalised = normaliseRisuFlag(s.flag, !!s.ableFlag);
     const hasNoEndNl = normalised.actions.includes("no_end_nl");
     const baseSortOrder = (normalised.order ?? i) * 10;
 
@@ -364,18 +395,19 @@ const UNKNOWN_PHASE_FALLBACK: PhaseMapEntry = {
 };
 
 
-interface NormalisedFlag {
+export interface NormalisedFlag {
   readonly flag: string;
   readonly actions: readonly string[];
   readonly order?: number;
 }
 
-function normaliseFlag(s: CustomScript, index: number): NormalisedFlag {
-  let raw = s.ableFlag ? (s.flag ?? "g") : "g";
+// Port of Risu's flag-meta parser + char-filter from scripts.ts.
+export function normaliseRisuFlag(rawFlag: string | undefined, ableFlag: boolean): NormalisedFlag {
+  let raw = ableFlag ? (rawFlag ?? "g") : "g";
   const actions: string[] = [];
   let order: number | undefined;
 
-  if (s.ableFlag && raw.indexOf("<") >= 0) {
+  if (ableFlag && raw.indexOf("<") >= 0) {
     const acc: string[] = [];
     let i = 0;
     while (i < raw.length) {
@@ -411,15 +443,14 @@ function normaliseFlag(s: CustomScript, index: number): NormalisedFlag {
   }
   if (flag.length === 0) flag = "u";
 
-  // move_top/move_bottom strip g flag (Risu parity).
   if (actions.includes("move_top") || actions.includes("move_bottom")) {
     flag = flag.replace("g", "");
     if (flag.length === 0) flag = "u";
   }
 
-  void index;
   return { flag, actions, ...(order !== undefined ? { order } : {}) };
 }
+
 
 function splitCommaTrim(s: string): string[] {
   const out: string[] = [];

@@ -2562,6 +2562,27 @@ var styles_default = `.risu-compat-drawer {\r
   flex: 1 1 auto;\r
   min-width: 0;\r
 }\r
+.lr-viewer-drawer .lrv-regex-divider {\r
+  display: flex;\r
+  align-items: center;\r
+  padding: 10px 12px 6px;\r
+  border-top: 1px solid var(--lumiverse-border, rgba(255, 255, 255, 0.05));\r
+}\r
+.lr-viewer-drawer .lrv-regex-divider-label {\r
+  font-size: 10px;\r
+  text-transform: uppercase;\r
+  letter-spacing: 0.6px;\r
+  font-weight: 600;\r
+  color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.55));\r
+  flex: 0 0 auto;\r
+  padding-right: 8px;\r
+}\r
+.lr-viewer-drawer .lrv-regex-divider::after {\r
+  content: '';\r
+  flex: 1 1 auto;\r
+  height: 1px;\r
+  background: var(--lumiverse-border, rgba(255, 255, 255, 0.1));\r
+}\r
 \r
 /* Lorebook */\r
 .lr-viewer-drawer .lrv-lorebook-group {\r
@@ -3585,7 +3606,7 @@ function mountCardsPanel(opts) {
       const existingResp = await fetch(`/api/v1/regex-scripts?scope=character&character_id=${encodeURIComponent(msg.characterId)}&limit=1000`, { credentials: "include" });
       if (existingResp.ok) {
         const body = await existingResp.json();
-        const existingIds = (body.data ?? []).filter((r) => r.scope === "character" && r.scope_id === msg.characterId).map((r) => r.id);
+        const existingIds = (body.data ?? []).filter((r) => r.scope === "character" && r.scope_id === msg.characterId && !r.metadata?._risu?.module_id).map((r) => r.id);
         if (existingIds.length > 0) {
           log.info(`drawer: pre-clean removing ${existingIds.length} existing character-scoped rule(s) for char=${msg.characterId}`);
           const delResp = await fetch("/api/v1/regex-scripts/bulk-delete", {
@@ -3830,17 +3851,35 @@ function mountCardsPanel(opts) {
         log.warn(`drawer.uninstallModuleArtifacts: world_book pipeline threw`, err);
       }
     }
-    if (msg.regexScriptIds.length > 0) {
+    const idsToDelete = new Set(msg.regexScriptIds);
+    try {
+      const listResp = await fetch(`/api/v1/regex-scripts?scope=character&character_id=${encodeURIComponent(msg.characterId)}&limit=2000`, { credentials: "include" });
+      if (listResp.ok) {
+        const body = await listResp.json();
+        for (const r of body.data ?? []) {
+          if (r.scope === "character" && r.scope_id === msg.characterId && r.metadata?._risu?.module_id === msg.moduleId) {
+            idsToDelete.add(r.id);
+          }
+        }
+      } else {
+        log.warn(`drawer.uninstallModuleArtifacts: list HTTP ${listResp.status}, falling back to stashed IDs only`);
+      }
+    } catch (err) {
+      log.warn(`drawer.uninstallModuleArtifacts: list threw, falling back to stashed IDs only`, err);
+    }
+    if (idsToDelete.size > 0) {
       try {
         const resp = await fetch("/api/v1/regex-scripts/bulk-delete", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ ids: msg.regexScriptIds }),
+          body: JSON.stringify({ ids: [...idsToDelete] }),
           credentials: "include"
         });
         if (!resp.ok) {
           ok = false;
-          log.warn(`drawer.uninstallModuleArtifacts: regex bulk-delete HTTP ${resp.status} (sent ${msg.regexScriptIds.length})`);
+          log.warn(`drawer.uninstallModuleArtifacts: regex bulk-delete HTTP ${resp.status} (sent ${idsToDelete.size})`);
+        } else {
+          log.info(`drawer.uninstallModuleArtifacts: regex bulk-deleted ${idsToDelete.size} (stashed=${msg.regexScriptIds.length})`);
         }
       } catch (err) {
         ok = false;
@@ -6333,7 +6372,7 @@ async function getTranslatorForPair(src, tgt) {
       if (ctor.availability) {
         const avail = await ctor.availability({ sourceLanguage: src, targetLanguage: tgt });
         console.info(`[lumirealm] translator ${src}->${tgt} availability=${avail}`);
-        if (avail === "unavailable")
+        if (avail !== "available")
           return null;
       }
       const inst = await ctor.create({ sourceLanguage: src, targetLanguage: tgt });
@@ -8512,6 +8551,16 @@ function mountViewerPanel(opts) {
       return det;
     }
     for (const r of regex) {
+      if (r.divider) {
+        const div = document.createElement("div");
+        div.className = "lrv-regex-divider";
+        const label = document.createElement("span");
+        label.className = "lrv-regex-divider-label";
+        label.textContent = r.name;
+        div.appendChild(label);
+        det.appendChild(div);
+        continue;
+      }
       const row = document.createElement("div");
       row.className = "lrv-regex-row";
       if (r.disabled)
