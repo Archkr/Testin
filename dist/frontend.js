@@ -13000,7 +13000,7 @@ var styles_default2 = `.lr-realm-launcher {\r
 \r
 .lr-realm-primary {\r
   background: var(--lumiverse-primary, #5b8cff);\r
-  color: var(--lumiverse-primary-text, #ffffff);\r
+  color: #ffffff;\r
   border: 0;\r
   padding: 9px 16px;\r
   border-radius: var(--lumiverse-radius, 8px);\r
