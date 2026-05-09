@@ -483,7 +483,7 @@
 
 .lr-realm-primary {
   background: var(--lumiverse-primary, #5b8cff);
-  color: var(--lumiverse-primary-text, #ffffff);
+  color: #ffffff;
   border: 0;
   padding: 9px 16px;
   border-radius: var(--lumiverse-radius, 8px);
