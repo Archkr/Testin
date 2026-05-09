@@ -25961,6 +25961,22 @@ function buildSyntheticStoredCard(characterId, data, risuai, attachedModules = [
     ...data.regex_scripts.length > 0 ? { regex_scripts: data.regex_scripts } : {}
   };
 }
+function mergeUserOverrides(base, patch) {
+  const out = {
+    ...base
+  };
+  for (const k of Object.keys(patch)) {
+    const v = patch[k];
+    if (v === null) {
+      delete out[k];
+      continue;
+    }
+    if (v === undefined)
+      continue;
+    out[k] = v;
+  }
+  return out;
+}
 
 // src/state/migration-state.ts
 var MIGRATION_STATE_PATH = "lumirealm/migration-state.json";
@@ -35974,11 +35990,10 @@ async function attachModuleToCharacter(characterId, moduleId, userId) {
       nextWb[moduleId] = env.installed_world_book_id;
     return {
       ...cur,
-      user_overrides: {
-        ...cur.user_overrides,
+      user_overrides: mergeUserOverrides(cur.user_overrides, {
         attached_module_ids: [...ids, moduleId],
-        ...Object.keys(nextWb).length > 0 ? { attached_module_world_books: nextWb } : {}
-      }
+        attached_module_world_books: Object.keys(nextWb).length > 0 ? nextWb : null
+      })
     };
   });
   if (!updated)
@@ -36010,12 +36025,11 @@ async function detachModuleFromCharacter(characterId, moduleId, userId) {
     delete nextRx[moduleId];
     return {
       ...cur,
-      user_overrides: {
-        ...cur.user_overrides,
+      user_overrides: mergeUserOverrides(cur.user_overrides, {
         attached_module_ids: ids.filter((id) => id !== moduleId),
-        ...Object.keys(nextWb).length > 0 ? { attached_module_world_books: nextWb } : {},
-        ...Object.keys(nextRx).length > 0 ? { attached_module_regex_script_ids: nextRx } : {}
-      }
+        attached_module_world_books: Object.keys(nextWb).length > 0 ? nextWb : null,
+        attached_module_regex_script_ids: Object.keys(nextRx).length > 0 ? nextRx : null
+      })
     };
   });
   if (!updated)
@@ -36454,11 +36468,10 @@ async function refreshAttachedModule(characterId, env, userId) {
     delete rx[env.id];
     return {
       ...cur,
-      user_overrides: {
-        ...cur.user_overrides,
-        ...Object.keys(wb).length > 0 ? { attached_module_world_books: wb } : {},
-        ...Object.keys(rx).length > 0 ? { attached_module_regex_script_ids: rx } : {}
-      }
+      user_overrides: mergeUserOverrides(cur.user_overrides, {
+        attached_module_world_books: Object.keys(wb).length > 0 ? wb : null,
+        attached_module_regex_script_ids: Object.keys(rx).length > 0 ? rx : null
+      })
     };
   });
   if (wbId || regexIds.length > 0) {
@@ -36492,12 +36505,11 @@ async function detachModuleFromAllCharacters(moduleId, userId) {
       delete rx[moduleId];
       return {
         ...cur,
-        user_overrides: {
-          ...cur.user_overrides,
+        user_overrides: mergeUserOverrides(cur.user_overrides, {
           attached_module_ids: (cur.user_overrides.attached_module_ids ?? []).filter((id) => id !== moduleId),
-          ...Object.keys(wb).length > 0 ? { attached_module_world_books: wb } : {},
-          ...Object.keys(rx).length > 0 ? { attached_module_regex_script_ids: rx } : {}
-        }
+          attached_module_world_books: Object.keys(wb).length > 0 ? wb : null,
+          attached_module_regex_script_ids: Object.keys(rx).length > 0 ? rx : null
+        })
       };
     });
     invalidateActiveForCharacter(e.character.id, userId);
@@ -37602,11 +37614,10 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
             delete rx[msg.moduleId];
           return {
             ...cur,
-            user_overrides: {
-              ...cur.user_overrides,
-              ...Object.keys(wb).length > 0 ? { attached_module_world_books: wb } : {},
-              ...Object.keys(rx).length > 0 ? { attached_module_regex_script_ids: rx } : {}
-            }
+            user_overrides: mergeUserOverrides(cur.user_overrides, {
+              attached_module_world_books: Object.keys(wb).length > 0 ? wb : null,
+              attached_module_regex_script_ids: Object.keys(rx).length > 0 ? rx : null
+            })
           };
         });
         if (msg.worldBookId) {

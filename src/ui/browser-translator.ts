@@ -185,15 +185,19 @@ export function getTranslator(): TranslatorHandle | null {
             resultCache.set(cacheKey, out);
             return out;
           } catch {
-            resultCache.set(cacheKey, text);
-            return text;
+            // Translate threw, fall through to remote fallback.
           }
         }
+      }
+      if (fallbackDisabled) {
         resultCache.set(cacheKey, text);
         return text;
       }
       const out = await googleTranslateFallback(text, src);
-      if (out === null) return text;
+      if (out === null) {
+        resultCache.set(cacheKey, text);
+        return text;
+      }
       resultCache.set(cacheKey, out);
       return out;
     },

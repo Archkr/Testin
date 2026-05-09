@@ -26,6 +26,7 @@ import {
   clearLumirealm,
   listLumirealmCharacters,
   buildSyntheticStoredCard,
+  mergeUserOverrides,
   type SpindleCharactersApi,
 } from './state/lumirealm-character.js';
 import {
@@ -5398,13 +5399,10 @@ async function attachModuleToCharacter(
     if (env.installed_world_book_id) nextWb[moduleId] = env.installed_world_book_id;
     return {
       ...cur,
-      user_overrides: {
-        ...cur.user_overrides,
+      user_overrides: mergeUserOverrides(cur.user_overrides, {
         attached_module_ids: [...ids, moduleId],
-        ...(Object.keys(nextWb).length > 0
-          ? { attached_module_world_books: nextWb }
-          : {}),
-      },
+        attached_module_world_books: Object.keys(nextWb).length > 0 ? nextWb : null,
+      }),
     };
   });
   if (!updated) return { ok: false, reason: 'character is not a lumirealm card' };
@@ -5440,16 +5438,11 @@ async function detachModuleFromCharacter(
     delete nextRx[moduleId];
     return {
       ...cur,
-      user_overrides: {
-        ...cur.user_overrides,
+      user_overrides: mergeUserOverrides(cur.user_overrides, {
         attached_module_ids: ids.filter((id) => id !== moduleId),
-        ...(Object.keys(nextWb).length > 0
-          ? { attached_module_world_books: nextWb }
-          : {}),
-        ...(Object.keys(nextRx).length > 0
-          ? { attached_module_regex_script_ids: nextRx }
-          : {}),
-      },
+        attached_module_world_books: Object.keys(nextWb).length > 0 ? nextWb : null,
+        attached_module_regex_script_ids: Object.keys(nextRx).length > 0 ? nextRx : null,
+      }),
     };
   });
   if (!updated) return { ok: false, reason: 'character is not a lumirealm card' };
@@ -6012,11 +6005,10 @@ async function refreshAttachedModule(
     delete rx[env.id];
     return {
       ...cur,
-      user_overrides: {
-        ...cur.user_overrides,
-        ...(Object.keys(wb).length > 0 ? { attached_module_world_books: wb } : {}),
-        ...(Object.keys(rx).length > 0 ? { attached_module_regex_script_ids: rx } : {}),
-      },
+      user_overrides: mergeUserOverrides(cur.user_overrides, {
+        attached_module_world_books: Object.keys(wb).length > 0 ? wb : null,
+        attached_module_regex_script_ids: Object.keys(rx).length > 0 ? rx : null,
+      }),
     };
   });
   if (wbId || regexIds.length > 0) {
@@ -6055,18 +6047,13 @@ async function detachModuleFromAllCharacters(
       delete rx[moduleId];
       return {
         ...cur,
-        user_overrides: {
-          ...cur.user_overrides,
+        user_overrides: mergeUserOverrides(cur.user_overrides, {
           attached_module_ids: (cur.user_overrides.attached_module_ids ?? []).filter(
             (id) => id !== moduleId,
           ),
-          ...(Object.keys(wb).length > 0
-            ? { attached_module_world_books: wb }
-            : {}),
-          ...(Object.keys(rx).length > 0
-            ? { attached_module_regex_script_ids: rx }
-            : {}),
-        },
+          attached_module_world_books: Object.keys(wb).length > 0 ? wb : null,
+          attached_module_regex_script_ids: Object.keys(rx).length > 0 ? rx : null,
+        }),
       };
     });
     invalidateActiveForCharacter(e.character.id, userId);
@@ -7346,11 +7333,10 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
           else delete rx[msg.moduleId];
           return {
             ...cur,
-            user_overrides: {
-              ...cur.user_overrides,
-              ...(Object.keys(wb).length > 0 ? { attached_module_world_books: wb } : {}),
-              ...(Object.keys(rx).length > 0 ? { attached_module_regex_script_ids: rx } : {}),
-            },
+            user_overrides: mergeUserOverrides(cur.user_overrides, {
+              attached_module_world_books: Object.keys(wb).length > 0 ? wb : null,
+              attached_module_regex_script_ids: Object.keys(rx).length > 0 ? rx : null,
+            }),
           };
         });
         if (msg.worldBookId) {

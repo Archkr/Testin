@@ -6454,17 +6454,18 @@ function getTranslator() {
             const out2 = await tr.translate(text);
             resultCache.set(cacheKey, out2);
             return out2;
-          } catch {
-            resultCache.set(cacheKey, text);
-            return text;
-          }
+          } catch {}
         }
+      }
+      if (fallbackDisabled) {
         resultCache.set(cacheKey, text);
         return text;
       }
       const out = await googleTranslateFallback(text, src);
-      if (out === null)
+      if (out === null) {
+        resultCache.set(cacheKey, text);
         return text;
+      }
       resultCache.set(cacheKey, out);
       return out;
     }
@@ -7810,6 +7811,18 @@ function mountViewerPanel(opts) {
       source: o.kind === "character" ? { kind: "character", characterId: o.id } : { kind: "module", moduleId: o.id }
     });
   }
+  function softRefetchCurrentSelection() {
+    if (selectedSourceKey === null)
+      return;
+    const o = parseSourceKey(selectedSourceKey);
+    if (!o)
+      return;
+    log.info(`viewer-panel: soft refetch kind=${o.kind} id=${o.id}`);
+    sendToBackend({
+      type: "request_viewer_data",
+      source: o.kind === "character" ? { kind: "character", characterId: o.id } : { kind: "module", moduleId: o.id }
+    });
+  }
   function renderStatus() {
     if (lastError) {
       status.style.display = "";
@@ -8944,21 +8957,37 @@ function mountViewerPanel(opts) {
             requestForSelection(o);
         }
         break;
-      case "modules_pushed":
+      case "modules_pushed": {
         modules = msg.modules;
+        const affectedChars = new Set;
         if (msg.attached_by_character) {
           for (const [charId, list] of Object.entries(msg.attached_by_character)) {
             attachedByCharacter.set(charId, list);
+            affectedChars.add(charId);
           }
         }
         rebuildSourceSelect();
         render();
+        const sel = selectedSourceKey ? parseSourceKey(selectedSourceKey) : null;
+        if (sel?.kind === "character" && affectedChars.has(sel.id)) {
+          softRefetchCurrentSelection();
+        } else if (sel?.kind === "module" && !modules.some((m) => m.id === sel.id)) {
+          viewerData = null;
+          loading = false;
+          render();
+        }
         break;
-      case "attached_modules_pushed":
+      }
+      case "attached_modules_pushed": {
         attachedByCharacter.set(msg.characterId, msg.attached);
         rebuildSourceSelect();
         render();
+        const sel = selectedSourceKey ? parseSourceKey(selectedSourceKey) : null;
+        if (sel?.kind === "character" && sel.id === msg.characterId) {
+          softRefetchCurrentSelection();
+        }
         break;
+      }
       case "viewer_data_pushed": {
         const d = msg.data;
         const expectedKey = sourceKey(d.source.kind === "character" ? { kind: "character", id: d.source.characterId, label: d.source.name } : { kind: "module", id: d.source.moduleId, label: d.source.name });

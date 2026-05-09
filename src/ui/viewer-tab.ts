@@ -248,6 +248,21 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
     });
   }
 
+  // Re-fetches without resetting subtab / pagination, used when an external
+  // event (module attach/detach/delete) changes the currently-viewed data.
+  function softRefetchCurrentSelection(): void {
+    if (selectedSourceKey === null) return;
+    const o = parseSourceKey(selectedSourceKey);
+    if (!o) return;
+    log.info(`viewer-panel: soft refetch kind=${o.kind} id=${o.id}`);
+    sendToBackend({
+      type: 'request_viewer_data',
+      source: o.kind === 'character'
+        ? { kind: 'character', characterId: o.id }
+        : { kind: 'module', moduleId: o.id },
+    });
+  }
+
   function renderStatus(): void {
     if (lastError) {
       status.style.display = '';
@@ -1437,21 +1452,37 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
           if (o?.kind === 'character') requestForSelection(o);
         }
         break;
-      case 'modules_pushed':
+      case 'modules_pushed': {
         modules = msg.modules;
+        const affectedChars = new Set<string>();
         if (msg.attached_by_character) {
           for (const [charId, list] of Object.entries(msg.attached_by_character)) {
             attachedByCharacter.set(charId, list);
+            affectedChars.add(charId);
           }
         }
         rebuildSourceSelect();
         render();
+        const sel = selectedSourceKey ? parseSourceKey(selectedSourceKey) : null;
+        if (sel?.kind === 'character' && affectedChars.has(sel.id)) {
+          softRefetchCurrentSelection();
+        } else if (sel?.kind === 'module' && !modules.some((m) => m.id === sel.id)) {
+          viewerData = null;
+          loading = false;
+          render();
+        }
         break;
-      case 'attached_modules_pushed':
+      }
+      case 'attached_modules_pushed': {
         attachedByCharacter.set(msg.characterId, msg.attached);
         rebuildSourceSelect();
         render();
+        const sel = selectedSourceKey ? parseSourceKey(selectedSourceKey) : null;
+        if (sel?.kind === 'character' && sel.id === msg.characterId) {
+          softRefetchCurrentSelection();
+        }
         break;
+      }
       case 'viewer_data_pushed': {
         const d = msg.data;
         const expectedKey = sourceKey(
