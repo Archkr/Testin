@@ -33797,6 +33797,19 @@ async function applyRepair(userId, options) {
     elapsedMs: Date.now() - t0
   };
 }
+function nudgeGc(reason) {
+  const bun = globalThis.Bun;
+  if (!bun?.gc)
+    return;
+  const t0 = Date.now();
+  try {
+    bun.gc(true);
+  } catch (err) {
+    log7.warn(`nudgeGc(${reason}): threw, ${errMsg(err)}`);
+    return;
+  }
+  log7.info(`nudgeGc(${reason}): elapsed=${Date.now() - t0}ms`);
+}
 var pendingImportCompletions = new Map;
 var assetUploadsInFlight = 0;
 var repairInFlightByUser = new Set;
@@ -34155,6 +34168,7 @@ async function importCardFromBytes(bytesB64, fileName, userId) {
       }
     });
     log7.info(`importCard: returned characterId=${result.characterId} name=${result.characterName} imageIds=${result.imageIds.length} warnings=${result.warnings.length} elapsed=${Date.now() - tStart}ms`);
+    nudgeGc("card-import");
     if (result.createdWorldBookIds.length > 0) {
       const existing = worldBookIdsByCharacter.get(result.characterId) ?? [];
       const merged = [...existing];
@@ -35986,12 +36000,16 @@ var moduleUploadSessions = new Map;
 function moduleStorage() {
   return spindle.userStorage;
 }
-async function processModuleUpload(bytes, fileName, userId) {
+async function processModuleUpload(bytesIn, fileName, userId) {
   assetUploadsInFlight++;
   try {
     const t0 = Date.now();
-    log7.info(`processModuleUpload: file=${fileName} bytes=${bytes.byteLength} userId=${userId}`);
-    const decoded = decodeRisum(bytes);
+    const inputBytes = bytesIn.byteLength;
+    log7.info(`processModuleUpload: file=${fileName} bytes=${inputBytes} userId=${userId}`);
+    const tDecodeStart = Date.now();
+    const decoded = decodeRisum(bytesIn);
+    bytesIn = new Uint8Array(0);
+    log7.info(`processModuleUpload: decodeRisum done assets=${decoded.assets.length} elapsed=${Date.now() - tDecodeStart}ms`);
     const parsed = risuModuleSchema.safeParse(decoded.module);
     if (!parsed.success) {
       throw new Error(`decoded module failed schema validation \u2014 ${parsed.error.issues.slice(0, 3).map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`);
@@ -36094,20 +36112,20 @@ Only accept if you trust the source of this module.
           let batchBytes = 0;
           while (i < pending3.length && batchItems.length < BATCH_MAX_ITEMS) {
             const meta = pending3[i];
-            const bytes2 = decoded.assets[i];
-            if (!meta || !bytes2) {
+            const bytes = decoded.assets[i];
+            if (!meta || !bytes) {
               i += 1;
               continue;
             }
-            if (batchItems.length > 0 && batchBytes + bytes2.byteLength > BATCH_MAX_BYTES)
+            if (batchItems.length > 0 && batchBytes + bytes.byteLength > BATCH_MAX_BYTES)
               break;
-            const sniff = sniffImageMime(bytes2);
+            const sniff = sniffImageMime(bytes);
             const uploadFilename = sniff ? `${meta.path}.${sniff.ext}` : meta.path;
             const uploadMime = sniff?.mime ?? meta.mimeType;
-            batchItems.push({ data: bytes2, mime_type: uploadMime, filename: uploadFilename });
+            batchItems.push({ data: bytes, mime_type: uploadMime, filename: uploadFilename });
             batchAssetNames.push(meta.path);
             batchSniffedExts.push(sniff?.ext);
-            batchBytes += bytes2.byteLength;
+            batchBytes += bytes.byteLength;
             i += 1;
           }
           let results = [];
@@ -36142,15 +36160,15 @@ Only accept if you trust the source of this module.
             if (i >= pending3.length)
               break;
             const meta = pending3[i];
-            const bytes2 = decoded.assets[i];
-            if (!meta || !bytes2)
+            const bytes = decoded.assets[i];
+            if (!meta || !bytes)
               continue;
             const assetName = meta.path;
-            const sniff = sniffImageMime(bytes2);
+            const sniff = sniffImageMime(bytes);
             const uploadFilename = sniff ? `${assetName}.${sniff.ext}` : assetName;
             const uploadMime = sniff?.mime ?? meta.mimeType;
             try {
-              const result = await spindleImagesApi.upload({ data: bytes2, mime_type: uploadMime, filename: uploadFilename }, userId);
+              const result = await spindleImagesApi.upload({ data: bytes, mime_type: uploadMime, filename: uploadFilename }, userId);
               if (typeof result?.id !== "string" || result.id.length === 0) {
                 throw new Error("upload returned without an image id");
               }
@@ -37793,17 +37811,17 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
           break;
         }
         const totalBytes = session.receivedBytes;
-        const buffers = [];
+        const tConcatStart = Date.now();
+        let combined = new Uint8Array(totalBytes);
+        let offset = 0;
         for (let i = 0;i < session.totalChunks; i++) {
           const c = session.buffer[i];
-          buffers.push(c);
+          combined.set(c, offset);
+          offset += c.byteLength;
+          session.buffer[i] = null;
         }
-        const combined = new Uint8Array(totalBytes);
-        let offset = 0;
-        for (const b of buffers) {
-          combined.set(b, offset);
-          offset += b.byteLength;
-        }
+        const concatMs = Date.now() - tConcatStart;
+        log7.info(`upload_module_commit: concat done bytes=${totalBytes} chunks=${session.totalChunks} elapsed=${concatMs}ms`);
         const fileName = session.fileName;
         moduleUploadSessions.delete(msg.sessionId);
         send({
@@ -37819,7 +37837,10 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
           fraction: 0.3
         }, userId);
         try {
-          const { envelope: env } = await processModuleUpload(combined, fileName, userId);
+          const handoff = combined;
+          combined = new Uint8Array(0);
+          const { envelope: env } = await processModuleUpload(handoff, fileName, userId);
+          nudgeGc("module-upload");
           const moduleName = typeof env.module.name === "string" && env.module.name.length > 0 ? env.module.name : env.id;
           send({
             type: "import_progress",

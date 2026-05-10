@@ -2295,6 +2295,25 @@ async function applyRepair(
   };
 }
 
+// JSC's incremental GC leaves upload-pipeline garbage (handoff, decoded
+// Uint8Arrays, IPC payloads) rooted for minutes without slack. Force a
+// synchronous full collect after large uploads, ~50-200ms on multi-GiB
+// heaps, no-op when Bun.gc is unavailable.
+function nudgeGc(reason: string): void {
+  const bun = (globalThis as {
+    Bun?: { gc?: (sync: boolean) => number | void };
+  }).Bun;
+  if (!bun?.gc) return;
+  const t0 = Date.now();
+  try {
+    bun.gc(true);
+  } catch (err) {
+    log.warn(`nudgeGc(${reason}): threw, ${errMsg(err)}`);
+    return;
+  }
+  log.info(`nudgeGc(${reason}): elapsed=${Date.now() - t0}ms`);
+}
+
 interface PendingImportCompletion {
   hasPendingSvgRaster: boolean;
   characterName: string;
@@ -2792,6 +2811,7 @@ async function importCardFromBytes(
       `importCard: returned characterId=${result.characterId} name=${result.characterName} ` +
         `imageIds=${result.imageIds.length} warnings=${result.warnings.length} elapsed=${Date.now() - tStart}ms`,
     );
+    nudgeGc('card-import');
 
     // Pre-seed worldBookIdsByCharacter so CHARACTER_DELETED before any chat
     // open still has the world_book id for cleanup.
@@ -5354,17 +5374,25 @@ function moduleStorage(): import('./state/modules-store.js').UserStorageLike {
 }
 
 async function processModuleUpload(
-  bytes: Uint8Array,
+  bytesIn: Uint8Array,
   fileName: string,
   userId: string,
 ): Promise<{ envelope: ModuleEnvelope }> {
   assetUploadsInFlight++;
   try {
   const t0 = Date.now();
+  const inputBytes = bytesIn.byteLength;
   log.info(
-    `processModuleUpload: file=${fileName} bytes=${bytes.byteLength} userId=${userId}`,
+    `processModuleUpload: file=${fileName} bytes=${inputBytes} userId=${userId}`,
   );
-  const decoded = decodeRisum(bytes);
+  const tDecodeStart = Date.now();
+  const decoded = decodeRisum(bytesIn);
+  // decodeRPack allocates fresh per-asset buffers, source no longer needed.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (bytesIn as any) = new Uint8Array(0);
+  log.info(
+    `processModuleUpload: decodeRisum done assets=${decoded.assets.length} elapsed=${Date.now() - tDecodeStart}ms`,
+  );
   const parsed = risuModuleSchema.safeParse(decoded.module);
   if (!parsed.success) {
     throw new Error(
@@ -7508,20 +7536,21 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
           moduleUploadSessions.delete(msg.sessionId);
           break;
         }
-        // Concatenate. Use Buffer.concat (Node-compatible in Bun) to
-        // avoid manually computing offsets.
         const totalBytes = session.receivedBytes;
-        const buffers: Uint8Array[] = [];
+        const tConcatStart = Date.now();
+        let combined = new Uint8Array(totalBytes);
+        let offset = 0;
         for (let i = 0; i < session.totalChunks; i++) {
           const c = session.buffer[i]!;
-          buffers.push(c);
+          combined.set(c, offset);
+          offset += c.byteLength;
+          // Drop the per-chunk reference so GC can reclaim while we walk.
+          (session.buffer as Array<Uint8Array | null>)[i] = null;
         }
-        const combined = new Uint8Array(totalBytes);
-        let offset = 0;
-        for (const b of buffers) {
-          combined.set(b, offset);
-          offset += b.byteLength;
-        }
+        const concatMs = Date.now() - tConcatStart;
+        log.info(
+          `upload_module_commit: concat done bytes=${totalBytes} chunks=${session.totalChunks} elapsed=${concatMs}ms`,
+        );
         const fileName = session.fileName;
         moduleUploadSessions.delete(msg.sessionId);
         send({
@@ -7537,11 +7566,17 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
           fraction: 0.3,
         }, userId);
         try {
+          const handoff = combined;
+          // Drop our local reference so processModuleUpload owns the only one.
+          // Inside processModuleUpload, decodeRisum can free the buffer once
+          // assets are extracted into per-asset Uint8Arrays.
+          combined = new Uint8Array(0);
           const { envelope: env } = await processModuleUpload(
-            combined,
+            handoff,
             fileName,
             userId,
           );
+          nudgeGc('module-upload');
           const moduleName = typeof env.module.name === 'string' && env.module.name.length > 0
             ? env.module.name
             : env.id;

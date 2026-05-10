@@ -7151,6 +7151,50 @@ var CHUNK_ACK_TIMEOUT_MS2 = 20000;
 var COMMIT_FIRST_PROGRESS_TIMEOUT_MS2 = 60000;
 var UPLOAD_WINDOW_SIZE2 = 30;
 var ACCEPT_EXTENSIONS2 = [".risum"];
+var liveVizTimers = new Set;
+function vizStartTimer(t) {
+  t.startedAt = Date.now();
+  t.timer = setTimeout(() => {
+    t.timer = null;
+    if (t.cancelled)
+      return;
+    liveVizTimers.delete(t);
+    t.onFire();
+  }, t.remainingMs);
+}
+function vizSetTimeout(ms, onFire) {
+  const t = { remainingMs: ms, startedAt: 0, timer: null, onFire, cancelled: false };
+  liveVizTimers.add(t);
+  if (typeof document === "undefined" || document.visibilityState === "visible") {
+    vizStartTimer(t);
+  }
+  return t;
+}
+function vizClearTimeout(t) {
+  t.cancelled = true;
+  if (t.timer !== null) {
+    clearTimeout(t.timer);
+    t.timer = null;
+  }
+  liveVizTimers.delete(t);
+}
+if (typeof document !== "undefined") {
+  document.addEventListener("visibilitychange", () => {
+    const visible = document.visibilityState === "visible";
+    for (const t of liveVizTimers) {
+      if (t.cancelled)
+        continue;
+      if (visible && t.timer === null) {
+        vizStartTimer(t);
+      } else if (!visible && t.timer !== null) {
+        const elapsed = Date.now() - t.startedAt;
+        t.remainingMs = Math.max(0, t.remainingMs - elapsed);
+        clearTimeout(t.timer);
+        t.timer = null;
+      }
+    }
+  });
+}
 function mountModulesPanel(opts) {
   const { sendToBackend, log } = opts;
   log.info("modules-panel: mounting");
@@ -7793,18 +7837,18 @@ filename: ${m.filename}`;
     if (session.lastAckSeq === seq)
       return Promise.resolve();
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
+      const timer = vizSetTimeout(timeoutMs, () => {
         if (session.pendingAcks.delete(seq)) {
           session.aborted = true;
-          reject(new Error(`timeout waiting for ${label} ack after ${timeoutMs}ms`));
+          reject(new Error(`timeout waiting for ${label} ack after ${timeoutMs}ms (visible time)`));
         }
-      }, timeoutMs);
+      });
       session.pendingAcks.set(seq, { resolve, reject, timer });
     });
   }
   function rejectAllPending(session, err) {
     for (const [seq, p] of session.pendingAcks) {
-      clearTimeout(p.timer);
+      vizClearTimeout(p.timer);
       p.reject(err);
       session.pendingAcks.delete(seq);
     }
@@ -7818,7 +7862,7 @@ filename: ${m.filename}`;
     const p = session.pendingAcks.get(seq);
     if (p) {
       session.pendingAcks.delete(seq);
-      clearTimeout(p.timer);
+      vizClearTimeout(p.timer);
       p.resolve();
     }
   }
