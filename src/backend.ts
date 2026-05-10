@@ -27,6 +27,8 @@ import {
   listLumirealmCharacters,
   buildSyntheticStoredCard,
   mergeUserOverrides,
+  buildAttachModulePatch,
+  buildDetachModulesPatch,
   type SpindleCharactersApi,
 } from './state/lumirealm-character.js';
 import {
@@ -116,6 +118,29 @@ import {
   subscribeToMissingChanges,
   PERMISSION_PURPOSE,
 } from './state/permissions.js';
+import { buildDispatchSeams } from './state/dispatch-seams.js';
+import { pushViewerData, type ViewerPushDeps } from './state/viewer-push.js';
+import { createViewerAssembly } from './state/viewer-assembly.js';
+import { mergeLangBlock } from './state/translation-merge.js';
+import { createLorebookImporter } from './state/lorebook-import.js';
+import { createModuleUploader } from './state/module-upload.js';
+import { createOrphanOrchestrator } from './state/orphan-orchestrator.js';
+import {
+  getRegisterMessageContentProcessor,
+  getRegisterMacroInterceptor,
+  getRegisterInterceptor,
+  getRegisterWorldInfoInterceptor,
+  getModalConfirmApi,
+  getRegexScriptsApi,
+  getConnectionsListFn,
+  type MessageContentProcessorCtx,
+  type MessageContentProcessorPatch,
+  type MacroInterceptorCtx,
+  type MacroInterceptorSnapshotEnv,
+  type LlmMessage,
+  type InterceptorContext,
+  type ModalConfirmOptions,
+} from './adapters/spindle-extras.js';
 import {
   collectModuleToggleDsl,
   extractToggleKeys,
@@ -162,6 +187,51 @@ import { resolveAlertDismissal } from './interpreter/alert-bridge.js';
 import { resolvePickResolution } from './interpreter/pick-bridge.js';
 import { userIdAls, currentUserId } from './interpreter/runtime/als.js';
 import { checkHostVersion, type HostVersionCheckResult } from './util/version-check.js';
+import {
+  getDecoratorBuffers as readDecoratorBuffers,
+  setDecoratorBuffers,
+  clearDecoratorBuffers as clearDecoratorBuffer,
+} from './interpreter/decorator-buffers.js';
+import { decodeRisum } from './core/risum/index.js';
+import { risuModuleSchema } from './core/schemas/module.js';
+import { guessMimeType, sniffImageMime } from './payload/import.js';
+import {
+  type ModuleEnvelope,
+  type ModuleIndexEntry,
+  MODULE_SCHEMA_VERSION,
+  deleteModule as deleteModuleFromStore,
+  envelopePath as moduleEnvelopePath,
+  listModules as listModuleStore,
+  pairModuleAssetsForUpload,
+  readEnvelope as readModuleEnvelope,
+  writeEnvelope as writeModuleEnvelope,
+} from './state/modules-store.js';
+import type {
+  AttachedModuleSummary,
+  ModuleSummary,
+} from './types/messages.js';
+import {
+  projectModuleLorebookEntries,
+  projectModuleRegexEntries,
+} from './state/module-artifact-project.js';
+import {
+  buildCharacterViewerData,
+  buildModuleViewerData,
+  type FetchedWorldBook,
+  type LumiSideRegex,
+} from './state/viewer-data.js';
+import {
+  addAssetToCharacterIndex,
+  addAssetToModuleIndex,
+  deleteCharacterAsset,
+  deleteModuleAsset,
+  renameCharacterAsset,
+  renameModuleAsset,
+} from './state/asset-index-mutate.js';
+import {
+  extractLuaForTrigger,
+  replaceTriggerLuaInArray,
+} from './state/trigger-lua-mutate.js';
 
 const EXTENSION_VERSION = '0.1.0';
 
@@ -316,62 +386,12 @@ let diagInterceptorCall = 0;
 registerAllMacros();
 
 // Pre-write content processor: resolves CBS before the route handler commits
-// the row. Feature-detected: Lumi builds without the hook leave
-// `registerMessageContentProcessor` undefined; falls back to reactive path.
-interface MessageContentProcessorCtx {
-  readonly chatId: string;
-  readonly messageId?: string;
-  readonly content: string;
-  readonly extra?: Record<string, unknown>;
-  readonly origin: 'create' | 'update' | 'swipe_add' | 'swipe_update' | 'render';
-  readonly swipeIndex?: number;
-  readonly userId: string;
-}
-interface MessageContentProcessorPatch {
-  content?: string;
-  extra?: Record<string, unknown>;
-}
-const registerMessageContentProcessor = (spindle as unknown as {
-  registerMessageContentProcessor?: (
-    handler: (
-      ctx: MessageContentProcessorCtx,
-    ) => Promise<MessageContentProcessorPatch | void>,
-    priority?: number,
-  ) => void;
-}).registerMessageContentProcessor;
+// the row. Feature-detected via spindle-extras adapter.
+const registerMessageContentProcessor = getRegisterMessageContentProcessor();
 
-// Macro interceptor: fires at the top of Lumi's MacroEvaluator.evaluate()
-// for every template, allowing one bulk in-worker CBS resolve per template
-// instead of one __macro_invoke__ RPC per macro occurrence.
-// Feature-detected. Only fires for chats belonging to a Risu-imported
-// character; returns void for all others.
-interface MacroInterceptorSnapshotEnv {
-  readonly commit: boolean;
-  readonly names: Record<string, string>;
-  readonly character: Record<string, unknown>;
-  readonly chat: Record<string, unknown>;
-  readonly system: Record<string, unknown>;
-  readonly variables: {
-    readonly local: Record<string, string>;
-    readonly global: Record<string, string>;
-    readonly chat: Record<string, string>;
-  };
-  readonly extra: Record<string, unknown>;
-}
-interface MacroInterceptorCtx {
-  readonly template: string;
-  readonly env: MacroInterceptorSnapshotEnv;
-  readonly commit: boolean;
-  readonly phase: 'prompt' | 'display' | 'response' | 'other';
-  readonly sourceHint?: string;
-  readonly userId?: string;
-}
-const registerMacroInterceptor = (spindle as unknown as {
-  registerMacroInterceptor?: (
-    handler: (ctx: MacroInterceptorCtx) => Promise<string | void>,
-    priority?: number,
-  ) => void;
-}).registerMacroInterceptor;
+// Macro interceptor: per-template bulk in-worker CBS resolve, replaces N
+// __macro_invoke__ RPCs with one. Feature-detected via spindle-extras.
+const registerMacroInterceptor = getRegisterMacroInterceptor();
 
 if (typeof registerMacroInterceptor === 'function') {
   registerMacroInterceptor((ctx) => withMaybeUser(ctx.userId, async () => {
@@ -501,7 +521,7 @@ if (typeof registerMacroInterceptor === 'function') {
           : {}),
       });
     } catch (err) {
-      log.warn(`macroInterceptor: runPipeline threw chat=${chatId} phase=${ctx.phase} — ${errMsg(err)}. Passing through.`);
+      log.warn(`macroInterceptor: runPipeline threw chat=${chatId} phase=${ctx.phase}: ${errMsg(err)}. Passing through.`);
       return;
     }
 
@@ -559,7 +579,7 @@ if (typeof registerMacroInterceptor === 'function') {
             },
           );
         } catch (err) {
-          log.warn(`macroInterceptor: listenEdit chain threw — ${errMsg(err)}. Continuing with pre-hook resolved.`);
+          log.warn(`macroInterceptor: listenEdit chain threw: ${errMsg(err)}. Continuing with pre-hook resolved.`);
         }
       }
 
@@ -607,7 +627,7 @@ if (typeof registerMacroInterceptor === 'function') {
   }), 100);
   log.info('macroInterceptor: registered at priority=100');
 } else {
-  log.warn('macroInterceptor: NOT AVAILABLE on this Lumi build — extension macros will resolve via per-call RPC (slow for iteration-heavy cards, and FRAME-SHIFT UNRELIABLE without preprocessor coherence)');
+  log.warn('macroInterceptor: NOT AVAILABLE on this Lumi build, extension macros will resolve via per-call RPC (slow for iteration-heavy cards, and FRAME-SHIFT UNRELIABLE without preprocessor coherence)');
 }
 
 if (typeof registerMessageContentProcessor === 'function') {
@@ -732,14 +752,14 @@ if (typeof registerMessageContentProcessor === 'function') {
               });
             } catch (err) {
               log.warn(
-                `messageContentProcessor.render at-actions threw — ${errMsg(err)}. Continuing with prior content.`,
+                `messageContentProcessor.render at-actions threw: ${errMsg(err)}. Continuing with prior content.`,
               );
             }
             atActionsMs = Date.now() - tAt;
           }
 
           // Risu parity: run the body through the CBS evaluator with
-          // commit:false (= rmVar:true) — body-level setvars are stripped,
+          // commit:false (= rmVar:true),body-level setvars are stripped,
           // everything else (`{{getvar}}`, `{{#risu_if}}`, `{{time}}`, etc.)
           // resolves against current chat state. Lumi's display-regex still
           // runs after this with commit:true, so card-authored regex
@@ -761,7 +781,7 @@ if (typeof registerMessageContentProcessor === 'function') {
               transformed = puaDecodeFeMacros(resolved, enc.tokens);
             } catch (err) {
               log.warn(
-                `messageContentProcessor.render body-resolve threw — ${errMsg(err)}. Returning pre-resolve content.`,
+                `messageContentProcessor.render body-resolve threw: ${errMsg(err)}. Returning pre-resolve content.`,
               );
             }
             resolveMs = Date.now() - tResolve;
@@ -794,7 +814,7 @@ if (typeof registerMessageContentProcessor === 'function') {
       }
 
       // Write-time origins (create / update / swipe_add / swipe_update / greeting).
-      // Storage holds RAW post-unbake — no resolveReadonly here. Body-level
+      // Storage holds RAW post-unbake,no resolveReadonly here. Body-level
       // macros resolve at render time via the 'render' origin above.
       // We still run `editoutput`-phase @@-actions (for `@@emo` side-effects
       // + `@@repeat_back` content concatenation; both fire on the raw body
@@ -819,7 +839,7 @@ if (typeof registerMessageContentProcessor === 'function') {
           });
         } catch (err) {
           log.warn(
-            `messageContentProcessor: at-actions editoutput threw — ${errMsg(err)}. ` +
+            `messageContentProcessor: at-actions editoutput threw: ${errMsg(err)}. ` +
               `Continuing with pre-action content.`,
           );
         }
@@ -844,36 +864,11 @@ if (typeof registerMessageContentProcessor === 'function') {
   }), 100);
   log.info('messageContentProcessor: registered');
 } else {
-  log.info('messageContentProcessor: not available on this Lumi build — falling back to reactive MESSAGE_EDITED resolve');
+  log.info('messageContentProcessor: not available on this Lumi build, falling back to reactive MESSAGE_EDITED resolve');
 }
 
 // listenEdit('editInput') + 'editRequest' chains via Lumi interceptor hook.
-interface InterceptorContext {
-  chatId?: string;
-  connectionId?: string;
-  personaId?: string;
-  generationType?: 'normal' | 'continue' | 'regenerate' | 'swipe' | 'impersonate';
-}
-interface LlmMessage {
-  role: 'system' | 'user' | 'assistant';
-  content: string;
-  name?: string;
-}
-const registerInterceptor = (spindle as unknown as {
-  registerInterceptor?: (
-    handler: (
-      messages: LlmMessage[],
-      context: unknown,
-    ) => Promise<LlmMessage[] | { messages: LlmMessage[]; parameters?: Record<string, unknown> }>,
-    priority?: number,
-  ) => void;
-}).registerInterceptor;
-
-import {
-  getDecoratorBuffers as readDecoratorBuffers,
-  setDecoratorBuffers,
-  clearDecoratorBuffers as clearDecoratorBuffer,
-} from './interpreter/decorator-buffers.js';
+const registerInterceptor = getRegisterInterceptor();
 
 if (typeof registerInterceptor === 'function') {
   registerInterceptor(async (messages, contextRaw) => {
@@ -1014,7 +1009,7 @@ if (typeof registerInterceptor === 'function') {
             out[userIdx] = { ...out[userIdx]!, content: mutated };
           }
         } catch (err) {
-          log.warn(`interceptor.editInput threw — ${errMsg(err)}. Continuing with original.`);
+          log.warn(`interceptor.editInput threw: ${errMsg(err)}. Continuing with original.`);
         }
       }
     }
@@ -1044,7 +1039,7 @@ if (typeof registerInterceptor === 'function') {
         out = mutated;
       }
     } catch (err) {
-      log.warn(`interceptor.editRequest threw — ${errMsg(err)}. Continuing with prior array.`);
+      log.warn(`interceptor.editRequest threw: ${errMsg(err)}. Continuing with prior array.`);
     }
 
     return out;
@@ -1052,13 +1047,10 @@ if (typeof registerInterceptor === 'function') {
   }, 100);
   log.info('interceptor: registered (editInput + editRequest)');
 } else {
-  log.info('interceptor: not available on this Lumi build — listenEdit editInput/editRequest will not fire');
+  log.info('interceptor: not available on this Lumi build, listenEdit editInput/editRequest will not fire');
 }
 
-const registerWorldInfoInterceptor =
-  typeof (spindle as unknown as { registerWorldInfoInterceptor?: unknown }).registerWorldInfoInterceptor === 'function'
-    ? (spindle.registerWorldInfoInterceptor.bind(spindle) as typeof spindle.registerWorldInfoInterceptor)
-    : null;
+const registerWorldInfoInterceptor = getRegisterWorldInfoInterceptor();
 
 if (registerWorldInfoInterceptor) {
   // log.always , bypasses the user's runtime-log toggle. The decorator
@@ -1225,7 +1217,7 @@ if (registerWorldInfoInterceptor) {
   }), 100);
   log.info('worldInfoInterceptor: registered');
 } else {
-  log.info('worldInfoInterceptor: not available on this Lumi build — Tier 2 lorebook decorators will not gate');
+  log.info('worldInfoInterceptor: not available on this Lumi build, Tier 2 lorebook decorators will not gate');
 }
 
 const variableState = new VariableStateStore();
@@ -1342,14 +1334,7 @@ interface SafeConnectionDTO {
 }
 
 async function listConnectionsForUser(userId: string): Promise<readonly SafeConnectionDTO[]> {
-  const anySpindle = spindle as unknown as {
-    connections?: {
-      list?: (uid?: string) => Promise<readonly {
-        id: string; name: string; provider: string; model: string; is_default: boolean;
-      }[]>;
-    };
-  };
-  const listFn = anySpindle.connections?.list;
+  const listFn = getConnectionsListFn();
   if (!listFn) {
     log.warn('listConnectionsForUser: spindle.connections.list not available on this Lumi build');
     return [];
@@ -1364,7 +1349,7 @@ async function listConnectionsForUser(userId: string): Promise<readonly SafeConn
       is_default: c.is_default,
     }));
   } catch (err) {
-    log.warn(`listConnectionsForUser: list threw — ${errMsg(err)}`);
+    log.warn(`listConnectionsForUser: list threw: ${errMsg(err)}`);
     return [];
   }
 }
@@ -1401,7 +1386,7 @@ async function deleteImageIds(
   let failed = 0;
   const del = spindleImagesDelete();
   if (!del) {
-    log.warn(`${context}: spindle.images.delete unavailable — ${imageIds.length} image(s) leaked`);
+    log.warn(`${context}: spindle.images.delete unavailable,${imageIds.length} image(s) leaked`);
     return { deleted, absent, failed: imageIds.length };
   }
   let nextIndex = 0;
@@ -1481,73 +1466,17 @@ async function backfillImageJournalIfMissing(
   }
 }
 
-// Boot-time detector: a journal whose owning character or module is gone is
-// evidence of a deletion that happened while the extension wasn't running.
-async function detectDeletedWhileOff(userId: string): Promise<{
-  readonly characterIds: readonly string[];
-  readonly moduleIds: readonly string[];
-}> {
-  const characterIds: string[] = [];
-  const moduleIds: string[] = [];
-  try {
-    const charJournalIds = await listImageJournalCharacterIds(journalStorage(), userId);
-    for (const characterId of charJournalIds) {
-      const file = await readImageJournalFile(journalStorage(), userId, characterId);
-      if (!file) continue;
-      let character: unknown = null;
-      try {
-        character = await spindle.characters.get(characterId, userId);
-      } catch (err) {
-        log.warn(`detectDeletedWhileOff: characters.get(${characterId}) threw: ${errMsg(err)}`);
-        continue;
-      }
-      if (character === null) characterIds.push(characterId);
-    }
-  } catch (err) {
-    log.warn(`detectDeletedWhileOff: char-journal walk failed: ${errMsg(err)}`);
-  }
-  try {
-    const moduleJournalIds = await listModuleImageJournalIds(journalStorage(), userId);
-    for (const moduleId of moduleJournalIds) {
-      const file = await readModuleImageJournalFile(journalStorage(), userId, moduleId);
-      if (!file) continue;
-      const env = await readModuleEnvelope(moduleStorage(), userId, moduleId);
-      if (env === null) moduleIds.push(moduleId);
-    }
-  } catch (err) {
-    log.warn(`detectDeletedWhileOff: module-journal walk failed: ${errMsg(err)}`);
-  }
-  return { characterIds, moduleIds };
-}
-
-interface SpindleModalConfirmLike {
-  readonly confirm?: (options: {
-    title: string;
-    message: string;
-    variant?: 'info' | 'warning' | 'danger' | 'success';
-    confirmLabel?: string;
-    cancelLabel?: string;
-    userId?: string;
-  }) => Promise<{ confirmed: boolean }>;
-}
-
 // Lumi caps each extension at 2 concurrent modals, two boot-time prompts can
 // race (orphan review, lorebook archive). Serialize per-user.
 const modalChainByUser = new Map<string, Promise<unknown>>();
 function queueModalConfirm(
   userId: string,
-  options: {
-    title: string;
-    message: string;
-    variant?: 'info' | 'warning' | 'danger' | 'success';
-    confirmLabel?: string;
-    cancelLabel?: string;
-  },
+  options: Omit<ModalConfirmOptions, 'userId'>,
 ): Promise<{ confirmed: boolean } | null> {
-  const modalApi = (spindle as unknown as { modal?: SpindleModalConfirmLike }).modal;
-  if (!modalApi?.confirm) return Promise.resolve(null);
+  const modalApi = getModalConfirmApi();
+  if (!modalApi) return Promise.resolve(null);
   const run = (): Promise<{ confirmed: boolean } | null> =>
-    modalApi.confirm!({ ...options, userId }).catch((err) => {
+    modalApi.confirm({ ...options, userId }).catch((err) => {
       log.warn(`queueModalConfirm: modal.confirm threw: ${errMsg(err)}`);
       return null;
     });
@@ -1635,39 +1564,6 @@ async function promptOrphanReviewIfAny(userId: string): Promise<void> {
   if (result.confirmed) {
     send({ type: 'open_settings_cleanup' }, userId);
   }
-}
-
-interface SpindleImageDTOLike {
-  readonly id: string;
-  readonly original_filename?: string;
-  readonly mime_type?: string;
-  readonly width?: number | null;
-  readonly height?: number | null;
-  readonly url?: string;
-  readonly owner_character_id?: string | null;
-  readonly created_at?: number;
-}
-
-interface SpindleImagesListLike {
-  readonly list?: (
-    options: { onlyOwned?: boolean; limit?: number; offset?: number; userId?: string },
-  ) => Promise<{ data: readonly SpindleImageDTOLike[]; total: number }>;
-}
-
-interface OrphanScanReport {
-  readonly orphans: readonly OrphanAssetEntry[];
-  readonly summary: {
-    readonly scannedTotal: number;
-    readonly liveCharacterRefs: number;
-    readonly liveModuleRefs: number;
-    readonly liveJournalRefs: number;
-    readonly charactersScanned: number;
-    readonly modulesScanned: number;
-    readonly elapsedMs: number;
-    readonly totalOrphans: number;
-    readonly truncated: boolean;
-    readonly orphanRegexCleaned: number;
-  };
 }
 
 function buildOrphanDetectDeps(userId: string): OrphanDetectDeps {
@@ -1760,257 +1656,69 @@ function buildOrphanDetectDepsExcluding(
   };
 }
 
-async function scanOrphanedImages(userId: string): Promise<OrphanScanReport> {
-  const tStart = Date.now();
-  const imagesApi = (spindle as unknown as { images?: SpindleImagesListLike }).images;
-  if (!imagesApi?.list) {
-    throw new Error('spindle.images.list unavailable, Lumi update required for orphan scan.');
-  }
-
-  const live = await buildLiveImageIdSet(buildOrphanDetectDeps(userId));
-
-  // Lumi clamps each page to 200 server-side, so requesting more is pointless.
-  // Stops on empty page, offset >= total, or zero-new-IDs (runaway-loop guard
-  // for hosts that ignore offset).
-  const PAGE_SIZE = 200;
-  const ownedById = new Map<string, SpindleImageDTOLike>();
-  let offset = 0;
-  let pages = 0;
-  while (true) {
-    const page = await imagesApi.list({
-      onlyOwned: true,
-      limit: PAGE_SIZE,
-      offset,
-      userId,
-    });
-    pages++;
-    if (!page || !Array.isArray(page.data)) {
-      log.warn(`scanOrphanedImages: list returned bad shape pages=${pages}, stopping`);
-      break;
+const orphanOrchestrator = createOrphanOrchestrator({
+  imagesApi: spindle.images
+    ? { list: (opts) => spindle.images.list(opts as never) as never }
+    : null,
+  regexApi: getRegexScriptsApi(),
+  listLumirealmCharacterIds: async (userId) => {
+    const entries = await listLumirealmCharacters(charactersApi(), userId, { paginate: true });
+    return entries.filter((e) => e.data !== null).map((e) => e.character.id);
+  },
+  listModuleIds: async (userId) => {
+    const ms = await listModuleStore(moduleStorage(), userId);
+    return ms.map((m) => m.id);
+  },
+  characterExists: async (userId, id) => {
+    try {
+      const c = await spindle.characters.get(id, userId);
+      return c !== null;
+    } catch {
+      return false;
     }
-    if (page.data.length === 0) break;
-    let added = 0;
-    for (const img of page.data) {
-      if (!img || typeof img.id !== 'string' || img.id.length === 0) continue;
-      if (!ownedById.has(img.id)) {
-        ownedById.set(img.id, img);
-        added++;
+  },
+  moduleExists: async (userId, id) => {
+    try {
+      const env = await readModuleEnvelope(moduleStorage(), userId, id);
+      return env !== null;
+    } catch {
+      return false;
+    }
+  },
+  listImageJournalCharacterIds: (userId) => listImageJournalCharacterIds(journalStorage(), userId),
+  readImageJournalFile: (userId, characterId) => readImageJournalFile(journalStorage(), userId, characterId),
+  listModuleImageJournalIds: (userId) => listModuleImageJournalIds(journalStorage(), userId),
+  readModuleImageJournalFile: (userId, moduleId) => readModuleImageJournalFile(journalStorage(), userId, moduleId),
+  clearImageJournal: async (userId, characterId) => { await clearImageJournal(journalStorage(), userId, characterId); },
+  clearModuleImageJournal: async (userId, moduleId) => { await clearModuleImageJournal(journalStorage(), userId, moduleId); },
+  buildOrphanDetectDeps,
+  countCharacterRepair: async (userId) => {
+    const entries = await listLumirealmCharacters(charactersApi(), userId, { paginate: true });
+    const liveModuleIds = new Set((await listModuleStore(moduleStorage(), userId)).map((m) => m.id));
+    let charactersToRetranslate = 0;
+    let modulesToReattach = 0;
+    let danglingModuleRefs = 0;
+    for (const e of entries) {
+      if (!e.data) continue;
+      charactersToRetranslate += 1;
+      const ids = e.data.user_overrides.attached_module_ids ?? [];
+      for (const id of ids) {
+        if (liveModuleIds.has(id)) modulesToReattach++;
+        else danglingModuleRefs++;
       }
     }
-    if (added === 0) {
-      log.warn(
-        `scanOrphanedImages: page added 0 new IDs at offset=${offset} pages=${pages}, ` +
-          `stopping (likely host returned dup-only page or ignored offset)`,
-      );
-      break;
-    }
-    offset += page.data.length;
-    if (typeof page.total === 'number' && offset >= page.total) break;
-  }
+    return { charactersToRetranslate, modulesToReattach, danglingModuleRefs };
+  },
+  log,
+  errMsg,
+});
 
-  const orphans: OrphanAssetEntry[] = [];
-  for (const img of ownedById.values()) {
-    if (live.liveIds.has(img.id)) continue;
-    orphans.push({
-      id: img.id,
-      filename: typeof img.original_filename === 'string' ? img.original_filename : '',
-      mime: typeof img.mime_type === 'string' ? img.mime_type : '',
-      width: typeof img.width === 'number' ? img.width : null,
-      height: typeof img.height === 'number' ? img.height : null,
-      url: typeof img.url === 'string' ? img.url : '',
-      ownerCharacterId: typeof img.owner_character_id === 'string' && img.owner_character_id.length > 0
-        ? img.owner_character_id
-        : null,
-      createdAt: typeof img.created_at === 'number' ? img.created_at : 0,
-    });
-  }
-
-  orphans.sort((a, b) => b.createdAt - a.createdAt);
-
-  // 16MB WS frame cap on Lumi (Bun.serve default), ~150 bytes JSON per orphan.
-  // Cap at 10k so half-million-image libraries (DLC packs) don't overflow.
-  const MAX_RETURNED = 10_000;
-  const totalOrphans = orphans.length;
-  const truncated = totalOrphans > MAX_RETURNED;
-  const shown = truncated ? orphans.slice(0, MAX_RETURNED) : orphans;
-
-  const orphanRegexCleaned = await sweepOrphanModuleRegex(userId);
-
-  return {
-    orphans: shown,
-    summary: {
-      scannedTotal: ownedById.size,
-      liveCharacterRefs: live.liveCharacterRefs,
-      liveModuleRefs: live.liveModuleRefs,
-      liveJournalRefs: live.liveJournalRefs,
-      charactersScanned: live.charactersScanned,
-      modulesScanned: live.modulesScanned,
-      elapsedMs: Date.now() - tStart,
-      totalOrphans,
-      truncated,
-      orphanRegexCleaned,
-    },
-  };
-}
-
-// Module regex carry `metadata._risu.module_id`. Envelope-gone rows are dead
-// by definition, safe to delete unconditionally.
-async function sweepOrphanModuleRegex(userId: string): Promise<number> {
-  const regexApi = (spindle as unknown as {
-    regex_scripts?: {
-      list?: (opts: { userId?: string; limit?: number; offset?: number }) => Promise<{ data: readonly unknown[]; total: number }>;
-      delete?: (id: string, userId?: string) => Promise<boolean>;
-    };
-  }).regex_scripts;
-  if (!regexApi?.list || !regexApi?.delete) {
-    log.warn(`sweepOrphanModuleRegex: spindle.regex_scripts unavailable, skipping`);
-    return 0;
-  }
-  let liveModuleIds: Set<string>;
-  try {
-    const modules = await listModuleStore(moduleStorage(), userId);
-    liveModuleIds = new Set(modules.map((m) => m.id));
-  } catch (err) {
-    log.warn(`sweepOrphanModuleRegex: listModules failed: ${errMsg(err)}`);
-    return 0;
-  }
-  const orphanIds: string[] = [];
-  let offset = 0;
-  const PAGE_SIZE = 200;
-  while (true) {
-    let page: { data: readonly unknown[]; total: number };
-    try {
-      page = await regexApi.list({ userId, limit: PAGE_SIZE, offset });
-    } catch (err) {
-      log.warn(`sweepOrphanModuleRegex: regex_scripts.list offset=${offset} failed: ${errMsg(err)}`);
-      break;
-    }
-    if (!Array.isArray(page.data) || page.data.length === 0) break;
-    for (const r of page.data) {
-      const row = r as { id?: unknown; metadata?: { _risu?: { module_id?: unknown } } };
-      const moduleId = row.metadata?._risu?.module_id;
-      if (typeof moduleId !== 'string' || moduleId.length === 0) continue;
-      if (liveModuleIds.has(moduleId)) continue;
-      if (typeof row.id === 'string') orphanIds.push(row.id);
-    }
-    offset += page.data.length;
-    if (typeof page.total === 'number' && offset >= page.total) break;
-  }
-  if (orphanIds.length === 0) {
-    log.info(`sweepOrphanModuleRegex: user=${userId} none orphaned`);
-    return 0;
-  }
-  let deleted = 0;
-  for (const id of orphanIds) {
-    try {
-      const ok = await regexApi.delete(id, userId);
-      if (ok) deleted++;
-    } catch (err) {
-      log.warn(`sweepOrphanModuleRegex: delete id=${id} failed: ${errMsg(err)}`);
-    }
-  }
-  log.info(`sweepOrphanModuleRegex: user=${userId} deleted ${deleted}/${orphanIds.length} orphan module regex`);
-  return deleted;
-}
-
-// Stale char-side regex: `metadata._risu` set without `module_id`, owning
-// character has no lumirealm envelope (typically deleted-while-off).
-async function listStaleCharRegexIds(userId: string): Promise<readonly string[]> {
-  const regexApi = (spindle as unknown as {
-    regex_scripts?: {
-      list?: (opts: { userId?: string; limit?: number; offset?: number }) => Promise<{ data: readonly unknown[]; total: number }>;
-    };
-  }).regex_scripts;
-  if (!regexApi?.list) return [];
-  const liveCharIds = new Set<string>();
-  try {
-    const entries = await listLumirealmCharacters(charactersApi(), userId, { paginate: true });
-    for (const e of entries) {
-      if (e.data) liveCharIds.add(e.character.id);
-    }
-  } catch (err) {
-    log.warn(`listStaleCharRegexIds: listLumirealmCharacters failed: ${errMsg(err)}`);
-    return [];
-  }
-  const orphanIds: string[] = [];
-  let offset = 0;
-  const PAGE_SIZE = 200;
-  while (true) {
-    let page: { data: readonly unknown[]; total: number };
-    try {
-      page = await regexApi.list({ userId, limit: PAGE_SIZE, offset });
-    } catch (err) {
-      log.warn(`listStaleCharRegexIds: regex_scripts.list offset=${offset} failed: ${errMsg(err)}`);
-      break;
-    }
-    if (!Array.isArray(page.data) || page.data.length === 0) break;
-    for (const r of page.data) {
-      const row = r as {
-        id?: unknown;
-        scope?: unknown;
-        scope_id?: unknown;
-        character_id?: unknown;
-        metadata?: { _risu?: { module_id?: unknown } };
-      };
-      if (typeof row.id !== 'string') continue;
-      if (row.scope !== 'character') continue;
-      const risu = row.metadata?._risu;
-      if (!risu || typeof risu !== 'object') continue;
-      if (typeof (risu as { module_id?: unknown }).module_id === 'string') continue;
-      const charId = typeof row.scope_id === 'string'
-        ? row.scope_id
-        : typeof row.character_id === 'string'
-          ? row.character_id
-          : null;
-      if (charId === null) continue;
-      if (liveCharIds.has(charId)) continue;
-      orphanIds.push(row.id);
-    }
-    offset += page.data.length;
-    if (typeof page.total === 'number' && offset >= page.total) break;
-  }
-  return orphanIds;
-}
-
-async function deleteRegexIds(userId: string, ids: readonly string[]): Promise<number> {
-  const regexApi = (spindle as unknown as {
-    regex_scripts?: { delete?: (id: string, userId?: string) => Promise<boolean> };
-  }).regex_scripts;
-  if (!regexApi?.delete) return 0;
-  let deleted = 0;
-  for (const id of ids) {
-    try {
-      const ok = await regexApi.delete(id, userId);
-      if (ok) deleted++;
-    } catch (err) {
-      log.warn(`deleteRegexIds: delete id=${id} failed: ${errMsg(err)}`);
-    }
-  }
-  return deleted;
-}
-
-async function clearDeadJournals(userId: string): Promise<number> {
-  const detected = await detectDeletedWhileOff(userId);
-  let cleared = 0;
-  for (const characterId of detected.characterIds) {
-    try {
-      await clearImageJournal(journalStorage(), userId, characterId);
-      cleared++;
-    } catch (err) {
-      log.warn(`clearDeadJournals: clear character=${characterId} failed: ${errMsg(err)}`);
-    }
-  }
-  for (const moduleId of detected.moduleIds) {
-    try {
-      await clearModuleImageJournal(journalStorage(), userId, moduleId);
-      cleared++;
-    } catch (err) {
-      log.warn(`clearDeadJournals: clear module=${moduleId} failed: ${errMsg(err)}`);
-    }
-  }
-  log.info(`clearDeadJournals: user=${userId} cleared ${cleared} dead journal(s)`);
-  return cleared;
-}
+const detectDeletedWhileOff = (userId: string) => orphanOrchestrator.detectDeletedWhileOff(userId);
+const scanOrphanedImages = (userId: string) => orphanOrchestrator.scanOrphanedImages(userId);
+const sweepOrphanModuleRegex = (userId: string) => orphanOrchestrator.sweepOrphanModuleRegex(userId);
+const listStaleCharRegexIds = (userId: string) => orphanOrchestrator.listStaleCharRegexIds(userId);
+const deleteRegexIds = (userId: string, ids: readonly string[]) => orphanOrchestrator.deleteRegexIds(userId, ids);
+const clearDeadJournals = (userId: string) => orphanOrchestrator.clearDeadJournals(userId);
 
 interface ForceRetranslateResult {
   readonly retranslated: number;
@@ -2141,24 +1849,13 @@ async function scrubDanglingModuleRefs(
     const regexIds = Array.isArray(oldRx[moduleId]) ? oldRx[moduleId] : [];
     perModuleRx.push({ moduleId, wbId, regexIds });
   }
-  await updateLumirealm(charactersApi(), characterId, userId, (cur) => {
-    const wb = { ...(cur.user_overrides.attached_module_world_books ?? {}) };
-    const rx = { ...(cur.user_overrides.attached_module_regex_script_ids ?? {}) };
-    for (const id of danglingIds) {
-      delete wb[id];
-      delete rx[id];
-    }
-    return {
-      ...cur,
-      user_overrides: mergeUserOverrides(cur.user_overrides, {
-        attached_module_ids: (cur.user_overrides.attached_module_ids ?? []).filter(
-          (id) => !danglingIds.includes(id),
-        ),
-        attached_module_world_books: Object.keys(wb).length > 0 ? wb : null,
-        attached_module_regex_script_ids: Object.keys(rx).length > 0 ? rx : null,
-      }),
-    };
-  });
+  await updateLumirealm(charactersApi(), characterId, userId, (cur) => ({
+    ...cur,
+    user_overrides: mergeUserOverrides(
+      cur.user_overrides,
+      buildDetachModulesPatch(cur.user_overrides, danglingIds),
+    ),
+  }));
   for (const m of perModuleRx) {
     if (!m.wbId && m.regexIds.length === 0) continue;
     send({
@@ -2172,78 +1869,7 @@ async function scrubDanglingModuleRefs(
   log.info(`scrubDanglingModuleRefs: char=${characterId} scrubbed=${danglingIds.length}`);
 }
 
-async function scanRepairTargets(userId: string): Promise<import('./types/messages.js').RepairScanSummary> {
-  const t0 = Date.now();
-  let staleModuleRegex = 0;
-  try {
-    const regexApi = (spindle as unknown as {
-      regex_scripts?: {
-        list?: (opts: { userId?: string; limit?: number; offset?: number }) => Promise<{ data: readonly unknown[]; total: number }>;
-      };
-    }).regex_scripts;
-    if (regexApi?.list) {
-      const liveModuleIds = new Set((await listModuleStore(moduleStorage(), userId)).map((m) => m.id));
-      let offset = 0;
-      while (true) {
-        const page = await regexApi.list({ userId, limit: 200, offset });
-        if (!Array.isArray(page.data) || page.data.length === 0) break;
-        for (const r of page.data) {
-          const row = r as { metadata?: { _risu?: { module_id?: unknown } } };
-          const moduleId = row.metadata?._risu?.module_id;
-          if (typeof moduleId !== 'string' || moduleId.length === 0) continue;
-          if (!liveModuleIds.has(moduleId)) staleModuleRegex++;
-        }
-        offset += page.data.length;
-        if (typeof page.total === 'number' && offset >= page.total) break;
-      }
-    }
-  } catch (err) {
-    log.warn(`scanRepairTargets: stale module regex count failed: ${errMsg(err)}`);
-  }
-  let staleCharRegex = 0;
-  try {
-    staleCharRegex = (await listStaleCharRegexIds(userId)).length;
-  } catch (err) {
-    log.warn(`scanRepairTargets: stale char regex count failed: ${errMsg(err)}`);
-  }
-  let deadJournals = 0;
-  try {
-    const detected = await detectDeletedWhileOff(userId);
-    deadJournals = detected.characterIds.length + detected.moduleIds.length;
-  } catch (err) {
-    log.warn(`scanRepairTargets: dead journal count failed: ${errMsg(err)}`);
-  }
-  let charactersToRetranslate = 0;
-  let modulesToReattach = 0;
-  let danglingModuleRefs = 0;
-  try {
-    const entries = await listLumirealmCharacters(charactersApi(), userId, { paginate: true });
-    charactersToRetranslate = entries.filter((e) => e.data !== null).length;
-    const liveModuleIds = new Set((await listModuleStore(moduleStorage(), userId)).map((m) => m.id));
-    for (const e of entries) {
-      if (!e.data) continue;
-      const ids = e.data.user_overrides.attached_module_ids ?? [];
-      for (const id of ids) {
-        if (liveModuleIds.has(id)) {
-          modulesToReattach++;
-        } else {
-          danglingModuleRefs++;
-        }
-      }
-    }
-  } catch (err) {
-    log.warn(`scanRepairTargets: char/module count failed: ${errMsg(err)}`);
-  }
-  return {
-    staleModuleRegex,
-    staleCharRegex,
-    deadJournals,
-    charactersToRetranslate,
-    modulesToReattach,
-    danglingModuleRefs,
-    elapsedMs: Date.now() - t0,
-  };
-}
+const scanRepairTargets = (userId: string) => orphanOrchestrator.scanRepairTargets(userId);
 
 async function applyRepair(
   userId: string,
@@ -2434,7 +2060,7 @@ async function applySvgRasterIndex(args: {
   });
   if (!updated) {
     log.warn(
-      `applySvgRasterIndex: updateLumirealm failed char=${characterId} — character may not be a lumirealm card`,
+      `applySvgRasterIndex: updateLumirealm failed char=${characterId},character may not be a lumirealm card`,
     );
     return;
   }
@@ -2526,13 +2152,13 @@ async function maybeFinalizeImport(characterId: string): Promise<void> {
   if (!pending) return;
   if (pending.hasPendingSvgRaster) {
     log.info(
-      `import.finalize: char=${characterId} still pending — svg=${pending.hasPendingSvgRaster}`,
+      `import.finalize: char=${characterId} still pending,svg=${pending.hasPendingSvgRaster}`,
     );
     return;
   }
   pendingImportCompletions.delete(characterId);
   log.info(
-    `import.finalize: char=${characterId} both async ops complete after ${Date.now() - pending.startedAt}ms — emitting phase=done`,
+    `import.finalize: char=${characterId} both async ops complete after ${Date.now() - pending.startedAt}ms,emitting phase=done`,
   );
   send({
     type: 'import_progress',
@@ -2544,7 +2170,7 @@ async function maybeFinalizeImport(characterId: string): Promise<void> {
   try {
     pushCards(await listCards(pending.ownerUserId), pending.ownerUserId);
   } catch (err) {
-    log.warn(`import.finalize: pushCards failed — ${errMsg(err)}`);
+    log.warn(`import.finalize: pushCards failed: ${errMsg(err)}`);
   }
 }
 
@@ -2706,7 +2332,7 @@ async function listCards(userId: string | undefined): Promise<readonly CardSumma
   const t0 = Date.now();
   log.info(`listCards: start userId=${userId ?? '<none>'}`);
   if (userId === undefined) {
-    log.info(`listCards: userId not yet captured — returning empty`);
+    log.info(`listCards: userId not yet captured, returning empty`);
     return [];
   }
   const entries = await listLumirealmCharacters(charactersApi(), userId, {
@@ -2744,7 +2370,7 @@ async function importCardFromBytes(
   const hasSetAvatar = typeof (spindle.characters as { setAvatar?: unknown }).setAvatar === 'function';
   if (!spindle.images?.upload) {
     throw new Error(
-      'spindle.images.upload is unavailable — Lumi 0.9.6+ required.',
+      'spindle.images.upload is unavailable,Lumi 0.9.6+ required.',
     );
   }
   const spindleImagesApi = spindle.images;
@@ -2815,7 +2441,7 @@ async function importCardFromBytes(
     },
     requestConsent: (opts) => requestConsent(opts, userId),
   };
-  if (!spindle.world_books) log.warn(`spindle.world_books unavailable — lorebook entries will be skipped`);
+  if (!spindle.world_books) log.warn(`spindle.world_books unavailable, lorebook entries will be skipped`);
 
   assetUploadsInFlight++;
   try {
@@ -2928,7 +2554,7 @@ async function importCardFromBytes(
       send({
         type: 'import_progress',
         phase: 'error',
-        message: `Import cancelled — low-level access declined`,
+        message: `Import cancelled, low-level access declined`,
         fraction: null,
         error: message,
       }, userId);
@@ -2963,7 +2589,7 @@ async function deleteCardByChar(
       const ok = await clearLumirealm(charactersApi(), characterId, userId);
       log.info(`deleteCardByChar: clearLumirealm ok=${ok}`);
     } else {
-      log.warn(`deleteCardByChar: soft remove skipped — userId not yet captured for char=${characterId}`);
+      log.warn(`deleteCardByChar: soft remove skipped,userId not yet captured for char=${characterId}`);
     }
   }
   // Invalidate cached active-card entries owned by the same user only, so
@@ -3022,13 +2648,13 @@ async function ensureActiveCardForChat(
 ): Promise<ActiveCard | null> {
   const tEnter = Date.now();
   if (userId === undefined) {
-    log.info(`ensureActiveCardForChat: userId not yet captured for chatId=${chatId} — will retry on next event`);
+    log.info(`ensureActiveCardForChat: userId not yet captured for chatId=${chatId},will retry on next event`);
     return null;
   }
   const cached = activeCardByChat.get(chatId);
   if (cached) {
     if (cached.ownerUserId !== userId) {
-      log.warn(`ensureActiveCardForChat: cache-hit owner mismatch chatId=${chatId} cachedOwner=${cached.ownerUserId} requester=${userId} — refusing`);
+      log.warn(`ensureActiveCardForChat: cache-hit owner mismatch chatId=${chatId} cachedOwner=${cached.ownerUserId} requester=${userId},refusing`);
       return null;
     }
     log.debug(`ensureActiveCardForChat: cache hit chatId=${chatId} characterId=${cached.card.character_id}`);
@@ -3051,10 +2677,10 @@ async function ensureActiveCardForChat(
     }
   }
   if (!characterId) {
-    log.info(`ensureActiveCardForChat: no characterId for chatId=${chatId} (chat may be group/deleted) — skip`);
+    log.info(`ensureActiveCardForChat: no characterId for chatId=${chatId} (chat may be group/deleted),skip`);
     return null;
   }
-  log.info(`ensureActiveCardForChat: cache miss chatId=${chatId} characterId=${characterId} — fetching extensions`);
+  log.info(`ensureActiveCardForChat: cache miss chatId=${chatId} characterId=${characterId},fetching extensions`);
   const tReadLumi0 = Date.now();
   const fetched = await readLumirealm(charactersApi(), characterId, userId);
   const tReadLumi = Date.now() - tReadLumi0;
@@ -3689,23 +3315,17 @@ async function runBinding(
   const api = makeSpindleHost({ chatId, characterId, userId });
   const scriptNS = makeDispatcherScriptNS();
   registerManualTriggers(scriptNS, compiled, api);
-  const stateChanged = makeStateChangedCallback(chatId, userId);
   const settings = getCachedSettingsSync(userId);
-  const auxDebugCapture = makeAuxDebugCapture(chatId, settings, userId);
-  await withDispatchContext({
+  const seams = buildDispatchSeams({
     chatId,
-    rememberOurWrite,
     binding,
-    stateChanged,
-    auxConnectionId: settings.auxConnectionId,
-    auxModelOverride: settings.auxModelOverride,
-    auxSamplers: settings.auxSamplers,
-    submodelConnectionId: settings.submodelConnectionId,
-    submodelModelOverride: settings.submodelModelOverride,
-    submodelSamplers: settings.submodelSamplers,
-    ...(auxDebugCapture ? { auxDebugCapture } : {}),
-    resolveTemplate: (text: string) => resolveReadonly(text, chatId, characterId, userId, { cbsContext: true }),
-  }, async () => {
+    settings,
+    rememberOurWrite,
+    stateChanged: makeStateChangedCallback(chatId, userId),
+    auxDebugCapture: makeAuxDebugCapture(chatId, settings, userId),
+    resolveTemplate: (text) => resolveReadonly(text, chatId, characterId, userId, { cbsContext: true }),
+  });
+  await withDispatchContext(seams, async () => {
     await dispatchBinding(
       {
         compiledTriggers: compiled,
@@ -3718,7 +3338,7 @@ async function runBinding(
       (err, name) => {
         const msg = err instanceof Error ? err.message : String(err);
         log.error(`trigger "${name}" failed on ${binding}: ${msg}`);
-        toastFor(userId, 'error', `lumirealm: ${name} — ${msg}`, { title: 'lumirealm trigger error' });
+        toastFor(userId, 'error', `lumirealm: ${name},${msg}`, { title: 'lumirealm trigger error' });
       },
     );
   });
@@ -3771,7 +3391,7 @@ async function runBinding(
                 },
               );
             } catch (err) {
-              log.warn(`runBinding: listenEdit editOutput chain threw — ${errMsg(err)}. Continuing.`);
+              log.warn(`runBinding: listenEdit editOutput chain threw: ${errMsg(err)}. Continuing.`);
             }
           }
           if (hasOutputAtActions) {
@@ -3784,7 +3404,7 @@ async function runBinding(
                 });
               }
             } catch (err) {
-              log.warn(`runBinding: at-actions output threw — ${errMsg(err)}. Continuing.`);
+              log.warn(`runBinding: at-actions output threw: ${errMsg(err)}. Continuing.`);
             }
           }
 
@@ -3799,7 +3419,7 @@ async function runBinding(
           }
         }
       } catch (err) {
-        log.warn(`runBinding: edit-hooks output threw — ${errMsg(err)}. Continuing.`);
+        log.warn(`runBinding: edit-hooks output threw: ${errMsg(err)}. Continuing.`);
       }
     }
   }
@@ -3815,7 +3435,7 @@ async function dispatchManualTrigger(
 ): Promise<void> {
   const active = await ensureActiveCardForChat(chatId, null, userId);
   if (!active) {
-    log.warn(`dispatchManualTrigger: no active card for chatId=${chatId} — skip`);
+    log.warn(`dispatchManualTrigger: no active card for chatId=${chatId},skip`);
     return;
   }
   const characterId = active.card.character_id;
@@ -3842,7 +3462,7 @@ async function dispatchManualTrigger(
   if (luaTriggers.length === 0 && commentMatchedTriggers.length === 0) {
     log.warn(
       `dispatchManualTrigger: no matching triggers on character=${characterId} ` +
-        `(no triggerlua and no comment="${triggerName}") — Risu would no-op here too`,
+        `(no triggerlua and no comment="${triggerName}"),Risu would no-op here too`,
     );
     return;
   }
@@ -3861,21 +3481,18 @@ async function dispatchManualTrigger(
     if (luaCode.length === 0) continue;
     try {
       const settings = getCachedSettingsSync(userId);
-      const auxDebugCapture = makeAuxDebugCapture(chatId, settings, userId);
-      const runtime = await makeRisuTriggerRuntime(api, { characterId }, scriptNS, {
-        characterId,
-        binding: 'manual',
+      const seams = buildDispatchSeams({
         chatId,
+        binding: 'manual',
+        settings,
         rememberOurWrite,
         stateChanged: makeStateChangedCallback(chatId, userId),
-        auxConnectionId: settings.auxConnectionId,
-        auxModelOverride: settings.auxModelOverride,
-        auxSamplers: settings.auxSamplers,
-        submodelConnectionId: settings.submodelConnectionId,
-        submodelModelOverride: settings.submodelModelOverride,
-        submodelSamplers: settings.submodelSamplers,
-        ...(auxDebugCapture ? { auxDebugCapture } : {}),
-        resolveTemplate: (text: string) => resolveReadonly(text, chatId, characterId, userId, { cbsContext: true }),
+        auxDebugCapture: makeAuxDebugCapture(chatId, settings, userId),
+        resolveTemplate: (text) => resolveReadonly(text, chatId, characterId, userId, { cbsContext: true }),
+      });
+      const runtime = await makeRisuTriggerRuntime(api, { characterId }, scriptNS, {
+        ...seams,
+        characterId,
       });
       // Risu: triggers.ts sets mode=buttonName; scriptings.ts
       // calls the Lua global by that name. Falls back to onButtonClick.
@@ -3900,22 +3517,16 @@ async function dispatchManualTrigger(
       const compiled = prepareTriggers(active.card.risuPayload, characterId);
       registerManualTriggers(scriptNS, compiled, api);
       const settings = getCachedSettingsSync(userId);
-      const auxDebugCapture = makeAuxDebugCapture(chatId, settings, userId);
-      const stateChanged = makeStateChangedCallback(chatId, userId);
-      await withDispatchContext({
+      const seams = buildDispatchSeams({
         chatId,
-        rememberOurWrite,
         binding: 'manual',
-        stateChanged,
-        auxConnectionId: settings.auxConnectionId,
-        auxModelOverride: settings.auxModelOverride,
-        auxSamplers: settings.auxSamplers,
-        submodelConnectionId: settings.submodelConnectionId,
-        submodelModelOverride: settings.submodelModelOverride,
-        submodelSamplers: settings.submodelSamplers,
-        ...(auxDebugCapture ? { auxDebugCapture } : {}),
-        resolveTemplate: (text: string) => resolveReadonly(text, chatId, characterId, userId, { cbsContext: true }),
-      }, async () => {
+        settings,
+        rememberOurWrite,
+        stateChanged: makeStateChangedCallback(chatId, userId),
+        auxDebugCapture: makeAuxDebugCapture(chatId, settings, userId),
+        resolveTemplate: (text) => resolveReadonly(text, chatId, characterId, userId, { cbsContext: true }),
+      });
+      await withDispatchContext(seams, async () => {
         const fired = await dispatchByManualName(
           {
             compiledTriggers: compiled,
@@ -3928,7 +3539,7 @@ async function dispatchManualTrigger(
           (err, name) => {
             const msg = err instanceof Error ? err.message : String(err);
             log.error(`dispatchManualTrigger: comment-matched trigger "${name}" threw: ${msg}`);
-            toastFor(userId, 'error', `lumirealm: ${name} — ${msg}`, { title: 'lumirealm trigger error' });
+            toastFor(userId, 'error', `lumirealm: ${name},${msg}`, { title: 'lumirealm trigger error' });
           },
         );
         log.info(`dispatchManualTrigger: comment-matched dispatch fired=${fired}/${commentMatchedTriggers.length}`);
@@ -3956,7 +3567,7 @@ async function dispatchButtonClick(
 ): Promise<void> {
   const active = await ensureActiveCardForChat(chatId, null, userId);
   if (!active) {
-    log.warn(`dispatchButtonClick: no active card for chatId=${chatId} — skip`);
+    log.warn(`dispatchButtonClick: no active card for chatId=${chatId},skip`);
     return;
   }
   const characterId = active.card.character_id;
@@ -3971,7 +3582,7 @@ async function dispatchButtonClick(
   );
   if (luaTriggers.length === 0) {
     log.warn(
-      `dispatchButtonClick: no triggerlua on character=${characterId} — Risu would no-op`,
+      `dispatchButtonClick: no triggerlua on character=${characterId},Risu would no-op`,
     );
     return;
   }
@@ -3989,21 +3600,18 @@ async function dispatchButtonClick(
     if (luaCode.length === 0) continue;
     try {
       const settings = getCachedSettingsSync(userId);
-      const auxDebugCapture = makeAuxDebugCapture(chatId, settings, userId);
-      const runtime = await makeRisuTriggerRuntime(api, { characterId }, scriptNS, {
-        characterId,
-        binding: 'manual',
+      const seams = buildDispatchSeams({
         chatId,
+        binding: 'manual',
+        settings,
         rememberOurWrite,
         stateChanged: makeStateChangedCallback(chatId, userId),
-        auxConnectionId: settings.auxConnectionId,
-        auxModelOverride: settings.auxModelOverride,
-        auxSamplers: settings.auxSamplers,
-        submodelConnectionId: settings.submodelConnectionId,
-        submodelModelOverride: settings.submodelModelOverride,
-        submodelSamplers: settings.submodelSamplers,
-        ...(auxDebugCapture ? { auxDebugCapture } : {}),
-        resolveTemplate: (text: string) => resolveReadonly(text, chatId, characterId, userId, { cbsContext: true }),
+        auxDebugCapture: makeAuxDebugCapture(chatId, settings, userId),
+        resolveTemplate: (text) => resolveReadonly(text, chatId, characterId, userId, { cbsContext: true }),
+      });
+      const runtime = await makeRisuTriggerRuntime(api, { characterId }, scriptNS, {
+        ...seams,
+        characterId,
       });
       log.info(
         `dispatchButtonClick: invoking onButtonClick args=[${effectiveId}, ${btn}] chatId=${chatId}`,
@@ -4030,7 +3638,7 @@ async function refreshVariables(
   opts?: { force?: boolean },
 ): Promise<void> {
   if (userId === undefined) {
-    log.debug(`variables.refresh: skip chat=${chatId} — userId not yet captured`);
+    log.debug(`variables.refresh: skip chat=${chatId},userId not yet captured`);
     return;
   }
   let chat: { metadata?: unknown } | null = null;
@@ -4114,7 +3722,7 @@ async function writeLocalVariable(
 
   if (value === null) {
     if (!Object.prototype.hasOwnProperty.call(local, trimmedKey)) {
-      return { ok: true }; // already absent — idempotent no-op
+      return { ok: true }; // already absent,idempotent no-op
     }
     delete local[trimmedKey];
   } else {
@@ -4228,7 +3836,7 @@ async function refreshToggleDefinitions(
   opts?: { force?: boolean },
 ): Promise<void> {
   if (userId === undefined) {
-    log.debug(`toggles.refresh: skip chat=${chatId} — userId not yet captured`);
+    log.debug(`toggles.refresh: skip chat=${chatId},userId not yet captured`);
     return;
   }
   const { flatToggles, attribution } = await loadToggleDsl(
@@ -4477,7 +4085,7 @@ async function refreshBgHtml(active: ActiveCard, chatId: string, userId: string 
   const elapsed = Date.now() - tResolve;
 
   if (resolvedBg.length === 0 && crossRuleStyles.length === 0) {
-    log.debug(`refreshBgHtml: no bg_html and no cross-rule styles — sending clear_bg_html`);
+    log.debug(`refreshBgHtml: no bg_html and no cross-rule styles, sending clear_bg_html`);
     try {
       send({ type: 'clear_bg_html', chatId }, userId);
     } catch (err) {
@@ -4541,7 +4149,7 @@ async function resolveReadonly(
   // cbs always forces worker-eval, the Lumi-native fallback can't propagate cbsContext through spindle.macros.resolve and would produce wrong semantics.
   if (cbsContext) {
     if (userId === undefined) {
-      log.warn(`resolveReadonly: cbs called before userId captured chat=${chatId} — returning template verbatim`);
+      log.warn(`resolveReadonly: cbs called before userId captured chat=${chatId},returning template verbatim`);
       return template;
     }
     try {
@@ -4552,7 +4160,7 @@ async function resolveReadonly(
       );
       return out;
     } catch (err) {
-      log.error(`resolveReadonly: cbs worker-eval threw chat=${chatId} — ${(err as Error).message}. Returning template verbatim.`);
+      log.error(`resolveReadonly: cbs worker-eval threw chat=${chatId}: ${(err as Error).message}. Returning template verbatim.`);
       return template;
     }
   }
@@ -4563,7 +4171,7 @@ async function resolveReadonly(
     // `undefined as string`. The legacy spindle.macros.resolve path tolerates
     // a missing userId better (it has its own fallback).
     if (userId === undefined) {
-      log.info(`resolveReadonly: worker-eval skipped chat=${chatId} — userId not yet captured; using legacy path`);
+      log.info(`resolveReadonly: worker-eval skipped chat=${chatId},userId not yet captured; using legacy path`);
     } else {
       try {
         const out = await resolveReadonlyInWorker(template, chatId, characterId, userId, cbsContext);
@@ -4573,7 +4181,7 @@ async function resolveReadonly(
         );
         return out;
       } catch (err) {
-        log.error(`resolveReadonly: worker-eval threw chat=${chatId} — ${(err as Error).message}. Falling back to legacy path.`);
+        log.error(`resolveReadonly: worker-eval threw chat=${chatId}: ${(err as Error).message}. Falling back to legacy path.`);
       }
     }
   }
@@ -4595,7 +4203,7 @@ async function resolveReadonly(
     );
     return result.text;
   } catch (err) {
-    log.error(`resolveReadonly: THREW chat=${chatId} elapsed=${Date.now() - t0}ms — ${(err as Error).message}`);
+    log.error(`resolveReadonly: THREW chat=${chatId} elapsed=${Date.now() - t0}ms: ${(err as Error).message}`);
     throw err;
   }
 }
@@ -4711,7 +4319,7 @@ async function fetchChatMessages(chatId: string): Promise<readonly ChatMessage[]
 // and the macro evaluator runs at render time inside the `'render'` MCP
 // origin handler (architecture §2.10.3). The bake-and-refresh path
 // (`resolveAndPersist` + `refreshResolvedContent` + sidecar) was deleted
-// in the unbake refactor — Lumi's display-regex cv-mitigation now handles
+// in the unbake refactor,Lumi's display-regex cv-mitigation now handles
 // per-touchedVars invalidation, replacing what the sidecar was for.
 
 function dumpPayload(raw: unknown): string {
@@ -4801,7 +4409,7 @@ spindle.on('SETTINGS_UPDATED', userScoped(async (raw, userId) => {
     const chat = await spindle.chats.get(chatId, userId);
     if (chat?.character_id) characterId = chat.character_id;
   } catch (err) {
-    log.warn(`SETTINGS_UPDATED activeChatId: chats.get failed — ${(err as Error).message}`);
+    log.warn(`SETTINGS_UPDATED activeChatId: chats.get failed: ${(err as Error).message}`);
   }
   const active = await ensureActiveCardForChat(chatId, characterId ?? null, userId);
   log.info(`SETTINGS_UPDATED activeChatId: active=${active ? `characterId=${active.card.character_id} hasBgHtml=${!!active.card.risuPayload.background_html} triggers=${active.card.risuPayload.triggers?.length ?? 0}` : '<none>'}`);
@@ -4960,7 +4568,7 @@ spindle.on('CHAT_CHANGED', userScoped(async (raw, userId) => {
 
 // MESSAGE_SENT: editInput is wired via registerInterceptor.
 // Body resolution happens at render time (post-unbake), so we don't need to
-// re-bake here — just refresh the variables snapshot for the drawer in case
+// re-bake here,just refresh the variables snapshot for the drawer in case
 // the new message references vars that the user wants to inspect.
 spindle.on('MESSAGE_SENT', userScoped(async (raw, userId) => {
   captureUserId(userId, 'MESSAGE_SENT');
@@ -5299,7 +4907,7 @@ spindle.on('CHARACTER_CREATED', userScoped(async (raw, userId) => {
   try {
     pushCards(await listCards(userId), userId);
   } catch (err) {
-    log.warn(`CHARACTER_CREATED: pushCards failed — ${errMsg(err)}`);
+    log.warn(`CHARACTER_CREATED: pushCards failed: ${errMsg(err)}`);
   }
 }));
 
@@ -5324,66 +4932,9 @@ spindle.on('CHARACTER_EDITED', userScoped(async (raw, userId) => {
   try {
     pushCards(await listCards(userId), userId);
   } catch (err) {
-    log.warn(`CHARACTER_EDITED: pushCards failed — ${errMsg(err)}`);
+    log.warn(`CHARACTER_EDITED: pushCards failed: ${errMsg(err)}`);
   }
 }));
-
-// CHARACTER_DUPLICATED: Lumi currently emits CHARACTER_CREATED for duplicates.
-// This subscription is defensive in case Lumi adds a distinct event later.
-spindle.on('CHARACTER_DUPLICATED', userScoped(async (raw, userId) => {
-  captureUserId(userId, 'CHARACTER_DUPLICATED');
-  const characterId =
-    (raw as { id?: string }).id
-    ?? extractIds(raw).characterId
-    ?? null;
-  log.info(`event CHARACTER_DUPLICATED characterId=${characterId ?? '?'} (Lumi 0.4.31+ emits CHARACTER_CREATED instead; this handler is defensive)`);
-  try {
-    pushCards(await listCards(userId), userId);
-  } catch (err) {
-    log.warn(`CHARACTER_DUPLICATED: pushCards failed — ${errMsg(err)}`);
-  }
-}));
-
-import { decodeRisum } from './core/risum/index.js';
-import { risuModuleSchema } from './core/schemas/module.js';
-import { guessMimeType, sniffImageMime } from './payload/import.js';
-import {
-  type ModuleEnvelope,
-  type ModuleIndexEntry,
-  MODULE_SCHEMA_VERSION,
-  deleteModule as deleteModuleFromStore,
-  envelopePath as moduleEnvelopePath,
-  listModules as listModuleStore,
-  pairModuleAssetsForUpload,
-  readEnvelope as readModuleEnvelope,
-  writeEnvelope as writeModuleEnvelope,
-} from './state/modules-store.js';
-import type {
-  AttachedModuleSummary,
-  ModuleSummary,
-} from './types/messages.js';
-import {
-  projectModuleLorebookEntries,
-  projectModuleRegexEntries,
-} from './state/module-artifact-project.js';
-import {
-  buildCharacterViewerData,
-  buildModuleViewerData,
-  type FetchedWorldBook,
-  type LumiSideRegex,
-} from './state/viewer-data.js';
-import {
-  addAssetToCharacterIndex,
-  addAssetToModuleIndex,
-  deleteCharacterAsset,
-  deleteModuleAsset,
-  renameCharacterAsset,
-  renameModuleAsset,
-} from './state/asset-index-mutate.js';
-import {
-  extractLuaForTrigger,
-  replaceTriggerLuaInArray,
-} from './state/trigger-lua-mutate.js';
 
 interface ModuleUploadSession {
   readonly fileName: string;
@@ -5402,6 +4953,36 @@ function moduleStorage(): import('./state/modules-store.js').UserStorageLike {
   return spindle.userStorage as unknown as import('./state/modules-store.js').UserStorageLike;
 }
 
+const moduleUploader = createModuleUploader({
+  decodeRisum,
+  parseSchema: (data) => risuModuleSchema.safeParse(data) as never,
+  newUuid: () => crypto.randomUUID(),
+  requestConsent: (opts, userId) => requestConsent(opts, userId),
+  pairAssets: pairModuleAssetsForUpload,
+  guessMimeType,
+  sniffImageMime,
+  uploadImageOne: (input, userId) => {
+    if (!spindle.images?.upload) {
+      throw new Error('spindle.images.upload is unavailable,Lumi 0.9.6+ required.');
+    }
+    return spindle.images.upload(input, userId);
+  },
+  ...(typeof spindle.images?.uploadMany === 'function'
+    ? {
+        uploadImageMany: (items, opts) =>
+          spindle.images.uploadMany(items as never, opts),
+      }
+    : {}),
+  appendToJournal: (uid, moduleId, ids) =>
+    appendModuleImageIdsToJournal(journalStorage(), uid, moduleId, ids),
+  syncWorldBook: (env, uid) => syncModuleWorldBook(env, uid),
+  writeEnvelope: async (uid, env) => { await writeModuleEnvelope(moduleStorage(), uid, env); },
+  emitProgress: (frame, userId) => send(frame, userId),
+  currentTranslatorSchemaVersion: CURRENT_MODULE_SCHEMA_VERSION,
+  log,
+  errMsg,
+});
+
 async function processModuleUpload(
   bytesIn: Uint8Array,
   fileName: string,
@@ -5409,288 +4990,7 @@ async function processModuleUpload(
 ): Promise<{ envelope: ModuleEnvelope }> {
   assetUploadsInFlight++;
   try {
-  const t0 = Date.now();
-  const inputBytes = bytesIn.byteLength;
-  log.info(
-    `processModuleUpload: file=${fileName} bytes=${inputBytes} userId=${userId}`,
-  );
-  const tDecodeStart = Date.now();
-  const decoded = decodeRisum(bytesIn);
-  // decodeRPack allocates fresh per-asset buffers, source no longer needed.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (bytesIn as any) = new Uint8Array(0);
-  log.info(
-    `processModuleUpload: decodeRisum done assets=${decoded.assets.length} elapsed=${Date.now() - tDecodeStart}ms`,
-  );
-  const parsed = risuModuleSchema.safeParse(decoded.module);
-  if (!parsed.success) {
-    throw new Error(
-      `decoded module failed schema validation — ${parsed.error.issues
-        .slice(0, 3)
-        .map((i) => `${i.path.join('.')}: ${i.message}`)
-        .join('; ')}`,
-    );
-  }
-  const moduleBody = parsed.data;
-  if (typeof moduleBody.id !== 'string' || moduleBody.id.length === 0) {
-    throw new Error('module is missing an `id` cannot store');
-  }
-  // Risu parity: every upload of a module gets a fresh UUID, so two uploads
-  // of the same .risum produce two independent entries.
-  const sourceModuleId = moduleBody.id;
-  moduleBody.id = crypto.randomUUID();
-  log.info(
-    `processModuleUpload: assigned fresh id=${moduleBody.id} ` +
-      `(source id was ${sourceModuleId})`,
-  );
-
-  // Risu modules.ts: prompt consent for lowLevelAccess modules.
-  if (moduleBody.lowLevelAccess === true) {
-    log.info(
-      `processModuleUpload: lowLevelAccess=true for module=${moduleBody.id} ` +
-        `name="${moduleBody.name ?? '<unnamed>'}" — prompting consent`,
-    );
-    let confirmed = false;
-    try {
-      const res = await requestConsent({
-        title: `Module "${moduleBody.name ?? moduleBody.id}" requests low-level access`,
-        message:
-          `This module declares low-level access: its triggers can call runLLM, ` +
-          `runImgGen, request, and other privileged APIs that consume tokens, ` +
-          `hit external services, and read your chat state.\n\n` +
-          `Only accept if you trust the source of this module.\n\n` +
-          `Decline to refuse the upload — the module will not be added to your library.`,
-        confirmLabel: 'Grant access',
-        cancelLabel: 'Decline',
-      }, userId);
-      confirmed = !!res?.confirmed;
-    } catch (err) {
-      log.warn(
-        `processModuleUpload: consent prompt threw: ${(err as Error).message} — treating as decline`,
-      );
-      confirmed = false;
-    }
-    if (!confirmed) {
-      log.info(`processModuleUpload: consent declined for module=${moduleBody.id} — aborting upload`);
-      throw new Error(
-        `Module "${moduleBody.name ?? moduleBody.id}" requires low-level access; consent declined.`,
-      );
-    }
-    log.info(`processModuleUpload: low-level access consent granted for module=${moduleBody.id}`);
-  }
-
-  if (!spindle.images?.upload) {
-    throw new Error(
-      'spindle.images.upload is unavailable — Lumi 0.9.6+ required.',
-    );
-  }
-  const spindleImagesApi = spindle.images;
-
-  const moduleAssetIndex: Record<string, { imageId: string; ext?: string }> = {};
-  let assetUploadFailures = 0;
-  if (decoded.assets.length > 0) {
-    const moduleAssets = (moduleBody.assets ?? []) as readonly (readonly [string, string, string])[];
-    const pending = pairModuleAssetsForUpload(
-      moduleAssets,
-      decoded.assets,
-      () => '',
-      guessMimeType,
-    );
-    if (pending.length < decoded.assets.length) {
-      log.warn(
-        `processModuleUpload: ${decoded.assets.length - pending.length} asset(s) ` +
-          `couldn't be paired with a module.assets[] name — dropped. ` +
-          `(decoded.assets index out of bounds vs module.assets list.)`,
-      );
-    }
-
-    const tUpload = Date.now();
-    const uploadConcurrency = 12;
-    const totalCount = pending.length;
-    const PROGRESS_BASE = 0.35;
-    const PROGRESS_END = 0.92;
-    let processed = 0;
-    const moduleNameForProgress = typeof moduleBody.name === 'string' && moduleBody.name.length > 0
-      ? moduleBody.name
-      : moduleBody.id;
-    const journalBuffer: string[] = [];
-    let journalChain: Promise<void> = Promise.resolve();
-    const flushModuleJournal = (): void => {
-      if (journalBuffer.length === 0) return;
-      const ids = journalBuffer.splice(0);
-      journalChain = journalChain.then(async () => {
-        try {
-          await appendModuleImageIdsToJournal(journalStorage(), userId, moduleBody.id, ids);
-        } catch (err) {
-          journalBuffer.unshift(...ids);
-          log.warn(`processModuleUpload: journal flush failed module=${moduleBody.id}: ${errMsg(err)}`);
-        }
-      });
-    };
-    const recordUploaded = (assetName: string, imageId: string, sniffedExt?: string): void => {
-      let ext = sniffedExt;
-      if (ext === undefined) {
-        const lastDot = assetName.lastIndexOf('.');
-        if (lastDot > 0) ext = assetName.slice(lastDot + 1).toLowerCase();
-      }
-      moduleAssetIndex[assetName] = ext !== undefined
-        ? { imageId, ext }
-        : { imageId };
-      journalBuffer.push(imageId);
-    };
-    const emitProgress = (): void => {
-      const frac = totalCount === 0
-        ? PROGRESS_END
-        : PROGRESS_BASE + (PROGRESS_END - PROGRESS_BASE) * (processed / totalCount);
-      send({
-        type: 'import_progress',
-        phase: 'uploading_assets',
-        message: `Uploading module assets for ${moduleNameForProgress} (${processed}/${totalCount})…`,
-        fraction: frac,
-      }, userId);
-    };
-
-    const uploadMany = spindleImagesApi.uploadMany?.bind(spindleImagesApi);
-
-    if (typeof uploadMany === 'function' && totalCount > 0) {
-      log.info(
-        `processModuleUpload: uploading ${totalCount} asset(s) via spindle.images.uploadMany ` +
-          `(module=${moduleBody.id}, batched)`,
-      );
-      const BATCH_MAX_ITEMS = 64;
-      const BATCH_MAX_BYTES = 16 * 1024 * 1024;
-      let i = 0;
-      while (i < pending.length) {
-        const batchItems: Array<{ data: Uint8Array; mime_type: string; filename: string }> = [];
-        const batchAssetNames: string[] = [];
-        const batchSniffedExts: Array<string | undefined> = [];
-        let batchBytes = 0;
-        while (i < pending.length && batchItems.length < BATCH_MAX_ITEMS) {
-          const meta = pending[i];
-          const bytes = decoded.assets[i];
-          if (!meta || !bytes) { i += 1; continue; }
-          if (batchItems.length > 0 && batchBytes + bytes.byteLength > BATCH_MAX_BYTES) break;
-          const sniff = sniffImageMime(bytes);
-          const uploadFilename = sniff ? `${meta.path}.${sniff.ext}` : meta.path;
-          const uploadMime = sniff?.mime ?? meta.mimeType;
-          batchItems.push({ data: bytes, mime_type: uploadMime, filename: uploadFilename });
-          batchAssetNames.push(meta.path);
-          batchSniffedExts.push(sniff?.ext);
-          batchBytes += bytes.byteLength;
-          i += 1;
-        }
-        let results: Array<{ id?: string; error?: string }> = [];
-        try {
-          results = await uploadMany(batchItems, { userId });
-        } catch (err) {
-          const msg = errMsg(err);
-          log.warn(`processModuleUpload: uploadMany batch failed (${batchItems.length} items): ${msg}`);
-          results = batchItems.map(() => ({ error: msg }));
-        }
-        for (let k = 0; k < results.length; k++) {
-          const r = results[k]!;
-          const name = batchAssetNames[k]!;
-          if (typeof r.id === 'string' && r.id.length > 0) {
-            recordUploaded(name, r.id, batchSniffedExts[k]);
-          } else {
-            assetUploadFailures += 1;
-            log.warn(`processModuleUpload: upload failed name=${name}: ${r.error ?? 'unknown error'}`);
-          }
-        }
-        processed += batchItems.length;
-        flushModuleJournal();
-        emitProgress();
-      }
-    } else if (totalCount > 0) {
-      log.info(
-        `processModuleUpload: uploading ${totalCount} asset(s) via spindle.images.upload ` +
-          `(module=${moduleBody.id}, single, fallback)`,
-      );
-      const progressEvery = Math.max(1, Math.min(25, Math.floor(totalCount / 20) || 1));
-      let nextIndex = 0;
-      const uploadWorker = async (): Promise<void> => {
-        while (true) {
-          const i = nextIndex++;
-          if (i >= pending.length) break;
-          const meta = pending[i];
-          const bytes = decoded.assets[i];
-          if (!meta || !bytes) continue;
-          const assetName = meta.path;
-          const sniff = sniffImageMime(bytes);
-          const uploadFilename = sniff ? `${assetName}.${sniff.ext}` : assetName;
-          const uploadMime = sniff?.mime ?? meta.mimeType;
-          try {
-            const result = await spindleImagesApi.upload(
-              { data: bytes, mime_type: uploadMime, filename: uploadFilename },
-              userId,
-            );
-            if (typeof result?.id !== 'string' || result.id.length === 0) {
-              throw new Error('upload returned without an image id');
-            }
-            recordUploaded(assetName, result.id, sniff?.ext);
-          } catch (err) {
-            assetUploadFailures += 1;
-            const errMessage = err instanceof Error ? err.message : String(err);
-            log.warn(`processModuleUpload: upload failed name=${assetName}: ${errMessage}`);
-          }
-          processed += 1;
-          if (processed % progressEvery === 0 || processed === totalCount) {
-            flushModuleJournal();
-            emitProgress();
-          }
-        }
-      };
-      const workers: Promise<void>[] = [];
-      for (let w = 0; w < Math.min(uploadConcurrency, pending.length); w++) {
-        workers.push(uploadWorker());
-      }
-      await Promise.all(workers);
-    }
-    flushModuleJournal();
-    await journalChain;
-    log.info(
-      `processModuleUpload: uploaded ${Object.keys(moduleAssetIndex).length}/${pending.length} ` +
-        `failed=${assetUploadFailures} elapsed=${Date.now() - tUpload}ms`,
-    );
-  }
-
-  const baseEnvelope: ModuleEnvelope = {
-    schema_version: MODULE_SCHEMA_VERSION,
-    id: moduleBody.id,
-    filename: fileName,
-    uploaded_at: Date.now(),
-    module: moduleBody,
-    asset_index: moduleAssetIndex,
-    translator_schema_version: CURRENT_MODULE_SCHEMA_VERSION,
-  };
-  const wbId = await syncModuleWorldBook(baseEnvelope, userId).catch((err) => {
-    log.warn(`processModuleUpload: syncModuleWorldBook failed module=${moduleBody.id}: ${errMsg(err)}`);
-    return null;
-  });
-  const envelope: ModuleEnvelope = {
-    schema_version: baseEnvelope.schema_version,
-    id: baseEnvelope.id,
-    filename: baseEnvelope.filename,
-    uploaded_at: baseEnvelope.uploaded_at,
-    module: baseEnvelope.module,
-    asset_index: baseEnvelope.asset_index,
-    ...(baseEnvelope.translator_schema_version !== undefined
-      ? { translator_schema_version: baseEnvelope.translator_schema_version }
-      : {}),
-    ...(wbId ? { installed_world_book_id: wbId } : {}),
-  };
-  await writeModuleEnvelope(moduleStorage(), userId, envelope);
-  log.info(
-    `processModuleUpload: ok id=${envelope.id} name=${moduleBody.name} ` +
-      `lore=${(moduleBody.lorebook ?? []).length} ` +
-      `regex=${(moduleBody.regex ?? []).length} ` +
-      `triggers=${(moduleBody.trigger ?? []).length} ` +
-      `assets=${decoded.assets.length} ` +
-      `assetUploadFailures=${assetUploadFailures} ` +
-      `wb=${envelope.installed_world_book_id ?? '-'} ` +
-      `elapsed=${Date.now() - t0}ms`,
-  );
-  return { envelope };
+    return await moduleUploader.upload(bytesIn, fileName, userId);
   } finally {
     assetUploadsInFlight--;
   }
@@ -5740,7 +5040,7 @@ async function buildAttachedByCharacter(
       } else {
         // Module was deleted from the library while still referenced.
         // Surface so the user can see + clean up.
-        list.push({ id, name: '(missing — module deleted from library)' });
+        list.push({ id, name: '(missing, module deleted from library)' });
       }
     }
     out[e.character.id] = list;
@@ -5777,6 +5077,20 @@ async function pushModules(userId: string): Promise<void> {
 
 const TRANSLATE_TARGET_LANG = 'en';
 
+const viewerAssembly = createViewerAssembly({
+  readLumirealm: (characterId, userId) => readLumirealm(charactersApi(), characterId, userId),
+  readModule: async (moduleId, userId) =>
+    readModuleEnvelope(moduleStorage(), userId, moduleId) as unknown as Awaited<ReturnType<typeof readModuleEnvelope>> as never,
+  fetchCharacter: async (characterId, userId) =>
+    spindle.characters.get(characterId, userId) as unknown as { world_book_ids?: unknown } | null,
+  fetchWorldBookMeta: async (wbId, userId) =>
+    spindle.world_books.get(wbId, userId) as unknown as { name?: unknown } | null,
+  listWorldBookEntries: (wbId, opts) => spindle.world_books.entries.list(wbId, opts),
+  translateLang: TRANSLATE_TARGET_LANG,
+  log,
+  errMsg,
+});
+
 async function persistModuleTranslation(
   userId: string,
   msg: Extract<import('./types/messages.js').FrontendToBackend, { type: 'cache_module_translation' }>,
@@ -5787,25 +5101,12 @@ async function persistModuleTranslation(
     return;
   }
   const lang = msg.lang || TRANSLATE_TARGET_LANG;
-  const existing = env.translations?.[lang] ?? {};
-  const existingLore = existing.lorebook ?? {};
-  const nextLore: Record<string, { comment?: string }> = { ...existingLore };
-  if (msg.lorebook) {
-    for (const item of msg.lorebook) {
-      if (!item.sourceHash) continue;
-      const prior = nextLore[item.sourceHash] ?? {};
-      nextLore[item.sourceHash] = {
-        ...prior,
-        ...(item.comment !== undefined ? { comment: item.comment } : {}),
-      };
-    }
-  }
-  const nextLang = {
-    ...existing,
+  const nextLang = mergeLangBlock({
+    existing: env.translations?.[lang] ?? {},
     ...(msg.name !== undefined ? { name: msg.name } : {}),
     ...(msg.description !== undefined ? { description: msg.description } : {}),
-    ...(Object.keys(nextLore).length > 0 ? { lorebook: nextLore } : {}),
-  };
+    ...(msg.lorebook !== undefined ? { lorebookItems: msg.lorebook } : {}),
+  });
   const next: typeof env = {
     ...env,
     translations: { ...(env.translations ?? {}), [lang]: nextLang },
@@ -5825,24 +5126,12 @@ async function persistCharacterTranslation(
   }
   const lang = msg.lang || TRANSLATE_TARGET_LANG;
   const existing = fetched.data.translations?.[lang] ?? {};
-  const existingLore = existing.lorebook ?? {};
-  const nextLore: Record<string, { comment?: string }> = { ...existingLore };
-  if (msg.lorebook) {
-    for (const item of msg.lorebook) {
-      if (!item.sourceHash) continue;
-      const prior = nextLore[item.sourceHash] ?? {};
-      nextLore[item.sourceHash] = {
-        ...prior,
-        ...(item.comment !== undefined ? { comment: item.comment } : {}),
-      };
-    }
-  }
   const nameChanged = msg.name !== undefined && msg.name !== existing.name;
-  const nextLang = {
-    ...existing,
+  const nextLang = mergeLangBlock({
+    existing,
     ...(msg.name !== undefined ? { name: msg.name } : {}),
-    ...(Object.keys(nextLore).length > 0 ? { lorebook: nextLore } : {}),
-  };
+    ...(msg.lorebook !== undefined ? { lorebookItems: msg.lorebook } : {}),
+  });
   const nextData = {
     ...fetched.data,
     translations: {
@@ -5876,7 +5165,7 @@ async function pushAttachedForCharacter(
   const lang = TRANSLATE_TARGET_LANG;
   const list: AttachedModuleSummary[] = ids.map((id) => {
     const e = byId.get(id);
-    if (!e) return { id, name: '(missing — module deleted from library)' };
+    if (!e) return { id, name: '(missing, module deleted from library)' };
     const tx = e.translatedName?.[lang];
     return { id, name: e.name, ...(tx !== undefined ? { translatedName: tx } : {}) };
   });
@@ -5893,14 +5182,12 @@ async function attachModuleToCharacter(
   const updated = await updateLumirealm(charactersApi(), characterId, userId, (cur) => {
     const ids = cur.user_overrides.attached_module_ids ?? [];
     if (ids.includes(moduleId)) return cur;
-    const nextWb = { ...(cur.user_overrides.attached_module_world_books ?? {}) };
-    if (env.installed_world_book_id) nextWb[moduleId] = env.installed_world_book_id;
     return {
       ...cur,
-      user_overrides: mergeUserOverrides(cur.user_overrides, {
-        attached_module_ids: [...ids, moduleId],
-        attached_module_world_books: Object.keys(nextWb).length > 0 ? nextWb : null,
-      }),
+      user_overrides: mergeUserOverrides(
+        cur.user_overrides,
+        buildAttachModulePatch(cur.user_overrides, moduleId, env.installed_world_book_id ?? null),
+      ),
     };
   });
   if (!updated) return { ok: false, reason: 'character is not a lumirealm card' };
@@ -5930,17 +5217,12 @@ async function detachModuleFromCharacter(
   const updated = await updateLumirealm(charactersApi(), characterId, userId, (cur) => {
     const ids = cur.user_overrides.attached_module_ids ?? [];
     if (!ids.includes(moduleId)) return cur;
-    const nextWb = { ...(cur.user_overrides.attached_module_world_books ?? {}) };
-    delete nextWb[moduleId];
-    const nextRx = { ...(cur.user_overrides.attached_module_regex_script_ids ?? {}) };
-    delete nextRx[moduleId];
     return {
       ...cur,
-      user_overrides: mergeUserOverrides(cur.user_overrides, {
-        attached_module_ids: ids.filter((id) => id !== moduleId),
-        attached_module_world_books: Object.keys(nextWb).length > 0 ? nextWb : null,
-        attached_module_regex_script_ids: Object.keys(nextRx).length > 0 ? nextRx : null,
-      }),
+      user_overrides: mergeUserOverrides(
+        cur.user_overrides,
+        buildDetachModulesPatch(cur.user_overrides, [moduleId]),
+      ),
     };
   });
   if (!updated) return { ok: false, reason: 'character is not a lumirealm card' };
@@ -6023,181 +5305,25 @@ async function refreshRisuAssetMap(characterId: string, userId: string): Promise
   }
 }
 
-async function handleImportLorebook(
-  msg: Extract<FrontendToBackend, { type: 'import_lorebook' }>,
-  userId: string,
-): Promise<void> {
-  // Two modes:
-  //   characterId !== null  , Risu parity for `importLoreBook(mode='global')`
-  //                           (Risu lorebook.svelte.ts:663-697). Append entries
-  //                           to the character's existing world_book (create
-  //                           one if missing).
-  //   characterId === null  , Standalone import (Import → Lorebooks tab). Create
-  //                           a fresh, unattached world_book. User attaches via
-  //                           Lumiverse if they want.
-  // Both paths reuse the same mapper + entry-write loop below.
-  const t0 = Date.now();
-  const standalone = msg.characterId === null;
-
-  const parsed = parseDirectLorebook(msg.json);
-  if (parsed.format === 'unknown') {
-    send({
-      type: 'lorebook_import_result',
-      characterId: msg.characterId,
-      ok: false,
-      written: 0,
-      dropped: parsed.dropped,
-      reason: 'unrecognized lorebook format (expected Risu native or CCSv3)',
-    }, userId);
-    return;
-  }
-  if (parsed.entries.length === 0) {
-    send({
-      type: 'lorebook_import_result',
-      characterId: msg.characterId,
-      ok: false,
-      written: 0,
-      dropped: parsed.dropped,
-      reason: 'no entries found in lorebook file',
-    }, userId);
-    return;
-  }
-
-  // Resolve target world_book id (per-character or fresh standalone).
-  let targetBookId: string | null = null;
-  let targetBookName: string;
-  if (standalone) {
-    const stem = (msg.filename ?? 'lorebook').replace(/\.[^.]+$/, '').trim() || 'lorebook';
-    targetBookName = stem;
-    try {
-      const wb = await spindle.world_books.create({ name: targetBookName }, userId);
-      targetBookId = wb.id;
-      log.info(`import_lorebook: standalone created world_book ${wb.id} name="${targetBookName}"`);
-    } catch (err) {
-      send({
-        type: 'lorebook_import_result',
-        characterId: null,
-        ok: false,
-        written: 0,
-        dropped: parsed.dropped,
-        reason: `world_book create failed: ${errMsg(err)}`,
-      }, userId);
-      return;
-    }
-  } else {
-    const characterId = msg.characterId!;
-    const fetched = await readLumirealm(charactersApi(), characterId, userId);
-    if (!fetched || !fetched.data) {
-      send({
-        type: 'lorebook_import_result',
-        characterId,
-        ok: false,
-        written: 0,
-        dropped: 0,
-        reason: 'not a lumirealm character',
-      }, userId);
-      return;
-    }
-    const existing = fetched.character.world_book_ids ?? [];
-    if (existing.length > 0) {
-      targetBookId = existing[0] ?? null;
-    }
-    targetBookName = `${fetched.character.name ?? 'character'}  - lore`;
-    if (!targetBookId) {
-      try {
-        const wbName = `${fetched.character.name ?? 'character'}  - lore (imported)`;
-        const wb = await spindle.world_books.create({ name: wbName }, userId);
-        targetBookId = wb.id;
-        targetBookName = wbName;
-        expectCharacterEdit(characterId);
-        await spindle.characters.update(
-          characterId,
-          { world_book_ids: [...existing, wb.id] } as never,
-          userId,
-        );
-        log.info(`import_lorebook: created world_book ${wb.id} for char=${characterId}`);
-      } catch (err) {
-        send({
-          type: 'lorebook_import_result',
-          characterId,
-          ok: false,
-          written: 0,
-          dropped: parsed.dropped,
-          reason: `world_book create failed: ${errMsg(err)}`,
-        }, userId);
-        return;
-      }
-    }
-  }
-
-  // Project Risu loreBook[] → LumiWorldBookEntry[] via the SAME mapper the
-  // .charx importer uses. Decorators in entry content (e.g. `@@end`) are
-  // applied; the lorebook id is the target world_book.
-  const lumiEntries = mapLoreBook(parsed.entries, { worldBookId: targetBookId });
-
-  let written = 0;
-  let entryWriteFailures = 0;
-  for (const entry of lumiEntries) {
-    try {
-      const entryInput: Record<string, unknown> = {
-        key: entry.key,
-        keysecondary: entry.keysecondary,
-        content: entry.content,
-        comment: entry.comment,
-        position: entry.position,
-        depth: entry.depth,
-        order_value: entry.order_value,
-        selective: entry.selective,
-        constant: entry.constant,
-        disabled: entry.disabled,
-        group_name: entry.group_name,
-        group_override: entry.group_override,
-        group_weight: entry.group_weight,
-        probability: entry.probability,
-        case_sensitive: entry.case_sensitive,
-        match_whole_words: entry.match_whole_words,
-        use_regex: entry.use_regex,
-        prevent_recursion: entry.prevent_recursion,
-        exclude_recursion: entry.exclude_recursion,
-        delay_until_recursion: entry.delay_until_recursion,
-        priority: entry.priority,
-        sticky: entry.sticky,
-        cooldown: entry.cooldown,
-        delay: entry.delay,
-        selective_logic: entry.selective_logic,
-        use_probability: entry.use_probability,
-        ...(entry.role !== null ? { role: entry.role } : {}),
-        ...(entry.scan_depth !== null ? { scan_depth: entry.scan_depth } : {}),
-        ...(entry.automation_id !== null ? { automation_id: entry.automation_id } : {}),
-        ...(entry.extensions ? { extensions: entry.extensions } : {}),
-      };
-      await spindle.world_books.entries.create(targetBookId, entryInput as never, userId);
-      written += 1;
-    } catch (err) {
-      entryWriteFailures += 1;
-      log.warn(`import_lorebook: entry "${entry.comment}" failed: ${errMsg(err)}`);
-    }
-  }
-
-  log.info(
-    `import_lorebook: ${standalone ? 'standalone' : `char=${msg.characterId}`} format=${parsed.format} ` +
-      `written=${written}/${parsed.entries.length} drops=${parsed.dropped} ` +
-      `entry_write_failures=${entryWriteFailures} elapsed=${Date.now() - t0}ms ` +
-      `file=${msg.filename ?? '<unnamed>'} book=${targetBookId}`,
-  );
-
-  send({
-    type: 'lorebook_import_result',
-    characterId: msg.characterId,
-    ok: written > 0,
-    written,
-    dropped: parsed.dropped + entryWriteFailures,
-    ...(targetBookId ? { worldBookId: targetBookId, worldBookName: targetBookName } : {}),
-    ...(written === 0 && entryWriteFailures > 0
-      ? { reason: 'all entry writes failed; see log for details' }
-      : {}),
-  }, userId);
-}
+const lorebookImporter = createLorebookImporter({
+  readLumirealm: (characterId, userId) => readLumirealm(charactersApi(), characterId, userId),
+  createWorldBook: (input, userId) => spindle.world_books.create(input, userId),
+  updateCharacterWorldBookIds: async (characterId, ids, userId) => {
+    expectCharacterEdit(characterId);
+    await spindle.characters.update(
+      characterId,
+      { world_book_ids: ids } as never,
+      userId,
+    );
+  },
+  createWorldBookEntry: (bookId, input, userId) =>
+    spindle.world_books.entries.create(bookId, input as never, userId),
+  send,
+  log,
+  errMsg,
+  parseDirectLorebook,
+  mapLoreBook,
+});
 
 function projectModuleLorebookForCreate(
   rawLorebook: readonly unknown[],
@@ -6239,7 +5365,7 @@ async function archiveWorldBookIfEdited(
   }
   if (allEntries.length === 0) return null;
   if (!hasUserEditedAnyEntry(allEntries)) {
-    log.info(`archive(${context}): skip — no user edits detected across ${allEntries.length} entries`);
+    log.info(`archive(${context}): skip,no user edits detected across ${allEntries.length} entries`);
     return null;
   }
   const archive = await spindle.world_books.create({ name: archiveName }, userId);
@@ -6279,21 +5405,6 @@ async function archiveModuleWorldBookBeforeMigration(
   );
 }
 
-async function archiveCharacterWorldBookBeforeMigration(
-  characterId: string,
-  characterName: string,
-  worldBookId: string,
-  userId: string,
-): Promise<string | null> {
-  const stamp = new Date().toISOString().slice(0, 10);
-  return archiveWorldBookIfEdited(
-    worldBookId,
-    `[LumiRealm Backup ${stamp}] Character: ${characterName}`,
-    userId,
-    `char=${characterId}`,
-  );
-}
-
 async function syncModuleWorldBook(
   env: ModuleEnvelope,
   userId: string,
@@ -6327,7 +5438,7 @@ async function syncModuleWorldBook(
       log.info(`syncModuleWorldBook: refreshed module=${env.id} wb=${existingId} entries=${projected.length}/${lorebook.length}`);
       return existingId;
     } catch (err) {
-      log.warn(`syncModuleWorldBook: refresh failed module=${env.id} wb=${existingId}: ${errMsg(err)} — recreating`);
+      log.warn(`syncModuleWorldBook: refresh failed module=${env.id} wb=${existingId}: ${errMsg(err)},recreating`);
       await deleteModuleWorldBookEverywhere(env.id, existingId, userId);
     }
   }
@@ -6536,22 +5647,13 @@ async function detachModuleFromAllCharacters(
       e.data.user_overrides.attached_module_world_books?.[moduleId] ?? null;
     const regexIds =
       e.data.user_overrides.attached_module_regex_script_ids?.[moduleId] ?? [];
-    await updateLumirealm(charactersApi(), e.character.id, userId, (cur) => {
-      const wb = { ...(cur.user_overrides.attached_module_world_books ?? {}) };
-      delete wb[moduleId];
-      const rx = { ...(cur.user_overrides.attached_module_regex_script_ids ?? {}) };
-      delete rx[moduleId];
-      return {
-        ...cur,
-        user_overrides: mergeUserOverrides(cur.user_overrides, {
-          attached_module_ids: (cur.user_overrides.attached_module_ids ?? []).filter(
-            (id) => id !== moduleId,
-          ),
-          attached_module_world_books: Object.keys(wb).length > 0 ? wb : null,
-          attached_module_regex_script_ids: Object.keys(rx).length > 0 ? rx : null,
-        }),
-      };
-    });
+    await updateLumirealm(charactersApi(), e.character.id, userId, (cur) => ({
+      ...cur,
+      user_overrides: mergeUserOverrides(
+        cur.user_overrides,
+        buildDetachModulesPatch(cur.user_overrides, [moduleId]),
+      ),
+    }));
     invalidateActiveForCharacter(e.character.id, userId);
     if (wbId) {
       await removeWorldBookFromCharacter(e.character.id, wbId, userId).catch((err) => {
@@ -6591,7 +5693,7 @@ async function mutateAssetIndex(
         for (const e of msg.entries) {
           const r = addAssetToCharacterIndex(working, e.assetName, e.imageId, e.ext);
           if (r.ok) working = r.index;
-          else log.warn(`add_assets (character ${characterId}): "${e.assetName}" skipped — ${r.reason}`);
+          else log.warn(`add_assets (character ${characterId}): "${e.assetName}" skipped,${r.reason}`);
         }
         return { ...cur, asset_index: working };
       }
@@ -6609,7 +5711,7 @@ async function mutateAssetIndex(
       }
       if (!result.ok) {
         log.warn(
-          `mutateAssetIndex (character ${characterId}): ${msg.type} failed — ${result.reason}`,
+          `mutateAssetIndex (character ${characterId}): ${msg.type} failed,${result.reason}`,
         );
         return cur;
       }
@@ -6627,7 +5729,7 @@ async function mutateAssetIndex(
     for (const e of msg.entries) {
       const r = addAssetToModuleIndex(working, e.assetName, e.imageId, e.ext);
       if (r.ok) working = r.index;
-      else log.warn(`add_assets (module ${moduleId}): "${e.assetName}" skipped — ${r.reason}`);
+      else log.warn(`add_assets (module ${moduleId}): "${e.assetName}" skipped,${r.reason}`);
     }
     const nextEnv = { ...env, asset_index: working };
     await writeModuleEnvelope(moduleStorage(), userId, nextEnv);
@@ -6722,181 +5824,13 @@ async function mutateTriggerLua(
   return { ok: true };
 }
 
-async function assembleCharacterViewerData(
-  characterId: string,
-  userId: string,
-): Promise<import('./types/messages.js').ViewerData | null> {
-  const fetched = await readLumirealm(charactersApi(), characterId, userId);
-  if (!fetched || !fetched.data) return null;
-  const fetchWarnings: string[] = [];
-  const worldBooks = await fetchCharacterWorldBooksForViewer(characterId, userId, fetchWarnings);
-  const translatedCommentBySourceHash = await collectTranslationsForCharacter(
-    fetched.data,
-    userId,
-    TRANSLATE_TARGET_LANG,
-  );
-  const translatedGroupNameByWbId = await buildTranslatedGroupNameByWbId(
-    fetched.character.name,
-    fetched.data,
-    worldBooks,
-    userId,
-    TRANSLATE_TARGET_LANG,
-  );
-  const moduleIdByWbId = new Map<string, string>();
-  const wbMap = fetched.data.user_overrides.attached_module_world_books ?? {};
-  for (const [moduleId, wbId] of Object.entries(wbMap)) {
-    if (typeof wbId === 'string') moduleIdByWbId.set(wbId, moduleId);
-  }
-  return buildCharacterViewerData({
-    characterId,
-    characterName: fetched.character.name,
-    data: fetched.data,
-    creatorNotes: fetched.character.creator_notes ?? '',
-    worldBooks,
-    fetchWarnings,
-    translatedCommentBySourceHash,
-    translatedGroupNameByWbId,
-    moduleIdByWbId,
-  });
-}
-
-async function buildTranslatedGroupNameByWbId(
-  characterName: string,
-  data: import('./payload/types.js').LumirealmCharacterData,
-  worldBooks: readonly FetchedWorldBook[],
-  userId: string,
-  lang: string,
-): Promise<ReadonlyMap<string, string>> {
-  const out = new Map<string, string>();
-  const moduleWbMap = data.user_overrides.attached_module_world_books ?? {};
-  const wbIdToModuleId = new Map<string, string>();
-  for (const [moduleId, wbId] of Object.entries(moduleWbMap)) {
-    if (typeof wbId === 'string') wbIdToModuleId.set(wbId, moduleId);
-  }
-  const txCharName = data.translations?.[lang]?.name;
-  for (const wb of worldBooks) {
-    const moduleId = wbIdToModuleId.get(wb.id);
-    if (moduleId !== undefined) {
-      try {
-        const env = await readModuleEnvelope(moduleStorage(), userId, moduleId);
-        const txMod = env?.translations?.[lang]?.name;
-        const origMod = (env?.module as { name?: unknown } | undefined)?.name;
-        if (txMod !== undefined && typeof origMod === 'string' && origMod.length > 0 && origMod !== txMod) {
-          out.set(wb.id, wb.name.includes(origMod) ? wb.name.replace(origMod, txMod) : txMod);
-        }
-      } catch (err) {
-        log.warn(`buildTranslatedGroupNameByWbId: module=${moduleId} read failed: ${errMsg(err)}`);
-      }
-      continue;
-    }
-    if (txCharName !== undefined && txCharName !== characterName) {
-      out.set(
-        wb.id,
-        wb.name.includes(characterName) ? wb.name.replace(characterName, txCharName) : txCharName,
-      );
-    }
-  }
-  return out;
-}
-
-// Merge character + attached-module translation maps for the active language.
-async function collectTranslationsForCharacter(
-  data: import('./payload/types.js').LumirealmCharacterData,
-  userId: string,
-  lang: string,
-): Promise<ReadonlyMap<string, string>> {
-  const out = new Map<string, string>();
-  const charLore = data.translations?.[lang]?.lorebook;
-  if (charLore) {
-    for (const [hash, t] of Object.entries(charLore)) {
-      if (typeof t?.comment === 'string') out.set(hash, t.comment);
-    }
-  }
-  const attachedIds = data.user_overrides.attached_module_ids ?? [];
-  for (const moduleId of attachedIds) {
-    try {
-      const env = await readModuleEnvelope(moduleStorage(), userId, moduleId);
-      const modLore = env?.translations?.[lang]?.lorebook;
-      if (!modLore) continue;
-      for (const [hash, t] of Object.entries(modLore)) {
-        if (typeof t?.comment === 'string') out.set(hash, t.comment);
-      }
-    } catch (err) {
-      log.warn(`collectTranslationsForCharacter: module=${moduleId} read failed: ${errMsg(err)}`);
-    }
-  }
-  return out;
-}
-
-async function fetchCharacterWorldBooksForViewer(
-  characterId: string,
-  userId: string,
-  warnings: string[],
-): Promise<readonly FetchedWorldBook[]> {
-  let wbIds: readonly string[];
-  try {
-    const ch = await spindle.characters.get(characterId, userId) as { world_book_ids?: unknown };
-    wbIds = Array.isArray(ch?.world_book_ids)
-      ? ch.world_book_ids.filter((x): x is string => typeof x === 'string')
-      : [];
-  } catch (err) {
-    warnings.push(`Could not fetch world_book_ids: ${errMsg(err)}`);
-    return [];
-  }
-  if (wbIds.length === 0) return [];
-  const out: FetchedWorldBook[] = [];
-  for (const wbId of wbIds) {
-    try {
-      const meta = await spindle.world_books.get(wbId, userId) as { name?: unknown };
-      const name = typeof meta?.name === 'string' && meta.name.length > 0 ? meta.name : wbId;
-      const entries: import('./state/viewer-data.js').FetchedWorldBookEntry[] = [];
-      let offset = 0;
-      while (true) {
-        const page = await spindle.world_books.entries.list(wbId, { limit: 200, offset, userId });
-        for (const e of page.data) {
-          const ee = e as unknown as Record<string, unknown>;
-          const id = typeof ee['id'] === 'string' ? ee['id'] : null;
-          if (id === null) continue;
-          const keyRaw = ee['key'];
-          const key = Array.isArray(keyRaw)
-            ? keyRaw.filter((x): x is string => typeof x === 'string')
-            : typeof keyRaw === 'string' ? [keyRaw] : [];
-          const ext = ee['extensions'] && typeof ee['extensions'] === 'object' && !Array.isArray(ee['extensions'])
-            ? ee['extensions'] as Record<string, unknown>
-            : null;
-          entries.push({
-            id,
-            key,
-            content: typeof ee['content'] === 'string' ? ee['content'] : '',
-            ...(typeof ee['comment'] === 'string' ? { comment: ee['comment'] } : {}),
-            ...(typeof ee['disabled'] === 'boolean' ? { disabled: ee['disabled'] } : {}),
-            ...(typeof ee['constant'] === 'boolean' ? { constant: ee['constant'] } : {}),
-            ...(typeof ee['order_value'] === 'number' ? { orderValue: ee['order_value'] } : {}),
-            ...(typeof ee['priority'] === 'number' ? { priority: ee['priority'] } : {}),
-            ...(typeof ee['position'] === 'number' ? { position: ee['position'] } : {}),
-            ...(typeof ee['depth'] === 'number' ? { depth: ee['depth'] } : {}),
-            extensions: ext,
-          });
-        }
-        if (page.data.length < 200) break;
-        offset += 200;
-      }
-      out.push({ id: wbId, name, entries });
-    } catch (err) {
-      warnings.push(`world_book ${wbId}: ${errMsg(err)}`);
-    }
-  }
-  return out;
-}
-
-async function assembleModuleViewerData(
-  moduleId: string,
-  userId: string,
-): Promise<import('./types/messages.js').ViewerData | null> {
-  const env = await readModuleEnvelope(moduleStorage(), userId, moduleId);
-  if (!env) return null;
-  return buildModuleViewerData({ envelope: env });
-}
+const viewerPushDeps: ViewerPushDeps = {
+  assembleCharacter: (characterId, userId) => viewerAssembly.assembleCharacter(characterId, userId),
+  assembleModule: (moduleId, userId) => viewerAssembly.assembleModule(moduleId, userId),
+  send,
+  warn: (m) => log.warn(m),
+  errMsg,
+};
 
 export async function readAttachedModuleEnvelopes(
   userId: string,
@@ -6942,7 +5876,7 @@ export async function readAttachedModuleEnvelopes(
       fallback.push(env);
       seenIds.add(env.id);
       log.info(
-        `readAttachedModuleEnvelopes: namespace match — handle="${ns}" → module id=${env.id} ` +
+        `readAttachedModuleEnvelopes: namespace match,handle="${ns}" → module id=${env.id} ` +
           `(transparent replacement / aliasing)`,
       );
     }
@@ -6955,7 +5889,7 @@ export async function readAttachedModuleEnvelopes(
     });
     if (!matched) {
       log.warn(
-        `readAttachedModuleEnvelopes: handle "${h}" did not resolve via id or namespace — skipping`,
+        `readAttachedModuleEnvelopes: handle "${h}" did not resolve via id or namespace,skipping`,
       );
     }
   }
@@ -7120,10 +6054,6 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
           `import_card_init: sessionId=${msg.sessionId} file=${msg.fileName} ` +
             `totalBytes=${msg.totalBytes} totalChunks=${msg.totalChunks}`,
         );
-        if (!userId) {
-          send({ type: 'error', message: 'import_card_init: no userId' }, userId);
-          break;
-        }
         const shape = validateUploadShape(msg.totalBytes, msg.totalChunks);
         if (!shape.ok) {
           log.warn(`import_card_init: rejected sessionId=${msg.sessionId} userId=${userId}: ${shape.reason}`);
@@ -7156,7 +6086,7 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
       case 'import_card_chunk': {
         const session = importSessions.get(msg.sessionId);
         if (!session) {
-          log.warn(`import_card_chunk: unknown sessionId=${msg.sessionId} seq=${msg.seq} — dropping`);
+          log.warn(`import_card_chunk: unknown sessionId=${msg.sessionId} seq=${msg.seq},dropping`);
           send({ type: 'error', message: `Unknown upload session ${msg.sessionId}. Re-import the card.` }, userId);
           break;
         }
@@ -7170,7 +6100,7 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
           break;
         }
         if (session.buffer[msg.seq] !== null) {
-          log.warn(`import_card_chunk: duplicate seq=${msg.seq} on session ${msg.sessionId} — overwriting`);
+          log.warn(`import_card_chunk: duplicate seq=${msg.seq} on session ${msg.sessionId},overwriting`);
         }
         const chunkBytes = new Uint8Array(Buffer.from(msg.bytesB64Chunk, 'base64'));
         session.buffer[msg.seq] = chunkBytes;
@@ -7208,7 +6138,7 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
           }
           importSessions.delete(msg.sessionId);
           const missingList = missing.length > 12 ? `${missing.slice(0, 12).join(',')}…(+${missing.length - 12})` : missing.join(',');
-          log.error(`import_card_commit: missing chunks=[${missingList}] — aborting`);
+          log.error(`import_card_commit: missing chunks=[${missingList}],aborting`);
           send({
             type: 'import_progress',
             phase: 'error',
@@ -7219,7 +6149,7 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
           break;
         }
         if (session.receivedBytes !== session.totalBytes) {
-          log.warn(`import_card_commit: byte count mismatch received=${session.receivedBytes} expected=${session.totalBytes} — proceeding anyway`);
+          log.warn(`import_card_commit: byte count mismatch received=${session.receivedBytes} expected=${session.totalBytes},proceeding anyway`);
         }
         const assembled = new Uint8Array(session.receivedBytes);
         let offset = 0;
@@ -7239,7 +6169,7 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
       case 'import_card_abort': {
         const session = importSessions.get(msg.sessionId);
         if (session && session.ownerUserId !== userId) {
-          log.warn(`import_card_abort: ownership mismatch sessionId=${msg.sessionId} owner=${session.ownerUserId} sender=${userId ?? '<none>'} — ignoring`);
+          log.warn(`import_card_abort: ownership mismatch sessionId=${msg.sessionId} owner=${session.ownerUserId} sender=${userId ?? '<none>'},ignoring`);
           break;
         }
         const existed = importSessions.delete(msg.sessionId);
@@ -7247,16 +6177,12 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
         break;
       }
       case 'register_svg_raster_index': {
-        if (!userId) {
-          send({ type: 'error', message: 'register_svg_raster_index: no userId' }, userId);
-          break;
-        }
         // Require an in-flight import: late replays add no value (the FE
         // only sends this in response to our `rasterize_svgs` push) and let
         // a user rewrite their own regex_scripts SVG markers post-import.
         const pendingForSvgCheck = pendingImportCompletions.get(msg.characterId);
         if (!pendingForSvgCheck) {
-          log.warn(`register_svg_raster_index: no pending import char=${msg.characterId} sender=${userId} — rejecting (late replay or fabrication)`);
+          log.warn(`register_svg_raster_index: no pending import char=${msg.characterId} sender=${userId},rejecting (late replay or fabrication)`);
           send({ type: 'error', message: 'register_svg_raster_index: no pending import' }, userId);
           break;
         }
@@ -7284,7 +6210,6 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
         break;
       }
       case 'delete_card': {
-        if (!userId) break;
         const opId = `delete-card-${msg.characterId}-${Date.now()}`;
         let cardName = msg.characterId.slice(0, 8);
         try {
@@ -7321,24 +6246,15 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
       }
       case 'manual_trigger': {
         log.info(`manual_trigger: triggerName=${msg.triggerName} triggerId=${msg.triggerId ?? '<none>'} chatId=${msg.chatId}`);
-        if (!userId) {
-          log.warn(`manual_trigger: no userId, dropping`);
-          break;
-        }
         await dispatchManualTrigger(msg.chatId, msg.triggerName, msg.triggerId, userId);
         break;
       }
       case 'manual_button_click': {
         log.info(`manual_button_click: btn=${msg.btn} btnId=${msg.btnId ?? '<none>'} chatId=${msg.chatId}`);
-        if (!userId) {
-          log.warn(`manual_button_click: no userId, dropping`);
-          break;
-        }
         await dispatchButtonClick(msg.chatId, msg.btn, msg.btnId, userId);
         break;
       }
       case 'set_variable': {
-        if (!userId) break;
         if (msg.scope !== 'local') {
           send({ type: 'error', message: `Only local scope is editable from the Variables tab (got: ${msg.scope})` }, userId);
           break;
@@ -7350,7 +6266,6 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
         break;
       }
       case 'delete_variable': {
-        if (!userId) break;
         if (msg.scope !== 'local') {
           send({ type: 'error', message: `Only local scope is editable from the Variables tab (got: ${msg.scope})` }, userId);
           break;
@@ -7362,10 +6277,6 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
         break;
       }
       case 'request_settings': {
-        if (!userId) {
-          send({ type: 'error', message: 'request_settings: no userId' }, userId);
-          break;
-        }
         const settings = await getSettingsForUser(userId);
         send({
           type: 'settings_pushed',
@@ -7386,10 +6297,6 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
         break;
       }
       case 'update_settings': {
-        if (!userId) {
-          send({ type: 'error', message: 'update_settings: no userId' }, userId);
-          break;
-        }
         const patch = normalizeSettingsPatch(msg.patch);
         const merged = await applySettingsPatch(userId, patch);
         send({
@@ -7411,26 +6318,14 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
         break;
       }
       case 'cache_module_translation': {
-        if (!userId) {
-          send({ type: 'error', message: 'cache_module_translation: no userId' }, userId);
-          break;
-        }
         await persistModuleTranslation(userId, msg);
         break;
       }
       case 'cache_character_translation': {
-        if (!userId) {
-          send({ type: 'error', message: 'cache_character_translation: no userId' }, userId);
-          break;
-        }
         await persistCharacterTranslation(userId, msg);
         break;
       }
       case 'request_connections_list': {
-        if (!userId) {
-          send({ type: 'error', message: 'request_connections_list: no userId' }, userId);
-          break;
-        }
         const connections = await listConnectionsForUser(userId);
         log.info(`request_connections_list: returning ${connections.length} connection(s) for user=${userId}`);
         send({
@@ -7440,7 +6335,6 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
         break;
       }
       case 'request_variables_snapshot': {
-        if (!userId) break;
         const active = await ensureActiveCardForChat(msg.chatId, null, userId);
         if (active) {
           await refreshVariables(active, msg.chatId, userId, { force: true });
@@ -7457,7 +6351,6 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
         break;
       }
       case 'request_toggle_definitions': {
-        if (!userId) break;
         const active = await ensureActiveCardForChat(msg.chatId, null, userId);
         if (active) {
           await refreshToggleDefinitions(active, msg.chatId, userId, { force: true });
@@ -7474,7 +6367,6 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
         break;
       }
       case 'set_toggle': {
-        if (!userId) break;
         const result = await writeToggleValue(msg.chatId, msg.key, msg.value, userId);
         if (!result.ok) {
           log.warn(`set_toggle failed: ${result.reason ?? 'unknown'}`);
@@ -7483,10 +6375,6 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
         break;
       }
       case 'upload_module_init': {
-        if (!userId) {
-          send({ type: 'error', message: 'upload_module_init: no userId' }, userId);
-          break;
-        }
         log.info(
           `upload_module_init: sessionId=${msg.sessionId} file=${msg.fileName} ` +
             `totalBytes=${msg.totalBytes} totalChunks=${msg.totalChunks}`,
@@ -7553,10 +6441,6 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
         const session = moduleUploadSessions.get(msg.sessionId);
         if (!session) {
           send({ type: 'error', message: `upload_module_commit: unknown sessionId ${msg.sessionId}` }, userId);
-          break;
-        }
-        if (!userId) {
-          send({ type: 'error', message: 'upload_module_commit: no userId' }, userId);
           break;
         }
         if (session.ownerUserId !== userId) {
@@ -7661,7 +6545,7 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
       case 'upload_module_abort': {
         const session = moduleUploadSessions.get(msg.sessionId);
         if (session && session.ownerUserId !== userId) {
-          log.warn(`upload_module_abort: ownership mismatch sessionId=${msg.sessionId} owner=${session.ownerUserId} sender=${userId ?? '<none>'} — ignoring`);
+          log.warn(`upload_module_abort: ownership mismatch sessionId=${msg.sessionId} owner=${session.ownerUserId} sender=${userId ?? '<none>'},ignoring`);
           break;
         }
         const existed = moduleUploadSessions.delete(msg.sessionId);
@@ -7671,18 +6555,10 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
         break;
       }
       case 'request_modules': {
-        if (!userId) {
-          send({ type: 'error', message: 'request_modules: no userId' }, userId);
-          break;
-        }
         await pushModules(userId);
         break;
       }
       case 'delete_module': {
-        if (!userId) {
-          send({ type: 'error', message: 'delete_module: no userId' }, userId);
-          break;
-        }
         const envelopeForDelete = await readModuleEnvelope(moduleStorage(), userId, msg.moduleId);
         const moduleName = envelopeForDelete?.module?.name || msg.moduleId.slice(0, 8);
         const opId = `delete-module-${msg.moduleId}-${Date.now()}`;
@@ -7795,10 +6671,6 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
         break;
       }
       case 'attach_module': {
-        if (!userId) {
-          send({ type: 'error', message: 'attach_module: no userId' }, userId);
-          break;
-        }
         if (blockedByRepair(userId, 'attach_module')) break;
         const result = await attachModuleToCharacter(
           msg.characterId,
@@ -7814,10 +6686,6 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
         break;
       }
       case 'detach_module': {
-        if (!userId) {
-          send({ type: 'error', message: 'detach_module: no userId' }, userId);
-          break;
-        }
         if (blockedByRepair(userId, 'detach_module')) break;
         const result = await detachModuleFromCharacter(
           msg.characterId,
@@ -7841,10 +6709,6 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
         // triggers/lua/assets via attached_module_ids; the world_book
         // / regex are written into Lumi's own tables and don't pass
         // through synthesize, so this invalidation is defensive).
-        if (!userId) {
-          send({ type: 'error', message: 'module_artifacts_installed: no userId' }, userId);
-          break;
-        }
         await updateLumirealm(charactersApi(), msg.characterId, userId, (cur) => {
           const wb = { ...(cur.user_overrides.attached_module_world_books ?? {}) };
           // Null wb in a reply means "regex-only install/refresh", leave the
@@ -7884,24 +6748,13 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
       case 'add_assets':
       case 'rename_asset':
       case 'delete_asset': {
-        if (!userId) {
-          send({ type: 'error', message: `${msg.type}: no userId` }, userId);
-          break;
-        }
         if (blockedByRepair(userId, msg.type)) break;
         const result = await mutateAssetIndex(msg, userId);
         if (!result.ok) {
           send({ type: 'error', message: `${msg.type}: ${result.reason ?? 'failed'}` }, userId);
           break;
         }
-        try {
-          const data = msg.source.kind === 'character'
-            ? await assembleCharacterViewerData(msg.source.characterId, userId)
-            : await assembleModuleViewerData(msg.source.moduleId, userId);
-          if (data) send({ type: 'viewer_data_pushed', data }, userId);
-        } catch (err) {
-          log.warn(`${msg.type}: viewer re-push failed: ${errMsg(err)}`);
-        }
+        await pushViewerData({ source: msg.source, context: msg.type, userId }, viewerPushDeps);
         if (msg.source.kind === 'module') {
           const attached = await charactersAttachedTo(msg.source.moduleId, userId);
           for (const charId of attached) {
@@ -7925,10 +6778,6 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
       }
       case 'set_default_variable':
       case 'delete_default_variable': {
-        if (!userId) {
-          send({ type: 'error', message: `${msg.type}: no userId` }, userId);
-          break;
-        }
         if (blockedByRepair(userId, msg.type)) break;
         const updated = await updateLumirealm(charactersApi(), msg.characterId, userId, (cur) => {
           const overrides = { ...(cur.user_overrides.default_variables_overrides ?? {}) };
@@ -7954,12 +6803,10 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
           send({ type: 'error', message: `${msg.type}: not a lumirealm character` }, userId);
           break;
         }
-        try {
-          const data = await assembleCharacterViewerData(msg.characterId, userId);
-          if (data) send({ type: 'viewer_data_pushed', data }, userId);
-        } catch (err) {
-          log.warn(`${msg.type}: viewer re-push failed: ${errMsg(err)}`);
-        }
+        await pushViewerData(
+          { source: { kind: 'character', characterId: msg.characterId }, context: msg.type, userId },
+          viewerPushDeps,
+        );
         // Defaults feed buildSyntheticStoredCard's mergedDefaults; invalidate
         // active card so the next chat-tick re-synthesises with the new
         // override applied.
@@ -7973,32 +6820,17 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
         break;
       }
       case 'import_lorebook': {
-        if (!userId) {
-          send({ type: 'error', message: 'import_lorebook: no userId' }, userId);
-          break;
-        }
-        await handleImportLorebook(msg, userId);
+        await lorebookImporter.handle(msg, userId);
         break;
       }
       case 'set_trigger_lua': {
-        if (!userId) {
-          send({ type: 'error', message: 'set_trigger_lua: no userId' }, userId);
-          break;
-        }
         if (blockedByRepair(userId, 'set_trigger_lua')) break;
         const result = await mutateTriggerLua(msg, userId);
         if (!result.ok) {
           send({ type: 'error', message: `set_trigger_lua: ${result.reason ?? 'failed'}` }, userId);
           break;
         }
-        try {
-          const data = msg.source.kind === 'character'
-            ? await assembleCharacterViewerData(msg.source.characterId, userId)
-            : await assembleModuleViewerData(msg.source.moduleId, userId);
-          if (data) send({ type: 'viewer_data_pushed', data }, userId);
-        } catch (err) {
-          log.warn(`set_trigger_lua: viewer re-push failed: ${errMsg(err)}`);
-        }
+        await pushViewerData({ source: msg.source, context: 'set_trigger_lua', userId }, viewerPushDeps);
         if (msg.source.kind === 'module') {
           const attached = await charactersAttachedTo(msg.source.moduleId, userId);
           for (const charId of attached) invalidateActiveForCharacter(charId, userId);
@@ -8008,10 +6840,6 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
         break;
       }
       case 'set_background_html': {
-        if (!userId) {
-          send({ type: 'error', message: 'set_background_html: no userId' }, userId);
-          break;
-        }
         if (blockedByRepair(userId, 'set_background_html')) break;
         const characterId = msg.characterId;
         const html = typeof msg.html === 'string' && msg.html.length > 0 ? msg.html : null;
@@ -8024,23 +6852,17 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
           break;
         }
         invalidateActiveForCharacter(characterId, userId);
-        try {
-          const data = await assembleCharacterViewerData(characterId, userId);
-          if (data) send({ type: 'viewer_data_pushed', data }, userId);
-        } catch (err) {
-          log.warn(`set_background_html: viewer re-push failed: ${errMsg(err)}`);
-        }
+        await pushViewerData(
+          { source: { kind: 'character', characterId }, context: 'set_background_html', userId },
+          viewerPushDeps,
+        );
         break;
       }
       case 'request_viewer_data': {
-        if (!userId) {
-          send({ type: 'error', message: 'request_viewer_data: no userId' }, userId);
-          break;
-        }
         try {
           const data = msg.source.kind === 'character'
-            ? await assembleCharacterViewerData(msg.source.characterId, userId)
-            : await assembleModuleViewerData(msg.source.moduleId, userId);
+            ? await viewerAssembly.assembleCharacter(msg.source.characterId, userId)
+            : await viewerAssembly.assembleModule(msg.source.moduleId, userId);
           if (data) send({ type: 'viewer_data_pushed', data }, userId);
           else send({
             type: 'error',
@@ -8058,7 +6880,7 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
           setScreenDims(userId, { width: Number(msg.width) || 0, height: Number(msg.height) || 0 });
           log.debug(`screen_dims: user=${userId} w=${msg.width} h=${msg.height}`);
         } else {
-          log.warn(`screen_dims: received but userId is empty — cache not updated`);
+          log.warn(`screen_dims: received but userId is empty, cache not updated`);
         }
         break;
       }
@@ -8068,7 +6890,6 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
         break;
       }
       case 'log_set_state': {
-        if (!userId) break;
         const next: Partial<LogState> = {
           enabled: !!msg.enabled,
           includeChatData: !!msg.includeChatData,
@@ -8080,7 +6901,6 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
         break;
       }
       case 'log_request_export': {
-        if (!userId) break;
         const snap = logStore.snapshot(userId);
         send({
           type: 'log_export_pushed',
@@ -8095,25 +6915,11 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
         break;
       }
       case 'log_clear': {
-        if (!userId) break;
         logStore.clear(userId);
         sendLogState(userId);
         break;
       }
       case 'request_orphan_scan': {
-        if (!userId) {
-          send({
-            type: 'orphan_scan_result',
-            orphans: [],
-            summary: {
-              scannedTotal: 0, liveCharacterRefs: 0, liveModuleRefs: 0,
-              liveJournalRefs: 0, charactersScanned: 0, modulesScanned: 0,
-              elapsedMs: 0, totalOrphans: 0, truncated: false,
-            },
-            error: 'No active user. Open a Lumi session and try again.',
-          }, userId);
-          break;
-        }
         if (assetUploadsInFlight > 0) {
           send({
             type: 'orphan_scan_result',
@@ -8162,15 +6968,6 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
       }
       case 'delete_orphan_assets': {
         const requested = msg.imageIds.length;
-        if (!userId) {
-          send({
-            type: 'orphan_delete_result',
-            requested, deleted: 0, absent: 0, failed: 0, skipped: 0,
-            skippedIds: [],
-            error: 'No active user.',
-          }, userId);
-          break;
-        }
         if (assetUploadsInFlight > 0) {
           send({
             type: 'orphan_delete_result',
@@ -8214,7 +7011,7 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
           if (safeIds.length === 0) {
             emitOperationProgress(
               userId, opId, 'done', opTitle,
-              `Nothing to delete (${skippedIds.length} skipped — became live)`,
+              `Nothing to delete (${skippedIds.length} skipped,became live)`,
               1,
             );
           } else {
@@ -8274,18 +7071,6 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
         break;
       }
       case 'request_repair_scan': {
-        if (!userId) {
-          send({
-            type: 'repair_scan_result',
-            summary: {
-              staleModuleRegex: 0, staleCharRegex: 0, deadJournals: 0,
-              charactersToRetranslate: 0, modulesToReattach: 0,
-              danglingModuleRefs: 0, elapsedMs: 0,
-            },
-            error: 'No active user. Open a Lumi session and try again.',
-          }, userId);
-          break;
-        }
         if (assetUploadsInFlight > 0) {
           send({
             type: 'repair_scan_result',
@@ -8325,19 +7110,6 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
         break;
       }
       case 'apply_repair': {
-        if (!userId) {
-          send({
-            type: 'repair_apply_result',
-            result: {
-              staleCharRegexDeleted: 0, staleModuleRegexDeleted: 0,
-              deadJournalsCleared: 0, charactersRetranslated: 0,
-              charactersSkippedLegacy: 0, modulesReattached: 0,
-              modulesScrubbed: 0, elapsedMs: 0,
-            },
-            error: 'No active user.',
-          }, userId);
-          break;
-        }
         if (assetUploadsInFlight > 0) {
           send({
             type: 'repair_apply_result',
@@ -8410,6 +7182,12 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
           send({ type: 'error', message: `pick: ${r.reason ?? 'failed'}` }, userId);
         }
         break;
+      }
+      default: {
+        // Compile-time exhaustiveness: a new FrontendToBackend variant
+        // without a case here trips this assignment.
+        const _exhaustive: never = msg;
+        void _exhaustive;
       }
     }
   } catch (err) {

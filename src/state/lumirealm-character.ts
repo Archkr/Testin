@@ -452,3 +452,45 @@ export function mergeUserOverrides(
   }
   return out;
 }
+
+export type ModuleTrackingPatch = {
+  attached_module_ids?: readonly string[];
+  attached_module_world_books?: Readonly<Record<string, string>> | null;
+  attached_module_regex_script_ids?: Readonly<Record<string, readonly string[]>> | null;
+};
+
+// Empty maps collapse to null so mergeUserOverrides drops the key entirely.
+// Without this, detaching the last module leaves orphaned `attached_module_world_books: {}`
+// in the envelope.
+export function buildAttachModulePatch(
+  current: LumirealmUserOverrides,
+  moduleId: string,
+  worldBookId: string | null,
+): ModuleTrackingPatch {
+  const ids = current.attached_module_ids ?? [];
+  const wb: Record<string, string> = { ...(current.attached_module_world_books ?? {}) };
+  if (worldBookId) wb[moduleId] = worldBookId;
+  return {
+    attached_module_ids: [...ids, moduleId],
+    attached_module_world_books: Object.keys(wb).length > 0 ? wb : null,
+  };
+}
+
+export function buildDetachModulesPatch(
+  current: LumirealmUserOverrides,
+  moduleIds: readonly string[],
+): ModuleTrackingPatch {
+  const idsSet = new Set(moduleIds);
+  const nextIds = (current.attached_module_ids ?? []).filter((id) => !idsSet.has(id));
+  const wb: Record<string, string> = { ...(current.attached_module_world_books ?? {}) };
+  const rx: Record<string, readonly string[]> = { ...(current.attached_module_regex_script_ids ?? {}) };
+  for (const id of moduleIds) {
+    delete wb[id];
+    delete rx[id];
+  }
+  return {
+    attached_module_ids: nextIds,
+    attached_module_world_books: Object.keys(wb).length > 0 ? wb : null,
+    attached_module_regex_script_ids: Object.keys(rx).length > 0 ? rx : null,
+  };
+}
