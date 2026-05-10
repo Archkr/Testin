@@ -36,6 +36,9 @@ export function runPipeline(input: RunPipelineInput): string {
     ...(input.currentMessageIndexOverride !== undefined
       ? { currentMessageIndexOverride: input.currentMessageIndexOverride }
       : {}),
+    ...(input.currentMessageRoleOverride !== undefined
+      ? { currentMessageRoleOverride: input.currentMessageRoleOverride }
+      : {}),
     ...(input.legacyMediaFindings !== undefined
       ? { legacyMediaFindings: input.legacyMediaFindings }
       : {}),

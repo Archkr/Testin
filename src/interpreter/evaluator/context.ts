@@ -12,6 +12,7 @@ import type {
 
 import type { EvaluatorCtx } from "./types.js";
 import type { AssetIndexEntry } from "../../payload/types.js";
+import { normalizeRoleToLumi } from "../../util/role-coerce.js";
 
 declare const spindle: import("lumiverse-spindle-types").SpindleAPI | undefined;
 
@@ -124,6 +125,7 @@ export interface BuildEvaluatorCtxInput {
   readonly screenWidth?: number;
   readonly screenHeight?: number;
   readonly currentMessageIndexOverride?: number;
+  readonly currentMessageRoleOverride?: string;
   /** false = display-pass; writes no-op, asset macros emit HTML. */
   readonly commit: boolean;
   readonly legacyMediaFindings?: boolean;
@@ -314,7 +316,9 @@ export function buildEvaluatorContext(input: BuildEvaluatorCtxInput): EvaluatorC
     rng: { random: () => Math.random() },
     clock: { now: () => Date.now() },
     triggerId: null,
-    role: null,
+    role: input.currentMessageRoleOverride
+      ? normalizeRoleToLumi(input.currentMessageRoleOverride)
+      : null,
     functions,
     aiModel: input.system?.model ?? "",
     axModel: "",

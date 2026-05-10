@@ -217,10 +217,12 @@ export function createLumiInterceptors(deps: CreateLumiInterceptorsDeps): LumiIn
       const charImage = getActiveCharacterImage(chatId);
       const personaImage = getActivePersonaImage(ctx.userId);
 
-      const dynChatIndex = (ctx.env as { dynamicMacros?: Record<string, string> }).dynamicMacros?.chat_index;
+      const dynamicMacros = (ctx.env as { dynamicMacros?: Record<string, string> }).dynamicMacros;
+      const dynChatIndex = dynamicMacros?.chat_index;
       const dynChatIndexNum = typeof dynChatIndex === 'string' && /^-?\d+$/.test(dynChatIndex)
         ? parseInt(dynChatIndex, 10) - 1
         : undefined;
+      const dynRole = typeof dynamicMacros?.role === 'string' ? dynamicMacros.role : undefined;
 
       let resolved: string;
       try {
@@ -230,6 +232,7 @@ export function createLumiInterceptors(deps: CreateLumiInterceptorsDeps): LumiIn
           chatId,
           ...(ctx.userId !== undefined ? { userId: ctx.userId } : {}),
           ...(dynChatIndexNum !== undefined ? { currentMessageIndexOverride: dynChatIndexNum } : {}),
+          ...(dynRole !== undefined ? { currentMessageRoleOverride: dynRole } : {}),
           characterId: active.card.character_id,
           userName: namesEnv.user ?? '',
           charName: namesEnv.char ?? charCard.name ?? '',

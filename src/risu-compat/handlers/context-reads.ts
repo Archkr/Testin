@@ -1,5 +1,6 @@
 import type { MacroHandler } from "../../core/cbs/index.js";
 import { registry } from "../registry.js";
+import { lumiRoleToRisu } from "../../util/role-coerce.js";
 
 // Context-read macros. Many are renamed to `risu_...` due to Lumi collisions.
 
@@ -61,8 +62,8 @@ register("axmodel", (ctx) => ctx.axModel,
 // Outside cbs: chatRole > firstmsg-then-'char' > chatID-then-msg.role > role > 'null'.
 register("role", (ctx) => {
   if (ctx.cbsContext) return "null";
+  if (ctx.role !== null) return lumiRoleToRisu(ctx.role);
   if (ctx.isFirstMessage) return "char";
-  if (ctx.role !== null) return ctx.role;
   return "null";
 }, "Returns the role of the current message ('user', 'char'/'assistant', 'system').");
 

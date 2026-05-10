@@ -21,3 +21,10 @@ export function risuRoleToLumi(r: string): "user" | "assistant" {
 export function lumiRoleToRisu(r: string): "user" | "char" {
   return r === "user" ? "user" : "char";
 }
+
+export function normalizeRoleToLumi(r: string): "user" | "assistant" | "system" | null {
+  if (r === "user" || r === "assistant" || r === "system") return r;
+  if (r === "char" || r === "bot") return "assistant";
+  if (r === "sys") return "system";
+  return null;
+}

@@ -3,6 +3,7 @@
 // replaceSync propagates live to all adopters with one sheet shared by reference.
 
 import { getHidePanelSheet } from '../portal/hide-panel-css.js';
+import { setupQuoteMarks, type QuoteMarks } from './quote-marks.js';
 
 // Late-binding accessor , `getHidePanelSheet()` lazily ensures the sheet
 // exists; calling it AT injection time rather than at boot keeps the
@@ -51,6 +52,8 @@ export function setupIslandStyles(flog: Flog, opts: SetupIslandStylesOptions = {
       destroy: () => { /* no-op */ },
     };
   }
+
+  const quoteMarks: QuoteMarks = setupQuoteMarks(flog);
 
   let crossRuleSheets: CSSStyleSheet[] = [];
   // Last-applied snapshots so we can short-circuit no-op refreshes. Mortal
@@ -122,6 +125,13 @@ export function setupIslandStyles(flog: Flog, opts: SetupIslandStylesOptions = {
       }
       const initialBase = shadow.querySelector('style[data-lumi-island-base]');
       if (initialBase) initialBase.remove();
+
+      // Risu-card gate: only mark quotes when per-card CSS is loaded (non-Risu
+      // chats leave perCardSheet empty, so the walker stays out of vanilla DOM).
+      if (sheet.cssRules.length > 0) {
+        quoteMarks.walkShadow(shadow);
+        quoteMarks.watchShadow(shadow);
+      }
 
       adoptionCount++;
       if (adoptionCount <= 8) {
@@ -384,11 +394,12 @@ export function rescopeRisuEnvironment(input: string): RescopeResult {
   // (?!,) skips already-paired :root,:host (Tailwind v4 @theme output)
   const rootHits = (css.match(/:root\b(?!,)/g) ?? []).length;
   css = css.replaceAll(/:root\b(?!,)/g, ':root,:host');
-  // overflow:visible overrides Lumi's `_htmlIsland_*` host class
-  // (`overflow: hidden`, set from outside the shadow);
+  // overflow:visible !important defeats Lumi's `_htmlIsland_*` host
+  // `overflow: hidden` (set from outside the shadow at equal specificity, so
+  // :host loses without !important). Font-size / line-height are intentionally
+  // not set here, so Lumi's --lumiverse-font-scale inheritance reaches card content.
   css +=
-    '\n/* Risu chat-shell baseline plus host overflow. */\n' +
-    ':host{font-size:0.875rem;line-height:1.25rem;overflow:visible !important}\n';
+    '\n:host{overflow:visible !important}\n';
 
   return {
     css,

@@ -20,6 +20,7 @@ import { getActiveModulesByNamespace } from './modules-by-namespace-cache.js';
 import { getDecoratorBuffers } from './decorator-buffers.js';
 import { getActiveCharacterImage, getActivePersonaImage } from './image-cache.js';
 import type { AssetIndexEntry } from '../payload/types.js';
+import { normalizeRoleToLumi } from '../util/role-coerce.js';
 
 import { makeSafeLogger } from '../util/safe-log.js';
 
@@ -339,7 +340,11 @@ export function buildRuntimeContext(mctx: MacroInvokeCtx): RisuRuntimeContext {
     rng: { random: () => Math.random() },
     clock: { now: () => Date.now() },
     triggerId: null,
-    role: null,
+    role: (() => {
+      const dyn = (env as { dynamicMacros?: Record<string, string> }).dynamicMacros;
+      const r = typeof dyn?.role === 'string' ? dyn.role : null;
+      return r ? normalizeRoleToLumi(r) : null;
+    })(),
     functions,
     aiModel: String(env.system?.model ?? ''),
     axModel: '',
