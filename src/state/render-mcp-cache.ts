@@ -41,8 +41,10 @@ interface CacheEntry {
 }
 
 const cache = new Map<string, CacheEntry>();
+const inFlight = new Map<string, { contentHash: number; contentLen: number; promise: Promise<RenderResult> }>();
 let hitCount = 0;
 let missCount = 0;
+let inFlightHitCount = 0;
 
 function key(chatId: string, msgId: string): string {
   return `${chatId}::${msgId}`;
@@ -121,10 +123,34 @@ export function cacheRenderMcp(
   });
 }
 
-/** Invalidate every entry for a chat. Wired into CHAT_CHANGED /
- *  CHAT_DELETED so a chat-state mutation invisible to the content hash
- *  (e.g. Lua reads `getChatVar` inside the hook) still re-runs the
- *  chain. */
+/** Concurrent identical-input render-MCP requests should share one scan instead of all firing. Returns the in-flight promise on hit; caller awaits it. Returns null if no matching in-flight request, in which case caller should `markRenderMcpInFlight` before doing the work. */
+export function lookupInFlightRenderMcp(
+  chatId: string,
+  msgId: string,
+  content: string,
+): Promise<RenderResult> | null {
+  const entry = inFlight.get(key(chatId, msgId));
+  if (!entry) return null;
+  if (entry.contentLen !== content.length) return null;
+  if (entry.contentHash !== fnv1a(content)) return null;
+  inFlightHitCount += 1;
+  return entry.promise;
+}
+
+export function markRenderMcpInFlight(
+  chatId: string,
+  msgId: string,
+  content: string,
+  promise: Promise<RenderResult>,
+): void {
+  const k = key(chatId, msgId);
+  inFlight.set(k, { contentHash: fnv1a(content), contentLen: content.length, promise });
+  promise.finally(() => {
+    const cur = inFlight.get(k);
+    if (cur && cur.promise === promise) inFlight.delete(k);
+  });
+}
+
 export function invalidateRenderMcpForChat(chatId: string): void {
   const prefix = `${chatId}::`;
   let removed = 0;
@@ -134,26 +160,28 @@ export function invalidateRenderMcpForChat(chatId: string): void {
       removed += 1;
     }
   }
+  for (const k of inFlight.keys()) {
+    if (k.startsWith(prefix)) inFlight.delete(k);
+  }
   if (removed > 0) log.debug(`invalidate chat=${chatId} entries=${removed}`);
 }
 
-/** Invalidate one specific (chatId, msgId) entry. Wired into MESSAGE_*
- *  so a per-message edit / swipe / delete drops only that bubble's
- *  cache entry without taking down the rest of the chat. */
 export function invalidateRenderMcpForMessage(chatId: string, msgId: string): void {
   const k = key(chatId, msgId);
   if (cache.delete(k)) log.debug(`invalidate chat=${chatId} msg=${msgId}`);
+  inFlight.delete(k);
 }
 
-/** Test hook + diagnostic. */
 export function resetRenderMcpCache(): void {
   cache.clear();
+  inFlight.clear();
   hitCount = 0;
   missCount = 0;
+  inFlightHitCount = 0;
 }
 
-export function renderMcpCacheStats(): { size: number; hits: number; misses: number } {
-  return { size: cache.size, hits: hitCount, misses: missCount };
+export function renderMcpCacheStats(): { size: number; hits: number; misses: number; inFlightHits: number; inFlightSize: number } {
+  return { size: cache.size, hits: hitCount, misses: missCount, inFlightHits: inFlightHitCount, inFlightSize: inFlight.size };
 }
 
 export const RENDER_MCP_CACHE_TTL_MS = TTL_MS;

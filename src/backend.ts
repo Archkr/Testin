@@ -143,6 +143,7 @@ import {
   invalidateRenderMcpForChat,
   invalidateRenderMcpForMessage,
 } from './state/render-mcp-cache.js';
+import { invalidateMacroInterceptorForChat } from './state/macro-interceptor-cache.js';
 import { scheduleStateChangedRefresh as scheduleDebouncedRefresh } from './state/state-changed-debouncer.js';
 import {
   logStore,
@@ -327,6 +328,7 @@ function scheduleStateChangedRefresh(chatId: string, userId: string | undefined)
       // Lumi's per-touchedVars displayRegexContentCache, which together
       // re-fetch only the affected bubbles. No bake walk here.
       invalidateRenderMcpForChat(chatId);
+      invalidateMacroInterceptorForChat(chatId);
       await refreshBgHtml(active, chatId, userId);
       await refreshVariables(active, chatId, userId);
       log.info(`scheduleStateChangedRefresh: completed chat=${chatId} elapsed=${Date.now() - t0}ms`);
@@ -812,6 +814,7 @@ const applySvgRasterIndex = createApplySvgRasterIndex({
   activeCardByChat,
   ensureActiveCardForChat,
   invalidateRenderMcpForChat,
+  invalidateMacroInterceptorForChat,
   refreshBgHtml,
   log,
   errMsg,
@@ -879,6 +882,7 @@ const lifecycleHandlers = createLifecycleEventHandlers({
   invalidateActiveForCharacter: (characterId, userId) => characterModuleAttach.invalidateActiveForCharacter(characterId, userId),
   invalidateRenderMcpForChat,
   invalidateRenderMcpForMessage,
+  invalidateMacroInterceptorForChat,
   invalidateListenEditPreload,
   clearActiveAssetIndexes,
   clearActiveCharacterImage,
@@ -1297,6 +1301,7 @@ const importHandlers = createImportHandlers({
   ensureActiveCardForChat,
   sendSetActiveChat,
   invalidateRenderMcpForChat,
+  invalidateMacroInterceptorForChat,
   refreshBgHtml,
   refreshVariables,
   importAnyFormat: (b64, name, uid) => realmHandle.importAnyFormat(b64, name, uid),

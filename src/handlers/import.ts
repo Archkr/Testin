@@ -50,6 +50,7 @@ export interface ImportHandlerDeps {
     userId: string,
   ) => void;
   readonly invalidateRenderMcpForChat: (chatId: string) => void;
+  readonly invalidateMacroInterceptorForChat: (chatId: string) => void;
   readonly refreshBgHtml: (active: ActiveCard, chatId: string, userId: string) => Promise<void>;
   readonly refreshVariables: (
     active: ActiveCard,
@@ -138,6 +139,7 @@ export function createImportHandlers(deps: ImportHandlerDeps): {
           );
           if (active) {
             deps.invalidateRenderMcpForChat(lastChat);
+            deps.invalidateMacroInterceptorForChat(lastChat);
             await deps.refreshBgHtml(active, lastChat, ctx.userId);
             await deps.refreshVariables(active, lastChat, ctx.userId, { force: true });
           }

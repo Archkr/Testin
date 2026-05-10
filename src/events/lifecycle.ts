@@ -3,6 +3,7 @@ import type { ActiveCard } from '../interpreter/dispatch.js';
 import type { RisuBinding } from '../interpreter/runtime.js';
 import type { OrphanDetectDeps } from '../state/orphan-detect.js';
 import type { JournalStorage, ImageJournalFile } from '../state/image-journal.js';
+import { invalidateRecentFlush } from '../state/recent-flush-cache.js';
 
 type EventHandler = (raw: unknown, userId: string | undefined) => Promise<void>;
 
@@ -32,6 +33,7 @@ export interface LifecycleEventHandlerDeps {
   readonly invalidateActiveForCharacter: (characterId: string, userId: string | undefined) => void;
   readonly invalidateRenderMcpForChat: (chatId: string) => void;
   readonly invalidateRenderMcpForMessage: (chatId: string, messageId: string) => void;
+  readonly invalidateMacroInterceptorForChat: (chatId: string) => void;
   readonly invalidateListenEditPreload: (chatId: string) => void;
   readonly clearActiveAssetIndexes: (chatId: string) => void;
   readonly clearActiveCharacterImage: (chatId: string) => void;
@@ -290,6 +292,7 @@ export function createLifecycleEventHandlers(deps: LifecycleEventHandlerDeps): L
         return;
       }
       deps.invalidateRenderMcpForChat(chatId);
+      deps.invalidateMacroInterceptorForChat(chatId);
       await deps.refreshBgHtml(active, chatId, userId);
       await deps.refreshVariables(active, chatId, userId, { force: true });
       await deps.refreshToggleDefinitions(active, chatId, userId, { force: true });
@@ -304,13 +307,14 @@ export function createLifecycleEventHandlers(deps: LifecycleEventHandlerDeps): L
       const requiresRefresh = changedFieldsRequireRefresh(
         changedFields === undefined ? 'unknown' : new Set(changedFields),
       );
-      // Cache invalidations gated on the same predicate as refresh: non-var
-      // writes (chat name/avatar, council cache, etc.) don't dirty either cache.
+      const wasOwn = deps.consumeOwnChatChange(chatId);
       if (requiresRefresh) {
         deps.invalidateListenEditPreload(chatId);
         deps.invalidateRenderMcpForChat(chatId);
+        deps.invalidateMacroInterceptorForChat(chatId);
+        // Own runtime.flush already updated this cache, only external writes need the drop.
+        if (!wasOwn) invalidateRecentFlush(chatId);
       }
-      const wasOwn = deps.consumeOwnChatChange(chatId);
       const fieldsPreview = changedFields === undefined
         ? 'undefined'
         : (changedFields.length === 0 ? 'empty' : `[${changedFields.slice(0, 4).join(',')}${changedFields.length > 4 ? `,+${changedFields.length - 4}` : ''}]`);
@@ -351,6 +355,7 @@ export function createLifecycleEventHandlers(deps: LifecycleEventHandlerDeps): L
       deps.log.info(`GENERATION_STARTED: → runBinding(request)`);
       await deps.runBinding(active, chatId, 'request', userId);
       deps.invalidateRenderMcpForChat(chatId);
+      deps.invalidateMacroInterceptorForChat(chatId);
       await deps.refreshBgHtml(active, chatId, userId);
       await deps.refreshVariables(active, chatId, userId);
     },
@@ -370,6 +375,7 @@ export function createLifecycleEventHandlers(deps: LifecycleEventHandlerDeps): L
         await deps.runBinding(active, chatId, binding, userId);
       }
       deps.invalidateRenderMcpForChat(chatId);
+      deps.invalidateMacroInterceptorForChat(chatId);
       await deps.refreshBgHtml(active, chatId, userId);
       await deps.refreshVariables(active, chatId, userId);
     },
@@ -386,6 +392,7 @@ export function createLifecycleEventHandlers(deps: LifecycleEventHandlerDeps): L
       const active = await deps.ensureActiveCardForChat(chatId, characterId, userId);
       if (!active) return;
       deps.invalidateRenderMcpForChat(chatId);
+      deps.invalidateMacroInterceptorForChat(chatId);
       await deps.refreshBgHtml(active, chatId, userId);
       await deps.refreshVariables(active, chatId, userId);
     },
@@ -454,6 +461,8 @@ export function createLifecycleEventHandlers(deps: LifecycleEventHandlerDeps): L
       if (!chatId) return;
       deps.invalidateListenEditPreload(chatId);
       deps.invalidateRenderMcpForChat(chatId);
+      deps.invalidateMacroInterceptorForChat(chatId);
+      invalidateRecentFlush(chatId);
       deps.lastSentBgHtmlByChat.delete(chatId);
       deps.activeCardByChat.delete(chatId);
       deps.clearActiveAssetIndexes(chatId);

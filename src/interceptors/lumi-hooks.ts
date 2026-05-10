@@ -9,11 +9,19 @@ import { puaEncodeFeMacros, puaDecodeFeMacros } from '../util/pua-roundtrip.js';
 import { normalizeReplaceStringForSanitizer } from '../util/sanitizer-doc-shape.js';
 import {
   lookupRenderMcp,
+  lookupInFlightRenderMcp,
+  markRenderMcpInFlight,
   cacheRenderMcp,
   renderMcpCacheStats,
 } from '../state/render-mcp-cache.js';
+import {
+  lookupMacroInterceptor,
+  cacheMacroInterceptor,
+  macroInterceptorCacheStats,
+} from '../state/macro-interceptor-cache.js';
 import { rememberOurWrite } from '../state/recent-writes.js';
 import { expectChatChange } from '../state/own-chat-change.js';
+import { invalidateRecentFlush } from '../state/recent-flush-cache.js';
 import { getActiveAssetIndexes } from '../interpreter/asset-cache.js';
 import { getScreenDims } from '../interpreter/screen-dims-cache.js';
 import {
@@ -80,6 +88,7 @@ export function createLumiInterceptors(deps: CreateLumiInterceptorsDeps): LumiIn
   let mcpInFlight = 0;
   let mcpEnterSeq = 0;
   let lastCacheStatsAt = 0;
+  let lastMicCacheStatsAt = 0;
 
   function withMaybeUser<T>(userId: string | undefined, fn: () => Promise<T>): Promise<T> {
     return userId !== undefined ? (userIdAls.run(userId, fn) as Promise<T>) : fn();
@@ -95,6 +104,19 @@ export function createLumiInterceptors(deps: CreateLumiInterceptorsDeps): LumiIn
     const ratio = lookups > 0 ? Math.round((stats.hits / lookups) * 100) : 0;
     log.info(
       `[render-mcp-cache] size=${stats.size} hits=${stats.hits} misses=${stats.misses} ratio=${ratio}%`,
+    );
+  }
+
+  function maybeEmitMicCacheStats(): void {
+    const stats = macroInterceptorCacheStats();
+    const lookups = stats.hits + stats.misses;
+    if (lookups < 200) return;
+    const now = Date.now();
+    if (now - lastMicCacheStatsAt < 5_000) return;
+    lastMicCacheStatsAt = now;
+    const ratio = lookups > 0 ? Math.round((stats.hits / lookups) * 100) : 0;
+    log.info(
+      `[macro-interceptor-cache] size=${stats.size} hits=${stats.hits} misses=${stats.misses} ratio=${ratio}%`,
     );
   }
 
@@ -115,9 +137,10 @@ export function createLumiInterceptors(deps: CreateLumiInterceptorsDeps): LumiIn
       const templateHead = ctx.template.slice(0, 120);
       const hasMarker = /★[A-Z_]+★|###[A-Z_]+###/.test(ctx.template);
       const chatEnv = ctx.env.chat as { id?: string; messageCount?: number; lastMessageId?: number };
+      const sourceHint = (ctx as { sourceHint?: string }).sourceHint;
       log.trace(
         `macroInterceptor.enter #${callId} chat=${chatId ?? '<none>'} active_present=${activeBefore} ` +
-          `commit=${ctx.commit} phase=${ctx.phase} userId=${ctx.userId ?? '<none>'} ` +
+          `commit=${ctx.commit} phase=${ctx.phase} sourceHint=${sourceHint ?? '<none>'} userId=${ctx.userId ?? '<none>'} ` +
           `tmpl_len=${ctx.template.length} has_marker=${hasMarker} ` +
           `lumi_messageCount=${chatEnv?.messageCount ?? '?'} lumi_lastMessageId=${chatEnv?.lastMessageId ?? '?'} ` +
           `tmpl_head=${JSON.stringify(templateHead)}`,
@@ -149,6 +172,20 @@ export function createLumiInterceptors(deps: CreateLumiInterceptorsDeps): LumiIn
             `cached=${active.ownerUserId} ctx=${ctx.userId} elapsed=${Date.now() - t0}ms`,
         );
         return;
+      }
+
+      const cacheable = !(ctx.commit === false && !mcpRenderAvailable);
+      if (cacheable) {
+        const hit = lookupMacroInterceptor(chatId, ctx.template, ctx.commit !== false);
+        if (hit !== null) {
+          maybeEmitMicCacheStats();
+          log.trace(
+            `macroInterceptor.exit #${callId} path=cache_hit elapsed=${Date.now() - t0}ms ` +
+              `tmpl_len=${ctx.template.length} out_len=${hit.length}`,
+          );
+          if (hit === ctx.template) return;
+          return hit;
+        }
       }
 
       const charCard = ctx.env.character as {
@@ -286,11 +323,19 @@ export function createLumiInterceptors(deps: CreateLumiInterceptorsDeps): LumiIn
       }
 
       if (resolved === ctx.template) {
+        if (cacheable) {
+          cacheMacroInterceptor(chatId, ctx.template, ctx.commit !== false, resolved);
+          maybeEmitMicCacheStats();
+        }
         log.trace(
           `macroInterceptor.exit #${callId} path=unchanged_passthrough elapsed=${Date.now() - t0}ms ` +
             `tmpl_len=${ctx.template.length} marker=${resolvedMarker ?? 'none'}`,
         );
         return;
+      }
+      if (cacheable) {
+        cacheMacroInterceptor(chatId, ctx.template, ctx.commit !== false, resolved);
+        maybeEmitMicCacheStats();
       }
       // Doc-boundary normalize is NOT applied here. macroInterceptor fires for both replace_string and find_regex, and wrapping a find_regex would break compilation.
       log.trace(
@@ -355,7 +400,6 @@ export function createLumiInterceptors(deps: CreateLumiInterceptorsDeps): LumiIn
           const messageIndex = typeof rawIdx === 'number' ? rawIdx : 0;
           const risuChatIdx = Math.max(-1, messageIndex - 1);
 
-          // Cache by content hash so cv-bumped re-renders replay instantly. Var changes invalidate explicitly so getvar re-resolves with fresh state.
           if (ctx.messageId) {
             const cached = lookupRenderMcp(ctx.chatId, ctx.messageId, ctx.content);
             maybeEmitCacheStats();
@@ -372,6 +416,32 @@ export function createLumiInterceptors(deps: CreateLumiInterceptorsDeps): LumiIn
               );
               return { content: cached.content };
             }
+            const inFlight = lookupInFlightRenderMcp(ctx.chatId, ctx.messageId, ctx.content);
+            if (inFlight) {
+              const shared = await inFlight;
+              const totalMs = Date.now() - tStart;
+              if (shared.kind === 'noop') {
+                log.info(
+                  `messageContentProcessor.exit #${seq} path=render-inflight-share-noop chat=${ctx.chatId} msg=${ctx.messageId} idx=${messageIndex} total=${totalMs}ms`,
+                );
+                return;
+              }
+              log.info(
+                `messageContentProcessor.exit #${seq} path=render-inflight-share chat=${ctx.chatId} msg=${ctx.messageId} idx=${messageIndex} before_len=${ctx.content.length} after_len=${shared.content.length} total=${totalMs}ms`,
+              );
+              return { content: shared.content };
+            }
+          }
+
+          let workResolve: (r: { kind: 'noop' } | { kind: 'transformed'; content: string }) => void = () => {};
+          let workReject: (e: unknown) => void = () => {};
+          const workPromise = new Promise<{ kind: 'noop' } | { kind: 'transformed'; content: string }>((res, rej) => {
+            workResolve = res;
+            workReject = rej;
+          });
+          workPromise.catch(() => { /* swallow — the work itself logs errors */ });
+          if (ctx.messageId) {
+            markRenderMcpInFlight(ctx.chatId, ctx.messageId, ctx.content, workPromise);
           }
 
           const editChain = triggers.map((t, i) => ({
@@ -452,6 +522,7 @@ export function createLumiInterceptors(deps: CreateLumiInterceptorsDeps): LumiIn
               if (ctx.messageId) {
                 cacheRenderMcp(ctx.chatId, ctx.messageId, ctx.content, { kind: 'noop' });
               }
+              workResolve({ kind: 'noop' });
               log.trace(
                 `messageContentProcessor.exit #${seq} path=render-noop chat=${ctx.chatId} msg=${ctx.messageId ?? '<?>'} idx=${messageIndex} total=${totalMs}ms (chain=${chainMs}ms at_actions=${atActionsMs}ms resolve=${resolveMs}ms ensure=${tB - tA}ms other=${otherOverhead}ms)`,
               );
@@ -460,11 +531,13 @@ export function createLumiInterceptors(deps: CreateLumiInterceptorsDeps): LumiIn
             if (ctx.messageId) {
               cacheRenderMcp(ctx.chatId, ctx.messageId, ctx.content, { kind: 'transformed', content: transformed });
             }
+            workResolve({ kind: 'transformed', content: transformed });
             log.trace(
               `messageContentProcessor.exit #${seq} path=render-transformed chat=${ctx.chatId} msg=${ctx.messageId ?? '<?>'} idx=${messageIndex} before_len=${ctx.content.length} after_len=${transformed.length} total=${totalMs}ms (chain=${chainMs}ms at_actions=${atActionsMs}ms resolve=${resolveMs}ms ensure=${tB - tA}ms other=${otherOverhead}ms)`,
             );
             return { content: transformed };
           } catch (err) {
+            workReject(err);
             log.warn(
               `messageContentProcessor.exit #${seq} path=render-threw chat=${ctx.chatId} msg=${ctx.messageId ?? '<?>'} err=${errMsg(err)} total=${Date.now() - tStart}ms`,
             );
@@ -793,6 +866,7 @@ export function createLumiInterceptors(deps: CreateLumiInterceptorsDeps): LumiIn
               { metadata: { ...meta, macro_variables: mv } as never },
               ctx.userId,
             );
+            invalidateRecentFlush(ctx.chatId);
             log.info(
               `[decorators] sticky_writes chat=${ctx.chatId} count=${changed}/${outcome.stickyWrites.length} ` +
                 `keys=[${outcome.stickyWrites.slice(0, 3).map((w) => w.varName).join(',')}${outcome.stickyWrites.length > 3 ? ',…' : ''}]`,

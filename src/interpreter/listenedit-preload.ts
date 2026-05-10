@@ -81,7 +81,7 @@ export async function preloadForListenEditChain(
   // would pay 3× wall clock for no reason. Promise.allSettled so a single
   // failure doesn't bring down the rest.
   const [varsResult, msgsResult, charResult] = await Promise.allSettled([
-    loadVars(api),
+    loadVars(api, chatId),
     api.chat.getMessages(),
     characterId && api.characters?.get
       ? api.characters.get(characterId)

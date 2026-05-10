@@ -15,6 +15,7 @@ import { runAtActionsForPhase, coerceAtActions } from '../interpreter/at-actions
 import { buildDispatchSeams } from './dispatch-seams.js';
 import { rememberOurWrite } from './recent-writes.js';
 import { invalidateRenderMcpForChat } from './render-mcp-cache.js';
+import { invalidateMacroInterceptorForChat } from './macro-interceptor-cache.js';
 import type { RisuCompatSettings } from './settings-store.js';
 
 export interface TriggerDispatcherDeps {
@@ -351,6 +352,7 @@ export function createTriggerDispatcher(deps: TriggerDispatcherDeps): TriggerDis
 
     log.info(`dispatchManualTrigger: done triggerName=${triggerName} elapsed=${Date.now() - t0}ms`);
     invalidateRenderMcpForChat(chatId);
+    invalidateMacroInterceptorForChat(chatId);
     await refreshBgHtml(active, chatId, userId);
     await refreshVariables(active, chatId, userId);
   }
@@ -418,6 +420,7 @@ export function createTriggerDispatcher(deps: TriggerDispatcherDeps): TriggerDis
     }
     log.info(`dispatchButtonClick: done btn="${btn}" elapsed=${Date.now() - t0}ms`);
     invalidateRenderMcpForChat(chatId);
+    invalidateMacroInterceptorForChat(chatId);
     await refreshBgHtml(active, chatId, userId);
     await refreshVariables(active, chatId, userId);
   }

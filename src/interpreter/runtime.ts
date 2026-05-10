@@ -1015,7 +1015,7 @@ export async function makeRisuTriggerRuntime(
     }
     if (dirty.value) {
       try {
-        await saveVars(api, varsCache);
+        await saveVars(api, varsCache, portalChatId);
         flog(`saveVars OK`);
       } catch (err) {
         _logFlush.error(`saveVars FAILED: ${(err as Error).message}`);
