@@ -121,7 +121,14 @@ export function createOrphanOrchestrator(
       for (const moduleId of moduleJournalIds) {
         const file = await deps.readModuleImageJournalFile(userId, moduleId);
         if (!file) continue;
-        const exists = await deps.moduleExists(userId, moduleId);
+        // Inner try/catch mirrors the character side: a transient throw skips this entry instead of marking it deleted.
+        let exists = false;
+        try {
+          exists = await deps.moduleExists(userId, moduleId);
+        } catch (err) {
+          deps.log.warn(`detectDeletedWhileOff: moduleExists(${moduleId}) threw: ${deps.errMsg(err)}`);
+          continue;
+        }
         if (!exists) moduleIds.push(moduleId);
       }
     } catch (err) {

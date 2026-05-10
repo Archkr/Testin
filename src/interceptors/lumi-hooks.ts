@@ -241,7 +241,8 @@ export function createLumiInterceptors(deps: CreateLumiInterceptorsDeps): LumiIn
       const resolvedMarker = /★[A-Z_]+★|###[A-Z_]+###/.exec(resolved)?.[0] ?? null;
       const stillHasRaw = resolved.includes('{{risu_') || resolved.includes('{{getvar::') || resolved.includes('{{#risu_');
 
-      // editDisplay fallback fires only when render MCP origin is unavailable. The render origin is the load-bearing path on Lumi 0.9.6+.
+      // editDisplay fallback for Lumi builds without the render MCP origin (the load-bearing path on Lumi 0.9.6+).
+      // DO NOT widen this gate, every commit:false template flowing through here (bg-html, 88KB CSS bundles) feeds 16+ Lua VMs, ~12s per chat-open on listenEdit-heavy cards.
       if (!ctx.commit && !mcpRenderAvailable) {
         const triggers = active.card.risuPayload.triggers as ReadonlyArray<{
           effect?: ReadonlyArray<{ type?: string }>;

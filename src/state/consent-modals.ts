@@ -7,7 +7,6 @@ import type {
   ModalConfirmOptions,
 } from '../adapters/spindle-extras.js';
 import type { ActiveCard } from '../interpreter/dispatch.js';
-import type { LumirealmCharacterData } from '../payload/types.js';
 import { clearActiveAssetIndexes } from '../interpreter/asset-cache.js';
 import { clearActiveCharacterImage } from '../interpreter/image-cache.js';
 
@@ -16,6 +15,7 @@ interface PendingConsent {
   readonly resolver: (confirmed: boolean) => void;
 }
 
+// Self-heal window for stuck FE: a disconnected client never replies, without this timeout the per-user consent chain blocks every later prompt forever.
 const CONSENT_TIMEOUT_MS = 5 * 60_000;
 
 export interface ConsentApi {
@@ -170,6 +170,5 @@ export function makeDeleteCardByChar(deps: DeleteCardDeps): (
     const fresh = await listCards(userId);
     const filtered = fresh.filter((c) => c.character_id !== characterId);
     pushCards(filtered, userId);
-    void (null as unknown as LumirealmCharacterData);
   };
 }

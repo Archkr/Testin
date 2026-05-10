@@ -133,6 +133,7 @@ export interface LifecycleEventHandlers {
   readonly CHARACTER_EDITED: EventHandler;
 }
 
+// Allow-list for paths warranting refresh on external CHAT_CHANGED, non-var writes are skipped. ADD a prefix here if a handler ever reads a new chat.metadata.X path or refresh silently breaks under burst writes.
 const REFRESH_FIELD_PREFIXES = [
   'metadata.macro_variables',
   'metadata.chat_variables',
@@ -440,6 +441,7 @@ export function createLifecycleEventHandlers(deps: LifecycleEventHandlerDeps): L
       if (msgId) deps.invalidateRenderMcpForMessage(chatId, msgId);
       const active = await deps.ensureActiveCardForChat(chatId, null, userId);
       if (!active) return;
+      // No bindings fire here, Risu has no binding-firing analogue for deletes.
       await deps.refreshBgHtml(active, chatId, userId);
       await deps.refreshVariables(active, chatId, userId);
     },

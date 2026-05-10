@@ -112,7 +112,9 @@ export interface ModalConfirmApi {
 
 export function getModalConfirmApi(): ModalConfirmApi | null {
   const m = (spindle as unknown as { modal?: { confirm?: ModalConfirmApi['confirm'] } }).modal;
-  return m?.confirm ? { confirm: m.confirm } : null;
+  // .bind(m) preserves `this` for hosts whose modal.confirm references private state (queue, decorators).
+  // Without it the wrapper object becomes the receiver and the modal pipeline silently fails.
+  return m?.confirm ? { confirm: m.confirm.bind(m) } : null;
 }
 
 // Regex scripts list/delete. Optional.
@@ -131,7 +133,7 @@ export function getRegexScriptsApi(): RegexScriptsApi | null {
     };
   }).regex_scripts;
   if (!api?.list || !api?.delete) return null;
-  return { list: api.list, delete: api.delete };
+  return { list: api.list.bind(api), delete: api.delete.bind(api) };
 }
 
 // Connections list with extension-side typing.

@@ -105,7 +105,9 @@ export async function buildLiveImageIdSet(
   const skippedJournalModules: string[] = [];
   const charJournals = await deps.listActiveCharacterJournals();
   for (const j of charJournals) {
-    const exists = await deps.characterExists(j.characterId);
+    // Transient throw treated as absent: cleanup scan must not shield IDs we couldn't verify, matches pre-refactor inline behavior.
+    let exists = false;
+    try { exists = await deps.characterExists(j.characterId); } catch { exists = false; }
     if (!exists) {
       skippedJournalCharacters.push(j.characterId);
       continue;
@@ -114,7 +116,8 @@ export async function buildLiveImageIdSet(
   }
   const moduleJournals = await deps.listActiveModuleJournals();
   for (const j of moduleJournals) {
-    const exists = await deps.moduleExists(j.moduleId);
+    let exists = false;
+    try { exists = await deps.moduleExists(j.moduleId); } catch { exists = false; }
     if (!exists) {
       skippedJournalModules.push(j.moduleId);
       continue;

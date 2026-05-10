@@ -126,22 +126,14 @@ export function createOrphanDetectBuilders(deps: OrphanDetectBuildersDeps): Orph
         }
         return out;
       },
+      // Throws propagate. Callers decide what a transient error means: buildLiveImageIdSet treats throw as absent (matches pre-refactor scan semantic), detectDeletedWhileOff treats throw as skip-entry so a network blip doesn't prompt cleanup of live data.
       characterExists: async (id) => {
-        try {
-          const c = await spindle.characters.get(id, userId);
-          return c !== null;
-        } catch (err) {
-          log.warn(`orphan-detect: characters.get(${id}) threw: ${errMsg(err)}`);
-          return false;
-        }
+        const c = await spindle.characters.get(id, userId);
+        return c !== null;
       },
       moduleExists: async (id) => {
-        try {
-          const env = await readModuleEnvelope(userId, id);
-          return env !== null;
-        } catch {
-          return false;
-        }
+        const env = await readModuleEnvelope(userId, id);
+        return env !== null;
       },
     };
   }

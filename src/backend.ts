@@ -368,20 +368,6 @@ function journalStorage(): JournalStorage {
   return spindle.userStorage as unknown as JournalStorage;
 }
 
-
-
-
-
-
-// Lumi caps each extension at 2 concurrent modals, two boot-time prompts can
-// race (orphan review, lorebook archive). Serialize per-user.
-
-
-
-// Wraps buildOrphanDetectDeps to treat one character ID as already-removed.
-// Used by CHARACTER_DELETED, where Lumi fires the event BEFORE the row is
-// removed and our list calls would otherwise still see the doomed character.
-
 const consentApi = createConsentApi({ send, log });
 const requestConsent = consentApi.requestConsent;
 const pendingConsents = consentApi.pendingConsents;
