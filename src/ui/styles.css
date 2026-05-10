@@ -3432,6 +3432,29 @@
   font-weight: 600;
   margin-right: 4px;
 }
+.lr-alert-perm-list {
+  margin: 0;
+  padding: 0 0 0 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.lr-alert-perm-list li {
+  list-style: disc;
+}
+.lr-alert-emphasize {
+  display: inline-block;
+  padding: 1px 7px;
+  background: var(--lumiverse-warning, #f5a623);
+  color: #1a1a1a;
+  border-radius: 4px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  font-size: 0.95em;
+}
 
 .lr-pick-modal {
   display: flex;

@@ -1,0 +1,100 @@
+declare const spindle: import('lumiverse-spindle-types').SpindleAPI;
+
+export const REQUIRED_PERMISSIONS: readonly string[] = [
+  'chat_mutation',
+  'chats',
+  'characters',
+  'generation',
+  'interceptor',
+  'context_handler',
+  'macro_interceptor',
+  'ui_panels',
+  'ephemeral_storage',
+  'world_books',
+  'personas',
+  'app_manipulation',
+  'images',
+];
+
+export const PERMISSION_PURPOSE: Readonly<Record<string, string>> = {
+  chat_mutation: 'apply Risu setChat / addChat / editOutput writebacks',
+  chats: 'read chats and message history for trigger dispatch',
+  characters: 'read and update Risu character data on import',
+  generation: 'dispatch aux + submodel LLM calls (axLLM / runLLM)',
+  interceptor: 'apply editInput / editRequest hooks at prompt assembly',
+  context_handler: 'enrich generation context with Risu state',
+  macro_interceptor: 'route Risu CBS macros through the in-worker pipeline',
+  ui_panels: 'mount the LumiRealm drawer + floating overlays',
+  ephemeral_storage: 'cache Risu envelopes and image journals',
+  world_books: 'create and update Risu lorebooks on import',
+  personas: 'read the active persona for {{user}} resolution',
+  app_manipulation: 'inject the bg-html host and message overlay',
+  images: 'upload and serve card-bundled assets and SVG rasters',
+};
+
+interface PermLog {
+  info(msg: string): void;
+  warn(msg: string): void;
+}
+
+const granted = new Set<string>();
+let loaded = false;
+const missingChangeListeners = new Set<(missing: readonly string[]) => void>();
+
+function computeMissing(): readonly string[] {
+  return REQUIRED_PERMISSIONS.filter((p) => !granted.has(p));
+}
+
+export async function initPermissions(log: PermLog): Promise<void> {
+  const api = (spindle as unknown as { permissions?: unknown }).permissions as
+    | {
+        getGranted?: () => Promise<string[]>;
+        onChanged?: (h: (detail: { permission: string; granted: boolean; allGranted: string[] }) => void) => () => void;
+      }
+    | undefined;
+  if (!api?.getGranted) {
+    log.warn('permissions.init: spindle.permissions API unavailable on this host');
+    return;
+  }
+  try {
+    const list = await api.getGranted();
+    for (const p of list) granted.add(p);
+    loaded = true;
+    log.info(`permissions.init: granted=[${[...granted].join(',')}]`);
+  } catch (err) {
+    log.warn(`permissions.init: getGranted failed: ${err instanceof Error ? err.message : String(err)}`);
+    return;
+  }
+  if (api.onChanged) {
+    try {
+      api.onChanged((detail) => {
+        granted.clear();
+        for (const p of detail.allGranted) granted.add(p);
+        const missing = computeMissing();
+        log.info(
+          `permissions.changed: ${detail.permission}=${detail.granted ? 'granted' : 'revoked'} ` +
+            `granted=[${detail.allGranted.join(',')}] missing=[${missing.join(',')}]`,
+        );
+        for (const fn of missingChangeListeners) {
+          try { fn(missing); } catch (err) {
+            log.warn(`permissions.changed: listener threw: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        }
+      });
+    } catch (err) {
+      log.warn(`permissions.init: onChanged subscribe failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+}
+
+export function getMissingPermissions(): readonly string[] {
+  if (!loaded) return [];
+  return computeMissing();
+}
+
+export function subscribeToMissingChanges(
+  handler: (missing: readonly string[]) => void,
+): () => void {
+  missingChangeListeners.add(handler);
+  return () => { missingChangeListeners.delete(handler); };
+}

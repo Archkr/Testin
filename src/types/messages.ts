@@ -459,6 +459,13 @@ export type BackendToFrontend =
       minimum: string;
       message: string;
     }
+  // Manifest declares required permissions the host has not granted.
+  // FE shows a one-time-per-mount modal nag.
+  | {
+      type: 'notify_missing_permissions';
+      missing: readonly string[];
+      purposes: Readonly<Record<string, string>>;
+    }
   // `risuPayload.background_html` resolved per state tick. FE pipes through Risu-compat
   // rewriter (HTML class prefix + CSS `.chattext` scope + `:host` universals) and paints
   // into a Shadow-DOM host.

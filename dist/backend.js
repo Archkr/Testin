@@ -31097,6 +31097,92 @@ function signature2(toggles, attribution) {
   });
 }
 
+// src/state/permissions.ts
+var REQUIRED_PERMISSIONS = [
+  "chat_mutation",
+  "chats",
+  "characters",
+  "generation",
+  "interceptor",
+  "context_handler",
+  "macro_interceptor",
+  "ui_panels",
+  "ephemeral_storage",
+  "world_books",
+  "personas",
+  "app_manipulation",
+  "images"
+];
+var PERMISSION_PURPOSE = {
+  chat_mutation: "apply Risu setChat / addChat / editOutput writebacks",
+  chats: "read chats and message history for trigger dispatch",
+  characters: "read and update Risu character data on import",
+  generation: "dispatch aux + submodel LLM calls (axLLM / runLLM)",
+  interceptor: "apply editInput / editRequest hooks at prompt assembly",
+  context_handler: "enrich generation context with Risu state",
+  macro_interceptor: "route Risu CBS macros through the in-worker pipeline",
+  ui_panels: "mount the LumiRealm drawer + floating overlays",
+  ephemeral_storage: "cache Risu envelopes and image journals",
+  world_books: "create and update Risu lorebooks on import",
+  personas: "read the active persona for {{user}} resolution",
+  app_manipulation: "inject the bg-html host and message overlay",
+  images: "upload and serve card-bundled assets and SVG rasters"
+};
+var granted = new Set;
+var loaded = false;
+var missingChangeListeners = new Set;
+function computeMissing() {
+  return REQUIRED_PERMISSIONS.filter((p) => !granted.has(p));
+}
+async function initPermissions(log5) {
+  const api = spindle.permissions;
+  if (!api?.getGranted) {
+    log5.warn("permissions.init: spindle.permissions API unavailable on this host");
+    return;
+  }
+  try {
+    const list = await api.getGranted();
+    for (const p of list)
+      granted.add(p);
+    loaded = true;
+    log5.info(`permissions.init: granted=[${[...granted].join(",")}]`);
+  } catch (err) {
+    log5.warn(`permissions.init: getGranted failed: ${err instanceof Error ? err.message : String(err)}`);
+    return;
+  }
+  if (api.onChanged) {
+    try {
+      api.onChanged((detail) => {
+        granted.clear();
+        for (const p of detail.allGranted)
+          granted.add(p);
+        const missing = computeMissing();
+        log5.info(`permissions.changed: ${detail.permission}=${detail.granted ? "granted" : "revoked"} ` + `granted=[${detail.allGranted.join(",")}] missing=[${missing.join(",")}]`);
+        for (const fn of missingChangeListeners) {
+          try {
+            fn(missing);
+          } catch (err) {
+            log5.warn(`permissions.changed: listener threw: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        }
+      });
+    } catch (err) {
+      log5.warn(`permissions.init: onChanged subscribe failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+}
+function getMissingPermissions() {
+  if (!loaded)
+    return [];
+  return computeMissing();
+}
+function subscribeToMissingChanges(handler) {
+  missingChangeListeners.add(handler);
+  return () => {
+    missingChangeListeners.delete(handler);
+  };
+}
+
 // src/core/toggle-syntax.ts
 function parseToggleSyntax(template) {
   try {
@@ -32351,6 +32437,28 @@ var hostVersionCheck = null;
   if (hostVersionCheck.needsUpdate)
     log7.warn(hostVersionCheck.message);
 })();
+initPermissions(log7);
+subscribeToMissingChanges((missing) => {
+  const purposes = {};
+  for (const p of missing)
+    purposes[p] = PERMISSION_PURPOSE[p] ?? p;
+  for (const userId of capturedUserIds) {
+    try {
+      spindle.sendToFrontend({
+        type: "notify_missing_permissions",
+        missing,
+        purposes
+      }, userId);
+    } catch (err) {
+      log7.warn(`permissions.changed: sendToFrontend failed userId=${userId}: ${errMsg(err)}`);
+    }
+  }
+  if (missing.length > 0) {
+    log7.warn(`permissions.changed: broadcast notify_missing_permissions to ${capturedUserIds.size} user(s) missing=[${missing.join(",")}]`);
+  } else {
+    log7.info(`permissions.changed: all required perms granted, broadcast empty set to ${capturedUserIds.size} user(s) to auto-dismiss`);
+  }
+});
 {
   const proc = globalThis.process;
   proc?.on?.("unhandledRejection", (reason) => {
@@ -32935,10 +33043,10 @@ async function getSettingsForUser(userId) {
   const cached = settingsByUser.get(userId);
   if (cached)
     return cached;
-  const loaded = await loadSettings(userStorage(), userId);
-  settingsByUser.set(userId, loaded);
-  log7.info(`settings: loaded for user=${userId} ` + `auxConn=${loaded.auxConnectionId ?? "<default>"} ` + `auxModel=${loaded.auxModelOverride ?? "<connection>"}`);
-  return loaded;
+  const loaded2 = await loadSettings(userStorage(), userId);
+  settingsByUser.set(userId, loaded2);
+  log7.info(`settings: loaded for user=${userId} ` + `auxConn=${loaded2.auxConnectionId ?? "<default>"} ` + `auxModel=${loaded2.auxModelOverride ?? "<connection>"}`);
+  return loaded2;
 }
 function getCachedSettingsSync(userId) {
   if (userId === undefined)
@@ -37318,6 +37426,18 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
             hostVersion: hostVersionCheck.hostVersion,
             minimum: hostVersionCheck.minimum,
             message: hostVersionCheck.message
+          }, userId);
+        }
+        const missingPerms = getMissingPermissions();
+        if (missingPerms.length > 0) {
+          const purposes = {};
+          for (const p of missingPerms)
+            purposes[p] = PERMISSION_PURPOSE[p] ?? p;
+          log7.warn(`get_cards: pushing notify_missing_permissions missing=[${missingPerms.join(",")}] userId=${userId}`);
+          spindle.sendToFrontend({
+            type: "notify_missing_permissions",
+            missing: missingPerms,
+            purposes
           }, userId);
         }
         let cleared = 0;

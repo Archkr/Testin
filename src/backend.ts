@@ -111,6 +111,12 @@ import { puaEncodeFeMacros, puaDecodeFeMacros } from './util/pua-roundtrip.js';
 import { VariableStateStore } from './state/variables-state.js';
 import { ToggleStateStore } from './state/toggle-state.js';
 import {
+  initPermissions,
+  getMissingPermissions,
+  subscribeToMissingChanges,
+  PERMISSION_PURPOSE,
+} from './state/permissions.js';
+import {
   collectModuleToggleDsl,
   extractToggleKeys,
   parseToggleSyntax,
@@ -251,6 +257,29 @@ void (async () => {
   );
   if (hostVersionCheck.needsUpdate) log.warn(hostVersionCheck.message);
 })();
+
+void initPermissions(log);
+
+subscribeToMissingChanges((missing) => {
+  const purposes: Record<string, string> = {};
+  for (const p of missing) purposes[p] = PERMISSION_PURPOSE[p] ?? p;
+  for (const userId of capturedUserIds) {
+    try {
+      spindle.sendToFrontend({
+        type: 'notify_missing_permissions',
+        missing,
+        purposes,
+      }, userId);
+    } catch (err) {
+      log.warn(`permissions.changed: sendToFrontend failed userId=${userId}: ${errMsg(err)}`);
+    }
+  }
+  if (missing.length > 0) {
+    log.warn(`permissions.changed: broadcast notify_missing_permissions to ${capturedUserIds.size} user(s) missing=[${missing.join(',')}]`);
+  } else {
+    log.info(`permissions.changed: all required perms granted, broadcast empty set to ${capturedUserIds.size} user(s) to auto-dismiss`);
+  }
+});
 
 // Without this guard any rejection from a card's Lua bridge call kills the worker.
 {
@@ -7032,6 +7061,17 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
             hostVersion: hostVersionCheck.hostVersion,
             minimum: hostVersionCheck.minimum,
             message: hostVersionCheck.message,
+          }, userId);
+        }
+        const missingPerms = getMissingPermissions();
+        if (missingPerms.length > 0) {
+          const purposes: Record<string, string> = {};
+          for (const p of missingPerms) purposes[p] = PERMISSION_PURPOSE[p] ?? p;
+          log.warn(`get_cards: pushing notify_missing_permissions missing=[${missingPerms.join(',')}] userId=${userId}`);
+          spindle.sendToFrontend({
+            type: 'notify_missing_permissions',
+            missing: missingPerms,
+            purposes,
           }, userId);
         }
         // FE remount needs the rehydrate path to resend bg-html. Drop only

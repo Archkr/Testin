@@ -3433,6 +3433,29 @@ var styles_default = `.risu-compat-drawer {\r
   font-weight: 600;\r
   margin-right: 4px;\r
 }\r
+.lr-alert-perm-list {\r
+  margin: 0;\r
+  padding: 0 0 0 18px;\r
+  display: flex;\r
+  flex-direction: column;\r
+  gap: 4px;\r
+  font-size: 13px;\r
+  line-height: 1.5;\r
+}\r
+.lr-alert-perm-list li {\r
+  list-style: disc;\r
+}\r
+.lr-alert-emphasize {\r
+  display: inline-block;\r
+  padding: 1px 7px;\r
+  background: var(--lumiverse-warning, #f5a623);\r
+  color: #1a1a1a;\r
+  border-radius: 4px;\r
+  font-weight: 700;\r
+  text-transform: uppercase;\r
+  letter-spacing: 0.3px;\r
+  font-size: 0.95em;\r
+}\r
 \r
 .lr-pick-modal {\r
   display: flex;\r
@@ -14845,6 +14868,114 @@ function setupHostVersionModal(opts) {
   };
 }
 
+// src/ui/permissions-modal.ts
+function setupPermissionsModal(opts) {
+  const { ctx, log } = opts;
+  opts.sendToBackend;
+  let current = null;
+  let lastShownKey = null;
+  function show(msg) {
+    if (msg.missing.length === 0) {
+      if (current) {
+        try {
+          current.dismiss();
+        } catch {}
+        current = null;
+      }
+      lastShownKey = null;
+      return;
+    }
+    const key = [...msg.missing].sort().join(",");
+    if (key === lastShownKey)
+      return;
+    lastShownKey = key;
+    if (current) {
+      try {
+        current.dismiss();
+      } catch {}
+      current = null;
+    }
+    let modal;
+    try {
+      modal = ctx.ui.showModal({ title: "LumiRealm: missing permissions", width: 520 });
+    } catch (err) {
+      log.error("permissions-modal: showModal failed", err);
+      return;
+    }
+    current = modal;
+    const root = modal.root;
+    root.classList.add("lr-alert-modal");
+    const lead = document.createElement("p");
+    lead.className = "lr-alert-lead";
+    lead.textContent = msg.missing.length === 1 ? "LumiRealm needs one permission that hasn't been granted." : `LumiRealm needs ${msg.missing.length} permissions that haven't been granted.`;
+    root.appendChild(lead);
+    const list = document.createElement("ul");
+    list.className = "lr-alert-perm-list";
+    for (const perm of msg.missing) {
+      const li = document.createElement("li");
+      const name = document.createElement("span");
+      name.className = "lr-alert-card-name";
+      name.textContent = perm;
+      li.appendChild(name);
+      const purpose = msg.purposes[perm];
+      if (purpose) {
+        li.appendChild(document.createTextNode(`: ${purpose}`));
+      }
+      list.appendChild(li);
+    }
+    root.appendChild(list);
+    const note = document.createElement("div");
+    note.className = "lr-alert-note";
+    const noteLabel = document.createElement("span");
+    noteLabel.className = "lr-alert-note-label";
+    noteLabel.textContent = "⚠️";
+    note.appendChild(noteLabel);
+    note.appendChild(document.createTextNode(" Grant them, then toggle LumiRealm "));
+    const emphasis = document.createElement("span");
+    emphasis.className = "lr-alert-emphasize";
+    emphasis.textContent = "off and back on";
+    note.appendChild(emphasis);
+    note.appendChild(document.createTextNode(" in the Extensions panel."));
+    root.appendChild(note);
+    const actions = document.createElement("div");
+    actions.className = "lr-alert-actions";
+    const okBtn = document.createElement("button");
+    okBtn.type = "button";
+    okBtn.className = "lr-alert-ok";
+    okBtn.textContent = "Got it";
+    okBtn.addEventListener("click", () => {
+      try {
+        modal.dismiss();
+      } catch {}
+    });
+    actions.appendChild(okBtn);
+    root.appendChild(actions);
+    modal.onDismiss(() => {
+      if (current === modal)
+        current = null;
+    });
+    queueMicrotask(() => {
+      try {
+        okBtn.focus();
+      } catch {}
+    });
+  }
+  return {
+    handleBackendMessage(msg) {
+      if (msg.type === "notify_missing_permissions")
+        show(msg);
+    },
+    destroy() {
+      if (current) {
+        try {
+          current.dismiss();
+        } catch {}
+        current = null;
+      }
+    }
+  };
+}
+
 // src/log/frontend-capture.ts
 var CONSOLE_METHODS = ["log", "info", "warn", "error", "debug"];
 var consoleShimInstalled = false;
@@ -15318,6 +15449,8 @@ function setup(ctx) {
   cleanups.push(() => legacyReimportModal.destroy());
   const hostVersionModal = setupHostVersionModal({ ctx, sendToBackend, log: flog2 });
   cleanups.push(() => hostVersionModal.destroy());
+  const permissionsModal = setupPermissionsModal({ ctx, sendToBackend, log: flog2 });
+  cleanups.push(() => permissionsModal.destroy());
   let realm = null;
   try {
     if (!sidebar)
@@ -15580,6 +15713,10 @@ function setup(ctx) {
     }
     if (msg.type === "notify_host_version_outdated") {
       hostVersionModal.handleBackendMessage(msg);
+      return;
+    }
+    if (msg.type === "notify_missing_permissions") {
+      permissionsModal.handleBackendMessage(msg);
       return;
     }
     if (isRealmBackendMessage(msg)) {
