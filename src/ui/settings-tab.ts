@@ -472,11 +472,12 @@ export function mountSettingsPanel(
 
   function refreshCleanupActionState(): void {
     const sel = cleanupSelected.size;
+    const repairBlocking = repairScanning || repairApplying;
     deleteBtn.textContent = `Delete selected (${sel})`;
-    deleteBtn.disabled = sel === 0 || cleanupDeleting || cleanupScanning;
-    selectAllBtn.disabled = cleanupOrphans.length === 0 || cleanupScanning || cleanupDeleting;
-    selectNoneBtn.disabled = sel === 0 || cleanupScanning || cleanupDeleting;
-    scanBtn.disabled = cleanupScanning || cleanupDeleting;
+    deleteBtn.disabled = sel === 0 || cleanupDeleting || cleanupScanning || repairBlocking;
+    selectAllBtn.disabled = cleanupOrphans.length === 0 || cleanupScanning || cleanupDeleting || repairBlocking;
+    selectNoneBtn.disabled = sel === 0 || cleanupScanning || cleanupDeleting || repairBlocking;
+    scanBtn.disabled = cleanupScanning || cleanupDeleting || repairBlocking;
     scanBtn.textContent = cleanupScanning ? 'Scanning…' : 'Scan for orphans';
   }
 
@@ -607,6 +608,175 @@ export function mountSettingsPanel(
       type: 'delete_orphan_assets',
       imageIds: Array.from(cleanupSelected),
     });
+  });
+
+  // ---------- Repair section (inside Cleanup subtab) ----------------------
+  const repairSection = document.createElement('div');
+  repairSection.className = 'rs-repair-section';
+
+  const repairHeader = document.createElement('h3');
+  repairHeader.className = 'rs-repair-header';
+  repairHeader.textContent = 'Repair extension state';
+  repairSection.appendChild(repairHeader);
+
+  const repairIntro = document.createElement('p');
+  repairIntro.className = 'lr-settings-intro';
+  repairIntro.textContent =
+    'Reconciles regex_scripts rows + image journals + lumirealm envelopes against each other. Use after reinstalling the extension or if cards stop loading correctly.';
+  repairSection.appendChild(repairIntro);
+
+  const repairScanBtn = document.createElement('button');
+  repairScanBtn.type = 'button';
+  repairScanBtn.className = 'lrm-btn lrm-btn-primary';
+  repairScanBtn.textContent = 'Scan for problems';
+  repairSection.appendChild(repairScanBtn);
+
+  const repairResultBox = document.createElement('div');
+  repairResultBox.className = 'rs-repair-result';
+  repairResultBox.style.display = 'none';
+  repairSection.appendChild(repairResultBox);
+
+  cleanupBody.appendChild(repairSection);
+
+  type RepairKey = 'staleCharRegex' | 'staleModuleRegex' | 'deadJournals' | 'forceRetranslate';
+  const repairChecked: Record<RepairKey, boolean> = {
+    staleCharRegex: true,
+    staleModuleRegex: true,
+    deadJournals: true,
+    forceRetranslate: false,
+  };
+  let repairScanning = false;
+  let repairApplying = false;
+  let repairLastSummary: import('../types/messages.js').RepairScanSummary | null = null;
+
+  function refreshRepairUi(): void {
+    repairScanBtn.disabled = repairScanning || repairApplying || cleanupScanning || cleanupDeleting;
+    repairScanBtn.textContent = repairScanning ? 'Scanning…' : 'Scan for problems';
+    refreshCleanupActionState();
+  }
+
+  function renderRepairResult(): void {
+    repairResultBox.replaceChildren();
+    const s = repairLastSummary;
+    if (!s) {
+      repairResultBox.style.display = 'none';
+      return;
+    }
+    repairResultBox.style.display = '';
+    const total = s.staleCharRegex + s.staleModuleRegex + s.deadJournals;
+    const summaryLine = document.createElement('div');
+    summaryLine.className = 'rs-repair-summary';
+    summaryLine.textContent = total === 0 && s.charactersToRetranslate === 0
+      ? 'No issues detected.'
+      : `Scan complete (${s.elapsedMs}ms). Pick what to apply:`;
+    repairResultBox.appendChild(summaryLine);
+
+    const retranslateLabel = s.charactersToRetranslate === 0
+      ? 'Force re-translate every lumirealm character'
+      : (() => {
+        const parts: string[] = [`${s.charactersToRetranslate} char${s.charactersToRetranslate === 1 ? '' : 's'}`];
+        if (s.modulesToReattach > 0) parts.push(`${s.modulesToReattach} module reattach${s.modulesToReattach === 1 ? '' : 'es'}`);
+        if (s.danglingModuleRefs > 0) parts.push(`${s.danglingModuleRefs} dangling ref${s.danglingModuleRefs === 1 ? '' : 's'} to scrub`);
+        return `Force re-translate (${parts.join(', ')})`;
+      })();
+
+    const rows: { key: RepairKey; label: string; count: number; danger: boolean }[] = [
+      { key: 'staleCharRegex', label: 'Stale character regex rows (envelope gone)', count: s.staleCharRegex, danger: false },
+      { key: 'staleModuleRegex', label: 'Stale module regex rows (module envelope gone)', count: s.staleModuleRegex, danger: false },
+      { key: 'deadJournals', label: 'Dead image journals (owner gone)', count: s.deadJournals, danger: false },
+      { key: 'forceRetranslate', label: retranslateLabel, count: s.charactersToRetranslate, danger: true },
+    ];
+    const applyBtn = document.createElement('button');
+    applyBtn.type = 'button';
+    applyBtn.className = 'lrm-btn lrm-btn-danger';
+    applyBtn.textContent = repairApplying ? 'Applying…' : 'Apply repair';
+
+    const hasApplicableSelection = (): boolean => (
+      (repairChecked.staleCharRegex && s.staleCharRegex > 0)
+      || (repairChecked.staleModuleRegex && s.staleModuleRegex > 0)
+      || (repairChecked.deadJournals && s.deadJournals > 0)
+      || (repairChecked.forceRetranslate && s.charactersToRetranslate > 0)
+    );
+    const refreshApplyBtn = (): void => {
+      applyBtn.disabled = repairApplying || !hasApplicableSelection();
+    };
+
+    for (const r of rows) {
+      const row = document.createElement('label');
+      row.className = 'rs-repair-row';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = repairChecked[r.key];
+      cb.disabled = r.count === 0;
+      cb.addEventListener('change', () => {
+        repairChecked[r.key] = cb.checked;
+        refreshApplyBtn();
+      });
+      row.appendChild(cb);
+      const labelText = document.createElement('span');
+      labelText.textContent = r.label;
+      if (r.count === 0) labelText.classList.add('rs-repair-row-empty');
+      if (r.danger) labelText.classList.add('rs-repair-row-danger');
+      row.appendChild(labelText);
+      const countSpan = document.createElement('span');
+      countSpan.className = 'rs-repair-count';
+      countSpan.textContent = r.key === 'forceRetranslate'
+        ? (r.count === 0 ? '—' : `${r.count} chars`)
+        : (r.count === 0 ? '0' : String(r.count));
+      row.appendChild(countSpan);
+      repairResultBox.appendChild(row);
+    }
+
+    refreshApplyBtn();
+    applyBtn.addEventListener('click', () => {
+      if (!hasApplicableSelection()) return;
+      const willRetranslate = repairChecked.forceRetranslate && s.charactersToRetranslate > 0;
+      const willDeleteRows = (repairChecked.staleCharRegex && s.staleCharRegex > 0)
+        || (repairChecked.staleModuleRegex && s.staleModuleRegex > 0);
+      const parts: string[] = [];
+      if (repairChecked.staleCharRegex && s.staleCharRegex > 0) {
+        parts.push(`delete ${s.staleCharRegex} stale character regex row(s)`);
+      }
+      if (repairChecked.staleModuleRegex && s.staleModuleRegex > 0) {
+        parts.push(`delete ${s.staleModuleRegex} stale module regex row(s)`);
+      }
+      if (repairChecked.deadJournals && s.deadJournals > 0) {
+        parts.push(`clear ${s.deadJournals} dead journal(s)`);
+      }
+      if (willRetranslate) {
+        const retransParts: string[] = [`re-translate ${s.charactersToRetranslate} character(s)`];
+        if (s.modulesToReattach > 0) retransParts.push(`reattach ${s.modulesToReattach} module(s)`);
+        if (s.danglingModuleRefs > 0) retransParts.push(`scrub ${s.danglingModuleRefs} dangling ref(s)`);
+        parts.push(retransParts.join(' + ') + ' (slow)');
+      }
+      if (!confirm(`Apply repair? This will:\n\n• ${parts.join('\n• ')}\n\n${willDeleteRows ? 'Deleted rows cannot be recovered. ' : ''}${willRetranslate ? 'Re-translation may take a while for large libraries.' : ''}`)) {
+        return;
+      }
+      log.info(`settings-tab: repair apply ${JSON.stringify(repairChecked)}`);
+      repairApplying = true;
+      applyBtn.disabled = true;
+      applyBtn.textContent = 'Applying…';
+      sendToBackend({
+        type: 'apply_repair',
+        options: {
+          applyStaleCharRegex: repairChecked.staleCharRegex,
+          applyStaleModuleRegex: repairChecked.staleModuleRegex,
+          applyDeadJournals: repairChecked.deadJournals,
+          applyForceRetranslate: repairChecked.forceRetranslate,
+        },
+      });
+    });
+    repairResultBox.appendChild(applyBtn);
+  }
+
+  repairScanBtn.addEventListener('click', () => {
+    if (repairScanning || repairApplying) return;
+    log.info('settings-tab: repair scan requested');
+    repairScanning = true;
+    repairLastSummary = null;
+    repairResultBox.style.display = 'none';
+    refreshRepairUi();
+    sendToBackend({ type: 'request_repair_scan' });
   });
 
   // ---------- Subtab activation -------------------------------------------
@@ -1116,6 +1286,59 @@ export function mountSettingsPanel(
         `settings-tab: orphan_delete_result removed=${removedCount} ` +
           `failed=${msg.failed} skipped=${msg.skipped} error=${msg.error ?? '<none>'}`,
       );
+      return;
+    }
+    if (msg.type === 'repair_scan_result') {
+      repairScanning = false;
+      if (msg.error) {
+        repairLastSummary = null;
+        repairResultBox.style.display = '';
+        repairResultBox.replaceChildren();
+        const errLine = document.createElement('div');
+        errLine.className = 'rs-repair-summary rs-repair-error';
+        errLine.textContent = `Scan failed: ${msg.error}`;
+        repairResultBox.appendChild(errLine);
+      } else {
+        repairLastSummary = msg.summary;
+        renderRepairResult();
+      }
+      refreshRepairUi();
+      log.info(`settings-tab: repair_scan_result ${JSON.stringify(msg.summary)} error=${msg.error ?? '<none>'}`);
+      return;
+    }
+    if (msg.type === 'repair_apply_result') {
+      repairApplying = false;
+      const r = msg.result;
+      const parts: string[] = [];
+      if (r.staleCharRegexDeleted > 0) parts.push(`${r.staleCharRegexDeleted} char regex deleted`);
+      if (r.staleModuleRegexDeleted > 0) parts.push(`${r.staleModuleRegexDeleted} module regex deleted`);
+      if (r.deadJournalsCleared > 0) parts.push(`${r.deadJournalsCleared} journals cleared`);
+      if (r.charactersRetranslated > 0) parts.push(`${r.charactersRetranslated} characters re-translated`);
+      if (r.charactersSkippedLegacy > 0) parts.push(`${r.charactersSkippedLegacy} pre-0.3 cards skipped (need re-import)`);
+      if (r.modulesReattached > 0) parts.push(`${r.modulesReattached} modules reattached`);
+      if (r.modulesScrubbed > 0) parts.push(`${r.modulesScrubbed} dangling refs scrubbed`);
+      const summary = parts.length === 0 ? 'Nothing to repair.' : parts.join(', ') + '.';
+      repairResultBox.replaceChildren();
+      repairResultBox.style.display = '';
+      const line = document.createElement('div');
+      line.className = msg.error ? 'rs-repair-summary rs-repair-error' : 'rs-repair-summary';
+      line.textContent = msg.error ? `Repair failed: ${msg.error}. ${summary}` : `Repair complete (${r.elapsedMs}ms): ${summary}`;
+      repairResultBox.appendChild(line);
+      const rescanBtn = document.createElement('button');
+      rescanBtn.type = 'button';
+      rescanBtn.className = 'lrm-btn';
+      rescanBtn.textContent = 'Re-scan';
+      rescanBtn.addEventListener('click', () => {
+        log.info('settings-tab: repair re-scan after apply');
+        repairScanning = true;
+        repairLastSummary = null;
+        repairResultBox.style.display = 'none';
+        refreshRepairUi();
+        sendToBackend({ type: 'request_repair_scan' });
+      });
+      repairResultBox.appendChild(rescanBtn);
+      refreshRepairUi();
+      log.info(`settings-tab: repair_apply_result ${JSON.stringify(r)} error=${msg.error ?? '<none>'}`);
       return;
     }
     // Forward to the inline logs panel (Debug subtab).

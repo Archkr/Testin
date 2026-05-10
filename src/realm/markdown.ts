@@ -5,6 +5,13 @@ const ALLOWED_TAGS = new Set([
   'a', 'img', 'span', 'div',
 ]);
 
+// Bodies are CDATA, not content: unwrap would leak CSS/JS as visible text.
+const DROP_TAGS = new Set([
+  'style', 'script', 'noscript', 'template',
+  'iframe', 'object', 'embed',
+  'head', 'title', 'meta', 'link', 'base',
+]);
+
 const ALLOWED_ATTRS_PER_TAG: Readonly<Record<string, ReadonlySet<string>>> = {
   a: new Set(['href', 'title']),
   img: new Set(['src', 'alt', 'title']),
@@ -133,6 +140,7 @@ function sanitizeNode(input: Node, target: Node, doc: Document): void {
   if (node.nodeType !== Node.ELEMENT_NODE) return;
   const el = node as Element;
   const tagName = el.tagName.toLowerCase();
+  if (DROP_TAGS.has(tagName)) return;
   if (!ALLOWED_TAGS.has(tagName)) {
     for (const child of Array.from(el.childNodes)) {
       sanitizeNode(child, target, doc);

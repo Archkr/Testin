@@ -601,6 +601,9 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         messagePortal.clearAll(activeRisuChatId === null ? 'set_active_chat:null' : 'chat-switch');
         if (sidebar) sidebar.setActiveChatId(activeRisuChatId);
       }
+      // Fall through to sidebar broadcast so the viewer panel can read
+      // msg.characterId for its auto-follow + Current button.
+      sidebar?.handleBackendMessage(msg);
       return;
     }
     if (msg.type === 'render_bg_html' || msg.type === 'clear_bg_html') {

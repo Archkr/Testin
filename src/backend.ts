@@ -1884,6 +1884,417 @@ async function sweepOrphanModuleRegex(userId: string): Promise<number> {
   return deleted;
 }
 
+// Stale char-side regex: `metadata._risu` set without `module_id`, owning
+// character has no lumirealm envelope (typically deleted-while-off).
+async function listStaleCharRegexIds(userId: string): Promise<readonly string[]> {
+  const regexApi = (spindle as unknown as {
+    regex_scripts?: {
+      list?: (opts: { userId?: string; limit?: number; offset?: number }) => Promise<{ data: readonly unknown[]; total: number }>;
+    };
+  }).regex_scripts;
+  if (!regexApi?.list) return [];
+  const liveCharIds = new Set<string>();
+  try {
+    const entries = await listLumirealmCharacters(charactersApi(), userId, { paginate: true });
+    for (const e of entries) {
+      if (e.data) liveCharIds.add(e.character.id);
+    }
+  } catch (err) {
+    log.warn(`listStaleCharRegexIds: listLumirealmCharacters failed: ${errMsg(err)}`);
+    return [];
+  }
+  const orphanIds: string[] = [];
+  let offset = 0;
+  const PAGE_SIZE = 200;
+  while (true) {
+    let page: { data: readonly unknown[]; total: number };
+    try {
+      page = await regexApi.list({ userId, limit: PAGE_SIZE, offset });
+    } catch (err) {
+      log.warn(`listStaleCharRegexIds: regex_scripts.list offset=${offset} failed: ${errMsg(err)}`);
+      break;
+    }
+    if (!Array.isArray(page.data) || page.data.length === 0) break;
+    for (const r of page.data) {
+      const row = r as {
+        id?: unknown;
+        scope?: unknown;
+        scope_id?: unknown;
+        character_id?: unknown;
+        metadata?: { _risu?: { module_id?: unknown } };
+      };
+      if (typeof row.id !== 'string') continue;
+      if (row.scope !== 'character') continue;
+      const risu = row.metadata?._risu;
+      if (!risu || typeof risu !== 'object') continue;
+      if (typeof (risu as { module_id?: unknown }).module_id === 'string') continue;
+      const charId = typeof row.scope_id === 'string'
+        ? row.scope_id
+        : typeof row.character_id === 'string'
+          ? row.character_id
+          : null;
+      if (charId === null) continue;
+      if (liveCharIds.has(charId)) continue;
+      orphanIds.push(row.id);
+    }
+    offset += page.data.length;
+    if (typeof page.total === 'number' && offset >= page.total) break;
+  }
+  return orphanIds;
+}
+
+async function deleteRegexIds(userId: string, ids: readonly string[]): Promise<number> {
+  const regexApi = (spindle as unknown as {
+    regex_scripts?: { delete?: (id: string, userId?: string) => Promise<boolean> };
+  }).regex_scripts;
+  if (!regexApi?.delete) return 0;
+  let deleted = 0;
+  for (const id of ids) {
+    try {
+      const ok = await regexApi.delete(id, userId);
+      if (ok) deleted++;
+    } catch (err) {
+      log.warn(`deleteRegexIds: delete id=${id} failed: ${errMsg(err)}`);
+    }
+  }
+  return deleted;
+}
+
+async function clearDeadJournals(userId: string): Promise<number> {
+  const detected = await detectDeletedWhileOff(userId);
+  let cleared = 0;
+  for (const characterId of detected.characterIds) {
+    try {
+      await clearImageJournal(journalStorage(), userId, characterId);
+      cleared++;
+    } catch (err) {
+      log.warn(`clearDeadJournals: clear character=${characterId} failed: ${errMsg(err)}`);
+    }
+  }
+  for (const moduleId of detected.moduleIds) {
+    try {
+      await clearModuleImageJournal(journalStorage(), userId, moduleId);
+      cleared++;
+    } catch (err) {
+      log.warn(`clearDeadJournals: clear module=${moduleId} failed: ${errMsg(err)}`);
+    }
+  }
+  log.info(`clearDeadJournals: user=${userId} cleared ${cleared} dead journal(s)`);
+  return cleared;
+}
+
+interface ForceRetranslateResult {
+  readonly retranslated: number;
+  readonly skippedLegacy: number;
+  readonly modulesReattached: number;
+  readonly modulesScrubbed: number;
+}
+
+interface ForceRetranslateOpts {
+  readonly onProgress?: (processed: number, total: number, currentName: string) => void;
+}
+
+// Walks every lumirealm character, resets translator_schema_version, runs
+// migration end-to-end sequentially.
+async function forceRetranslateAll(
+  userId: string,
+  opts: ForceRetranslateOpts = {},
+): Promise<ForceRetranslateResult> {
+  let entries: Awaited<ReturnType<typeof listLumirealmCharacters>>;
+  try {
+    entries = await listLumirealmCharacters(charactersApi(), userId, { paginate: true });
+  } catch (err) {
+    log.warn(`forceRetranslateAll: listLumirealmCharacters failed: ${errMsg(err)}`);
+    return { retranslated: 0, skippedLegacy: 0, modulesReattached: 0, modulesScrubbed: 0 };
+  }
+  let retranslated = 0;
+  let skippedLegacy = 0;
+  let modulesReattached = 0;
+  let modulesScrubbed = 0;
+  let processed = 0;
+  const total = entries.length;
+  for (const entry of entries) {
+    if (!entry.data) {
+      processed++;
+      continue;
+    }
+    const charId = entry.character.id;
+    const charName = entry.character.name ?? '(unnamed)';
+    opts.onProgress?.(processed, total, charName);
+    // Pre-0.3 cards don't carry envelope.source, so re-translation is impossible.
+    // Resetting their version would brick them at v0 forever, requiring re-import.
+    if (entry.data.source === undefined) {
+      skippedLegacy++;
+      processed++;
+      continue;
+    }
+    translatorMigrationChecked.delete(charId);
+    const reset: typeof entry.data = { ...entry.data, translator_schema_version: 0 };
+    try {
+      await writeLumirealm(charactersApi(), charId, reset, userId);
+    } catch (err) {
+      log.warn(`forceRetranslateAll: writeLumirealm(${charId}) failed: ${errMsg(err)}`);
+      processed++;
+      continue;
+    }
+    try {
+      const kind = await runCharacterMigration(charId, charName, userId, reset, { silent: true });
+      if (kind === 'migrated') retranslated++;
+    } catch (err) {
+      log.warn(`forceRetranslateAll: runCharacterMigration(${charId}) failed: ${errMsg(err)}`);
+    }
+    // Re-fetch post-migration to read the current attached_module_ids.
+    let postFetch: Awaited<ReturnType<typeof readLumirealm>>;
+    try {
+      postFetch = await readLumirealm(charactersApi(), charId, userId);
+    } catch (err) {
+      log.warn(`forceRetranslateAll: readLumirealm(${charId}) post-migrate failed: ${errMsg(err)}`);
+      processed++;
+      continue;
+    }
+    if (!postFetch?.data) {
+      processed++;
+      continue;
+    }
+    const attachedIds = postFetch.data.user_overrides.attached_module_ids ?? [];
+    if (attachedIds.length === 0) {
+      processed++;
+      continue;
+    }
+    const danglingIds: string[] = [];
+    for (const moduleId of attachedIds) {
+      let env: Awaited<ReturnType<typeof readModuleEnvelope>>;
+      try {
+        env = await readModuleEnvelope(moduleStorage(), userId, moduleId);
+      } catch (err) {
+        log.warn(`forceRetranslateAll: readModuleEnvelope(${moduleId}) char=${charId} threw: ${errMsg(err)}`);
+        env = null;
+      }
+      if (!env) {
+        danglingIds.push(moduleId);
+        continue;
+      }
+      try {
+        await refreshAttachedModule(charId, env, userId);
+        modulesReattached++;
+      } catch (err) {
+        log.warn(`forceRetranslateAll: refreshAttachedModule(${charId}, ${moduleId}) failed: ${errMsg(err)}`);
+      }
+    }
+    if (danglingIds.length > 0) {
+      try {
+        await scrubDanglingModuleRefs(charId, danglingIds, userId);
+        modulesScrubbed += danglingIds.length;
+      } catch (err) {
+        log.warn(`forceRetranslateAll: scrubDanglingModuleRefs(${charId}) failed: ${errMsg(err)}`);
+      }
+    }
+    processed++;
+  }
+  return { retranslated, skippedLegacy, modulesReattached, modulesScrubbed };
+}
+
+// Removes dangling moduleIds from the char's user_overrides + fires
+// uninstall_module_artifacts so leftover DB rows get metadata-keyed sweep.
+async function scrubDanglingModuleRefs(
+  characterId: string,
+  danglingIds: readonly string[],
+  userId: string,
+): Promise<void> {
+  if (danglingIds.length === 0) return;
+  const fetched = await readLumirealm(charactersApi(), characterId, userId);
+  if (!fetched?.data) return;
+  const oldWb = fetched.data.user_overrides.attached_module_world_books ?? {};
+  const oldRx = fetched.data.user_overrides.attached_module_regex_script_ids ?? {};
+  const perModuleRx: Array<{ moduleId: string; wbId: string | null; regexIds: readonly string[] }> = [];
+  for (const moduleId of danglingIds) {
+    const wbId = typeof oldWb[moduleId] === 'string' ? oldWb[moduleId] : null;
+    const regexIds = Array.isArray(oldRx[moduleId]) ? oldRx[moduleId] : [];
+    perModuleRx.push({ moduleId, wbId, regexIds });
+  }
+  await updateLumirealm(charactersApi(), characterId, userId, (cur) => {
+    const wb = { ...(cur.user_overrides.attached_module_world_books ?? {}) };
+    const rx = { ...(cur.user_overrides.attached_module_regex_script_ids ?? {}) };
+    for (const id of danglingIds) {
+      delete wb[id];
+      delete rx[id];
+    }
+    return {
+      ...cur,
+      user_overrides: mergeUserOverrides(cur.user_overrides, {
+        attached_module_ids: (cur.user_overrides.attached_module_ids ?? []).filter(
+          (id) => !danglingIds.includes(id),
+        ),
+        attached_module_world_books: Object.keys(wb).length > 0 ? wb : null,
+        attached_module_regex_script_ids: Object.keys(rx).length > 0 ? rx : null,
+      }),
+    };
+  });
+  for (const m of perModuleRx) {
+    if (!m.wbId && m.regexIds.length === 0) continue;
+    send({
+      type: 'uninstall_module_artifacts',
+      characterId,
+      moduleId: m.moduleId,
+      worldBookId: m.wbId,
+      regexScriptIds: m.regexIds,
+    }, userId);
+  }
+  log.info(`scrubDanglingModuleRefs: char=${characterId} scrubbed=${danglingIds.length}`);
+}
+
+async function scanRepairTargets(userId: string): Promise<import('./types/messages.js').RepairScanSummary> {
+  const t0 = Date.now();
+  let staleModuleRegex = 0;
+  try {
+    const regexApi = (spindle as unknown as {
+      regex_scripts?: {
+        list?: (opts: { userId?: string; limit?: number; offset?: number }) => Promise<{ data: readonly unknown[]; total: number }>;
+      };
+    }).regex_scripts;
+    if (regexApi?.list) {
+      const liveModuleIds = new Set((await listModuleStore(moduleStorage(), userId)).map((m) => m.id));
+      let offset = 0;
+      while (true) {
+        const page = await regexApi.list({ userId, limit: 200, offset });
+        if (!Array.isArray(page.data) || page.data.length === 0) break;
+        for (const r of page.data) {
+          const row = r as { metadata?: { _risu?: { module_id?: unknown } } };
+          const moduleId = row.metadata?._risu?.module_id;
+          if (typeof moduleId !== 'string' || moduleId.length === 0) continue;
+          if (!liveModuleIds.has(moduleId)) staleModuleRegex++;
+        }
+        offset += page.data.length;
+        if (typeof page.total === 'number' && offset >= page.total) break;
+      }
+    }
+  } catch (err) {
+    log.warn(`scanRepairTargets: stale module regex count failed: ${errMsg(err)}`);
+  }
+  let staleCharRegex = 0;
+  try {
+    staleCharRegex = (await listStaleCharRegexIds(userId)).length;
+  } catch (err) {
+    log.warn(`scanRepairTargets: stale char regex count failed: ${errMsg(err)}`);
+  }
+  let deadJournals = 0;
+  try {
+    const detected = await detectDeletedWhileOff(userId);
+    deadJournals = detected.characterIds.length + detected.moduleIds.length;
+  } catch (err) {
+    log.warn(`scanRepairTargets: dead journal count failed: ${errMsg(err)}`);
+  }
+  let charactersToRetranslate = 0;
+  let modulesToReattach = 0;
+  let danglingModuleRefs = 0;
+  try {
+    const entries = await listLumirealmCharacters(charactersApi(), userId, { paginate: true });
+    charactersToRetranslate = entries.filter((e) => e.data !== null).length;
+    const liveModuleIds = new Set((await listModuleStore(moduleStorage(), userId)).map((m) => m.id));
+    for (const e of entries) {
+      if (!e.data) continue;
+      const ids = e.data.user_overrides.attached_module_ids ?? [];
+      for (const id of ids) {
+        if (liveModuleIds.has(id)) {
+          modulesToReattach++;
+        } else {
+          danglingModuleRefs++;
+        }
+      }
+    }
+  } catch (err) {
+    log.warn(`scanRepairTargets: char/module count failed: ${errMsg(err)}`);
+  }
+  return {
+    staleModuleRegex,
+    staleCharRegex,
+    deadJournals,
+    charactersToRetranslate,
+    modulesToReattach,
+    danglingModuleRefs,
+    elapsedMs: Date.now() - t0,
+  };
+}
+
+async function applyRepair(
+  userId: string,
+  options: import('./types/messages.js').RepairApplyOptions,
+): Promise<import('./types/messages.js').RepairApplyResult> {
+  const t0 = Date.now();
+  let staleCharRegexDeleted = 0;
+  let staleModuleRegexDeleted = 0;
+  let deadJournalsCleared = 0;
+  let charactersRetranslated = 0;
+  let charactersSkippedLegacy = 0;
+  let modulesReattached = 0;
+  let modulesScrubbed = 0;
+  const opId = `repair-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  const opTitle = 'Repairing extension state';
+  emitOperationProgress(userId, opId, 'started', opTitle, 'Sweeping stale rows…', 0);
+  if (options.applyStaleCharRegex) {
+    try {
+      emitOperationProgress(userId, opId, 'progress', opTitle, 'Sweeping stale character regex…', 0.05);
+      const ids = await listStaleCharRegexIds(userId);
+      staleCharRegexDeleted = await deleteRegexIds(userId, ids);
+      log.info(`applyRepair: deleted ${staleCharRegexDeleted}/${ids.length} stale char regex`);
+    } catch (err) {
+      log.warn(`applyRepair: stale char regex sweep failed: ${errMsg(err)}`);
+    }
+  }
+  if (options.applyStaleModuleRegex) {
+    try {
+      emitOperationProgress(userId, opId, 'progress', opTitle, 'Sweeping stale module regex…', 0.15);
+      staleModuleRegexDeleted = await sweepOrphanModuleRegex(userId);
+    } catch (err) {
+      log.warn(`applyRepair: stale module regex sweep failed: ${errMsg(err)}`);
+    }
+  }
+  if (options.applyDeadJournals) {
+    try {
+      emitOperationProgress(userId, opId, 'progress', opTitle, 'Clearing dead journals…', 0.25);
+      deadJournalsCleared = await clearDeadJournals(userId);
+    } catch (err) {
+      log.warn(`applyRepair: dead journal clear failed: ${errMsg(err)}`);
+    }
+  }
+  if (options.applyForceRetranslate) {
+    try {
+      const r = await forceRetranslateAll(userId, {
+        onProgress: (processed, total, name) => {
+          if (total <= 0) return;
+          // 0.3..0.95 reserved for retranslate so the rest of the bar fits above.
+          const frac = 0.3 + (processed / total) * 0.65;
+          emitOperationProgress(
+            userId,
+            opId,
+            'progress',
+            opTitle,
+            `Re-translating ${processed + 1}/${total}: ${name}`,
+            frac,
+          );
+        },
+      });
+      charactersRetranslated = r.retranslated;
+      charactersSkippedLegacy = r.skippedLegacy;
+      modulesReattached = r.modulesReattached;
+      modulesScrubbed = r.modulesScrubbed;
+    } catch (err) {
+      log.warn(`applyRepair: force retranslate failed: ${errMsg(err)}`);
+    }
+  }
+  emitOperationProgress(userId, opId, 'done', opTitle, 'Repair complete.', 1);
+  return {
+    staleCharRegexDeleted,
+    staleModuleRegexDeleted,
+    deadJournalsCleared,
+    charactersRetranslated,
+    charactersSkippedLegacy,
+    modulesReattached,
+    modulesScrubbed,
+    elapsedMs: Date.now() - t0,
+  };
+}
+
 interface PendingImportCompletion {
   hasPendingSvgRaster: boolean;
   characterName: string;
@@ -1896,6 +2307,26 @@ const pendingImportCompletions = new Map<string, PendingImportCompletion>();
 // scan refuses to run while non-zero so an in-flight upload's not-yet-journaled
 // IDs cannot be deleted as orphans.
 let assetUploadsInFlight = 0;
+
+// True while applyRepair is running. Module attach/detach + drawer mutations
+// gate against this so the snapshot-then-write loop in forceRetranslateAll
+// can't be raced into silent data loss on user_overrides.
+const repairInFlightByUser = new Set<string>();
+
+// Returns true and surfaces an error toast if a repair is in flight, so
+// the caller should bail. Returns false if it's safe to proceed.
+function blockedByRepair(userId: string | undefined, messageType: string): boolean {
+  if (userId === undefined) return false;
+  if (!repairInFlightByUser.has(userId)) return false;
+  log.info(`${messageType}: blocked by in-flight repair for user=${userId}`);
+  toastFor(
+    userId,
+    'warning',
+    'A repair is in progress. Try again once it finishes.',
+    { title: 'lumirealm' },
+  );
+  return true;
+}
 
 type OperationPhase = 'started' | 'progress' | 'done' | 'error';
 function emitOperationProgress(
@@ -2680,6 +3111,9 @@ function maybeMigrateCharacterTranslator(
   envelope: import('./payload/types.js').LumirealmCharacterData,
 ): void {
   if (translatorMigrationChecked.has(characterId)) return;
+  // forceRetranslateAll deletes the dedupe flag + writes v=0 + runs migration
+  // sequentially. A chat-open mid-loop would re-fire the migration concurrently.
+  if (repairInFlightByUser.has(userId)) return;
   const stored = envelope.translator_schema_version ?? 1;
   if (stored >= CURRENT_CHARACTER_SCHEMA_VERSION) {
     translatorMigrationChecked.add(characterId);
@@ -2696,8 +3130,8 @@ async function runCharacterMigration(
   characterName: string,
   userId: string,
   envelope: import('./payload/types.js').LumirealmCharacterData,
-  opts?: { firePromptOnNeedsReimport?: boolean },
-): Promise<void> {
+  opts?: { firePromptOnNeedsReimport?: boolean; silent?: boolean },
+): Promise<import('./state/translator-migrations.js').MigrationResult['kind']> {
   const deps: MigrationDeps = {
     loadCatalog,
     extensionVersion: EXTENSION_VERSION,
@@ -2797,18 +3231,20 @@ async function runCharacterMigration(
   );
   if (result.kind === 'migrated') {
     invalidateActiveForCharacter(characterId, userId);
-    toastFor(userId, 'success',
-      `Updated ${characterName} for the latest LumiRealm fixes.`,
-      { title: 'lumirealm' },
-    );
+    if (!opts?.silent) {
+      toastFor(userId, 'success',
+        `Updated ${characterName} for the latest LumiRealm fixes.`,
+        { title: 'lumirealm' },
+      );
+    }
   } else if (result.kind === 'needs_reimport') {
-    if (opts?.firePromptOnNeedsReimport !== true) return;
+    if (opts?.firePromptOnNeedsReimport !== true) return result.kind;
     const { alreadyWarned } = await markLegacyReimportWarned(
       spindle.userStorage,
       userId,
       characterId,
     );
-    if (alreadyWarned) return;
+    if (alreadyWarned) return result.kind;
     send({
       type: 'notify_legacy_card_needs_reimport',
       characterId,
@@ -2820,6 +3256,7 @@ async function runCharacterMigration(
     );
     translatorMigrationChecked.delete(characterId);
   }
+  return result.kind;
 }
 
 async function runModuleMigration(
@@ -4265,9 +4702,13 @@ function captureUserId(userId: string | undefined, where: string): void {
 }
 
 // Decoupled from bg-html paint so empty-bg cards activate.
-function sendSetActiveChat(activeChatId: string | null, userId: string | undefined): void {
+function sendSetActiveChat(
+  activeChatId: string | null,
+  activeCharacterId: string | null,
+  userId: string | undefined,
+): void {
   try {
-    send({ type: 'set_active_chat', chatId: activeChatId }, userId);
+    send({ type: 'set_active_chat', chatId: activeChatId, characterId: activeCharacterId }, userId);
   } catch (err) {
     log.warn(`sendSetActiveChat: ${(err as Error).message}`);
   }
@@ -4291,7 +4732,7 @@ spindle.on('SETTINGS_UPDATED', userScoped(async (raw, userId) => {
   // When chatId clears (ChatView unmount), fire clear_bg_html for the last
   // mounted chat so fixed-positioned bg widgets don't bleed onto other pages.
   if (!chatId) {
-    sendSetActiveChat(null, userId);
+    sendSetActiveChat(null, null, userId);
     const lastChat = userId ? lastActiveChatByUser.get(userId) : undefined;
     if (lastChat) {
       log.info(
@@ -4316,7 +4757,7 @@ spindle.on('SETTINGS_UPDATED', userScoped(async (raw, userId) => {
   const active = await ensureActiveCardForChat(chatId, characterId ?? null, userId);
   log.info(`SETTINGS_UPDATED activeChatId: active=${active ? `characterId=${active.card.character_id} hasBgHtml=${!!active.card.risuPayload.background_html} triggers=${active.card.risuPayload.triggers?.length ?? 0}` : '<none>'}`);
   // Activation precedes paint: lifter clearAll fires on this edge.
-  sendSetActiveChat(active ? chatId : null, userId);
+  sendSetActiveChat(active ? chatId : null, active ? active.card.character_id : null, userId);
   if (!active) {
     try { send({ type: 'clear_bg_html', chatId }, userId); } catch { /* */ }
     return;
@@ -4707,7 +5148,7 @@ spindle.on('CHARACTER_DELETED', userScoped(async (raw, uid) => {
     const lastChat = lastActiveChatByUser.get(uid);
     if (lastChat) {
       const stillActive = await ensureActiveCardForChat(lastChat, null, uid).catch(() => null);
-      if (!stillActive) sendSetActiveChat(null, uid);
+      if (!stillActive) sendSetActiveChat(null, null, uid);
     }
   }
 
@@ -5988,6 +6429,8 @@ async function charactersAttachedTo(
   return out;
 }
 
+// MUST NOT delete the module's world_book: it is shared across every
+// character attached to the module, so dropping it here destroys lore.
 async function refreshAttachedModule(
   characterId: string,
   env: ModuleEnvelope,
@@ -5995,28 +6438,24 @@ async function refreshAttachedModule(
 ): Promise<void> {
   const fetched = await readLumirealm(charactersApi(), characterId, userId);
   if (!fetched || !fetched.data) return;
-  const wbId = fetched.data.user_overrides.attached_module_world_books?.[env.id] ?? null;
   const regexIds =
     fetched.data.user_overrides.attached_module_regex_script_ids?.[env.id] ?? [];
   await updateLumirealm(charactersApi(), characterId, userId, (cur) => {
-    const wb = { ...(cur.user_overrides.attached_module_world_books ?? {}) };
-    delete wb[env.id];
     const rx = { ...(cur.user_overrides.attached_module_regex_script_ids ?? {}) };
     delete rx[env.id];
     return {
       ...cur,
       user_overrides: mergeUserOverrides(cur.user_overrides, {
-        attached_module_world_books: Object.keys(wb).length > 0 ? wb : null,
         attached_module_regex_script_ids: Object.keys(rx).length > 0 ? rx : null,
       }),
     };
   });
-  if (wbId || regexIds.length > 0) {
+  if (regexIds.length > 0) {
     send({
       type: 'uninstall_module_artifacts',
       characterId,
       moduleId: env.id,
-      worldBookId: wbId,
+      worldBookId: null,
       regexScriptIds: regexIds,
     }, userId);
   }
@@ -6255,6 +6694,7 @@ async function assembleCharacterViewerData(
     characterId,
     characterName: fetched.character.name,
     data: fetched.data,
+    creatorNotes: fetched.character.creator_notes ?? '',
     worldBooks,
     fetchWarnings,
     translatedCommentBySourceHash,
@@ -6589,7 +7029,11 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
           try {
             const active = await ensureActiveCardForChat(lastChat, null, userId);
             // FE remount lost activeRisuChatId; reaffirm before paint.
-            sendSetActiveChat(active ? lastChat : null, userId);
+            sendSetActiveChat(
+              active ? lastChat : null,
+              active ? active.card.character_id : null,
+              userId,
+            );
             if (active) {
               invalidateRenderMcpForChat(lastChat);
               await refreshBgHtml(active, lastChat, userId);
@@ -6599,7 +7043,7 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
             log.warn(`get_cards: rehydrate failed chat=${lastChat}: ${errMsg(err)}`);
           }
         } else {
-          sendSetActiveChat(null, userId);
+          sendSetActiveChat(null, null, userId);
         }
         break;
       }
@@ -7280,6 +7724,7 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
           send({ type: 'error', message: 'attach_module: no userId' }, userId);
           break;
         }
+        if (blockedByRepair(userId, 'attach_module')) break;
         const result = await attachModuleToCharacter(
           msg.characterId,
           msg.moduleId,
@@ -7298,6 +7743,7 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
           send({ type: 'error', message: 'detach_module: no userId' }, userId);
           break;
         }
+        if (blockedByRepair(userId, 'detach_module')) break;
         const result = await detachModuleFromCharacter(
           msg.characterId,
           msg.moduleId,
@@ -7326,8 +7772,9 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
         }
         await updateLumirealm(charactersApi(), msg.characterId, userId, (cur) => {
           const wb = { ...(cur.user_overrides.attached_module_world_books ?? {}) };
+          // Null wb in a reply means "regex-only install/refresh", leave the
+          // existing tracking intact (the shared wb survives the refresh).
           if (msg.worldBookId) wb[msg.moduleId] = msg.worldBookId;
-          else delete wb[msg.moduleId];
           const rx = { ...(cur.user_overrides.attached_module_regex_script_ids ?? {}) };
           if (msg.regexScriptIds.length > 0) rx[msg.moduleId] = msg.regexScriptIds;
           else delete rx[msg.moduleId];
@@ -7366,6 +7813,7 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
           send({ type: 'error', message: `${msg.type}: no userId` }, userId);
           break;
         }
+        if (blockedByRepair(userId, msg.type)) break;
         const result = await mutateAssetIndex(msg, userId);
         if (!result.ok) {
           send({ type: 'error', message: `${msg.type}: ${result.reason ?? 'failed'}` }, userId);
@@ -7406,6 +7854,7 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
           send({ type: 'error', message: `${msg.type}: no userId` }, userId);
           break;
         }
+        if (blockedByRepair(userId, msg.type)) break;
         const updated = await updateLumirealm(charactersApi(), msg.characterId, userId, (cur) => {
           const overrides = { ...(cur.user_overrides.default_variables_overrides ?? {}) };
           if (msg.type === 'set_default_variable') {
@@ -7461,6 +7910,7 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
           send({ type: 'error', message: 'set_trigger_lua: no userId' }, userId);
           break;
         }
+        if (blockedByRepair(userId, 'set_trigger_lua')) break;
         const result = await mutateTriggerLua(msg, userId);
         if (!result.ok) {
           send({ type: 'error', message: `set_trigger_lua: ${result.reason ?? 'failed'}` }, userId);
@@ -7487,6 +7937,7 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
           send({ type: 'error', message: 'set_background_html: no userId' }, userId);
           break;
         }
+        if (blockedByRepair(userId, 'set_background_html')) break;
         const characterId = msg.characterId;
         const html = typeof msg.html === 'string' && msg.html.length > 0 ? msg.html : null;
         const updated = await updateLumirealm(charactersApi(), characterId, userId, (cur) => ({
@@ -7744,6 +8195,128 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
             skippedIds: [],
             error: errMsg(err),
           }, userId);
+        }
+        break;
+      }
+      case 'request_repair_scan': {
+        if (!userId) {
+          send({
+            type: 'repair_scan_result',
+            summary: {
+              staleModuleRegex: 0, staleCharRegex: 0, deadJournals: 0,
+              charactersToRetranslate: 0, modulesToReattach: 0,
+              danglingModuleRefs: 0, elapsedMs: 0,
+            },
+            error: 'No active user. Open a Lumi session and try again.',
+          }, userId);
+          break;
+        }
+        if (assetUploadsInFlight > 0) {
+          send({
+            type: 'repair_scan_result',
+            summary: {
+              staleModuleRegex: 0, staleCharRegex: 0, deadJournals: 0,
+              charactersToRetranslate: 0, modulesToReattach: 0,
+              danglingModuleRefs: 0, elapsedMs: 0,
+            },
+            error: 'An import or module upload is in progress. Wait for it to finish, then scan again.',
+          }, userId);
+          break;
+        }
+        try {
+          const summary = await scanRepairTargets(userId);
+          log.info(
+            `repair-scan: staleModuleRegex=${summary.staleModuleRegex} ` +
+              `staleCharRegex=${summary.staleCharRegex} ` +
+              `deadJournals=${summary.deadJournals} ` +
+              `charsToRetranslate=${summary.charactersToRetranslate} ` +
+              `modulesToReattach=${summary.modulesToReattach} ` +
+              `danglingModuleRefs=${summary.danglingModuleRefs} ` +
+              `elapsed=${summary.elapsedMs}ms`,
+          );
+          send({ type: 'repair_scan_result', summary }, userId);
+        } catch (err) {
+          log.warn(`repair-scan: failed: ${errMsg(err)}`);
+          send({
+            type: 'repair_scan_result',
+            summary: {
+              staleModuleRegex: 0, staleCharRegex: 0, deadJournals: 0,
+              charactersToRetranslate: 0, modulesToReattach: 0,
+              danglingModuleRefs: 0, elapsedMs: 0,
+            },
+            error: errMsg(err),
+          }, userId);
+        }
+        break;
+      }
+      case 'apply_repair': {
+        if (!userId) {
+          send({
+            type: 'repair_apply_result',
+            result: {
+              staleCharRegexDeleted: 0, staleModuleRegexDeleted: 0,
+              deadJournalsCleared: 0, charactersRetranslated: 0,
+              charactersSkippedLegacy: 0, modulesReattached: 0,
+              modulesScrubbed: 0, elapsedMs: 0,
+            },
+            error: 'No active user.',
+          }, userId);
+          break;
+        }
+        if (assetUploadsInFlight > 0) {
+          send({
+            type: 'repair_apply_result',
+            result: {
+              staleCharRegexDeleted: 0, staleModuleRegexDeleted: 0,
+              deadJournalsCleared: 0, charactersRetranslated: 0,
+              charactersSkippedLegacy: 0, modulesReattached: 0,
+              modulesScrubbed: 0, elapsedMs: 0,
+            },
+            error: 'An import or module upload is in progress. Wait for it to finish before applying.',
+          }, userId);
+          break;
+        }
+        if (repairInFlightByUser.has(userId)) {
+          send({
+            type: 'repair_apply_result',
+            result: {
+              staleCharRegexDeleted: 0, staleModuleRegexDeleted: 0,
+              deadJournalsCleared: 0, charactersRetranslated: 0,
+              charactersSkippedLegacy: 0, modulesReattached: 0,
+              modulesScrubbed: 0, elapsedMs: 0,
+            },
+            error: 'A repair is already in progress.',
+          }, userId);
+          break;
+        }
+        repairInFlightByUser.add(userId);
+        try {
+          const result = await applyRepair(userId, msg.options);
+          log.info(
+            `repair-apply: charRegex=${result.staleCharRegexDeleted} ` +
+              `moduleRegex=${result.staleModuleRegexDeleted} ` +
+              `journals=${result.deadJournalsCleared} ` +
+              `retranslated=${result.charactersRetranslated} ` +
+              `skippedLegacy=${result.charactersSkippedLegacy} ` +
+              `modulesReattached=${result.modulesReattached} ` +
+              `modulesScrubbed=${result.modulesScrubbed} ` +
+              `elapsed=${result.elapsedMs}ms`,
+          );
+          send({ type: 'repair_apply_result', result }, userId);
+        } catch (err) {
+          log.warn(`repair-apply: failed: ${errMsg(err)}`);
+          send({
+            type: 'repair_apply_result',
+            result: {
+              staleCharRegexDeleted: 0, staleModuleRegexDeleted: 0,
+              deadJournalsCleared: 0, charactersRetranslated: 0,
+              charactersSkippedLegacy: 0, modulesReattached: 0,
+              modulesScrubbed: 0, elapsedMs: 0,
+            },
+            error: errMsg(err),
+          }, userId);
+        } finally {
+          repairInFlightByUser.delete(userId);
         }
         break;
       }

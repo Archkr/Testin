@@ -44,6 +44,7 @@ export function buildCharacterViewerData(input: {
   characterId: string;
   characterName: string;
   data: LumirealmCharacterData;
+  creatorNotes?: string;
   worldBooks?: readonly FetchedWorldBook[];
   extraCharacterRegex?: readonly LumiSideRegex[];
   fetchWarnings?: readonly string[];
@@ -179,6 +180,9 @@ export function buildCharacterViewerData(input: {
     ts: input.ts ?? Date.now(),
     fetchWarnings: input.fetchWarnings ?? [],
     ...(input.data.source === undefined ? { lorebookNeedsReimport: true } : {}),
+    ...(input.creatorNotes && input.creatorNotes.length > 0
+      ? { creatorNotes: input.creatorNotes }
+      : {}),
   };
 }
 

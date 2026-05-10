@@ -1175,6 +1175,54 @@ var styles_default = `.risu-compat-drawer {\r
   font-size: 12px;\r
   color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.65));\r
 }\r
+\r
+.risu-settings-drawer .rs-repair-section {\r
+  margin-top: 24px;\r
+  padding-top: 16px;\r
+  border-top: 1px solid var(--lumiverse-border, rgba(255, 255, 255, 0.08));\r
+}\r
+.risu-settings-drawer .rs-repair-header {\r
+  font-size: 14px;\r
+  font-weight: 600;\r
+  margin: 0 0 6px;\r
+  color: var(--lumiverse-text, inherit);\r
+}\r
+.risu-settings-drawer .rs-repair-result {\r
+  margin-top: 12px;\r
+  padding: 10px 12px;\r
+  background: rgba(0, 0, 0, 0.18);\r
+  border: 1px solid var(--lumiverse-border, rgba(255, 255, 255, 0.06));\r
+  border-radius: 4px;\r
+  display: flex;\r
+  flex-direction: column;\r
+  gap: 8px;\r
+}\r
+.risu-settings-drawer .rs-repair-summary {\r
+  font-size: 12px;\r
+  color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.7));\r
+}\r
+.risu-settings-drawer .rs-repair-error {\r
+  color: var(--lumiverse-danger, rgba(255, 130, 130, 0.95));\r
+}\r
+.risu-settings-drawer .rs-repair-row {\r
+  display: grid;\r
+  grid-template-columns: 20px 1fr auto;\r
+  gap: 8px;\r
+  align-items: center;\r
+  font-size: 12px;\r
+  padding: 4px 0;\r
+}\r
+.risu-settings-drawer .rs-repair-row-empty {\r
+  color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.4));\r
+}\r
+.risu-settings-drawer .rs-repair-row-danger {\r
+  color: var(--lumiverse-warning, rgba(255, 200, 120, 0.9));\r
+}\r
+.risu-settings-drawer .rs-repair-count {\r
+  font-variant-numeric: tabular-nums;\r
+  color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.55));\r
+  font-size: 11px;\r
+}\r
 .risu-settings-drawer .rs-cleanup-list {\r
   max-height: 60vh;\r
   overflow-y: auto;\r
@@ -2155,6 +2203,83 @@ var styles_default = `.risu-compat-drawer {\r
 .lr-viewer-drawer .lrv-btn:hover {\r
   background: var(--lumiverse-fill, rgba(255, 255, 255, 0.08));\r
   border-color: var(--lumiverse-primary, rgba(120, 160, 255, 0.55));\r
+}\r
+.lr-viewer-drawer .lrv-current-btn {\r
+  appearance: none;\r
+  border: 0;\r
+  background: var(--lumiverse-primary, #5b8cff);\r
+  color: #ffffff;\r
+  border-radius: 4px;\r
+  padding: 6px 10px;\r
+  font: inherit;\r
+  font-size: 12px;\r
+  font-weight: 600;\r
+  cursor: pointer;\r
+}\r
+.lr-viewer-drawer .lrv-current-btn:hover:not(:disabled) {\r
+  filter: brightness(1.1);\r
+}\r
+.lr-viewer-drawer .lrv-current-btn:disabled {\r
+  opacity: 0.5;\r
+  cursor: not-allowed;\r
+}\r
+.lr-viewer-drawer .lrv-notes {\r
+  padding: 4px 12px 12px;\r
+}\r
+.lr-viewer-drawer .lrv-notes-body {\r
+  font-size: 13px;\r
+  line-height: 1.55;\r
+  color: var(--lumiverse-text, inherit);\r
+}\r
+.lr-viewer-drawer .lrv-notes-body p { margin: 0 0 0.7em; }\r
+.lr-viewer-drawer .lrv-notes-body p:last-child { margin-bottom: 0; }\r
+.lr-viewer-drawer .lrv-notes-body h1,\r
+.lr-viewer-drawer .lrv-notes-body h2,\r
+.lr-viewer-drawer .lrv-notes-body h3,\r
+.lr-viewer-drawer .lrv-notes-body h4,\r
+.lr-viewer-drawer .lrv-notes-body h5,\r
+.lr-viewer-drawer .lrv-notes-body h6 {\r
+  margin: 0.9em 0 0.4em;\r
+  font-weight: 600;\r
+  line-height: 1.3;\r
+}\r
+.lr-viewer-drawer .lrv-notes-body h1 { font-size: 1.35em; }\r
+.lr-viewer-drawer .lrv-notes-body h2 { font-size: 1.2em; }\r
+.lr-viewer-drawer .lrv-notes-body h3 { font-size: 1.08em; }\r
+.lr-viewer-drawer .lrv-notes-body h4,\r
+.lr-viewer-drawer .lrv-notes-body h5,\r
+.lr-viewer-drawer .lrv-notes-body h6 { font-size: 1em; }\r
+.lr-viewer-drawer .lrv-notes-body ul,\r
+.lr-viewer-drawer .lrv-notes-body ol { margin: 0 0 0.7em 1.4em; padding: 0; }\r
+.lr-viewer-drawer .lrv-notes-body li { margin: 0.15em 0; }\r
+.lr-viewer-drawer .lrv-notes-body code {\r
+  background: var(--lumiverse-fill-subtle, rgba(255, 255, 255, 0.06));\r
+  border: 1px solid var(--lumiverse-border, rgba(255, 255, 255, 0.08));\r
+  border-radius: 3px;\r
+  padding: 1px 4px;\r
+  font-size: 0.9em;\r
+}\r
+.lr-viewer-drawer .lrv-notes-body blockquote {\r
+  margin: 0 0 0.7em;\r
+  padding: 4px 10px;\r
+  border-left: 3px solid var(--lumiverse-primary, rgba(120, 160, 255, 0.4));\r
+  color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.7));\r
+  background: var(--lumiverse-fill-subtle, rgba(255, 255, 255, 0.03));\r
+  border-radius: 0 4px 4px 0;\r
+}\r
+.lr-viewer-drawer .lrv-notes-body a {\r
+  color: var(--lumiverse-primary, #5b8cff);\r
+  text-decoration: underline;\r
+}\r
+.lr-viewer-drawer .lrv-notes-body img {\r
+  max-width: 100%;\r
+  height: auto;\r
+  border-radius: 4px;\r
+}\r
+.lr-viewer-drawer .lrv-notes-body hr {\r
+  border: 0;\r
+  border-top: 1px solid var(--lumiverse-border, rgba(255, 255, 255, 0.1));\r
+  margin: 1em 0;\r
 }\r
 .lr-viewer-drawer .lrv-status {\r
   font-size: 11px;\r
@@ -5657,11 +5782,12 @@ function mountSettingsPanel(opts) {
   let cleanupGrid = null;
   function refreshCleanupActionState() {
     const sel = cleanupSelected.size;
+    const repairBlocking = repairScanning || repairApplying;
     deleteBtn.textContent = `Delete selected (${sel})`;
-    deleteBtn.disabled = sel === 0 || cleanupDeleting || cleanupScanning;
-    selectAllBtn.disabled = cleanupOrphans.length === 0 || cleanupScanning || cleanupDeleting;
-    selectNoneBtn.disabled = sel === 0 || cleanupScanning || cleanupDeleting;
-    scanBtn.disabled = cleanupScanning || cleanupDeleting;
+    deleteBtn.disabled = sel === 0 || cleanupDeleting || cleanupScanning || repairBlocking;
+    selectAllBtn.disabled = cleanupOrphans.length === 0 || cleanupScanning || cleanupDeleting || repairBlocking;
+    selectNoneBtn.disabled = sel === 0 || cleanupScanning || cleanupDeleting || repairBlocking;
+    scanBtn.disabled = cleanupScanning || cleanupDeleting || repairBlocking;
     scanBtn.textContent = cleanupScanning ? "Scanning…" : "Scan for orphans";
   }
   function renderCleanupRow(o) {
@@ -5789,6 +5915,158 @@ owner: ${o.ownerCharacterId}` : ""}`;
       type: "delete_orphan_assets",
       imageIds: Array.from(cleanupSelected)
     });
+  });
+  const repairSection = document.createElement("div");
+  repairSection.className = "rs-repair-section";
+  const repairHeader = document.createElement("h3");
+  repairHeader.className = "rs-repair-header";
+  repairHeader.textContent = "Repair extension state";
+  repairSection.appendChild(repairHeader);
+  const repairIntro = document.createElement("p");
+  repairIntro.className = "lr-settings-intro";
+  repairIntro.textContent = "Reconciles regex_scripts rows + image journals + lumirealm envelopes against each other. Use after reinstalling the extension or if cards stop loading correctly.";
+  repairSection.appendChild(repairIntro);
+  const repairScanBtn = document.createElement("button");
+  repairScanBtn.type = "button";
+  repairScanBtn.className = "lrm-btn lrm-btn-primary";
+  repairScanBtn.textContent = "Scan for problems";
+  repairSection.appendChild(repairScanBtn);
+  const repairResultBox = document.createElement("div");
+  repairResultBox.className = "rs-repair-result";
+  repairResultBox.style.display = "none";
+  repairSection.appendChild(repairResultBox);
+  cleanupBody.appendChild(repairSection);
+  const repairChecked = {
+    staleCharRegex: true,
+    staleModuleRegex: true,
+    deadJournals: true,
+    forceRetranslate: false
+  };
+  let repairScanning = false;
+  let repairApplying = false;
+  let repairLastSummary = null;
+  function refreshRepairUi() {
+    repairScanBtn.disabled = repairScanning || repairApplying || cleanupScanning || cleanupDeleting;
+    repairScanBtn.textContent = repairScanning ? "Scanning…" : "Scan for problems";
+    refreshCleanupActionState();
+  }
+  function renderRepairResult() {
+    repairResultBox.replaceChildren();
+    const s = repairLastSummary;
+    if (!s) {
+      repairResultBox.style.display = "none";
+      return;
+    }
+    repairResultBox.style.display = "";
+    const total = s.staleCharRegex + s.staleModuleRegex + s.deadJournals;
+    const summaryLine = document.createElement("div");
+    summaryLine.className = "rs-repair-summary";
+    summaryLine.textContent = total === 0 && s.charactersToRetranslate === 0 ? "No issues detected." : `Scan complete (${s.elapsedMs}ms). Pick what to apply:`;
+    repairResultBox.appendChild(summaryLine);
+    const retranslateLabel = s.charactersToRetranslate === 0 ? "Force re-translate every lumirealm character" : (() => {
+      const parts = [`${s.charactersToRetranslate} char${s.charactersToRetranslate === 1 ? "" : "s"}`];
+      if (s.modulesToReattach > 0)
+        parts.push(`${s.modulesToReattach} module reattach${s.modulesToReattach === 1 ? "" : "es"}`);
+      if (s.danglingModuleRefs > 0)
+        parts.push(`${s.danglingModuleRefs} dangling ref${s.danglingModuleRefs === 1 ? "" : "s"} to scrub`);
+      return `Force re-translate (${parts.join(", ")})`;
+    })();
+    const rows = [
+      { key: "staleCharRegex", label: "Stale character regex rows (envelope gone)", count: s.staleCharRegex, danger: false },
+      { key: "staleModuleRegex", label: "Stale module regex rows (module envelope gone)", count: s.staleModuleRegex, danger: false },
+      { key: "deadJournals", label: "Dead image journals (owner gone)", count: s.deadJournals, danger: false },
+      { key: "forceRetranslate", label: retranslateLabel, count: s.charactersToRetranslate, danger: true }
+    ];
+    const applyBtn = document.createElement("button");
+    applyBtn.type = "button";
+    applyBtn.className = "lrm-btn lrm-btn-danger";
+    applyBtn.textContent = repairApplying ? "Applying…" : "Apply repair";
+    const hasApplicableSelection = () => repairChecked.staleCharRegex && s.staleCharRegex > 0 || repairChecked.staleModuleRegex && s.staleModuleRegex > 0 || repairChecked.deadJournals && s.deadJournals > 0 || repairChecked.forceRetranslate && s.charactersToRetranslate > 0;
+    const refreshApplyBtn = () => {
+      applyBtn.disabled = repairApplying || !hasApplicableSelection();
+    };
+    for (const r of rows) {
+      const row = document.createElement("label");
+      row.className = "rs-repair-row";
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = repairChecked[r.key];
+      cb.disabled = r.count === 0;
+      cb.addEventListener("change", () => {
+        repairChecked[r.key] = cb.checked;
+        refreshApplyBtn();
+      });
+      row.appendChild(cb);
+      const labelText = document.createElement("span");
+      labelText.textContent = r.label;
+      if (r.count === 0)
+        labelText.classList.add("rs-repair-row-empty");
+      if (r.danger)
+        labelText.classList.add("rs-repair-row-danger");
+      row.appendChild(labelText);
+      const countSpan = document.createElement("span");
+      countSpan.className = "rs-repair-count";
+      countSpan.textContent = r.key === "forceRetranslate" ? r.count === 0 ? "—" : `${r.count} chars` : r.count === 0 ? "0" : String(r.count);
+      row.appendChild(countSpan);
+      repairResultBox.appendChild(row);
+    }
+    refreshApplyBtn();
+    applyBtn.addEventListener("click", () => {
+      if (!hasApplicableSelection())
+        return;
+      const willRetranslate = repairChecked.forceRetranslate && s.charactersToRetranslate > 0;
+      const willDeleteRows = repairChecked.staleCharRegex && s.staleCharRegex > 0 || repairChecked.staleModuleRegex && s.staleModuleRegex > 0;
+      const parts = [];
+      if (repairChecked.staleCharRegex && s.staleCharRegex > 0) {
+        parts.push(`delete ${s.staleCharRegex} stale character regex row(s)`);
+      }
+      if (repairChecked.staleModuleRegex && s.staleModuleRegex > 0) {
+        parts.push(`delete ${s.staleModuleRegex} stale module regex row(s)`);
+      }
+      if (repairChecked.deadJournals && s.deadJournals > 0) {
+        parts.push(`clear ${s.deadJournals} dead journal(s)`);
+      }
+      if (willRetranslate) {
+        const retransParts = [`re-translate ${s.charactersToRetranslate} character(s)`];
+        if (s.modulesToReattach > 0)
+          retransParts.push(`reattach ${s.modulesToReattach} module(s)`);
+        if (s.danglingModuleRefs > 0)
+          retransParts.push(`scrub ${s.danglingModuleRefs} dangling ref(s)`);
+        parts.push(retransParts.join(" + ") + " (slow)");
+      }
+      if (!confirm(`Apply repair? This will:
+
+• ${parts.join(`
+• `)}
+
+${willDeleteRows ? "Deleted rows cannot be recovered. " : ""}${willRetranslate ? "Re-translation may take a while for large libraries." : ""}`)) {
+        return;
+      }
+      log.info(`settings-tab: repair apply ${JSON.stringify(repairChecked)}`);
+      repairApplying = true;
+      applyBtn.disabled = true;
+      applyBtn.textContent = "Applying…";
+      sendToBackend({
+        type: "apply_repair",
+        options: {
+          applyStaleCharRegex: repairChecked.staleCharRegex,
+          applyStaleModuleRegex: repairChecked.staleModuleRegex,
+          applyDeadJournals: repairChecked.deadJournals,
+          applyForceRetranslate: repairChecked.forceRetranslate
+        }
+      });
+    });
+    repairResultBox.appendChild(applyBtn);
+  }
+  repairScanBtn.addEventListener("click", () => {
+    if (repairScanning || repairApplying)
+      return;
+    log.info("settings-tab: repair scan requested");
+    repairScanning = true;
+    repairLastSummary = null;
+    repairResultBox.style.display = "none";
+    refreshRepairUi();
+    sendToBackend({ type: "request_repair_scan" });
   });
   const panelsHost = document.createElement("div");
   panelsHost.className = "lr-subtab-panels";
@@ -6269,6 +6547,66 @@ owner: ${o.ownerCharacterId}` : ""}`;
       renderCleanupList();
       refreshCleanupActionState();
       log.info(`settings-tab: orphan_delete_result removed=${removedCount} ` + `failed=${msg.failed} skipped=${msg.skipped} error=${msg.error ?? "<none>"}`);
+      return;
+    }
+    if (msg.type === "repair_scan_result") {
+      repairScanning = false;
+      if (msg.error) {
+        repairLastSummary = null;
+        repairResultBox.style.display = "";
+        repairResultBox.replaceChildren();
+        const errLine = document.createElement("div");
+        errLine.className = "rs-repair-summary rs-repair-error";
+        errLine.textContent = `Scan failed: ${msg.error}`;
+        repairResultBox.appendChild(errLine);
+      } else {
+        repairLastSummary = msg.summary;
+        renderRepairResult();
+      }
+      refreshRepairUi();
+      log.info(`settings-tab: repair_scan_result ${JSON.stringify(msg.summary)} error=${msg.error ?? "<none>"}`);
+      return;
+    }
+    if (msg.type === "repair_apply_result") {
+      repairApplying = false;
+      const r = msg.result;
+      const parts = [];
+      if (r.staleCharRegexDeleted > 0)
+        parts.push(`${r.staleCharRegexDeleted} char regex deleted`);
+      if (r.staleModuleRegexDeleted > 0)
+        parts.push(`${r.staleModuleRegexDeleted} module regex deleted`);
+      if (r.deadJournalsCleared > 0)
+        parts.push(`${r.deadJournalsCleared} journals cleared`);
+      if (r.charactersRetranslated > 0)
+        parts.push(`${r.charactersRetranslated} characters re-translated`);
+      if (r.charactersSkippedLegacy > 0)
+        parts.push(`${r.charactersSkippedLegacy} pre-0.3 cards skipped (need re-import)`);
+      if (r.modulesReattached > 0)
+        parts.push(`${r.modulesReattached} modules reattached`);
+      if (r.modulesScrubbed > 0)
+        parts.push(`${r.modulesScrubbed} dangling refs scrubbed`);
+      const summary = parts.length === 0 ? "Nothing to repair." : parts.join(", ") + ".";
+      repairResultBox.replaceChildren();
+      repairResultBox.style.display = "";
+      const line = document.createElement("div");
+      line.className = msg.error ? "rs-repair-summary rs-repair-error" : "rs-repair-summary";
+      line.textContent = msg.error ? `Repair failed: ${msg.error}. ${summary}` : `Repair complete (${r.elapsedMs}ms): ${summary}`;
+      repairResultBox.appendChild(line);
+      const rescanBtn = document.createElement("button");
+      rescanBtn.type = "button";
+      rescanBtn.className = "lrm-btn";
+      rescanBtn.textContent = "Re-scan";
+      rescanBtn.addEventListener("click", () => {
+        log.info("settings-tab: repair re-scan after apply");
+        repairScanning = true;
+        repairLastSummary = null;
+        repairResultBox.style.display = "none";
+        refreshRepairUi();
+        sendToBackend({ type: "request_repair_scan" });
+      });
+      repairResultBox.appendChild(rescanBtn);
+      refreshRepairUi();
+      log.info(`settings-tab: repair_apply_result ${JSON.stringify(r)} error=${msg.error ?? "<none>"}`);
       return;
     }
     try {
@@ -7634,6 +7972,233 @@ function generateSessionId2() {
   return `mod-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+// src/realm/markdown.ts
+var ALLOWED_TAGS = new Set([
+  "p",
+  "br",
+  "hr",
+  "strong",
+  "b",
+  "em",
+  "i",
+  "u",
+  "s",
+  "del",
+  "code",
+  "pre",
+  "blockquote",
+  "ul",
+  "ol",
+  "li",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+  "a",
+  "img",
+  "span",
+  "div"
+]);
+var DROP_TAGS = new Set([
+  "style",
+  "script",
+  "noscript",
+  "template",
+  "iframe",
+  "object",
+  "embed",
+  "head",
+  "title",
+  "meta",
+  "link",
+  "base"
+]);
+var ALLOWED_ATTRS_PER_TAG = {
+  a: new Set(["href", "title"]),
+  img: new Set(["src", "alt", "title"])
+};
+var ALLOWED_URL_SCHEMES = new Set(["http:", "https:", "mailto:"]);
+function escapeHtml(s) {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+function inlineMarkdown(input) {
+  let out = input;
+  out = out.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_m, alt, src) => {
+    return `<img src="${escapeHtml(src)}" alt="${escapeHtml(alt)}">`;
+  });
+  out = out.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_m, text, href) => {
+    return `<a href="${escapeHtml(href)}">${escapeHtml(text)}</a>`;
+  });
+  out = out.replace(/`([^`\n]+)`/g, (_m, code) => `<code>${escapeHtml(code)}</code>`);
+  out = out.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
+  out = out.replace(/__([^_\n]+)__/g, "<strong>$1</strong>");
+  out = out.replace(/\*([^*\n]+)\*/g, "<em>$1</em>");
+  out = out.replace(/(^|\W)_([^_\n]+)_(?=\W|$)/g, "$1<em>$2</em>");
+  out = out.replace(/~~([^~\n]+)~~/g, "<del>$1</del>");
+  return out;
+}
+function blockMarkdownToHtml(input) {
+  if (!input)
+    return "";
+  if (containsHtmlTags(input))
+    return input;
+  const lines = input.replace(/\r\n?/g, `
+`).split(`
+`);
+  const out = [];
+  let i = 0;
+  let para = [];
+  const flushPara = () => {
+    if (para.length === 0)
+      return;
+    const joined = para.join(`
+`).trim();
+    if (joined) {
+      const withBreaks = joined.replace(/\n/g, "<br>");
+      out.push(`<p>${inlineMarkdown(escapeHtml(withBreaks).replace(/&lt;br&gt;/g, "<br>"))}</p>`);
+    }
+    para = [];
+  };
+  while (i < lines.length) {
+    const line = lines[i] ?? "";
+    const trimmed = line.trim();
+    if (trimmed.length === 0) {
+      flushPara();
+      i += 1;
+      continue;
+    }
+    const heading = /^(#{1,6})\s+(.*)$/.exec(trimmed);
+    if (heading && heading[1] && heading[2] !== undefined) {
+      flushPara();
+      const level = heading[1].length;
+      out.push(`<h${level}>${inlineMarkdown(escapeHtml(heading[2]))}</h${level}>`);
+      i += 1;
+      continue;
+    }
+    if (/^(?:-{3,}|\*{3,}|_{3,})$/.test(trimmed)) {
+      flushPara();
+      out.push("<hr>");
+      i += 1;
+      continue;
+    }
+    if (/^>\s?/.test(trimmed)) {
+      flushPara();
+      const buf = [];
+      while (i < lines.length && /^>\s?/.test((lines[i] ?? "").trim())) {
+        buf.push((lines[i] ?? "").trim().replace(/^>\s?/, ""));
+        i += 1;
+      }
+      out.push(`<blockquote>${inlineMarkdown(escapeHtml(buf.join(`
+`).replace(/\n/g, "<br>")).replace(/&lt;br&gt;/g, "<br>"))}</blockquote>`);
+      continue;
+    }
+    const ulMatch = /^(?:[-*+])\s+(.*)$/.exec(trimmed);
+    const olMatch = /^\d+\.\s+(.*)$/.exec(trimmed);
+    if (ulMatch || olMatch) {
+      flushPara();
+      const isOrdered = !!olMatch;
+      const items = [];
+      while (i < lines.length) {
+        const cur = (lines[i] ?? "").trim();
+        const m = isOrdered ? /^\d+\.\s+(.*)$/.exec(cur) : /^(?:[-*+])\s+(.*)$/.exec(cur);
+        if (!m)
+          break;
+        items.push(`<li>${inlineMarkdown(escapeHtml(m[1] ?? ""))}</li>`);
+        i += 1;
+      }
+      out.push(`<${isOrdered ? "ol" : "ul"}>${items.join("")}</${isOrdered ? "ol" : "ul"}>`);
+      continue;
+    }
+    para.push(line);
+    i += 1;
+  }
+  flushPara();
+  return out.join(`
+`);
+}
+function containsHtmlTags(s) {
+  return /<[a-z][a-z0-9-]*(\s|>|\/)/i.test(s);
+}
+function isAllowedUrl(url) {
+  try {
+    const trimmed = url.trim();
+    if (trimmed.startsWith("#") || trimmed.startsWith("/"))
+      return true;
+    const parsed = new URL(trimmed, "https://example.invalid/");
+    return ALLOWED_URL_SCHEMES.has(parsed.protocol);
+  } catch {
+    return false;
+  }
+}
+function sanitizeNode(input, target, doc) {
+  const node = input;
+  if (node.nodeType === Node.TEXT_NODE) {
+    target.appendChild(doc.createTextNode(node.data));
+    return;
+  }
+  if (node.nodeType !== Node.ELEMENT_NODE)
+    return;
+  const el = node;
+  const tagName = el.tagName.toLowerCase();
+  if (DROP_TAGS.has(tagName))
+    return;
+  if (!ALLOWED_TAGS.has(tagName)) {
+    for (const child of Array.from(el.childNodes)) {
+      sanitizeNode(child, target, doc);
+    }
+    return;
+  }
+  const cleanEl = doc.createElement(tagName);
+  const allowedAttrs = ALLOWED_ATTRS_PER_TAG[tagName];
+  if (allowedAttrs) {
+    for (const attr of Array.from(el.attributes)) {
+      const name = attr.name.toLowerCase();
+      if (!allowedAttrs.has(name))
+        continue;
+      if (name === "href" || name === "src") {
+        if (!isAllowedUrl(attr.value))
+          continue;
+      }
+      cleanEl.setAttribute(name, attr.value);
+    }
+  }
+  if (tagName === "a") {
+    cleanEl.setAttribute("rel", "noopener noreferrer nofollow");
+    cleanEl.setAttribute("target", "_blank");
+  }
+  if (tagName === "img") {
+    cleanEl.setAttribute("loading", "lazy");
+    cleanEl.setAttribute("referrerpolicy", "no-referrer");
+  }
+  for (const child of Array.from(el.childNodes)) {
+    sanitizeNode(child, cleanEl, doc);
+  }
+  target.appendChild(cleanEl);
+}
+function renderDescription(raw) {
+  const doc = document;
+  const frag = doc.createDocumentFragment();
+  if (!raw)
+    return frag;
+  const html = blockMarkdownToHtml(raw);
+  const parsed = new DOMParser().parseFromString(`<div id="root">${html}</div>`, "text/html");
+  const sourceRoot = parsed.getElementById("root");
+  if (!sourceRoot) {
+    frag.appendChild(doc.createTextNode(raw));
+    return frag;
+  }
+  const wrapper = doc.createElement("div");
+  for (const child of Array.from(sourceRoot.childNodes)) {
+    sanitizeNode(child, wrapper, doc);
+  }
+  for (const child of Array.from(wrapper.childNodes)) {
+    frag.appendChild(child);
+  }
+  return frag;
+}
+
 // src/ui/viewer-tab.ts
 var MAX_ASSET_MB = 50;
 var MAX_ASSET_BYTES = MAX_ASSET_MB * 1024 * 1024;
@@ -7648,7 +8213,9 @@ function mountViewerPanel(opts) {
   let viewerData = null;
   let loading = false;
   let lastError = null;
-  let activeSubTab = "assets";
+  let activeSubTab = "notes";
+  let activeCharacterId = null;
+  let pendingAutoSwitch = false;
   const ASSET_TILE_MIN_W = 140;
   const ASSET_TILE_H = 220;
   const ASSET_OVERSCAN_ROWS = 2;
@@ -7695,6 +8262,36 @@ function mountViewerPanel(opts) {
   refreshBtn.textContent = "Refresh";
   refreshBtn.title = "Re-fetch the selected source.";
   toolbar.appendChild(refreshBtn);
+  const currentBtn = document.createElement("button");
+  currentBtn.type = "button";
+  currentBtn.className = "lrv-current-btn";
+  currentBtn.textContent = "Current";
+  currentBtn.title = "Switch to the character of the open chat.";
+  currentBtn.addEventListener("click", () => {
+    if (!activeCharacterId)
+      return;
+    selectToCharacter(activeCharacterId, "click");
+  });
+  toolbar.appendChild(currentBtn);
+  function updateCurrentBtn() {
+    const inLibrary = !!activeCharacterId && cards.some((c) => c.character_id === activeCharacterId);
+    currentBtn.disabled = !inLibrary;
+    currentBtn.style.display = activeCharacterId ? "" : "none";
+  }
+  function selectToCharacter(characterId, reason) {
+    if (!cards.some((c) => c.character_id === characterId))
+      return false;
+    const key = `character::${characterId}`;
+    if (selectedSourceKey === key)
+      return true;
+    log.info(`viewer-panel: select character=${characterId} reason=${reason}`);
+    selectedSourceKey = key;
+    sourceSelect.setValue(key);
+    const o = parseSourceKey(key);
+    if (o)
+      requestForSelection(o);
+    return true;
+  }
   root.appendChild(toolbar);
   const status = document.createElement("div");
   status.className = "lrv-status";
@@ -7801,7 +8398,13 @@ function mountViewerPanel(opts) {
     loading = true;
     viewerData = null;
     lastError = null;
-    activeSubTab = "assets";
+    editingTriggerIndex = null;
+    editingTriggerLua = "";
+    editingBackgroundHtml = false;
+    editingBackgroundHtmlBuffer = "";
+    renamingAssetName = null;
+    assetSearchTerm = "";
+    activeSubTab = o.kind === "character" ? "notes" : "assets";
     assetPagesShown = 1;
     renderStatus();
     renderSurfaces();
@@ -7847,6 +8450,14 @@ function mountViewerPanel(opts) {
   function buildSubTabs(d) {
     const isCharacter = d.source.kind === "character";
     const tabs = [];
+    const notes = d.creatorNotes ?? "";
+    if (isCharacter && notes.trim().length > 0) {
+      tabs.push({
+        id: "notes",
+        label: "Notes",
+        render: () => renderNotesSection(notes)
+      });
+    }
     tabs.push({
       id: "assets",
       label: "Assets",
@@ -7935,6 +8546,15 @@ function mountViewerPanel(opts) {
     surfaceHost.appendChild(renderSubTabBar(tabs));
     const active = tabs.find((t) => t.id === activeSubTab) ?? tabs[0];
     surfaceHost.appendChild(active.render());
+  }
+  function renderNotesSection(notes) {
+    const det = document.createElement("section");
+    det.className = "lrv-notes";
+    const body = document.createElement("div");
+    body.className = "lrv-notes-body";
+    body.appendChild(renderDescription(notes));
+    det.appendChild(body);
+    return det;
   }
   function renderBackgroundHtmlSection(html) {
     const det = document.createElement("section");
@@ -8947,16 +9567,40 @@ function mountViewerPanel(opts) {
   });
   function handleBackendMessage(msg) {
     switch (msg.type) {
-      case "cards_updated":
+      case "set_active_chat": {
+        const next = msg.characterId ?? null;
+        if (next === activeCharacterId)
+          break;
+        activeCharacterId = next;
+        updateCurrentBtn();
+        pendingAutoSwitch = false;
+        if (next !== null) {
+          const switched = selectToCharacter(next, "set_active_chat");
+          pendingAutoSwitch = !switched;
+        }
+        break;
+      }
+      case "cards_updated": {
         cards = msg.cards;
+        const keyBeforeRebuild = selectedSourceKey;
         rebuildSourceSelect();
+        updateCurrentBtn();
         render();
-        if (selectedSourceKey !== null) {
+        let switched = false;
+        if (pendingAutoSwitch && activeCharacterId !== null) {
+          switched = selectToCharacter(activeCharacterId, "cards_updated");
+          if (switched)
+            pendingAutoSwitch = false;
+        }
+        const rebuildPickedFresh = selectedSourceKey !== null && (keyBeforeRebuild === null || keyBeforeRebuild !== selectedSourceKey);
+        const rebuildIssuedFetch = rebuildPickedFresh && !switched;
+        if (selectedSourceKey !== null && !switched && !rebuildIssuedFetch) {
           const o = parseSourceKey(selectedSourceKey);
           if (o?.kind === "character")
             requestForSelection(o);
         }
         break;
+      }
       case "modules_pushed": {
         modules = msg.modules;
         const affectedChars = new Set;
@@ -9031,6 +9675,7 @@ function mountViewerPanel(opts) {
   }
   sendToBackend({ type: "get_cards" });
   sendToBackend({ type: "request_modules" });
+  updateCurrentBtn();
   render();
   log.info("viewer-panel: ready");
   return { handleBackendMessage, destroy };
@@ -13137,217 +13782,6 @@ var styles_default2 = `.lr-realm-launcher {\r
 // src/realm/styles.ts
 var REALM_STYLES = styles_default2;
 
-// src/realm/markdown.ts
-var ALLOWED_TAGS = new Set([
-  "p",
-  "br",
-  "hr",
-  "strong",
-  "b",
-  "em",
-  "i",
-  "u",
-  "s",
-  "del",
-  "code",
-  "pre",
-  "blockquote",
-  "ul",
-  "ol",
-  "li",
-  "h1",
-  "h2",
-  "h3",
-  "h4",
-  "h5",
-  "h6",
-  "a",
-  "img",
-  "span",
-  "div"
-]);
-var ALLOWED_ATTRS_PER_TAG = {
-  a: new Set(["href", "title"]),
-  img: new Set(["src", "alt", "title"])
-};
-var ALLOWED_URL_SCHEMES = new Set(["http:", "https:", "mailto:"]);
-function escapeHtml(s) {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
-}
-function inlineMarkdown(input) {
-  let out = input;
-  out = out.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_m, alt, src) => {
-    return `<img src="${escapeHtml(src)}" alt="${escapeHtml(alt)}">`;
-  });
-  out = out.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_m, text, href) => {
-    return `<a href="${escapeHtml(href)}">${escapeHtml(text)}</a>`;
-  });
-  out = out.replace(/`([^`\n]+)`/g, (_m, code) => `<code>${escapeHtml(code)}</code>`);
-  out = out.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
-  out = out.replace(/__([^_\n]+)__/g, "<strong>$1</strong>");
-  out = out.replace(/\*([^*\n]+)\*/g, "<em>$1</em>");
-  out = out.replace(/(^|\W)_([^_\n]+)_(?=\W|$)/g, "$1<em>$2</em>");
-  out = out.replace(/~~([^~\n]+)~~/g, "<del>$1</del>");
-  return out;
-}
-function blockMarkdownToHtml(input) {
-  if (!input)
-    return "";
-  if (containsHtmlTags(input))
-    return input;
-  const lines = input.replace(/\r\n?/g, `
-`).split(`
-`);
-  const out = [];
-  let i = 0;
-  let para = [];
-  const flushPara = () => {
-    if (para.length === 0)
-      return;
-    const joined = para.join(`
-`).trim();
-    if (joined) {
-      const withBreaks = joined.replace(/\n/g, "<br>");
-      out.push(`<p>${inlineMarkdown(escapeHtml(withBreaks).replace(/&lt;br&gt;/g, "<br>"))}</p>`);
-    }
-    para = [];
-  };
-  while (i < lines.length) {
-    const line = lines[i] ?? "";
-    const trimmed = line.trim();
-    if (trimmed.length === 0) {
-      flushPara();
-      i += 1;
-      continue;
-    }
-    const heading = /^(#{1,6})\s+(.*)$/.exec(trimmed);
-    if (heading && heading[1] && heading[2] !== undefined) {
-      flushPara();
-      const level = heading[1].length;
-      out.push(`<h${level}>${inlineMarkdown(escapeHtml(heading[2]))}</h${level}>`);
-      i += 1;
-      continue;
-    }
-    if (/^(?:-{3,}|\*{3,}|_{3,})$/.test(trimmed)) {
-      flushPara();
-      out.push("<hr>");
-      i += 1;
-      continue;
-    }
-    if (/^>\s?/.test(trimmed)) {
-      flushPara();
-      const buf = [];
-      while (i < lines.length && /^>\s?/.test((lines[i] ?? "").trim())) {
-        buf.push((lines[i] ?? "").trim().replace(/^>\s?/, ""));
-        i += 1;
-      }
-      out.push(`<blockquote>${inlineMarkdown(escapeHtml(buf.join(`
-`).replace(/\n/g, "<br>")).replace(/&lt;br&gt;/g, "<br>"))}</blockquote>`);
-      continue;
-    }
-    const ulMatch = /^(?:[-*+])\s+(.*)$/.exec(trimmed);
-    const olMatch = /^\d+\.\s+(.*)$/.exec(trimmed);
-    if (ulMatch || olMatch) {
-      flushPara();
-      const isOrdered = !!olMatch;
-      const items = [];
-      while (i < lines.length) {
-        const cur = (lines[i] ?? "").trim();
-        const m = isOrdered ? /^\d+\.\s+(.*)$/.exec(cur) : /^(?:[-*+])\s+(.*)$/.exec(cur);
-        if (!m)
-          break;
-        items.push(`<li>${inlineMarkdown(escapeHtml(m[1] ?? ""))}</li>`);
-        i += 1;
-      }
-      out.push(`<${isOrdered ? "ol" : "ul"}>${items.join("")}</${isOrdered ? "ol" : "ul"}>`);
-      continue;
-    }
-    para.push(line);
-    i += 1;
-  }
-  flushPara();
-  return out.join(`
-`);
-}
-function containsHtmlTags(s) {
-  return /<[a-z][a-z0-9-]*(\s|>|\/)/i.test(s);
-}
-function isAllowedUrl(url) {
-  try {
-    const trimmed = url.trim();
-    if (trimmed.startsWith("#") || trimmed.startsWith("/"))
-      return true;
-    const parsed = new URL(trimmed, "https://example.invalid/");
-    return ALLOWED_URL_SCHEMES.has(parsed.protocol);
-  } catch {
-    return false;
-  }
-}
-function sanitizeNode(input, target, doc) {
-  const node = input;
-  if (node.nodeType === Node.TEXT_NODE) {
-    target.appendChild(doc.createTextNode(node.data));
-    return;
-  }
-  if (node.nodeType !== Node.ELEMENT_NODE)
-    return;
-  const el = node;
-  const tagName = el.tagName.toLowerCase();
-  if (!ALLOWED_TAGS.has(tagName)) {
-    for (const child of Array.from(el.childNodes)) {
-      sanitizeNode(child, target, doc);
-    }
-    return;
-  }
-  const cleanEl = doc.createElement(tagName);
-  const allowedAttrs = ALLOWED_ATTRS_PER_TAG[tagName];
-  if (allowedAttrs) {
-    for (const attr of Array.from(el.attributes)) {
-      const name = attr.name.toLowerCase();
-      if (!allowedAttrs.has(name))
-        continue;
-      if (name === "href" || name === "src") {
-        if (!isAllowedUrl(attr.value))
-          continue;
-      }
-      cleanEl.setAttribute(name, attr.value);
-    }
-  }
-  if (tagName === "a") {
-    cleanEl.setAttribute("rel", "noopener noreferrer nofollow");
-    cleanEl.setAttribute("target", "_blank");
-  }
-  if (tagName === "img") {
-    cleanEl.setAttribute("loading", "lazy");
-    cleanEl.setAttribute("referrerpolicy", "no-referrer");
-  }
-  for (const child of Array.from(el.childNodes)) {
-    sanitizeNode(child, cleanEl, doc);
-  }
-  target.appendChild(cleanEl);
-}
-function renderDescription(raw) {
-  const doc = document;
-  const frag = doc.createDocumentFragment();
-  if (!raw)
-    return frag;
-  const html = blockMarkdownToHtml(raw);
-  const parsed = new DOMParser().parseFromString(`<div id="root">${html}</div>`, "text/html");
-  const sourceRoot = parsed.getElementById("root");
-  if (!sourceRoot) {
-    frag.appendChild(doc.createTextNode(raw));
-    return frag;
-  }
-  const wrapper = doc.createElement("div");
-  for (const child of Array.from(sourceRoot.childNodes)) {
-    sanitizeNode(child, wrapper, doc);
-  }
-  for (const child of Array.from(wrapper.childNodes)) {
-    frag.appendChild(child);
-  }
-  return frag;
-}
-
 // src/realm/frontend.ts
 function isRealmBackendMessage(msg) {
   return msg.type === "realm_search_result" || msg.type === "realm_info_result" || msg.type === "realm_download_started";
@@ -15061,6 +15495,7 @@ function setup(ctx) {
         if (sidebar)
           sidebar.setActiveChatId(activeRisuChatId);
       }
+      sidebar?.handleBackendMessage(msg);
       return;
     }
     if (msg.type === "render_bg_html" || msg.type === "clear_bg_html") {

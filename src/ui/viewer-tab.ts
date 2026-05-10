@@ -22,6 +22,7 @@ import {
 } from './translate-orchestrator.js';
 import { dominantScriptLang } from './browser-translator.js';
 import { createSearchableSelect, type SearchableSelectItem } from './searchable-select.js';
+import { renderDescription } from '../realm/markdown.js';
 
 // Viewer for both characters and standalone .risum modules.
 // Mounts into a host element provided by ui/sidebar.ts.
@@ -66,8 +67,13 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
   // Import → Lorebooks in Phase E. The 'defaults' subtab no longer renders
   // here , `_risu_decorators` lookups still go through the viewer-data API
   // for character introspection, but the editor is gone.
-  type ViewerSubTab = 'assets' | 'triggers' | 'lorebook' | 'regex' | 'background' | 'cjs';
-  let activeSubTab: ViewerSubTab = 'assets';
+  type ViewerSubTab = 'notes' | 'assets' | 'triggers' | 'lorebook' | 'regex' | 'background' | 'cjs';
+  let activeSubTab: ViewerSubTab = 'notes';
+  // Mirrors `set_active_chat.characterId`. Drives the Current button + auto-switch.
+  let activeCharacterId: string | null = null;
+  // True when set_active_chat fired with a characterId not yet in `cards`.
+  // The next cards_updated retries the switch, then clears the flag.
+  let pendingAutoSwitch = false;
   // Asset virtualization , only the visible window of tiles is mounted at any
   // time. Module-grade asset counts (Cheongwon ships 1500+) used to require
   // pagination; now scrolling reveals tiles on demand without DOM blowup.
@@ -125,6 +131,35 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
   refreshBtn.textContent = 'Refresh';
   refreshBtn.title = 'Re-fetch the selected source.';
   toolbar.appendChild(refreshBtn);
+
+  const currentBtn = document.createElement('button');
+  currentBtn.type = 'button';
+  currentBtn.className = 'lrv-current-btn';
+  currentBtn.textContent = 'Current';
+  currentBtn.title = 'Switch to the character of the open chat.';
+  currentBtn.addEventListener('click', () => {
+    if (!activeCharacterId) return;
+    selectToCharacter(activeCharacterId, 'click');
+  });
+  toolbar.appendChild(currentBtn);
+
+  function updateCurrentBtn(): void {
+    const inLibrary = !!activeCharacterId && cards.some((c) => c.character_id === activeCharacterId);
+    currentBtn.disabled = !inLibrary;
+    currentBtn.style.display = activeCharacterId ? '' : 'none';
+  }
+
+  function selectToCharacter(characterId: string, reason: string): boolean {
+    if (!cards.some((c) => c.character_id === characterId)) return false;
+    const key = `character::${characterId}`;
+    if (selectedSourceKey === key) return true;
+    log.info(`viewer-panel: select character=${characterId} reason=${reason}`);
+    selectedSourceKey = key;
+    sourceSelect.setValue(key);
+    const o = parseSourceKey(key);
+    if (o) requestForSelection(o);
+    return true;
+  }
 
   root.appendChild(toolbar);
 
@@ -235,7 +270,16 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
     loading = true;
     viewerData = null;
     lastError = null;
-    activeSubTab = 'assets';
+    // Drop unsaved per-source editor state so a chat-switch auto-follow or
+    // manual dropdown change doesn't keep stale buffers around.
+    editingTriggerIndex = null;
+    editingTriggerLua = '';
+    editingBackgroundHtml = false;
+    editingBackgroundHtmlBuffer = '';
+    renamingAssetName = null;
+    assetSearchTerm = '';
+    // Modules have no creator notes, jump straight to Assets.
+    activeSubTab = o.kind === 'character' ? 'notes' : 'assets';
     assetPagesShown = 1;
     renderStatus();
     renderSurfaces();
@@ -296,6 +340,14 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
   function buildSubTabs(d: import('../types/messages.js').ViewerData): readonly SubTabSpec[] {
     const isCharacter = d.source.kind === 'character';
     const tabs: SubTabSpec[] = [];
+    const notes = d.creatorNotes ?? '';
+    if (isCharacter && notes.trim().length > 0) {
+      tabs.push({
+        id: 'notes',
+        label: 'Notes',
+        render: () => renderNotesSection(notes),
+      });
+    }
     tabs.push({
       id: 'assets',
       label: 'Assets',
@@ -386,6 +438,16 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
 
     const active = tabs.find((t) => t.id === activeSubTab) ?? tabs[0]!;
     surfaceHost.appendChild(active.render());
+  }
+
+  function renderNotesSection(notes: string): HTMLElement {
+    const det = document.createElement('section');
+    det.className = 'lrv-notes';
+    const body = document.createElement('div');
+    body.className = 'lrv-notes-body';
+    body.appendChild(renderDescription(notes));
+    det.appendChild(body);
+    return det;
   }
 
   function renderBackgroundHtmlSection(html: string): HTMLElement {
@@ -1443,15 +1505,42 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
 
   function handleBackendMessage(msg: BackendToFrontend): void {
     switch (msg.type) {
-      case 'cards_updated':
+      case 'set_active_chat': {
+        const next = msg.characterId ?? null;
+        if (next === activeCharacterId) break;
+        activeCharacterId = next;
+        updateCurrentBtn();
+        pendingAutoSwitch = false;
+        if (next !== null) {
+          const switched = selectToCharacter(next, 'set_active_chat');
+          pendingAutoSwitch = !switched;
+        }
+        break;
+      }
+      case 'cards_updated': {
         cards = msg.cards;
+        const keyBeforeRebuild = selectedSourceKey;
         rebuildSourceSelect();
+        updateCurrentBtn();
         render();
-        if (selectedSourceKey !== null) {
+        let switched = false;
+        if (pendingAutoSwitch && activeCharacterId !== null) {
+          switched = selectToCharacter(activeCharacterId, 'cards_updated');
+          if (switched) pendingAutoSwitch = false;
+        }
+        // rebuildSourceSelect issues requestForSelection in two cases: no prior
+        // selection, OR prior selection no longer in the new options. Skip the
+        // trailing re-fetch when either rebuild or auto-switch already issued.
+        const rebuildPickedFresh =
+          selectedSourceKey !== null
+          && (keyBeforeRebuild === null || keyBeforeRebuild !== selectedSourceKey);
+        const rebuildIssuedFetch = rebuildPickedFresh && !switched;
+        if (selectedSourceKey !== null && !switched && !rebuildIssuedFetch) {
           const o = parseSourceKey(selectedSourceKey);
           if (o?.kind === 'character') requestForSelection(o);
         }
         break;
+      }
       case 'modules_pushed': {
         modules = msg.modules;
         const affectedChars = new Set<string>();
@@ -1530,6 +1619,7 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
   sendToBackend({ type: 'get_cards' });
   sendToBackend({ type: 'request_modules' });
 
+  updateCurrentBtn();
   render();
   log.info('viewer-panel: ready');
 

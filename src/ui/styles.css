@@ -1174,6 +1174,54 @@
   font-size: 12px;
   color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.65));
 }
+
+.risu-settings-drawer .rs-repair-section {
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid var(--lumiverse-border, rgba(255, 255, 255, 0.08));
+}
+.risu-settings-drawer .rs-repair-header {
+  font-size: 14px;
+  font-weight: 600;
+  margin: 0 0 6px;
+  color: var(--lumiverse-text, inherit);
+}
+.risu-settings-drawer .rs-repair-result {
+  margin-top: 12px;
+  padding: 10px 12px;
+  background: rgba(0, 0, 0, 0.18);
+  border: 1px solid var(--lumiverse-border, rgba(255, 255, 255, 0.06));
+  border-radius: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.risu-settings-drawer .rs-repair-summary {
+  font-size: 12px;
+  color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.7));
+}
+.risu-settings-drawer .rs-repair-error {
+  color: var(--lumiverse-danger, rgba(255, 130, 130, 0.95));
+}
+.risu-settings-drawer .rs-repair-row {
+  display: grid;
+  grid-template-columns: 20px 1fr auto;
+  gap: 8px;
+  align-items: center;
+  font-size: 12px;
+  padding: 4px 0;
+}
+.risu-settings-drawer .rs-repair-row-empty {
+  color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.4));
+}
+.risu-settings-drawer .rs-repair-row-danger {
+  color: var(--lumiverse-warning, rgba(255, 200, 120, 0.9));
+}
+.risu-settings-drawer .rs-repair-count {
+  font-variant-numeric: tabular-nums;
+  color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.55));
+  font-size: 11px;
+}
 .risu-settings-drawer .rs-cleanup-list {
   max-height: 60vh;
   overflow-y: auto;
@@ -2154,6 +2202,83 @@
 .lr-viewer-drawer .lrv-btn:hover {
   background: var(--lumiverse-fill, rgba(255, 255, 255, 0.08));
   border-color: var(--lumiverse-primary, rgba(120, 160, 255, 0.55));
+}
+.lr-viewer-drawer .lrv-current-btn {
+  appearance: none;
+  border: 0;
+  background: var(--lumiverse-primary, #5b8cff);
+  color: #ffffff;
+  border-radius: 4px;
+  padding: 6px 10px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.lr-viewer-drawer .lrv-current-btn:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+.lr-viewer-drawer .lrv-current-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.lr-viewer-drawer .lrv-notes {
+  padding: 4px 12px 12px;
+}
+.lr-viewer-drawer .lrv-notes-body {
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--lumiverse-text, inherit);
+}
+.lr-viewer-drawer .lrv-notes-body p { margin: 0 0 0.7em; }
+.lr-viewer-drawer .lrv-notes-body p:last-child { margin-bottom: 0; }
+.lr-viewer-drawer .lrv-notes-body h1,
+.lr-viewer-drawer .lrv-notes-body h2,
+.lr-viewer-drawer .lrv-notes-body h3,
+.lr-viewer-drawer .lrv-notes-body h4,
+.lr-viewer-drawer .lrv-notes-body h5,
+.lr-viewer-drawer .lrv-notes-body h6 {
+  margin: 0.9em 0 0.4em;
+  font-weight: 600;
+  line-height: 1.3;
+}
+.lr-viewer-drawer .lrv-notes-body h1 { font-size: 1.35em; }
+.lr-viewer-drawer .lrv-notes-body h2 { font-size: 1.2em; }
+.lr-viewer-drawer .lrv-notes-body h3 { font-size: 1.08em; }
+.lr-viewer-drawer .lrv-notes-body h4,
+.lr-viewer-drawer .lrv-notes-body h5,
+.lr-viewer-drawer .lrv-notes-body h6 { font-size: 1em; }
+.lr-viewer-drawer .lrv-notes-body ul,
+.lr-viewer-drawer .lrv-notes-body ol { margin: 0 0 0.7em 1.4em; padding: 0; }
+.lr-viewer-drawer .lrv-notes-body li { margin: 0.15em 0; }
+.lr-viewer-drawer .lrv-notes-body code {
+  background: var(--lumiverse-fill-subtle, rgba(255, 255, 255, 0.06));
+  border: 1px solid var(--lumiverse-border, rgba(255, 255, 255, 0.08));
+  border-radius: 3px;
+  padding: 1px 4px;
+  font-size: 0.9em;
+}
+.lr-viewer-drawer .lrv-notes-body blockquote {
+  margin: 0 0 0.7em;
+  padding: 4px 10px;
+  border-left: 3px solid var(--lumiverse-primary, rgba(120, 160, 255, 0.4));
+  color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.7));
+  background: var(--lumiverse-fill-subtle, rgba(255, 255, 255, 0.03));
+  border-radius: 0 4px 4px 0;
+}
+.lr-viewer-drawer .lrv-notes-body a {
+  color: var(--lumiverse-primary, #5b8cff);
+  text-decoration: underline;
+}
+.lr-viewer-drawer .lrv-notes-body img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 4px;
+}
+.lr-viewer-drawer .lrv-notes-body hr {
+  border: 0;
+  border-top: 1px solid var(--lumiverse-border, rgba(255, 255, 255, 0.1));
+  margin: 1em 0;
 }
 .lr-viewer-drawer .lrv-status {
   font-size: 11px;

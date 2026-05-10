@@ -50,6 +50,43 @@ export interface OrphanAssetEntry {
   readonly createdAt: number;
 }
 
+export interface RepairScanSummary {
+  /** regex_scripts rows whose `metadata._risu.module_id` is not in the live module library. */
+  readonly staleModuleRegex: number;
+  /** regex_scripts rows whose owning character has no `extensions.lumirealm` blob. */
+  readonly staleCharRegex: number;
+  /** Image journals (character + module) whose owner is gone. */
+  readonly deadJournals: number;
+  /** Lumirealm characters that would have their translator_schema_version reset to 0. */
+  readonly charactersToRetranslate: number;
+  /** (char, module) pairs where the module envelope exists, will detach + reattach. */
+  readonly modulesToReattach: number;
+  /** (char, module) pairs where the module envelope is missing, will scrub the reference. */
+  readonly danglingModuleRefs: number;
+  readonly elapsedMs: number;
+}
+
+export interface RepairApplyOptions {
+  readonly applyStaleModuleRegex: boolean;
+  readonly applyStaleCharRegex: boolean;
+  readonly applyDeadJournals: boolean;
+  readonly applyForceRetranslate: boolean;
+}
+
+export interface RepairApplyResult {
+  readonly staleModuleRegexDeleted: number;
+  readonly staleCharRegexDeleted: number;
+  readonly deadJournalsCleared: number;
+  readonly charactersRetranslated: number;
+  /** Pre-0.3 characters skipped because they have no source for re-translation. */
+  readonly charactersSkippedLegacy: number;
+  /** (char, module) pairs that were detached + reattached. Only set when applyForceRetranslate is true. */
+  readonly modulesReattached: number;
+  /** (char, module) pairs where the module envelope was missing, scrubbed. Only set when applyForceRetranslate is true. */
+  readonly modulesScrubbed: number;
+  readonly elapsedMs: number;
+}
+
 export interface PendingRegexScriptMsg {
   readonly name: string;
   readonly script_id: string;
@@ -353,6 +390,8 @@ export type FrontendToBackend =
     }
   | { type: 'request_orphan_scan' }
   | { type: 'delete_orphan_assets'; imageIds: readonly string[] }
+  | { type: 'request_repair_scan' }
+  | { type: 'apply_repair'; options: RepairApplyOptions }
   | { type: 'log_request_state' }
   | {
       type: 'log_set_state';
@@ -438,6 +477,9 @@ export type BackendToFrontend =
   | {
       type: 'set_active_chat';
       chatId: string | null;
+      /** Character owning the active chat (lumirealm characters only). `null`
+       *  when chatId is null OR the chat belongs to a non-lumirealm character. */
+      characterId?: string | null;
     }
   // Pushed on every state-tick. `defaults` is character-level `defaultVariables`
   // (Risu's `getChatVar` fallback when key unset).
@@ -676,6 +718,16 @@ export type BackendToFrontend =
       error?: string;
     }
   | {
+      type: 'repair_scan_result';
+      summary: RepairScanSummary;
+      error?: string;
+    }
+  | {
+      type: 'repair_apply_result';
+      result: RepairApplyResult;
+      error?: string;
+    }
+  | {
       type: 'log_state_pushed';
       enabled: boolean;
       includeChatData: boolean;
@@ -802,6 +854,8 @@ export interface ViewerData {
    *  lorebook viewer can't render order-correctly without source-backed v6
    *  backfill, so the FE surfaces a re-import notice instead. */
   readonly lorebookNeedsReimport?: boolean;
+  /** Character-only `creator_notes`, rendered in the Overview tab. */
+  readonly creatorNotes?: string;
 }
 
 export interface ViewerDefaultVariable {
