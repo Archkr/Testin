@@ -8,16 +8,13 @@ import {
   type RealmBackendHandle,
 } from './realm/backend.js';
 import type { RealmBackendToFrontend } from './realm/messages.js';
-import type { AssetIndexEntry, StoredRisuCard } from './payload/types.js';
+import type { StoredRisuCard } from './payload/types.js';
 import { CURRENT_CHARACTER_SCHEMA_VERSION } from './state/translator-migrations.js';
 import { CURRENT_MODULE_SCHEMA_VERSION } from './state/module-migrations.js';
-import {
-  type UserStorageLike,
-} from './payload/installer.js';
+import { type UserStorageLike } from './payload/installer.js';
 import {
   preValidateRequires,
   RisuCompatVersionError,
-  RisuConsentDeclinedError,
 } from './payload/codec.js';
 import {
   readLumirealm,
@@ -27,23 +24,9 @@ import {
   listLumirealmCharacters,
   buildSyntheticStoredCard,
   mergeUserOverrides,
-  buildAttachModulePatch,
   buildDetachModulesPatch,
   type SpindleCharactersApi,
 } from './state/lumirealm-character.js';
-import {
-  migrateCharacterIfNeeded,
-  type MigrationDeps,
-} from './state/translator-migrations.js';
-import {
-  readMigrationState,
-  writeMigrationState,
-} from './state/migration-state.js';
-import { markLegacyReimportWarned } from './state/legacy-reimport-warnings.js';
-import {
-  migrateModuleIfNeeded,
-  type ModuleMigrationDeps,
-} from './state/module-migrations.js';
 import {
   appendImageIdsToJournal,
   clearImageJournal,
@@ -57,36 +40,18 @@ import {
   listModuleImageJournalIds,
   readModuleImageJournalFile,
 } from './state/module-image-journal.js';
-import {
-  buildLiveImageIdSet,
-  type OrphanDetectDeps,
-} from './state/orphan-detect.js';
+import { buildLiveImageIdSet } from './state/orphan-detect.js';
 import {
   GENERATION_ENDED_BINDINGS,
   type ActiveCard,
 } from './interpreter/dispatch.js';
-import {
-  prepareTriggers,
-  dispatchBinding,
-  dispatchByManualName,
-  makeDispatcherScriptNS,
-  registerManualTriggers,
-  type CompiledTriggerEntry,
-} from './interpreter/dispatcher.js';
-import { makeSpindleHost } from './interpreter/spindle-host.js';
-import { makeRisuTriggerRuntime, withDispatchContext } from './interpreter/runtime.js';
-import type { RisuBinding } from './interpreter/runtime.js';
-import { importCard, loadCatalog, type SpindleImportApi } from './payload/import.js';
+import { type CompiledTriggerEntry } from './interpreter/dispatcher.js';
 import { parseDirectLorebook } from './payload/lorebook-direct-import.js';
-import { mapLoreBook, hasUserEditedAnyEntry } from './core/mappers/lorebook.js';
-import { loreBookSchema, type LoreBook } from './core/schemas/lorebook.js';
+import { mapLoreBook } from './core/mappers/lorebook.js';
 import { registerAll as registerAllMacros } from './interpreter/macros.js';
 import { setActiveAssetIndexes, clearActiveAssetIndexes } from './interpreter/asset-cache.js';
 import {
   setActiveCharacterImage,
-  setActivePersonaImage,
-  getActiveCharacterImage,
-  getActivePersonaImage,
   clearActiveCharacterImage,
   imageUrlFromId,
 } from './interpreter/image-cache.js';
@@ -98,17 +63,9 @@ import {
   setActiveModulesByNamespace,
   clearActiveModulesByNamespace,
 } from './interpreter/modules-by-namespace-cache.js';
-import { runPipeline, workerEvalEnabled } from './interpreter/evaluator/pipeline.js';
 import { clearVarOverlay } from './interpreter/evaluator/context.js';
-import { runListenEditChain } from './interpreter/listen-edit.js';
 import { invalidateListenEditPreload } from './interpreter/listenedit-preload.js';
-import {
-  runAtActionsForPhase,
-  coerceAtActions,
-} from './interpreter/at-actions-runtime.js';
-import { getActiveAssetIndexes } from './interpreter/asset-cache.js';
-import { setScreenDims, getScreenDims } from './interpreter/screen-dims-cache.js';
-import { puaEncodeFeMacros, puaDecodeFeMacros } from './util/pua-roundtrip.js';
+import { setScreenDims } from './interpreter/screen-dims-cache.js';
 import { VariableStateStore } from './state/variables-state.js';
 import { ToggleStateStore } from './state/toggle-state.js';
 import {
@@ -117,10 +74,8 @@ import {
   subscribeToMissingChanges,
   PERMISSION_PURPOSE,
 } from './state/permissions.js';
-import { buildDispatchSeams } from './state/dispatch-seams.js';
 import type { ViewerPushDeps } from './state/viewer-push.js';
 import { createViewerAssembly } from './state/viewer-assembly.js';
-import { mergeLangBlock } from './state/translation-merge.js';
 import { createLorebookImporter } from './state/lorebook-import.js';
 import { createModuleUploader } from './state/module-upload.js';
 import { createOrphanOrchestrator } from './state/orphan-orchestrator.js';
@@ -170,46 +125,25 @@ import { createWorldBookOps } from './state/world-book-ops.js';
 import { createAssetTriggerMutate } from './state/asset-trigger-mutate.js';
 import { createCharacterModuleAttach } from './state/character-module-attach.js';
 import { createModulePushes } from './state/module-pushes.js';
+import { createOrphanDetectBuilders } from './state/orphan-detect-builders.js';
+import {
+  createConsentApi,
+  makeQueueModalConfirm,
+  makeDeleteCardByChar,
+} from './state/consent-modals.js';
 import {
   getModalConfirmApi,
   getRegexScriptsApi,
-  getConnectionsListFn,
-  type ModalConfirmOptions,
 } from './adapters/spindle-extras.js';
-import {
-  collectModuleToggleDsl,
-  extractToggleKeys,
-  parseToggleSyntax,
-  type SidebarToggle,
-} from './core/toggle-syntax.js';
-import type { SidebarToggleWire } from './types/messages.js';
-import {
-  type RisuCompatSettings,
-  DEFAULT_SETTINGS,
-  loadSettings,
-  saveSettings,
-  mergeSettings,
-  normalizeSettingsPatch,
-} from './state/settings-store.js';
-import {
-  expectChatChange,
-  consumeOwnChatChange,
-} from './state/own-chat-change.js';
+import { normalizeSettingsPatch } from './state/settings-store.js';
+import { consumeOwnChatChange } from './state/own-chat-change.js';
 import { consumeOwnCharacterEdit, expectCharacterEdit } from './state/own-character-edit.js';
+import { consumeIfOurWrite } from './state/recent-writes.js';
 import {
-  rememberOurWrite,
-  consumeIfOurWrite,
-} from './state/recent-writes.js';
-import {
-  lookupRenderMcp,
-  cacheRenderMcp,
   invalidateRenderMcpForChat,
   invalidateRenderMcpForMessage,
-  renderMcpCacheStats,
 } from './state/render-mcp-cache.js';
 import { scheduleStateChangedRefresh as scheduleDebouncedRefresh } from './state/state-changed-debouncer.js';
-import { computeDepthPromptSeed } from './state/depth-prompt-seed.js';
-import { normalizeReplaceStringForSanitizer } from './util/sanitizer-doc-shape.js';
 import {
   logStore,
   loadPersistedLogState,
@@ -220,46 +154,17 @@ import { resolveAlertDismissal } from './interpreter/alert-bridge.js';
 import { resolvePickResolution } from './interpreter/pick-bridge.js';
 import { userIdAls, currentUserId } from './interpreter/runtime/als.js';
 import { checkHostVersion, type HostVersionCheckResult } from './util/version-check.js';
-import {
-  getDecoratorBuffers as readDecoratorBuffers,
-  setDecoratorBuffers,
-  clearDecoratorBuffers as clearDecoratorBuffer,
-} from './interpreter/decorator-buffers.js';
 import { decodeRisum } from './core/risum/index.js';
 import { risuModuleSchema } from './core/schemas/module.js';
 import { guessMimeType, sniffImageMime } from './payload/import.js';
 import {
   type ModuleEnvelope,
-  type ModuleIndexEntry,
   deleteModule as deleteModuleFromStore,
   listModules as listModuleStore,
   pairModuleAssetsForUpload,
   readEnvelope as readModuleEnvelope,
   writeEnvelope as writeModuleEnvelope,
 } from './state/modules-store.js';
-import type {
-  AttachedModuleSummary,
-  ModuleSummary,
-} from './types/messages.js';
-import { projectModuleRegexEntries } from './state/module-artifact-project.js';
-import {
-  buildCharacterViewerData,
-  buildModuleViewerData,
-  type FetchedWorldBook,
-  type LumiSideRegex,
-} from './state/viewer-data.js';
-import {
-  addAssetToCharacterIndex,
-  addAssetToModuleIndex,
-  deleteCharacterAsset,
-  deleteModuleAsset,
-  renameCharacterAsset,
-  renameModuleAsset,
-} from './state/asset-index-mutate.js';
-import {
-  extractLuaForTrigger,
-  replaceTriggerLuaInArray,
-} from './state/trigger-lua-mutate.js';
 
 const EXTENSION_VERSION = '0.1.0';
 
@@ -286,15 +191,6 @@ function userScoped(
     userId
       ? userIdAls.run(userId, () => handler(raw, userId))
       : handler(raw, userId);
-}
-
-// Same idea for Lumi callbacks (macro/MCP/worldInfo) whose ctx already
-// carries userId. When undefined, runs unwrapped (system-tagged).
-function withMaybeUser<T>(
-  userId: string | undefined,
-  fn: () => Promise<T>,
-): Promise<T> {
-  return userId !== undefined ? (userIdAls.run(userId, fn) as Promise<T>) : fn();
 }
 
 const log = {
@@ -472,211 +368,55 @@ function journalStorage(): JournalStorage {
   return spindle.userStorage as unknown as JournalStorage;
 }
 
-function spindleImagesDelete(): ((id: string, userId?: string) => Promise<boolean>) | null {
-  return spindle.images?.delete ? spindle.images.delete.bind(spindle.images) : null;
-}
-
-async function deleteImageIds(
-  imageIds: readonly string[],
-  userId: string,
-  context: string,
-  onProgress?: (processed: number, total: number) => void,
-): Promise<{ deleted: number; absent: number; failed: number }> {
-  let deleted = 0;
-  let absent = 0;
-  let failed = 0;
-  const del = spindleImagesDelete();
-  if (!del) {
-    log.warn(`${context}: spindle.images.delete unavailable,${imageIds.length} image(s) leaked`);
-    return { deleted, absent, failed: imageIds.length };
-  }
-  let nextIndex = 0;
-  let processed = 0;
-  const total = imageIds.length;
-  const concurrency = Math.min(6, total);
-  // Throttle progress emission so 10k-image deletes don't spam WS at 6Hz.
-  const progressEvery = Math.max(10, Math.floor(total / 100));
-  const worker = async (): Promise<void> => {
-    while (true) {
-      const i = nextIndex++;
-      if (i >= total) break;
-      const id = imageIds[i];
-      if (!id) {
-        processed++;
-        continue;
-      }
-      try {
-        const ok = await del(id, userId);
-        if (ok) deleted++; else absent++;
-      } catch (err) {
-        failed++;
-        log.warn(`${context}: image delete threw id=${id}: ${errMsg(err)}`);
-      }
-      processed++;
-      if (onProgress && (processed % progressEvery === 0 || processed === total)) {
-        try {
-          onProgress(processed, total);
-        } catch (err) {
-          log.warn(`${context}: onProgress threw: ${errMsg(err)}`);
-        }
-      }
-    }
-  };
-  const workers: Promise<void>[] = [];
-  for (let w = 0; w < concurrency; w++) workers.push(worker());
-  await Promise.all(workers);
-  return { deleted, absent, failed };
-}
 
 
-function collectStoredCardImageIds(
-  avatarId: string | null,
-  card: { asset_index: Readonly<Record<string, AssetIndexEntry>>; emotion_index: Readonly<Record<string, AssetIndexEntry>> },
-): readonly string[] {
-  const ids: string[] = [];
-  if (typeof avatarId === 'string' && avatarId.length > 0) ids.push(avatarId);
-  const collect = (idx: Readonly<Record<string, AssetIndexEntry>>): void => {
-    for (const entry of Object.values(idx)) {
-      for (const id of entry.imageIds) {
-        if (typeof id === 'string' && id.length > 0) ids.push(id);
-      }
-    }
-  };
-  collect(card.asset_index);
-  collect(card.emotion_index);
-  return ids;
-}
 
-async function backfillImageJournalIfMissing(
-  characterId: string,
-  avatarId: string | null,
-  card: { asset_index: Readonly<Record<string, AssetIndexEntry>>; emotion_index: Readonly<Record<string, AssetIndexEntry>> },
-  userId: string,
-): Promise<void> {
-  try {
-    const existing = await readImageJournalFile(journalStorage(), userId, characterId);
-    if (existing) return;
-    const ids = collectStoredCardImageIds(avatarId, card);
-    if (ids.length === 0) return;
-    await appendImageIdsToJournal(journalStorage(), userId, characterId, ids);
-    log.info(
-      `image-journal: backfilled legacy char=${characterId} ids=${ids.length}`,
-    );
-  } catch (err) {
-    log.warn(`image-journal: backfill failed char=${characterId}: ${errMsg(err)}`);
-  }
-}
+
 
 // Lumi caps each extension at 2 concurrent modals, two boot-time prompts can
 // race (orphan review, lorebook archive). Serialize per-user.
-const modalChainByUser = new Map<string, Promise<unknown>>();
-function queueModalConfirm(
-  userId: string,
-  options: Omit<ModalConfirmOptions, 'userId'>,
-): Promise<{ confirmed: boolean } | null> {
-  const modalApi = getModalConfirmApi();
-  if (!modalApi) return Promise.resolve(null);
-  const run = (): Promise<{ confirmed: boolean } | null> =>
-    modalApi.confirm({ ...options, userId }).catch((err) => {
-      log.warn(`queueModalConfirm: modal.confirm threw: ${errMsg(err)}`);
-      return null;
-    });
-  const prior = modalChainByUser.get(userId) ?? Promise.resolve();
-  const next = prior.then(run, run);
-  modalChainByUser.set(userId, next.catch(() => undefined));
-  return next;
-}
 
 
-function buildOrphanDetectDeps(userId: string): OrphanDetectDeps {
-  return {
-    listLumirealmCharacters: async () => {
-      const entries = await listLumirealmCharacters(charactersApi(), userId, {
-        paginate: true,
-      });
-      return entries.map(({ character, data }) => ({
-        id: character.id,
-        image_id: character.image_id ?? null,
-        asset_index: data.asset_index,
-        emotion_index: data.emotion_index,
-        regex_replace_strings: data.regex_scripts.map((r) => r.replace_string),
-        background_html: data.payload?.background_html ?? null,
-      }));
-    },
-    listModules: async () => {
-      const summaries = await listModuleStore(moduleStorage(), userId);
-      const out: Array<{ id: string; asset_imageIds: readonly string[] }> = [];
-      for (const summary of summaries) {
-        const env = await readModuleEnvelope(moduleStorage(), userId, summary.id);
-        if (!env) continue;
-        const ids: string[] = [];
-        for (const ref of Object.values(env.asset_index ?? {})) {
-          if (typeof ref.imageId === 'string' && ref.imageId.length > 0) {
-            ids.push(ref.imageId);
-          }
-        }
-        out.push({ id: summary.id, asset_imageIds: ids });
-      }
-      return out;
-    },
-    listActiveCharacterJournals: async () => {
-      const ids = await listImageJournalCharacterIds(journalStorage(), userId);
-      const out: Array<NonNullable<Awaited<ReturnType<typeof readImageJournalFile>>>> = [];
-      for (const id of ids) {
-        const f = await readImageJournalFile(journalStorage(), userId, id);
-        if (f && f.status === 'active') out.push(f);
-      }
-      return out;
-    },
-    listActiveModuleJournals: async () => {
-      const ids = await listModuleImageJournalIds(journalStorage(), userId);
-      const out: Array<NonNullable<Awaited<ReturnType<typeof readModuleImageJournalFile>>>> = [];
-      for (const id of ids) {
-        const f = await readModuleImageJournalFile(journalStorage(), userId, id);
-        if (f && f.status === 'active') out.push(f);
-      }
-      return out;
-    },
-    characterExists: async (id) => {
-      try {
-        const c = await spindle.characters.get(id, userId);
-        return c !== null;
-      } catch (err) {
-        log.warn(`orphan-detect: characters.get(${id}) threw: ${errMsg(err)}`);
-        return false;
-      }
-    },
-    moduleExists: async (id) => {
-      try {
-        const env = await readModuleEnvelope(moduleStorage(), userId, id);
-        return env !== null;
-      } catch {
-        return false;
-      }
-    },
-  };
-}
 
 // Wraps buildOrphanDetectDeps to treat one character ID as already-removed.
 // Used by CHARACTER_DELETED, where Lumi fires the event BEFORE the row is
 // removed and our list calls would otherwise still see the doomed character.
-function buildOrphanDetectDepsExcluding(
-  userId: string,
-  excludeCharacterId: string,
-): OrphanDetectDeps {
-  const base = buildOrphanDetectDeps(userId);
-  return {
-    ...base,
-    listLumirealmCharacters: async () => {
-      const all = await base.listLumirealmCharacters();
-      return all.filter((c) => c.id !== excludeCharacterId);
-    },
-    characterExists: async (id) => {
-      if (id === excludeCharacterId) return false;
-      return base.characterExists(id);
-    },
-  };
-}
+
+const consentApi = createConsentApi({ send, log });
+const requestConsent = consentApi.requestConsent;
+const pendingConsents = consentApi.pendingConsents;
+
+const queueModalConfirm = makeQueueModalConfirm({ getModalConfirmApi, log, errMsg });
+
+const deleteCardByChar = makeDeleteCardByChar({
+  clearLumirealm: (charId, userId) => clearLumirealm(charactersApi(), charId, userId),
+  activeCardByChat,
+  compiledByCharacter,
+  variableState,
+  toggleState,
+  listCards,
+  pushCards,
+  log,
+});
+
+const orphanDetectBuilders = createOrphanDetectBuilders({
+  journalStorage,
+  listLumirealmCharacters: async (userId) => {
+    const entries = await listLumirealmCharacters(charactersApi(), userId, { paginate: true });
+    return entries.map((e) => ({
+      character: { id: e.character.id, image_id: e.character.image_id ?? null },
+      data: e.data,
+    }));
+  },
+  listModuleStore: (userId) => listModuleStore(moduleStorage(), userId),
+  readModuleEnvelope: (userId, moduleId) => readModuleEnvelope(moduleStorage(), userId, moduleId),
+  log,
+  errMsg,
+});
+const buildOrphanDetectDeps = orphanDetectBuilders.buildOrphanDetectDeps;
+const buildOrphanDetectDepsExcluding = orphanDetectBuilders.buildOrphanDetectDepsExcluding;
+const backfillImageJournalIfMissing = orphanDetectBuilders.backfillImageJournalIfMissing;
+const deleteImageIds = orphanDetectBuilders.deleteImageIds;
 
 const orphanOrchestrator = createOrphanOrchestrator({
   imagesApi: spindle.images
@@ -919,57 +659,6 @@ function toastFor(
   t[kind](message, { ...(options ?? {}), userId });
 }
 
-interface PendingConsent {
-  readonly ownerUserId: string;
-  readonly resolver: (confirmed: boolean) => void;
-}
-const pendingConsents = new Map<string, PendingConsent>();
-// Per-user serialization: user A's consent prompt must not block user B's.
-const consentChainByUser = new Map<string, Promise<unknown>>();
-// Self-heal window for stuck FE: a disconnected client never replies, so
-// without this the consent chain for that user blocks every later prompt.
-const CONSENT_TIMEOUT_MS = 5 * 60_000;
-
-function requestConsent(opts: {
-  title: string;
-  message: string;
-  confirmLabel: string;
-  cancelLabel: string;
-}, userId: string): Promise<{ confirmed: boolean }> {
-  const run = (): Promise<{ confirmed: boolean }> =>
-    new Promise((resolve) => {
-      const requestId = crypto.randomUUID();
-      const timeoutHandle = setTimeout(() => {
-        if (!pendingConsents.has(requestId)) return;
-        pendingConsents.delete(requestId);
-        log.warn(`requestConsent: timed out requestId=${requestId} userId=${userId} (auto-decline)`);
-        resolve({ confirmed: false });
-      }, CONSENT_TIMEOUT_MS);
-      if (typeof (timeoutHandle as { unref?: () => void }).unref === 'function') {
-        (timeoutHandle as { unref: () => void }).unref();
-      }
-      pendingConsents.set(requestId, {
-        ownerUserId: userId,
-        resolver: (confirmed) => {
-          clearTimeout(timeoutHandle);
-          resolve({ confirmed });
-        },
-      });
-      send({
-        type: 'consent_prompt',
-        requestId,
-        title: opts.title,
-        message: opts.message,
-        confirmLabel: opts.confirmLabel,
-        cancelLabel: opts.cancelLabel,
-      }, userId);
-      log.info(`requestConsent: dispatched requestId=${requestId} userId=${userId} title="${opts.title}"`);
-    });
-  const prior = consentChainByUser.get(userId) ?? Promise.resolve();
-  const result = prior.then(run, run);
-  consentChainByUser.set(userId, result.catch(() => undefined));
-  return result;
-}
 
 const logStateLoadedFor = new Set<string>();
 async function ensureLogStateLoaded(userId: string): Promise<void> {
@@ -1009,49 +698,6 @@ function pushCards(cards: readonly CardSummary[], userId: string | undefined): v
 }
 
 
-async function deleteCardByChar(
-  characterId: string,
-  userId: string | undefined,
-  mode: 'soft' | 'cascade' = 'cascade',
-): Promise<void> {
-  // userId may be a mode-string from a stale caller (TS doesn't catch when both args are string).
-  // Reject obvious mismatches to surface that bug at runtime instead of silently mis-routing.
-  if (userId === 'soft' || userId === 'cascade') {
-    throw new Error(`deleteCardByChar: userId="${userId}" looks like a mode value; caller likely passed args in old order`);
-  }
-  log.info(`deleteCardByChar: start characterId=${characterId} mode=${mode}`);
-  if (mode === 'soft') {
-    if (userId !== undefined) {
-      const ok = await clearLumirealm(charactersApi(), characterId, userId);
-      log.info(`deleteCardByChar: clearLumirealm ok=${ok}`);
-    } else {
-      log.warn(`deleteCardByChar: soft remove skipped,userId not yet captured for char=${characterId}`);
-    }
-  }
-  // Invalidate cached active-card entries owned by the same user only, so
-  // user B's delete cannot wipe user A's cache. Skip when userId unknown.
-  let evictedChats = 0;
-  if (userId !== undefined) {
-    for (const [chatId, active] of activeCardByChat) {
-      if (active.card.character_id === characterId && active.ownerUserId === userId) {
-        activeCardByChat.delete(chatId);
-        clearActiveAssetIndexes(chatId);
-        clearActiveCharacterImage(chatId);
-        variableState.clearChat(chatId);
-        toggleState.clearChat(chatId);
-        evictedChats += 1;
-      }
-    }
-  }
-  // characterIds are Lumi-wide unique UUIDs, so the compiled-trigger cache
-  // is safe to evict from any context (no cross-user collision possible).
-  const compiledEvicted = compiledByCharacter.delete(characterId);
-  log.info(`deleteCardByChar: evicted activeCard entries=${evictedChats} compiled=${compiledEvicted}`);
-  // CHARACTER_DELETED fires before the row is removed; filter defensively.
-  const fresh = await listCards(userId);
-  const filtered = fresh.filter((c) => c.character_id !== characterId);
-  pushCards(filtered, userId);
-}
 
 // spindle.on(event, handler) survives syncTriggers() reloads and receives
 // every event fired via eventBus.emit(type, payload, userId) for this user.
@@ -1451,8 +1097,8 @@ const invalidateActiveForCharacter = characterModuleAttach.invalidateActiveForCh
 const charactersAttachedTo = characterModuleAttach.charactersAttachedTo;
 const archiveModuleWorldBookBeforeMigration = worldBookOps.archiveModuleWorldBookBeforeMigration;
 const syncModuleWorldBook = worldBookOps.syncModuleWorldBook;
-const addWorldBookToCharacter = worldBookOps.addWorldBookToCharacter;
-const removeWorldBookFromCharacter = worldBookOps.removeWorldBookFromCharacter;
+void worldBookOps.addWorldBookToCharacter;
+void worldBookOps.removeWorldBookFromCharacter;
 const dispatchModuleArtifactInstall = worldBookOps.dispatchModuleArtifactInstall;
 
 const lorebookImporter = createLorebookImporter({
