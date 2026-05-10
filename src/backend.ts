@@ -62,7 +62,6 @@ import {
   type OrphanDetectDeps,
 } from './state/orphan-detect.js';
 import {
-  eventToBinding,
   GENERATION_ENDED_BINDINGS,
   type ActiveCard,
 } from './interpreter/dispatch.js';
@@ -151,6 +150,10 @@ import { createLumiInterceptors } from './interceptors/lumi-hooks.js';
 import { createReadonlyResolver } from './state/readonly-resolver.js';
 import { createBgHtmlRefresher } from './state/bg-html.js';
 import { createTriggerDispatcher } from './state/trigger-dispatch.js';
+import { createRepairOrchestrator } from './state/repair-orchestrator.js';
+import { createMigrationsRunner } from './state/migrations.js';
+import { createMassMigrationsRunner } from './boot/mass-migrations.js';
+import { createActiveCardLoader } from './state/active-card.js';
 import {
   getModalConfirmApi,
   getRegexScriptsApi,
@@ -212,9 +215,7 @@ import { guessMimeType, sniffImageMime } from './payload/import.js';
 import {
   type ModuleEnvelope,
   type ModuleIndexEntry,
-  MODULE_SCHEMA_VERSION,
   deleteModule as deleteModuleFromStore,
-  envelopePath as moduleEnvelopePath,
   listModules as listModuleStore,
   pairModuleAssetsForUpload,
   readEnvelope as readModuleEnvelope,
@@ -894,235 +895,9 @@ const listStaleCharRegexIds = (userId: string) => orphanOrchestrator.listStaleCh
 const deleteRegexIds = (userId: string, ids: readonly string[]) => orphanOrchestrator.deleteRegexIds(userId, ids);
 const clearDeadJournals = (userId: string) => orphanOrchestrator.clearDeadJournals(userId);
 
-interface ForceRetranslateResult {
-  readonly retranslated: number;
-  readonly skippedLegacy: number;
-  readonly modulesReattached: number;
-  readonly modulesScrubbed: number;
-}
-
-interface ForceRetranslateOpts {
-  readonly onProgress?: (processed: number, total: number, currentName: string) => void;
-}
-
-// Walks every lumirealm character, resets translator_schema_version, runs
-// migration end-to-end sequentially.
-async function forceRetranslateAll(
-  userId: string,
-  opts: ForceRetranslateOpts = {},
-): Promise<ForceRetranslateResult> {
-  let entries: Awaited<ReturnType<typeof listLumirealmCharacters>>;
-  try {
-    entries = await listLumirealmCharacters(charactersApi(), userId, { paginate: true });
-  } catch (err) {
-    log.warn(`forceRetranslateAll: listLumirealmCharacters failed: ${errMsg(err)}`);
-    return { retranslated: 0, skippedLegacy: 0, modulesReattached: 0, modulesScrubbed: 0 };
-  }
-  let retranslated = 0;
-  let skippedLegacy = 0;
-  let modulesReattached = 0;
-  let modulesScrubbed = 0;
-  let processed = 0;
-  const total = entries.length;
-  for (const entry of entries) {
-    if (!entry.data) {
-      processed++;
-      continue;
-    }
-    const charId = entry.character.id;
-    const charName = entry.character.name ?? '(unnamed)';
-    opts.onProgress?.(processed, total, charName);
-    // Pre-0.3 cards don't carry envelope.source, so re-translation is impossible.
-    // Resetting their version would brick them at v0 forever, requiring re-import.
-    if (entry.data.source === undefined) {
-      skippedLegacy++;
-      processed++;
-      continue;
-    }
-    translatorMigrationChecked.delete(charId);
-    const reset: typeof entry.data = { ...entry.data, translator_schema_version: 0 };
-    try {
-      await writeLumirealm(charactersApi(), charId, reset, userId);
-    } catch (err) {
-      log.warn(`forceRetranslateAll: writeLumirealm(${charId}) failed: ${errMsg(err)}`);
-      processed++;
-      continue;
-    }
-    try {
-      const kind = await runCharacterMigration(charId, charName, userId, reset, { silent: true });
-      if (kind === 'migrated') retranslated++;
-    } catch (err) {
-      log.warn(`forceRetranslateAll: runCharacterMigration(${charId}) failed: ${errMsg(err)}`);
-    }
-    // Re-fetch post-migration to read the current attached_module_ids.
-    let postFetch: Awaited<ReturnType<typeof readLumirealm>>;
-    try {
-      postFetch = await readLumirealm(charactersApi(), charId, userId);
-    } catch (err) {
-      log.warn(`forceRetranslateAll: readLumirealm(${charId}) post-migrate failed: ${errMsg(err)}`);
-      processed++;
-      continue;
-    }
-    if (!postFetch?.data) {
-      processed++;
-      continue;
-    }
-    const attachedIds = postFetch.data.user_overrides.attached_module_ids ?? [];
-    if (attachedIds.length === 0) {
-      processed++;
-      continue;
-    }
-    const danglingIds: string[] = [];
-    for (const moduleId of attachedIds) {
-      let env: Awaited<ReturnType<typeof readModuleEnvelope>>;
-      try {
-        env = await readModuleEnvelope(moduleStorage(), userId, moduleId);
-      } catch (err) {
-        log.warn(`forceRetranslateAll: readModuleEnvelope(${moduleId}) char=${charId} threw: ${errMsg(err)}`);
-        env = null;
-      }
-      if (!env) {
-        danglingIds.push(moduleId);
-        continue;
-      }
-      try {
-        await refreshAttachedModule(charId, env, userId);
-        modulesReattached++;
-      } catch (err) {
-        log.warn(`forceRetranslateAll: refreshAttachedModule(${charId}, ${moduleId}) failed: ${errMsg(err)}`);
-      }
-    }
-    if (danglingIds.length > 0) {
-      try {
-        await scrubDanglingModuleRefs(charId, danglingIds, userId);
-        modulesScrubbed += danglingIds.length;
-      } catch (err) {
-        log.warn(`forceRetranslateAll: scrubDanglingModuleRefs(${charId}) failed: ${errMsg(err)}`);
-      }
-    }
-    processed++;
-  }
-  return { retranslated, skippedLegacy, modulesReattached, modulesScrubbed };
-}
-
-// Removes dangling moduleIds from the char's user_overrides + fires
-// uninstall_module_artifacts so leftover DB rows get metadata-keyed sweep.
-async function scrubDanglingModuleRefs(
-  characterId: string,
-  danglingIds: readonly string[],
-  userId: string,
-): Promise<void> {
-  if (danglingIds.length === 0) return;
-  const fetched = await readLumirealm(charactersApi(), characterId, userId);
-  if (!fetched?.data) return;
-  const oldWb = fetched.data.user_overrides.attached_module_world_books ?? {};
-  const oldRx = fetched.data.user_overrides.attached_module_regex_script_ids ?? {};
-  const perModuleRx: Array<{ moduleId: string; wbId: string | null; regexIds: readonly string[] }> = [];
-  for (const moduleId of danglingIds) {
-    const wbId = typeof oldWb[moduleId] === 'string' ? oldWb[moduleId] : null;
-    const regexIds = Array.isArray(oldRx[moduleId]) ? oldRx[moduleId] : [];
-    perModuleRx.push({ moduleId, wbId, regexIds });
-  }
-  await updateLumirealm(charactersApi(), characterId, userId, (cur) => ({
-    ...cur,
-    user_overrides: mergeUserOverrides(
-      cur.user_overrides,
-      buildDetachModulesPatch(cur.user_overrides, danglingIds),
-    ),
-  }));
-  for (const m of perModuleRx) {
-    if (!m.wbId && m.regexIds.length === 0) continue;
-    send({
-      type: 'uninstall_module_artifacts',
-      characterId,
-      moduleId: m.moduleId,
-      worldBookId: m.wbId,
-      regexScriptIds: m.regexIds,
-    }, userId);
-  }
-  log.info(`scrubDanglingModuleRefs: char=${characterId} scrubbed=${danglingIds.length}`);
-}
 
 const scanRepairTargets = (userId: string) => orphanOrchestrator.scanRepairTargets(userId);
 
-async function applyRepair(
-  userId: string,
-  options: import('./types/messages.js').RepairApplyOptions,
-): Promise<import('./types/messages.js').RepairApplyResult> {
-  const t0 = Date.now();
-  let staleCharRegexDeleted = 0;
-  let staleModuleRegexDeleted = 0;
-  let deadJournalsCleared = 0;
-  let charactersRetranslated = 0;
-  let charactersSkippedLegacy = 0;
-  let modulesReattached = 0;
-  let modulesScrubbed = 0;
-  const opId = `repair-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-  const opTitle = 'Repairing extension state';
-  emitOperationProgress(userId, opId, 'started', opTitle, 'Sweeping stale rows…', 0);
-  if (options.applyStaleCharRegex) {
-    try {
-      emitOperationProgress(userId, opId, 'progress', opTitle, 'Sweeping stale character regex…', 0.05);
-      const ids = await listStaleCharRegexIds(userId);
-      staleCharRegexDeleted = await deleteRegexIds(userId, ids);
-      log.info(`applyRepair: deleted ${staleCharRegexDeleted}/${ids.length} stale char regex`);
-    } catch (err) {
-      log.warn(`applyRepair: stale char regex sweep failed: ${errMsg(err)}`);
-    }
-  }
-  if (options.applyStaleModuleRegex) {
-    try {
-      emitOperationProgress(userId, opId, 'progress', opTitle, 'Sweeping stale module regex…', 0.15);
-      staleModuleRegexDeleted = await sweepOrphanModuleRegex(userId);
-    } catch (err) {
-      log.warn(`applyRepair: stale module regex sweep failed: ${errMsg(err)}`);
-    }
-  }
-  if (options.applyDeadJournals) {
-    try {
-      emitOperationProgress(userId, opId, 'progress', opTitle, 'Clearing dead journals…', 0.25);
-      deadJournalsCleared = await clearDeadJournals(userId);
-    } catch (err) {
-      log.warn(`applyRepair: dead journal clear failed: ${errMsg(err)}`);
-    }
-  }
-  if (options.applyForceRetranslate) {
-    try {
-      const r = await forceRetranslateAll(userId, {
-        onProgress: (processed, total, name) => {
-          if (total <= 0) return;
-          // 0.3..0.95 reserved for retranslate so the rest of the bar fits above.
-          const frac = 0.3 + (processed / total) * 0.65;
-          emitOperationProgress(
-            userId,
-            opId,
-            'progress',
-            opTitle,
-            `Re-translating ${processed + 1}/${total}: ${name}`,
-            frac,
-          );
-        },
-      });
-      charactersRetranslated = r.retranslated;
-      charactersSkippedLegacy = r.skippedLegacy;
-      modulesReattached = r.modulesReattached;
-      modulesScrubbed = r.modulesScrubbed;
-    } catch (err) {
-      log.warn(`applyRepair: force retranslate failed: ${errMsg(err)}`);
-    }
-  }
-  emitOperationProgress(userId, opId, 'done', opTitle, 'Repair complete.', 1);
-  return {
-    staleCharRegexDeleted,
-    staleModuleRegexDeleted,
-    deadJournalsCleared,
-    charactersRetranslated,
-    charactersSkippedLegacy,
-    modulesReattached,
-    modulesScrubbed,
-    elapsedMs: Date.now() - t0,
-  };
-}
 
 // JSC's incremental GC leaves upload-pipeline garbage (handoff, decoded
 // Uint8Arrays, IPC payloads) rooted for minutes without slack. Force a
@@ -1154,6 +929,9 @@ let assetUploadsInFlight = 0;
 // gate against this so the snapshot-then-write loop in forceRetranslateAll
 // can't be raced into silent data loss on user_overrides.
 const repairInFlightByUser = new Set<string>();
+
+// Per-character per-worker-boot dedupe, set on first migration check fire.
+const translatorMigrationChecked = new Set<string>();
 
 // Returns true and surfaces an error toast if a repair is in flight, so
 // the caller should bail. Returns false if it's safe to proceed.
@@ -1785,606 +1563,9 @@ function charactersApi(): SpindleCharactersApi {
   return spindle.characters as unknown as SpindleCharactersApi;
 }
 
-async function ensureActiveCardForChat(
-  chatId: string,
-  characterId: string | null,
-  userId: string | undefined,
-): Promise<ActiveCard | null> {
-  const tEnter = Date.now();
-  if (userId === undefined) {
-    log.info(`ensureActiveCardForChat: userId not yet captured for chatId=${chatId},will retry on next event`);
-    return null;
-  }
-  const cached = activeCardByChat.get(chatId);
-  if (cached) {
-    if (cached.ownerUserId !== userId) {
-      log.warn(`ensureActiveCardForChat: cache-hit owner mismatch chatId=${chatId} cachedOwner=${cached.ownerUserId} requester=${userId},refusing`);
-      return null;
-    }
-    log.debug(`ensureActiveCardForChat: cache hit chatId=${chatId} characterId=${cached.card.character_id}`);
-    return cached;
-  }
-  let tChatsGet = 0;
-  if (!characterId) {
-    const tChatGet0 = Date.now();
-    try {
-      const chat = await spindle.chats.get(chatId, userId);
-      tChatsGet = Date.now() - tChatGet0;
-      const resolved = chat?.character_id ?? null;
-      if (resolved) {
-        log.info(`ensureActiveCardForChat: resolved characterId=${resolved} via chats.get for chatId=${chatId} chats_get=${tChatsGet}ms`);
-        characterId = resolved;
-      }
-    } catch (err) {
-      tChatsGet = Date.now() - tChatGet0;
-      log.warn(`ensureActiveCardForChat: chats.get(${chatId}) failed chats_get=${tChatsGet}ms: ${errMsg(err)}`);
-    }
-  }
-  if (!characterId) {
-    log.info(`ensureActiveCardForChat: no characterId for chatId=${chatId} (chat may be group/deleted),skip`);
-    return null;
-  }
-  log.info(`ensureActiveCardForChat: cache miss chatId=${chatId} characterId=${characterId},fetching extensions`);
-  const tReadLumi0 = Date.now();
-  const fetched = await readLumirealm(charactersApi(), characterId, userId);
-  const tReadLumi = Date.now() - tReadLumi0;
-  if (!fetched) {
-    log.info(`ensureActiveCardForChat: character not found id=${characterId} (group chat or deleted)`);
-    return null;
-  }
-  if (!fetched.data) {
-    log.info(`ensureActiveCardForChat: character ${characterId} is not a lumirealm card (no extensions.lumirealm or soft-removed)`);
-    return null;
-  }
-  const tValidate0 = Date.now();
-  const check = preValidateRequires(fetched.data.payload.requires);
-  const tValidate = Date.now() - tValidate0;
-  if (!check.ok) {
-    const err = new RisuCompatVersionError(check.missing, EXTENSION_VERSION);
-    log.error(err.message);
-    toastFor(userId, 'error', err.message, { title: 'lumirealm' });
-    return null;
-  }
-  if (check.degraded.length > 0) {
-    log.warn(`ensureActiveCardForChat: degraded features=[${check.degraded.join(', ')}]`);
-    toastFor(userId, 'warning',
-      `Card uses degraded features: ${check.degraded.join(', ')}.`,
-      { title: 'lumirealm' },
-    );
-  }
-  const attachedIds = fetched.data.user_overrides.attached_module_ids ?? [];
-  const tModules0 = Date.now();
-  const attachedForRuntime = attachedIds.length > 0
-    ? await loadAttachedModulesForRuntime(userId, attachedIds)
-    : [];
-  const tModules = Date.now() - tModules0;
-  const tBuild0 = Date.now();
-  const card = buildSyntheticStoredCard(
-    characterId,
-    fetched.data,
-    fetched.risuai,
-    attachedForRuntime,
-  );
-  const tBuild = Date.now() - tBuild0;
-  log.info(
-    `ensureActiveCardForChat: loaded char=${characterId} translator=${card.risuPayload.translator_version} ` +
-    `triggers=${card.risuPayload.triggers.length} lua_scripts=${card.risuPayload.lua_scripts.length} ` +
-    `regex=${card.regex_scripts?.length ?? 0} assets=${Object.keys(card.asset_index).length} ` +
-    `bg_html_len=${card.risuPayload.background_html?.length ?? 0} ` +
-    `utility_bot=${card.risuPayload.utility_bot} ` +
-    `defaults=${Object.keys(card.risuPayload.scriptstate_defaults).length} ` +
-    `modules=${attachedForRuntime.length}` +
-    (attachedForRuntime.length > 0
-      ? ` (${attachedForRuntime.map((m) => `${m.id}:t${m.triggers.length}/a${Object.keys(m.asset_index).length}`).join(',')})`
-      : '') +
-    ` chats_get=${tChatsGet}ms readLumi=${tReadLumi}ms validate=${tValidate}ms modules=${tModules}ms build=${tBuild}ms`,
-  );
-  const active: ActiveCard = { card, chatId, ownerUserId: userId, lumirealm: fetched.data };
-  activeCardByChat.set(chatId, active);
-  const allWbIds = (fetched.character.world_book_ids ?? []).filter(
-    (id): id is string => typeof id === 'string' && id.length > 0,
-  );
-  const moduleWbIdSet = new Set(
-    Object.values(fetched.data.user_overrides.attached_module_world_books ?? {})
-      .filter((id): id is string => typeof id === 'string' && id.length > 0),
-  );
-  const characterOwnedWbIds = allWbIds.filter((id) => !moduleWbIdSet.has(id));
-  worldBookIdsByCharacter.set(characterId, characterOwnedWbIds);
-  void backfillImageJournalIfMissing(characterId, fetched.character.image_id ?? null, card, userId);
-  setActiveAssetIndexes(chatId, {
-    assets: card.asset_index,
-    emotions: card.emotion_index,
-  });
-  setActiveScriptstateDefaults(
-    chatId,
-    card.character_id,
-    card.risuPayload.scriptstate_defaults ?? {},
-  );
-  const mbnForActive = modulesByNamespaceFromCard(card);
-  if (mbnForActive) setActiveModulesByNamespace(chatId, card.character_id, mbnForActive);
-  else clearActiveModulesByNamespace(chatId);
-  setActiveCharacterImage(
-    chatId,
-    imageUrlFromId(fetched.character.image_id ?? null),
-  );
-  void refreshPersonaImage(userId);
-  // One-time seed of authors_note from CCSv3 depth_prompt on first open.
-  void seedAuthorsNoteFromDepthPrompt(chatId, userId, fetched.character.extensions ?? {});
-  void maybeMigrateCharacterTranslator(characterId, fetched.character.name, userId, fetched.data);
-  log.info(
-    `ensureActiveCardForChat: DONE chatId=${chatId} characterId=${characterId} total=${Date.now() - tEnter}ms`,
-  );
-  return active;
-}
-
-// Dedupe per-character per-worker-boot. Set on first migration check fire.
-const translatorMigrationChecked = new Set<string>();
-// Per-userId per-boot dedupe so the mass walk runs once per worker boot.
-const massModuleMigrationStartedThisBoot = new Set<string>();
-const massCharacterMigrationStartedThisBoot = new Set<string>();
-
-function maybeMigrateCharacterTranslator(
-  characterId: string,
-  characterName: string,
-  userId: string,
-  envelope: import('./payload/types.js').LumirealmCharacterData,
-): void {
-  if (translatorMigrationChecked.has(characterId)) return;
-  // forceRetranslateAll deletes the dedupe flag + writes v=0 + runs migration
-  // sequentially. A chat-open mid-loop would re-fire the migration concurrently.
-  if (repairInFlightByUser.has(userId)) return;
-  const stored = envelope.translator_schema_version ?? 1;
-  if (stored >= CURRENT_CHARACTER_SCHEMA_VERSION) {
-    translatorMigrationChecked.add(characterId);
-    return;
-  }
-  translatorMigrationChecked.add(characterId);
-  void runCharacterMigration(characterId, characterName, userId, envelope, {
-    firePromptOnNeedsReimport: true,
-  });
-}
-
-async function runCharacterMigration(
-  characterId: string,
-  characterName: string,
-  userId: string,
-  envelope: import('./payload/types.js').LumirealmCharacterData,
-  opts?: { firePromptOnNeedsReimport?: boolean; silent?: boolean },
-): Promise<import('./state/translator-migrations.js').MigrationResult['kind']> {
-  const deps: MigrationDeps = {
-    loadCatalog,
-    extensionVersion: EXTENSION_VERSION,
-    log,
-    installCharacterRegexScripts: async (charId, charName, scripts) => {
-      send({
-        type: 'install_regex_scripts',
-        characterId: charId,
-        characterName: charName,
-        scripts: scripts.map((s) => ({ ...s, metadata: { ...(s.metadata ?? {}) } })),
-      }, userId);
-    },
-    reinstallAttachedModules: async (charId) => {
-      const ids = envelope.user_overrides.attached_module_ids ?? [];
-      let count = 0;
-      for (const moduleId of ids) {
-        try {
-          const env = await readModuleEnvelope(moduleStorage(), userId, moduleId);
-          if (!env) continue;
-          await dispatchModuleArtifactInstall(charId, env, userId);
-          count++;
-        } catch (err) {
-          log.warn(
-            `runCharacterMigration: reinstall module=${moduleId} char=${charId} threw: ${errMsg(err)}`,
-          );
-        }
-      }
-      return count;
-    },
-    dispatchSvgRasterize: (charId, charName, svgs) => {
-      const filtered = svgs.filter((t) => t.classification !== 'templated');
-      if (filtered.length === 0) return;
-      log.info(
-        `runCharacterMigration: dispatching rasterize_svgs char=${charId} count=${filtered.length}`,
-      );
-      send({
-        type: 'rasterize_svgs',
-        characterId: charId,
-        characterName: charName,
-        svgs: filtered.map((t) => ({
-          markerN: t.markerN,
-          svg: t.svg,
-          classification: t.classification as 'simple' | 'theme-reactive' | 'animated',
-          width: t.width,
-          height: t.height,
-        })),
-      }, userId);
-    },
-    writeEnvelope: async (charId, data, uid) => {
-      await writeLumirealm(charactersApi(), charId, data, uid);
-    },
-    getAvatarImageId: async (charId, uid) => {
-      try {
-        const ch = await spindle.characters.get(charId, uid) as { image_id?: unknown };
-        return typeof ch?.image_id === 'string' && ch.image_id.length > 0
-          ? ch.image_id
-          : null;
-      } catch {
-        return null;
-      }
-    },
-    getCharacterWorldBookIds: async (charId, uid) => {
-      try {
-        const ch = await spindle.characters.get(charId, uid) as { world_book_ids?: unknown };
-        if (!Array.isArray(ch?.world_book_ids)) return [];
-        return ch.world_book_ids.filter((x): x is string => typeof x === 'string');
-      } catch {
-        return [];
-      }
-    },
-    listWorldBookEntries: async (wbId, uid) => {
-      const out: { id: string; extensions: Record<string, unknown> | null }[] = [];
-      let offset = 0;
-      while (true) {
-        const page = await spindle.world_books.entries.list(wbId, { limit: 200, offset, userId: uid });
-        for (const e of page.data) {
-          const ee = e as { id?: unknown; extensions?: unknown };
-          const id = typeof ee.id === 'string' ? ee.id : null;
-          if (id === null) continue;
-          const ext = ee.extensions && typeof ee.extensions === 'object' && !Array.isArray(ee.extensions)
-            ? ee.extensions as Record<string, unknown>
-            : null;
-          out.push({ id, extensions: ext });
-        }
-        if (page.data.length < 200) break;
-        offset += 200;
-      }
-      return out;
-    },
-    updateWorldBookEntryExtensions: async (entryId, extensions, uid) => {
-      await spindle.world_books.entries.update(entryId, { extensions } as never, uid);
-    },
-  };
-  const result = await migrateCharacterIfNeeded(
-    { characterId, characterName, userId, envelope },
-    deps,
-  );
-  if (result.kind === 'migrated') {
-    invalidateActiveForCharacter(characterId, userId);
-    if (!opts?.silent) {
-      toastFor(userId, 'success',
-        `Updated ${characterName} for the latest LumiRealm fixes.`,
-        { title: 'lumirealm' },
-      );
-    }
-  } else if (result.kind === 'needs_reimport') {
-    if (opts?.firePromptOnNeedsReimport !== true) return result.kind;
-    const { alreadyWarned } = await markLegacyReimportWarned(
-      spindle.userStorage,
-      userId,
-      characterId,
-    );
-    if (alreadyWarned) return result.kind;
-    send({
-      type: 'notify_legacy_card_needs_reimport',
-      characterId,
-      characterName,
-    }, userId);
-  } else if (result.kind === 'failed') {
-    log.error(
-      `migration failed char=${characterId}: ${result.error} (will retry next boot)`,
-    );
-    translatorMigrationChecked.delete(characterId);
-  }
-  return result.kind;
-}
-
-async function runModuleMigration(
-  moduleId: string,
-  userId: string,
-): Promise<{ ok: boolean }> {
-  const env = await readModuleEnvelope(moduleStorage(), userId, moduleId);
-  if (!env) return { ok: true };
-  const stored = env.translator_schema_version ?? 1;
-  if (stored >= CURRENT_MODULE_SCHEMA_VERSION) return { ok: true };
-  let archiveWbId: string | null = null;
-  const deps: ModuleMigrationDeps = {
-    syncWorldBook: async (e) => {
-      archiveWbId = await archiveModuleWorldBookBeforeMigration(e, userId);
-      return syncModuleWorldBook(e, userId);
-    },
-    reinstallArtifactsForAttached: async (mid) => {
-      const charIds = await charactersAttachedTo(mid, userId);
-      let count = 0;
-      for (const charId of charIds) {
-        try {
-          await dispatchModuleArtifactInstall(charId, env, userId);
-          count++;
-        } catch (err) {
-          log.warn(
-            `runModuleMigration: reinstall char=${charId} module=${mid} threw: ${errMsg(err)}`,
-          );
-        }
-      }
-      return count;
-    },
-    refreshArtifactsForAttached: async (mid) => {
-      const charIds = await charactersAttachedTo(mid, userId);
-      let count = 0;
-      for (const charId of charIds) {
-        try {
-          await refreshAttachedModule(charId, env, userId);
-          count++;
-        } catch (err) {
-          log.warn(
-            `runModuleMigration: refresh char=${charId} module=${mid} threw: ${errMsg(err)}`,
-          );
-        }
-      }
-      return count;
-    },
-    writeEnvelope: async (next) => {
-      await writeModuleEnvelope(moduleStorage(), userId, next);
-    },
-    log,
-  };
-  const result = await migrateModuleIfNeeded(env, deps);
-  if (result.kind === 'migrated') {
-    const charIds = await charactersAttachedTo(moduleId, userId);
-    for (const charId of charIds) invalidateActiveForCharacter(charId, userId);
-    if (archiveWbId) {
-      const m = env.module as { name?: unknown };
-      const moduleName = typeof m.name === 'string' && m.name.length > 0 ? m.name : env.id;
-      notifyLorebookMigrationArchive(`Module: ${moduleName}`, archiveWbId, userId);
-    }
-    return { ok: true };
-  }
-  if (result.kind === 'failed') return { ok: false };
-  return { ok: true };
-}
 
 
-async function runMassModuleMigrationIfNeeded(userId: string): Promise<void> {
-  if (massModuleMigrationStartedThisBoot.has(userId)) return;
-  massModuleMigrationStartedThisBoot.add(userId);
-  const state = await readMigrationState(spindle.userStorage, userId);
-  if (state.last_swept_modules >= CURRENT_MODULE_SCHEMA_VERSION) {
-    log.info(`mass-migration(modules): user=${userId} already swept to v${state.last_swept_modules}, skipping`);
-    return;
-  }
-  const allModules = await listModuleStore(moduleStorage(), userId);
-  const candidates: string[] = [];
-  for (const m of allModules) {
-    const env = await readModuleEnvelope(moduleStorage(), userId, m.id);
-    if (!env) continue;
-    if ((env.translator_schema_version ?? 1) < CURRENT_MODULE_SCHEMA_VERSION) {
-      candidates.push(m.id);
-    }
-  }
-  if (candidates.length === 0) {
-    await writeMigrationState(spindle.userStorage, userId, {
-      ...state,
-      last_swept_modules: CURRENT_MODULE_SCHEMA_VERSION,
-    });
-    log.info(`mass-migration(modules): user=${userId} no modules below v${CURRENT_MODULE_SCHEMA_VERSION}, sweep marker bumped`);
-    return;
-  }
-  const opId = `mass-migration-modules-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-  const opTitle = 'Updating module lorebooks';
-  emitOperationProgress(
-    userId,
-    opId,
-    'started',
-    opTitle,
-    `Updating ${candidates.length} module${candidates.length === 1 ? '' : 's'}…`,
-    0,
-  );
-  log.info(`mass-migration(modules): user=${userId} starting count=${candidates.length} opId=${opId}`);
-  let processed = 0;
-  let failed = 0;
-  for (const moduleId of candidates) {
-    try {
-      const r = await runModuleMigration(moduleId, userId);
-      if (!r.ok) failed++;
-    } catch (err) {
-      failed++;
-      log.warn(`mass-migration(modules): module=${moduleId} threw: ${errMsg(err)}`);
-    }
-    processed++;
-    emitOperationProgress(
-      userId,
-      opId,
-      'progress',
-      opTitle,
-      `Updated ${processed}/${candidates.length} module${candidates.length === 1 ? '' : 's'}`,
-      processed / candidates.length,
-    );
-  }
-  if (failed === 0) {
-    const after = await readMigrationState(spindle.userStorage, userId);
-    await writeMigrationState(spindle.userStorage, userId, {
-      ...after,
-      last_swept_modules: CURRENT_MODULE_SCHEMA_VERSION,
-    });
-    log.info(`mass-migration(modules): user=${userId} done processed=${processed} opId=${opId}`);
-  } else {
-    log.warn(
-      `mass-migration(modules): user=${userId} done with failures processed=${processed} failed=${failed} ` +
-        `(sweep marker NOT bumped, will retry next boot)`,
-    );
-  }
-  emitOperationProgress(
-    userId,
-    opId,
-    'done',
-    opTitle,
-    failed === 0
-      ? `Updated ${processed} module${processed === 1 ? '' : 's'}`
-      : `Updated ${processed - failed}/${processed} (${failed} failed, will retry next start)`,
-    1,
-  );
-  const existingTimer = archiveFlushTimerByUser.get(userId);
-  if (existingTimer) {
-    clearTimeout(existingTimer);
-    archiveFlushTimerByUser.delete(userId);
-  }
-  await flushLorebookMigrationArchives(userId);
-}
 
-async function runMassCharacterMigrationIfNeeded(userId: string): Promise<void> {
-  if (massCharacterMigrationStartedThisBoot.has(userId)) return;
-  massCharacterMigrationStartedThisBoot.add(userId);
-  const state = await readMigrationState(spindle.userStorage, userId);
-  if (state.last_swept_characters >= CURRENT_CHARACTER_SCHEMA_VERSION) {
-    log.info(`mass-migration(characters): user=${userId} already swept to v${state.last_swept_characters}, skipping`);
-    return;
-  }
-  const all = await listLumirealmCharacters(charactersApi(), userId, { paginate: true });
-  const candidates: { id: string; name: string; data: import('./payload/types.js').LumirealmCharacterData }[] = [];
-  for (const entry of all) {
-    if ((entry.data.translator_schema_version ?? 1) < CURRENT_CHARACTER_SCHEMA_VERSION) {
-      candidates.push({ id: entry.character.id, name: entry.character.name ?? '(unnamed)', data: entry.data });
-    }
-  }
-  if (candidates.length === 0) {
-    await writeMigrationState(spindle.userStorage, userId, {
-      ...state,
-      last_swept_characters: CURRENT_CHARACTER_SCHEMA_VERSION,
-    });
-    log.info(`mass-migration(characters): user=${userId} no characters below v${CURRENT_CHARACTER_SCHEMA_VERSION}, sweep marker bumped`);
-    return;
-  }
-  const opId = `mass-migration-characters-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-  const opTitle = 'Updating Risu cards';
-  emitOperationProgress(
-    userId,
-    opId,
-    'started',
-    opTitle,
-    `Updating ${candidates.length} card${candidates.length === 1 ? '' : 's'}…`,
-    0,
-  );
-  log.info(`mass-migration(characters): user=${userId} starting count=${candidates.length} opId=${opId}`);
-  let processed = 0;
-  let failed = 0;
-  for (const c of candidates) {
-    // Per-character per-boot dedupe in `translatorMigrationChecked` would
-    // otherwise short-circuit if the chat opened first. Mark + run inline so
-    // both paths agree on completion ordering.
-    if (translatorMigrationChecked.has(c.id)) {
-      processed++;
-      continue;
-    }
-    translatorMigrationChecked.add(c.id);
-    try {
-      await runCharacterMigration(c.id, c.name, userId, c.data);
-    } catch (err) {
-      failed++;
-      translatorMigrationChecked.delete(c.id);
-      log.warn(`mass-migration(characters): character=${c.id} threw: ${errMsg(err)}`);
-    }
-    processed++;
-    emitOperationProgress(
-      userId,
-      opId,
-      'progress',
-      opTitle,
-      `Updated ${processed}/${candidates.length} card${candidates.length === 1 ? '' : 's'}`,
-      processed / candidates.length,
-    );
-  }
-  if (failed === 0) {
-    const after = await readMigrationState(spindle.userStorage, userId);
-    await writeMigrationState(spindle.userStorage, userId, {
-      ...after,
-      last_swept_characters: CURRENT_CHARACTER_SCHEMA_VERSION,
-    });
-    log.info(`mass-migration(characters): user=${userId} done processed=${processed} opId=${opId}`);
-  } else {
-    log.warn(
-      `mass-migration(characters): user=${userId} done with failures processed=${processed} failed=${failed} ` +
-        `(sweep marker NOT bumped, will retry next boot)`,
-    );
-  }
-  emitOperationProgress(
-    userId,
-    opId,
-    'done',
-    opTitle,
-    failed === 0
-      ? `Updated ${processed} card${processed === 1 ? '' : 's'}`
-      : `Updated ${processed - failed}/${processed} (${failed} failed, will retry next start)`,
-    1,
-  );
-}
-
-interface PendingArchiveNotification {
-  readonly subjectLabel: string;
-  readonly archiveWbId: string;
-}
-const pendingArchivesByUser = new Map<string, PendingArchiveNotification[]>();
-const archiveFlushTimerByUser = new Map<string, ReturnType<typeof setTimeout>>();
-const ARCHIVE_BATCH_DELAY_MS = 2000;
-
-function notifyLorebookMigrationArchive(
-  subjectLabel: string,
-  archiveWbId: string,
-  userId: string,
-): void {
-  const list = pendingArchivesByUser.get(userId) ?? [];
-  list.push({ subjectLabel, archiveWbId });
-  pendingArchivesByUser.set(userId, list);
-  const existing = archiveFlushTimerByUser.get(userId);
-  if (existing) clearTimeout(existing);
-  const timer = setTimeout(() => {
-    archiveFlushTimerByUser.delete(userId);
-    void flushLorebookMigrationArchives(userId);
-  }, ARCHIVE_BATCH_DELAY_MS);
-  if (typeof (timer as { unref?: () => void }).unref === 'function') {
-    (timer as { unref: () => void }).unref();
-  }
-  archiveFlushTimerByUser.set(userId, timer);
-}
-
-async function flushLorebookMigrationArchives(userId: string): Promise<void> {
-  const pending = pendingArchivesByUser.get(userId);
-  if (!pending || pending.length === 0) return;
-  pendingArchivesByUser.delete(userId);
-  const items: { subjectLabel: string; archiveName: string | null }[] = [];
-  for (const p of pending) {
-    let archiveName: string | null = null;
-    try {
-      const wb = await spindle.world_books.get(p.archiveWbId, userId);
-      archiveName = (wb as { name?: string })?.name ?? null;
-    } catch (err) {
-      log.warn(`flushLorebookMigrationArchives: world_books.get(${p.archiveWbId}) failed: ${errMsg(err)}`);
-    }
-    items.push({ subjectLabel: p.subjectLabel, archiveName });
-  }
-  const count = items.length;
-  const MAX_LIST = 10;
-  const listed = items.slice(0, MAX_LIST);
-  const overflow = count - listed.length;
-  const bullets = listed
-    .map((i) => i.archiveName ? `• ${i.archiveName}` : `• ${i.subjectLabel} (backup)`)
-    .join('\n');
-  const overflowSuffix = overflow > 0 ? `\n…and ${overflow} more` : '';
-  const title = count === 1 ? 'Lorebook updated' : `${count} lorebooks updated`;
-  const message =
-    `${count} lorebook${count === 1 ? ' was' : 's were'} updated to apply the latest LumiRealm fixes. ` +
-    `Your manual edits were saved as separate backup lorebooks in the Lorebook tab:\n\n` +
-    `${bullets}${overflowSuffix}\n\n` +
-    `Copy any edits from these backups into the updated lorebooks if you want to keep them.`;
-  const result = await queueModalConfirm(userId, {
-    title,
-    message,
-    variant: 'info',
-    confirmLabel: 'Got it',
-    cancelLabel: 'Dismiss',
-  });
-  if (result === null) {
-    toastFor(userId, 'info', message, { title });
-  }
-}
 
 async function seedAuthorsNoteFromDepthPrompt(
   chatId: string,
@@ -2742,18 +1923,6 @@ function sanitizeVarMap(raw: unknown): Record<string, string> {
 // Per-chat memo of the last bg-html signature, dedupes redundant sends across the SETTINGS_UPDATED + CHAT_CHANGED + GENERATION_* fan-out on chat-open.
 const lastSentBgHtmlByChat = new Map<string, string>();
 
-const EDITED_BY_MARKER = 'lumirealm';
-
-
-// `rememberOurWrite` / `consumeIfOurWrite` extracted to
-// `src/state/recent-writes.ts` (LRU + TTL cache, directly unit-testable).
-//
-// Body content is no longer baked at write time. Storage holds raw `{{...}}`
-// and the macro evaluator runs at render time inside the `'render'` MCP
-// origin handler (architecture §2.10.3). The bake-and-refresh path
-// (`resolveAndPersist` + `refreshResolvedContent` + sidecar) was deleted
-// in the unbake refactor,Lumi's display-regex cv-mitigation now handles
-// per-touchedVars invalidation, replacing what the sidecar was for.
 
 function dumpPayload(raw: unknown): string {
   try { return JSON.stringify(raw).slice(0, 400); } catch { return '<unstringifiable>'; }
@@ -2803,6 +1972,39 @@ function sendSetActiveChat(
     log.warn(`sendSetActiveChat: ${(err as Error).message}`);
   }
 }
+
+const activeCardLoader = createActiveCardLoader({
+  extensionVersion: EXTENSION_VERSION,
+  currentCharacterSchemaVersion: CURRENT_CHARACTER_SCHEMA_VERSION,
+  activeCardByChat,
+  worldBookIdsByCharacter,
+  translatorMigrationChecked,
+  repairInFlightByUser,
+  readLumirealm: (characterId, userId) => readLumirealm(charactersApi(), characterId, userId),
+  preValidateRequires,
+  buildVersionError: (missing) => new RisuCompatVersionError(missing, EXTENSION_VERSION),
+  loadAttachedModulesForRuntime: (userId, ids) => loadAttachedModulesForRuntime(userId, ids),
+  buildSyntheticStoredCard,
+  modulesByNamespaceFromCard,
+  setActiveAssetIndexes,
+  setActiveScriptstateDefaults,
+  setActiveModulesByNamespace,
+  clearActiveModulesByNamespace,
+  setActiveCharacterImage: (chatId, url) => setActiveCharacterImage(chatId, url ?? ''),
+  imageUrlFromId,
+  backfillImageJournalIfMissing: (charId, avatarId, card, userId) =>
+    backfillImageJournalIfMissing(charId, avatarId, card, userId),
+  refreshPersonaImage: (userId) => refreshPersonaImage(userId),
+  seedAuthorsNoteFromDepthPrompt: (chatId, userId, ext) =>
+    seedAuthorsNoteFromDepthPrompt(chatId, userId, ext),
+  // Forward-bound: migrationsRunner is wired below, this trampoline calls into it once available.
+  runCharacterMigration: (charId, charName, userId, env, opts) =>
+    migrationsRunner.runCharacterMigration(charId, charName, userId, env, opts),
+  toastFor,
+  log,
+  errMsg,
+});
+const ensureActiveCardForChat = activeCardLoader.ensureActiveCardForChat;
 
 const readonlyResolver = createReadonlyResolver({
   activeCardByChat,
@@ -2971,23 +2173,6 @@ async function processModuleUpload(
   }
 }
 
-
-function summarizeModule(env: ModuleEnvelope): ModuleSummary {
-  const m = env.module;
-  return {
-    id: env.id,
-    name: typeof m.name === 'string' ? m.name : '(unnamed)',
-    description: typeof m.description === 'string' ? m.description : '',
-    filename: env.filename,
-    uploaded_at: env.uploaded_at,
-    lorebook_count: Array.isArray(m.lorebook) ? m.lorebook.length : 0,
-    regex_count: Array.isArray(m.regex) ? m.regex.length : 0,
-    trigger_count: Array.isArray(m.trigger) ? m.trigger.length : 0,
-    asset_count: Object.keys(env.asset_index).length,
-    low_level_access: m.lowLevelAccess === true,
-    has_cjs: typeof m.cjs === 'string' && m.cjs.length > 0,
-  };
-}
 
 async function buildAttachedByCharacter(
   userId: string,
@@ -3606,6 +2791,85 @@ async function refreshAttachedModule(
   invalidateActiveForCharacter(characterId, userId);
   await refreshRisuAssetMap(characterId, userId);
 }
+
+const migrationsRunner = createMigrationsRunner({
+  extensionVersion: EXTENSION_VERSION,
+  currentModuleSchemaVersion: CURRENT_MODULE_SCHEMA_VERSION,
+  translatorMigrationChecked,
+  send,
+  readModuleEnvelope: (userId, moduleId) => readModuleEnvelope(moduleStorage(), userId, moduleId),
+  writeModuleEnvelope: async (userId, env) => { await writeModuleEnvelope(moduleStorage(), userId, env); },
+  dispatchModuleArtifactInstall: (charId, env, userId) => dispatchModuleArtifactInstall(charId, env, userId),
+  writeLumirealm: (charId, data, userId) => writeLumirealm(charactersApi(), charId, data, userId),
+  invalidateActiveForCharacter,
+  toastFor,
+  archiveModuleWorldBookBeforeMigration: (env, userId) => archiveModuleWorldBookBeforeMigration(env, userId),
+  syncModuleWorldBook: (env, userId) => syncModuleWorldBook(env, userId),
+  charactersAttachedTo: (moduleId, userId) => charactersAttachedTo(moduleId, userId),
+  refreshAttachedModule: (charId, env, userId) => refreshAttachedModule(charId, env, userId),
+  // Forward-bound: massMigrations supplies the actual archive notifier below, this trampoline calls into it once wired.
+  notifyLorebookMigrationArchive: (label, wbId, uid) => massMigrations.notifyLorebookMigrationArchive(label, wbId, uid),
+  log,
+  errMsg,
+});
+const runCharacterMigration = migrationsRunner.runCharacterMigration;
+const runModuleMigration = migrationsRunner.runModuleMigration;
+
+const massMigrations = createMassMigrationsRunner({
+  currentCharacterSchemaVersion: CURRENT_CHARACTER_SCHEMA_VERSION,
+  currentModuleSchemaVersion: CURRENT_MODULE_SCHEMA_VERSION,
+  translatorMigrationChecked,
+  moduleStorage,
+  listModules: (userId) => listModuleStore(moduleStorage(), userId),
+  readModuleEnvelope: (userId, moduleId) => readModuleEnvelope(moduleStorage(), userId, moduleId),
+  listLumirealmCharacters: async (userId) => {
+    const all = await listLumirealmCharacters(charactersApi(), userId, { paginate: true });
+    return all.map((e) => ({
+      character: { id: e.character.id, name: e.character.name ?? null },
+      data: e.data,
+    }));
+  },
+  runModuleMigration,
+  runCharacterMigration,
+  emitOperationProgress,
+  queueModalConfirm,
+  toastFor,
+  log,
+  errMsg,
+});
+const runMassModuleMigrationIfNeeded = massMigrations.runMassModuleMigrationIfNeeded;
+const runMassCharacterMigrationIfNeeded = massMigrations.runMassCharacterMigrationIfNeeded;
+
+const repairOrchestrator = createRepairOrchestrator({
+  listLumirealmCharacters: async (userId) => {
+    const entries = await listLumirealmCharacters(charactersApi(), userId, { paginate: true });
+    return entries.map((e) => ({
+      character: { id: e.character.id, name: e.character.name ?? undefined },
+      data: e.data,
+    }));
+  },
+  writeLumirealm: (characterId, data, userId) => writeLumirealm(charactersApi(), characterId, data, userId),
+  readLumirealm: (characterId, userId) => readLumirealm(charactersApi(), characterId, userId),
+  updateLumirealm: (characterId, userId, fn) => updateLumirealm(charactersApi(), characterId, userId, fn),
+  mergeUserOverrides: (base, patch) => mergeUserOverrides(base, patch as never),
+  buildDetachModulesPatch: (base, ids) => buildDetachModulesPatch(base, ids) as never,
+  runCharacterMigration: (charId, charName, userId, env, opts) =>
+    runCharacterMigration(charId, charName, userId, env, opts),
+  readModuleEnvelope: (userId, moduleId) => readModuleEnvelope(moduleStorage(), userId, moduleId),
+  refreshAttachedModule: (charId, env, userId) => refreshAttachedModule(charId, env, userId),
+  translatorMigrationChecked,
+  listStaleCharRegexIds,
+  deleteRegexIds,
+  sweepOrphanModuleRegex,
+  clearDeadJournals,
+  send,
+  emitOperationProgress,
+  log,
+  errMsg,
+});
+void repairOrchestrator.forceRetranslateAll;
+void repairOrchestrator.scrubDanglingModuleRefs;
+const applyRepair = repairOrchestrator.applyRepair;
 
 async function detachModuleFromAllCharacters(
   moduleId: string,

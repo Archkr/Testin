@@ -1,0 +1,300 @@
+declare const spindle: import('lumiverse-spindle-types').SpindleAPI;
+
+import type { LumirealmCharacterData } from '../payload/types.js';
+import type { ModuleEnvelope } from './modules-store.js';
+import type { BackendToFrontend } from '../types/messages.js';
+import {
+  migrateCharacterIfNeeded,
+  type MigrationDeps,
+  type MigrationResult,
+} from './translator-migrations.js';
+import {
+  migrateModuleIfNeeded,
+  type ModuleMigrationDeps,
+} from './module-migrations.js';
+import { markLegacyReimportWarned } from './legacy-reimport-warnings.js';
+import { loadCatalog } from '../payload/import.js';
+
+export interface MigrationsFactoryDeps {
+  readonly extensionVersion: string;
+  readonly currentModuleSchemaVersion: number;
+  readonly translatorMigrationChecked: Set<string>;
+  readonly send: (msg: BackendToFrontend, userId: string | undefined) => void;
+  readonly readModuleEnvelope: (userId: string, moduleId: string) => Promise<ModuleEnvelope | null>;
+  readonly writeModuleEnvelope: (userId: string, env: ModuleEnvelope) => Promise<void>;
+  readonly dispatchModuleArtifactInstall: (
+    characterId: string,
+    env: ModuleEnvelope,
+    userId: string | undefined,
+  ) => Promise<void>;
+  readonly writeLumirealm: (
+    characterId: string,
+    data: LumirealmCharacterData,
+    userId: string,
+  ) => Promise<unknown>;
+  readonly invalidateActiveForCharacter: (characterId: string, userId: string | undefined) => void;
+  readonly toastFor: (
+    userId: string | undefined,
+    kind: 'success' | 'warning' | 'error' | 'info',
+    message: string,
+    options?: { title?: string; duration?: number },
+  ) => void;
+  readonly archiveModuleWorldBookBeforeMigration: (
+    env: ModuleEnvelope,
+    userId: string,
+  ) => Promise<string | null>;
+  readonly syncModuleWorldBook: (env: ModuleEnvelope, userId: string) => Promise<string | null>;
+  readonly charactersAttachedTo: (moduleId: string, userId: string) => Promise<readonly string[]>;
+  readonly refreshAttachedModule: (
+    characterId: string,
+    env: ModuleEnvelope,
+    userId: string,
+  ) => Promise<void>;
+  readonly notifyLorebookMigrationArchive: (
+    subjectLabel: string,
+    archiveWbId: string,
+    userId: string,
+  ) => void;
+  readonly log: {
+    readonly info: (m: string) => void;
+    readonly warn: (m: string) => void;
+    readonly error: (m: string) => void;
+  };
+  readonly errMsg: (e: unknown) => string;
+}
+
+export interface MigrationsRunner {
+  readonly runCharacterMigration: (
+    characterId: string,
+    characterName: string,
+    userId: string,
+    envelope: LumirealmCharacterData,
+    opts?: { firePromptOnNeedsReimport?: boolean; silent?: boolean },
+  ) => Promise<MigrationResult['kind']>;
+  readonly runModuleMigration: (
+    moduleId: string,
+    userId: string,
+  ) => Promise<{ ok: boolean }>;
+}
+
+export function createMigrationsRunner(deps: MigrationsFactoryDeps): MigrationsRunner {
+  const {
+    extensionVersion,
+    currentModuleSchemaVersion,
+    translatorMigrationChecked,
+    send,
+    readModuleEnvelope,
+    writeModuleEnvelope,
+    dispatchModuleArtifactInstall,
+    writeLumirealm,
+    invalidateActiveForCharacter,
+    toastFor,
+    archiveModuleWorldBookBeforeMigration,
+    syncModuleWorldBook,
+    charactersAttachedTo,
+    refreshAttachedModule,
+    notifyLorebookMigrationArchive,
+    log,
+    errMsg,
+  } = deps;
+
+  async function runCharacterMigration(
+    characterId: string,
+    characterName: string,
+    userId: string,
+    envelope: LumirealmCharacterData,
+    opts?: { firePromptOnNeedsReimport?: boolean; silent?: boolean },
+  ): Promise<MigrationResult['kind']> {
+    const migrationDeps: MigrationDeps = {
+      loadCatalog,
+      extensionVersion,
+      log,
+      installCharacterRegexScripts: async (charId, charName, scripts) => {
+        send({
+          type: 'install_regex_scripts',
+          characterId: charId,
+          characterName: charName,
+          scripts: scripts.map((s) => ({ ...s, metadata: { ...(s.metadata ?? {}) } })),
+        }, userId);
+      },
+      reinstallAttachedModules: async (charId) => {
+        const ids = envelope.user_overrides.attached_module_ids ?? [];
+        let count = 0;
+        for (const moduleId of ids) {
+          try {
+            const env = await readModuleEnvelope(userId, moduleId);
+            if (!env) continue;
+            await dispatchModuleArtifactInstall(charId, env, userId);
+            count++;
+          } catch (err) {
+            log.warn(
+              `runCharacterMigration: reinstall module=${moduleId} char=${charId} threw: ${errMsg(err)}`,
+            );
+          }
+        }
+        return count;
+      },
+      dispatchSvgRasterize: (charId, charName, svgs) => {
+        const filtered = svgs.filter((t) => t.classification !== 'templated');
+        if (filtered.length === 0) return;
+        log.info(
+          `runCharacterMigration: dispatching rasterize_svgs char=${charId} count=${filtered.length}`,
+        );
+        send({
+          type: 'rasterize_svgs',
+          characterId: charId,
+          characterName: charName,
+          svgs: filtered.map((t) => ({
+            markerN: t.markerN,
+            svg: t.svg,
+            classification: t.classification as 'simple' | 'theme-reactive' | 'animated',
+            width: t.width,
+            height: t.height,
+          })),
+        }, userId);
+      },
+      writeEnvelope: async (charId, data, uid) => {
+        await writeLumirealm(charId, data, uid);
+      },
+      getAvatarImageId: async (charId, uid) => {
+        try {
+          const ch = await spindle.characters.get(charId, uid) as { image_id?: unknown };
+          return typeof ch?.image_id === 'string' && ch.image_id.length > 0
+            ? ch.image_id
+            : null;
+        } catch {
+          return null;
+        }
+      },
+      getCharacterWorldBookIds: async (charId, uid) => {
+        try {
+          const ch = await spindle.characters.get(charId, uid) as { world_book_ids?: unknown };
+          if (!Array.isArray(ch?.world_book_ids)) return [];
+          return ch.world_book_ids.filter((x): x is string => typeof x === 'string');
+        } catch {
+          return [];
+        }
+      },
+      listWorldBookEntries: async (wbId, uid) => {
+        const out: { id: string; extensions: Record<string, unknown> | null }[] = [];
+        let offset = 0;
+        while (true) {
+          const page = await spindle.world_books.entries.list(wbId, { limit: 200, offset, userId: uid });
+          for (const e of page.data) {
+            const ee = e as { id?: unknown; extensions?: unknown };
+            const id = typeof ee.id === 'string' ? ee.id : null;
+            if (id === null) continue;
+            const ext = ee.extensions && typeof ee.extensions === 'object' && !Array.isArray(ee.extensions)
+              ? ee.extensions as Record<string, unknown>
+              : null;
+            out.push({ id, extensions: ext });
+          }
+          if (page.data.length < 200) break;
+          offset += 200;
+        }
+        return out;
+      },
+      updateWorldBookEntryExtensions: async (entryId, extensions, uid) => {
+        await spindle.world_books.entries.update(entryId, { extensions } as never, uid);
+      },
+    };
+    const result = await migrateCharacterIfNeeded(
+      { characterId, characterName, userId, envelope },
+      migrationDeps,
+    );
+    if (result.kind === 'migrated') {
+      invalidateActiveForCharacter(characterId, userId);
+      if (!opts?.silent) {
+        toastFor(userId, 'success',
+          `Updated ${characterName} for the latest LumiRealm fixes.`,
+          { title: 'lumirealm' },
+        );
+      }
+    } else if (result.kind === 'needs_reimport') {
+      if (opts?.firePromptOnNeedsReimport !== true) return result.kind;
+      const { alreadyWarned } = await markLegacyReimportWarned(
+        spindle.userStorage,
+        userId,
+        characterId,
+      );
+      if (alreadyWarned) return result.kind;
+      send({
+        type: 'notify_legacy_card_needs_reimport',
+        characterId,
+        characterName,
+      }, userId);
+    } else if (result.kind === 'failed') {
+      log.error(
+        `migration failed char=${characterId}: ${result.error} (will retry next boot)`,
+      );
+      translatorMigrationChecked.delete(characterId);
+    }
+    return result.kind;
+  }
+
+  async function runModuleMigration(
+    moduleId: string,
+    userId: string,
+  ): Promise<{ ok: boolean }> {
+    const env = await readModuleEnvelope(userId, moduleId);
+    if (!env) return { ok: true };
+    const stored = env.translator_schema_version ?? 1;
+    if (stored >= currentModuleSchemaVersion) return { ok: true };
+    let archiveWbId: string | null = null;
+    const moduleDeps: ModuleMigrationDeps = {
+      syncWorldBook: async (e) => {
+        archiveWbId = await archiveModuleWorldBookBeforeMigration(e, userId);
+        return syncModuleWorldBook(e, userId);
+      },
+      reinstallArtifactsForAttached: async (mid) => {
+        const charIds = await charactersAttachedTo(mid, userId);
+        let count = 0;
+        for (const charId of charIds) {
+          try {
+            await dispatchModuleArtifactInstall(charId, env, userId);
+            count++;
+          } catch (err) {
+            log.warn(
+              `runModuleMigration: reinstall char=${charId} module=${mid} threw: ${errMsg(err)}`,
+            );
+          }
+        }
+        return count;
+      },
+      refreshArtifactsForAttached: async (mid) => {
+        const charIds = await charactersAttachedTo(mid, userId);
+        let count = 0;
+        for (const charId of charIds) {
+          try {
+            await refreshAttachedModule(charId, env, userId);
+            count++;
+          } catch (err) {
+            log.warn(
+              `runModuleMigration: refresh char=${charId} module=${mid} threw: ${errMsg(err)}`,
+            );
+          }
+        }
+        return count;
+      },
+      writeEnvelope: async (next) => {
+        await writeModuleEnvelope(userId, next);
+      },
+      log,
+    };
+    const result = await migrateModuleIfNeeded(env, moduleDeps);
+    if (result.kind === 'migrated') {
+      const charIds = await charactersAttachedTo(moduleId, userId);
+      for (const charId of charIds) invalidateActiveForCharacter(charId, userId);
+      if (archiveWbId) {
+        const m = env.module as { name?: unknown };
+        const moduleName = typeof m.name === 'string' && m.name.length > 0 ? m.name : env.id;
+        notifyLorebookMigrationArchive(`Module: ${moduleName}`, archiveWbId, userId);
+      }
+      return { ok: true };
+    }
+    if (result.kind === 'failed') return { ok: false };
+    return { ok: true };
+  }
+
+  return { runCharacterMigration, runModuleMigration };
+}
