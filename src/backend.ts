@@ -166,6 +166,10 @@ import { createVariablesTogglesService } from './state/variables-toggles.js';
 import { createSettingsService } from './state/settings-service.js';
 import { makeCaptureUserId } from './boot/capture-user.js';
 import { createImportCardOrchestrator } from './boot/import-card.js';
+import { createWorldBookOps } from './state/world-book-ops.js';
+import { createAssetTriggerMutate } from './state/asset-trigger-mutate.js';
+import { createCharacterModuleAttach } from './state/character-module-attach.js';
+import { createModulePushes } from './state/module-pushes.js';
 import {
   getModalConfirmApi,
   getRegexScriptsApi,
@@ -1239,7 +1243,8 @@ const lifecycleHandlers = createLifecycleEventHandlers({
   variableState,
   toggleState,
   ensureActiveCardForChat,
-  invalidateActiveForCharacter,
+  // Trampoline: characterModuleAttach is wired below, this defers the lookup to call time.
+  invalidateActiveForCharacter: (characterId, userId) => characterModuleAttach.invalidateActiveForCharacter(characterId, userId),
   invalidateRenderMcpForChat,
   invalidateRenderMcpForMessage,
   invalidateListenEditPreload,
@@ -1347,68 +1352,33 @@ async function processModuleUpload(
 }
 
 
-async function buildAttachedByCharacter(
-  userId: string,
-  libraryById: ReadonlyMap<string, ModuleSummary>,
-): Promise<Record<string, readonly AttachedModuleSummary[]>> {
-  const out: Record<string, AttachedModuleSummary[]> = {};
-  const entries = await listLumirealmCharacters(charactersApi(), userId, {
-    paginate: true,
-  });
-  for (const e of entries) {
-    const ids = e.data.user_overrides.attached_module_ids ?? [];
-    if (ids.length === 0) {
-      out[e.character.id] = [];
-      continue;
-    }
-    const list: AttachedModuleSummary[] = [];
-    for (const id of ids) {
-      const sum = libraryById.get(id);
-      if (sum) {
-        list.push({
-          id: sum.id,
-          name: sum.name,
-          ...(sum.translatedName !== undefined ? { translatedName: sum.translatedName } : {}),
-        });
-      } else {
-        // Module was deleted from the library while still referenced.
-        // Surface so the user can see + clean up.
-        list.push({ id, name: '(missing, module deleted from library)' });
-      }
-    }
-    out[e.character.id] = list;
-  }
-  return out;
-}
 
-async function pushModules(userId: string): Promise<void> {
-  const indexEntries = await listModuleStore(moduleStorage(), userId);
-  const lang = TRANSLATE_TARGET_LANG;
-  const wire: ModuleSummary[] = indexEntries.map((e) => {
-    const translatedName = e.translatedName?.[lang];
-    const translatedDescription = e.translatedDescription?.[lang];
-    return {
-      id: e.id,
-      name: e.name,
-      description: e.description,
-      ...(translatedName !== undefined ? { translatedName } : {}),
-      ...(translatedDescription !== undefined ? { translatedDescription } : {}),
-      filename: e.filename,
-      uploaded_at: e.uploaded_at,
-      lorebook_count: e.lorebook_count,
-      regex_count: e.regex_count,
-      trigger_count: e.trigger_count,
-      asset_count: e.asset_count,
-      low_level_access: e.low_level_access,
-      has_cjs: e.has_cjs,
-    };
-  });
-  const byId = new Map(wire.map((w) => [w.id, w]));
-  const attached = await buildAttachedByCharacter(userId, byId);
-  send({ type: 'modules_pushed', modules: wire, attached_by_character: attached }, userId);
-}
 
 const TRANSLATE_TARGET_LANG = 'en';
+
+const modulePushes = createModulePushes({
+  translateLang: TRANSLATE_TARGET_LANG,
+  readLumirealm: (charId, userId) => readLumirealm(charactersApi(), charId, userId),
+  writeLumirealm: (charId, data, userId) => writeLumirealm(charactersApi(), charId, data, userId),
+  readModuleEnvelope: (userId, moduleId) => readModuleEnvelope(moduleStorage(), userId, moduleId),
+  writeModuleEnvelope: async (userId, env) => { await writeModuleEnvelope(moduleStorage(), userId, env); },
+  listModuleStore: (userId) => listModuleStore(moduleStorage(), userId),
+  listLumirealmCharacters: async (userId) => {
+    const all = await listLumirealmCharacters(charactersApi(), userId, { paginate: true });
+    return all.map((e) => ({ character: { id: e.character.id }, data: e.data }));
+  },
+  listCards,
+  pushCards,
+  send,
+  log,
+  errMsg,
+});
+const pushModules = modulePushes.pushModules;
+const pushAttachedForCharacter = modulePushes.pushAttachedForCharacter;
+const persistModuleTranslation = modulePushes.persistModuleTranslation;
+const persistCharacterTranslation = modulePushes.persistCharacterTranslation;
+const readAttachedModuleEnvelopes = modulePushes.readAttachedModuleEnvelopes;
+const loadAttachedModulesForRuntime = modulePushes.loadAttachedModulesForRuntime;
 
 const viewerAssembly = createViewerAssembly({
   readLumirealm: (characterId, userId) => readLumirealm(charactersApi(), characterId, userId),
@@ -1424,219 +1394,66 @@ const viewerAssembly = createViewerAssembly({
   errMsg,
 });
 
-async function persistModuleTranslation(
-  userId: string,
-  msg: Extract<import('./types/messages.js').FrontendToBackend, { type: 'cache_module_translation' }>,
-): Promise<void> {
-  const env = await readModuleEnvelope(moduleStorage(), userId, msg.moduleId);
-  if (!env) {
-    log.warn(`cache_module_translation: module=${msg.moduleId} not found`);
-    return;
-  }
-  const lang = msg.lang || TRANSLATE_TARGET_LANG;
-  const nextLang = mergeLangBlock({
-    existing: env.translations?.[lang] ?? {},
-    ...(msg.name !== undefined ? { name: msg.name } : {}),
-    ...(msg.description !== undefined ? { description: msg.description } : {}),
-    ...(msg.lorebook !== undefined ? { lorebookItems: msg.lorebook } : {}),
-  });
-  const next: typeof env = {
-    ...env,
-    translations: { ...(env.translations ?? {}), [lang]: nextLang },
-  };
-  await writeModuleEnvelope(moduleStorage(), userId, next);
-  await pushModules(userId);
-}
 
-async function persistCharacterTranslation(
-  userId: string,
-  msg: Extract<import('./types/messages.js').FrontendToBackend, { type: 'cache_character_translation' }>,
-): Promise<void> {
-  const fetched = await readLumirealm(charactersApi(), msg.characterId, userId);
-  if (!fetched || !fetched.data) {
-    log.warn(`cache_character_translation: character=${msg.characterId} not lumirealm`);
-    return;
-  }
-  const lang = msg.lang || TRANSLATE_TARGET_LANG;
-  const existing = fetched.data.translations?.[lang] ?? {};
-  const nameChanged = msg.name !== undefined && msg.name !== existing.name;
-  const nextLang = mergeLangBlock({
-    existing,
-    ...(msg.name !== undefined ? { name: msg.name } : {}),
-    ...(msg.lorebook !== undefined ? { lorebookItems: msg.lorebook } : {}),
-  });
-  const nextData = {
-    ...fetched.data,
-    translations: {
-      ...(fetched.data.translations ?? {}),
-      [lang]: nextLang,
-    },
-  };
-  expectCharacterEdit(msg.characterId);
-  await writeLumirealm(charactersApi(), msg.characterId, nextData, userId);
-  if (nameChanged) {
-    pushCards(await listCards(userId), userId);
-  }
-}
 
-async function pushAttachedForCharacter(
-  characterId: string,
-  userId: string,
-): Promise<void> {
-  const fetched = await readLumirealm(charactersApi(), characterId, userId);
-  if (!fetched || !fetched.data) {
-    send({
-      type: 'attached_modules_pushed',
-      characterId,
-      attached: [],
-    }, userId);
-    return;
-  }
-  const ids = fetched.data.user_overrides.attached_module_ids ?? [];
-  const indexEntries = await listModuleStore(moduleStorage(), userId);
-  const byId = new Map(indexEntries.map((e) => [e.id, e]));
-  const lang = TRANSLATE_TARGET_LANG;
-  const list: AttachedModuleSummary[] = ids.map((id) => {
-    const e = byId.get(id);
-    if (!e) return { id, name: '(missing, module deleted from library)' };
-    const tx = e.translatedName?.[lang];
-    return { id, name: e.name, ...(tx !== undefined ? { translatedName: tx } : {}) };
-  });
-  send({ type: 'attached_modules_pushed', characterId, attached: list }, userId);
-}
+const worldBookOps = createWorldBookOps({
+  // Forward-bound: characterModuleAttach is wired below, this trampoline calls into it once available.
+  charactersAttachedTo: (moduleId, userId) => characterModuleAttach.charactersAttachedTo(moduleId, userId),
+  send,
+  log,
+  errMsg,
+});
+void worldBookOps.archiveWorldBookIfEdited;
+void worldBookOps.deleteModuleWorldBookEverywhere;
 
-async function attachModuleToCharacter(
-  characterId: string,
-  moduleId: string,
-  userId: string,
-): Promise<{ ok: boolean; reason?: string }> {
-  const env = await readModuleEnvelope(moduleStorage(), userId, moduleId);
-  if (!env) return { ok: false, reason: `module ${moduleId} not in library` };
-  const updated = await updateLumirealm(charactersApi(), characterId, userId, (cur) => {
-    const ids = cur.user_overrides.attached_module_ids ?? [];
-    if (ids.includes(moduleId)) return cur;
-    return {
-      ...cur,
-      user_overrides: mergeUserOverrides(
-        cur.user_overrides,
-        buildAttachModulePatch(cur.user_overrides, moduleId, env.installed_world_book_id ?? null),
-      ),
-    };
-  });
-  if (!updated) return { ok: false, reason: 'character is not a lumirealm card' };
-  if (env.installed_world_book_id) {
-    await addWorldBookToCharacter(characterId, env.installed_world_book_id, userId).catch((err) => {
-      log.warn(`attachModuleToCharacter: addWorldBookToCharacter failed char=${characterId} module=${moduleId}: ${errMsg(err)}`);
-    });
-  }
-  invalidateActiveForCharacter(characterId, userId);
-  await dispatchModuleArtifactInstall(characterId, env, userId);
-  await refreshRisuAssetMap(characterId, userId);
-  return { ok: true };
-}
+const assetTriggerMutate = createAssetTriggerMutate({
+  readLumirealm: (charId, userId) => readLumirealm(charactersApi(), charId, userId),
+  updateLumirealm: (charId, userId, fn) => updateLumirealm(charactersApi(), charId, userId, fn),
+  readModuleEnvelope: (userId, moduleId) => readModuleEnvelope(moduleStorage(), userId, moduleId),
+  writeModuleEnvelope: async (userId, env) => { await writeModuleEnvelope(moduleStorage(), userId, env); },
+  pushModules,
+  log,
+  errMsg,
+});
+const refreshRisuAssetMap = assetTriggerMutate.refreshRisuAssetMap;
+const mutateAssetIndex = assetTriggerMutate.mutateAssetIndex;
+const mutateTriggerLua = assetTriggerMutate.mutateTriggerLua;
 
-async function detachModuleFromCharacter(
-  characterId: string,
-  moduleId: string,
-  userId: string,
-): Promise<{ ok: boolean; reason?: string }> {
-  const fetched = await readLumirealm(charactersApi(), characterId, userId);
-  if (!fetched || !fetched.data) {
-    return { ok: false, reason: 'character is not a lumirealm card' };
-  }
-  const wbId = fetched.data.user_overrides.attached_module_world_books?.[moduleId] ?? null;
-  const regexIds =
-    fetched.data.user_overrides.attached_module_regex_script_ids?.[moduleId] ?? [];
-  const updated = await updateLumirealm(charactersApi(), characterId, userId, (cur) => {
-    const ids = cur.user_overrides.attached_module_ids ?? [];
-    if (!ids.includes(moduleId)) return cur;
-    return {
-      ...cur,
-      user_overrides: mergeUserOverrides(
-        cur.user_overrides,
-        buildDetachModulesPatch(cur.user_overrides, [moduleId]),
-      ),
-    };
-  });
-  if (!updated) return { ok: false, reason: 'character is not a lumirealm card' };
-  invalidateActiveForCharacter(characterId, userId);
-  if (wbId) {
-    await removeWorldBookFromCharacter(characterId, wbId, userId).catch((err) => {
-      log.warn(`detachModuleFromCharacter: removeWorldBookFromCharacter failed char=${characterId}: ${errMsg(err)}`);
-    });
-    const env = await readModuleEnvelope(moduleStorage(), userId, moduleId);
-    if (env && env.installed_world_book_id !== wbId) {
-      try {
-        await spindle.world_books.delete(wbId, userId);
-        log.info(`detachModuleFromCharacter: deleted legacy per-char world_book wb=${wbId}`);
-      } catch (err) {
-        log.warn(`detachModuleFromCharacter: legacy world_book delete failed wb=${wbId}: ${errMsg(err)}`);
-      }
-    }
-  }
-  if (regexIds.length > 0) {
-    send({ type: 'uninstall_module_artifacts', characterId, moduleId, worldBookId: null, regexScriptIds: regexIds }, userId);
-  }
-  await refreshRisuAssetMap(characterId, userId);
-  return { ok: true };
-}
-
-function assetStem(name: string): string {
-  const base = name.split('/').pop() || name;
-  const dot = base.lastIndexOf('.');
-  return dot > 0 ? base.slice(0, dot) : base;
-}
-
-function setMapKey(map: Record<string, string>, name: string, id: string): void {
-  if (!id) return;
-  map[name] = id;
-  const stem = assetStem(name);
-  if (stem !== name && !(stem in map)) map[stem] = id;
-}
-
-async function refreshRisuAssetMap(characterId: string, userId: string): Promise<void> {
-  const fetched = await readLumirealm(charactersApi(), characterId, userId);
-  if (!fetched || !fetched.data) return;
-  const data = fetched.data;
-  const map: Record<string, string> = {};
-  const moduleIds = data.user_overrides.attached_module_ids ?? [];
-  for (const modId of moduleIds) {
-    const env = await readModuleEnvelope(moduleStorage(), userId, modId);
-    if (!env) continue;
-    for (const [name, ref] of Object.entries(env.asset_index)) {
-      if (typeof ref?.imageId === 'string' && ref.imageId.length > 0) {
-        setMapKey(map, name, ref.imageId);
-      }
-    }
-  }
-  for (const [name, entry] of Object.entries(data.asset_index)) {
-    const id = entry.imageIds[0];
-    if (typeof id === 'string' && id.length > 0) setMapKey(map, name, id);
-  }
-  for (const [name, entry] of Object.entries(data.emotion_index)) {
-    const id = entry.imageIds[0];
-    if (typeof id === 'string' && id.length > 0) setMapKey(map, name, id);
-  }
-  expectCharacterEdit(characterId);
-  try {
-    await spindle.characters.update(
-      characterId,
-      { extensions: { risu_asset_map: map } } as never,
-      userId,
-    );
-    const ids = Object.values(map);
-    const dist: Record<string, number> = {};
-    for (const id of ids) dist[id] = (dist[id] ?? 0) + 1;
-    const top = Object.entries(dist).sort((a, b) => b[1] - a[1]).slice(0, 3);
-    log.trace(
-      `refreshRisuAssetMap: char=${characterId} entries=${ids.length} ` +
-        `unique_image_ids=${new Set(ids).size} ` +
-        `top3=${top.map(([id, n]) => `${id.slice(0, 8)}…(${n})`).join(',')}`,
-    );
-  } catch (err) {
-    log.warn(`refreshRisuAssetMap: char=${characterId} update failed: ${errMsg(err)}`);
-  }
-}
+const characterModuleAttach = createCharacterModuleAttach({
+  readLumirealm: (charId, userId) => readLumirealm(charactersApi(), charId, userId),
+  updateLumirealm: (charId, userId, fn) => updateLumirealm(charactersApi(), charId, userId, fn),
+  readModuleEnvelope: (userId, moduleId) => readModuleEnvelope(moduleStorage(), userId, moduleId),
+  listLumirealmCharacters: async (userId) => {
+    const all = await listLumirealmCharacters(charactersApi(), userId, { paginate: true });
+    return all.map((e) => ({ character: { id: e.character.id }, data: e.data }));
+  },
+  addWorldBookToCharacter: (charId, wbId, userId) => worldBookOps.addWorldBookToCharacter(charId, wbId, userId),
+  removeWorldBookFromCharacter: (charId, wbId, userId) => worldBookOps.removeWorldBookFromCharacter(charId, wbId, userId),
+  dispatchModuleArtifactInstall: (charId, env, userId) => worldBookOps.dispatchModuleArtifactInstall(charId, env, userId),
+  refreshRisuAssetMap,
+  activeCardByChat,
+  compiledByCharacter,
+  lastSentBgHtmlByChat,
+  variableState,
+  toggleState,
+  ensureActiveCardForChat,
+  refreshToggleDefinitions,
+  refreshBgHtml,
+  send,
+  log,
+  errMsg,
+});
+const attachModuleToCharacter = characterModuleAttach.attachModuleToCharacter;
+const detachModuleFromCharacter = characterModuleAttach.detachModuleFromCharacter;
+const refreshAttachedModule = characterModuleAttach.refreshAttachedModule;
+const detachModuleFromAllCharacters = characterModuleAttach.detachModuleFromAllCharacters;
+const invalidateActiveForCharacter = characterModuleAttach.invalidateActiveForCharacter;
+const charactersAttachedTo = characterModuleAttach.charactersAttachedTo;
+const archiveModuleWorldBookBeforeMigration = worldBookOps.archiveModuleWorldBookBeforeMigration;
+const syncModuleWorldBook = worldBookOps.syncModuleWorldBook;
+const addWorldBookToCharacter = worldBookOps.addWorldBookToCharacter;
+const removeWorldBookFromCharacter = worldBookOps.removeWorldBookFromCharacter;
+const dispatchModuleArtifactInstall = worldBookOps.dispatchModuleArtifactInstall;
 
 const lorebookImporter = createLorebookImporter({
   readLumirealm: (characterId, userId) => readLumirealm(charactersApi(), characterId, userId),
@@ -1658,312 +1475,8 @@ const lorebookImporter = createLorebookImporter({
   mapLoreBook,
 });
 
-function projectModuleLorebookForCreate(
-  rawLorebook: readonly unknown[],
-  moduleId: string,
-  worldBookId: string,
-): readonly Record<string, unknown>[] {
-  const valid: LoreBook[] = [];
-  for (const raw of rawLorebook) {
-    const parsed = loreBookSchema.safeParse(raw);
-    if (!parsed.success) continue;
-    const lb = parsed.data;
-    if (lb.key.length === 0 && lb.content.length === 0) continue;
-    valid.push(lb);
-  }
-  const entries = mapLoreBook(valid, { worldBookId });
-  return entries.map((e) => ({
-    ...e,
-    extensions: { ...(e.extensions ?? {}), _risu_module_id: moduleId },
-  }));
-}
 
-// Snapshot a wb's entries into a detached, clearly-labeled standalone wb so
-// user edits survive a destructive in-place migration. Returns the archive wb
-// id, or null when nothing to archive (empty source or no detected edits).
-async function archiveWorldBookIfEdited(
-  sourceWbId: string,
-  archiveName: string,
-  userId: string,
-  context: string,
-): Promise<string | null> {
-  const allEntries: unknown[] = [];
-  let offset = 0;
-  while (true) {
-    const page = await spindle.world_books.entries.list(sourceWbId, { limit: 200, offset, userId });
-    if (page.data.length === 0) break;
-    allEntries.push(...page.data);
-    if (page.data.length < 200) break;
-    offset += 200;
-  }
-  if (allEntries.length === 0) return null;
-  if (!hasUserEditedAnyEntry(allEntries)) {
-    log.info(`archive(${context}): skip,no user edits detected across ${allEntries.length} entries`);
-    return null;
-  }
-  const archive = await spindle.world_books.create({ name: archiveName }, userId);
-  let copied = 0;
-  for (const e of allEntries) {
-    const { id: _id, world_book_id: _wbId, ...rest } = e as Record<string, unknown>;
-    void _id;
-    void _wbId;
-    try {
-      await spindle.world_books.entries.create(archive.id, rest as never, userId);
-      copied++;
-    } catch (err) {
-      log.warn(`archive(${context}): copy entry failed: ${errMsg(err)}`);
-    }
-  }
-  log.info(
-    `archive(${context}): archived=${copied}/${allEntries.length} ` +
-      `wb=${archive.id} name="${archive.name}"`,
-  );
-  return archive.id;
-}
 
-async function archiveModuleWorldBookBeforeMigration(
-  env: ModuleEnvelope,
-  userId: string,
-): Promise<string | null> {
-  const wbId = env.installed_world_book_id;
-  if (!wbId) return null;
-  const m = env.module as { name?: unknown };
-  const moduleName = typeof m.name === 'string' && m.name.length > 0 ? m.name : env.id;
-  const stamp = new Date().toISOString().slice(0, 10);
-  return archiveWorldBookIfEdited(
-    wbId,
-    `[LumiRealm Backup ${stamp}] Module: ${moduleName}`,
-    userId,
-    `module=${env.id}`,
-  );
-}
-
-async function syncModuleWorldBook(
-  env: ModuleEnvelope,
-  userId: string,
-): Promise<string | null> {
-  const m = env.module as { name?: unknown; lorebook?: readonly unknown[] };
-  const lorebook = Array.isArray(m.lorebook) ? m.lorebook : [];
-  const existingId = env.installed_world_book_id;
-  if (lorebook.length === 0) {
-    if (existingId) {
-      await deleteModuleWorldBookEverywhere(env.id, existingId, userId);
-    }
-    return null;
-  }
-  const moduleName = typeof m.name === 'string' && m.name.length > 0 ? m.name : env.id;
-  if (existingId) {
-    try {
-      let offset = 0;
-      while (true) {
-        const page = await spindle.world_books.entries.list(existingId, { limit: 200, offset, userId });
-        if (page.data.length === 0) break;
-        for (const e of page.data) {
-          await spindle.world_books.entries.delete(e.id, userId).catch(() => undefined);
-        }
-        if (page.data.length < 200) break;
-      }
-      await spindle.world_books.update(existingId, { name: `Module: ${moduleName}` }, userId).catch(() => undefined);
-      const projected = projectModuleLorebookForCreate(lorebook, env.id, existingId);
-      for (const entry of projected) {
-        await spindle.world_books.entries.create(existingId, entry as never, userId);
-      }
-      log.info(`syncModuleWorldBook: refreshed module=${env.id} wb=${existingId} entries=${projected.length}/${lorebook.length}`);
-      return existingId;
-    } catch (err) {
-      log.warn(`syncModuleWorldBook: refresh failed module=${env.id} wb=${existingId}: ${errMsg(err)},recreating`);
-      await deleteModuleWorldBookEverywhere(env.id, existingId, userId);
-    }
-  }
-  const wb = await spindle.world_books.create({ name: `Module: ${moduleName}` }, userId);
-  const projected = projectModuleLorebookForCreate(lorebook, env.id, wb.id);
-  for (const entry of projected) {
-    await spindle.world_books.entries.create(wb.id, entry as never, userId);
-  }
-  log.info(`syncModuleWorldBook: created module=${env.id} wb=${wb.id} entries=${projected.length}/${lorebook.length}`);
-  return wb.id;
-}
-
-async function deleteModuleWorldBookEverywhere(
-  moduleId: string,
-  worldBookId: string,
-  userId: string,
-): Promise<void> {
-  const attached = await charactersAttachedTo(moduleId, userId);
-  for (const charId of attached) {
-    await removeWorldBookFromCharacter(charId, worldBookId, userId);
-  }
-  try {
-    await spindle.world_books.delete(worldBookId, userId);
-  } catch (err) {
-    log.warn(`deleteModuleWorldBookEverywhere: delete wb=${worldBookId} failed: ${errMsg(err)}`);
-  }
-}
-
-async function addWorldBookToCharacter(
-  characterId: string,
-  worldBookId: string,
-  userId: string,
-): Promise<void> {
-  const c = await spindle.characters.get(characterId, userId);
-  if (!c) return;
-  const ids = (c.world_book_ids ?? []).filter((x): x is string => typeof x === 'string');
-  if (ids.includes(worldBookId)) return;
-  expectCharacterEdit(characterId);
-  await spindle.characters.update(
-    characterId,
-    { world_book_ids: [...ids, worldBookId] } as never,
-    userId,
-  );
-}
-
-async function removeWorldBookFromCharacter(
-  characterId: string,
-  worldBookId: string,
-  userId: string,
-): Promise<void> {
-  const c = await spindle.characters.get(characterId, userId);
-  if (!c) return;
-  const ids = (c.world_book_ids ?? []).filter((x): x is string => typeof x === 'string');
-  if (!ids.includes(worldBookId)) return;
-  expectCharacterEdit(characterId);
-  await spindle.characters.update(
-    characterId,
-    { world_book_ids: ids.filter((id) => id !== worldBookId) } as never,
-    userId,
-  );
-}
-
-async function dispatchModuleArtifactInstall(
-  characterId: string,
-  env: ModuleEnvelope,
-  userId: string | undefined,
-): Promise<void> {
-  const m = env.module as {
-    name?: unknown;
-    regex?: readonly unknown[];
-  };
-  const moduleName = typeof m.name === 'string' && m.name.length > 0
-    ? m.name
-    : env.id;
-  const regexScripts = projectModuleRegexEntries(
-    env.id,
-    moduleName,
-    characterId,
-    m.regex,
-    () => cryptoUuidLocal(),
-  );
-  if (regexScripts.length === 0) {
-    log.info(
-      `dispatchModuleArtifactInstall: module=${env.id} char=${characterId} no regex to install`,
-    );
-    return;
-  }
-  const lorebookEntries: never[] = [];
-  log.info(
-    `dispatchModuleArtifactInstall: module=${env.id} char=${characterId} ` +
-      `lorebookEntries=${lorebookEntries.length} regexScripts=${regexScripts.length}`,
-  );
-  send({
-    type: 'install_module_artifacts',
-    characterId,
-    moduleId: env.id,
-    worldBookName: `Module: ${moduleName}`,
-    lorebookEntries,
-    regexScripts,
-  }, userId);
-}
-
-function cryptoUuidLocal(): string {
-  const c = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto;
-  if (c?.randomUUID) return c.randomUUID();
-  return `mod-rx-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-}
-
-function invalidateActiveForCharacter(characterId: string, userId: string | undefined): void {
-  // Only evict entries owned by the same user, so user B's invalidation can't
-  // wipe user A's cache. Without a userId we can't attribute, so skip.
-  if (userId === undefined) {
-    log.warn(`invalidateActiveForCharacter: skipped char=${characterId} (no userId)`);
-    return;
-  }
-  let evicted = 0;
-  const evictedChats: string[] = [];
-  for (const [chatId, active] of activeCardByChat) {
-    if (active.card.character_id === characterId && active.ownerUserId === userId) {
-      activeCardByChat.delete(chatId);
-      clearActiveAssetIndexes(chatId);
-      clearActiveCharacterImage(chatId);
-      variableState.clearChat(chatId);
-      toggleState.clearChat(chatId);
-      lastSentBgHtmlByChat.delete(chatId);
-      evictedChats.push(chatId);
-      evicted += 1;
-    }
-  }
-  compiledByCharacter.delete(characterId);
-  log.info(`invalidateActiveForCharacter: char=${characterId} evictedChats=${evicted}`);
-  for (const chatId of evictedChats) {
-    void (async () => {
-      const reactivated = await ensureActiveCardForChat(chatId, null, userId);
-      if (reactivated) {
-        await refreshToggleDefinitions(reactivated, chatId, userId, { force: true });
-        await refreshBgHtml(reactivated, chatId, userId);
-      }
-    })();
-  }
-}
-
-/** Returns IDs of characters that attach `moduleId`. */
-async function charactersAttachedTo(
-  moduleId: string,
-  userId: string,
-): Promise<readonly string[]> {
-  const entries = await listLumirealmCharacters(charactersApi(), userId, {
-    paginate: true,
-  });
-  const out: string[] = [];
-  for (const e of entries) {
-    const ids = e.data.user_overrides.attached_module_ids ?? [];
-    if (ids.includes(moduleId)) out.push(e.character.id);
-  }
-  return out;
-}
-
-// MUST NOT delete the module's world_book: it is shared across every
-// character attached to the module, so dropping it here destroys lore.
-async function refreshAttachedModule(
-  characterId: string,
-  env: ModuleEnvelope,
-  userId: string,
-): Promise<void> {
-  const fetched = await readLumirealm(charactersApi(), characterId, userId);
-  if (!fetched || !fetched.data) return;
-  const regexIds =
-    fetched.data.user_overrides.attached_module_regex_script_ids?.[env.id] ?? [];
-  await updateLumirealm(charactersApi(), characterId, userId, (cur) => {
-    const rx = { ...(cur.user_overrides.attached_module_regex_script_ids ?? {}) };
-    delete rx[env.id];
-    return {
-      ...cur,
-      user_overrides: mergeUserOverrides(cur.user_overrides, {
-        attached_module_regex_script_ids: Object.keys(rx).length > 0 ? rx : null,
-      }),
-    };
-  });
-  if (regexIds.length > 0) {
-    send({
-      type: 'uninstall_module_artifacts',
-      characterId,
-      moduleId: env.id,
-      worldBookId: null,
-      regexScriptIds: regexIds,
-    }, userId);
-  }
-  await dispatchModuleArtifactInstall(characterId, env, userId);
-  invalidateActiveForCharacter(characterId, userId);
-  await refreshRisuAssetMap(characterId, userId);
-}
 
 const migrationsRunner = createMigrationsRunner({
   extensionVersion: EXTENSION_VERSION,
@@ -2042,197 +1555,8 @@ void repairOrchestrator.forceRetranslateAll;
 void repairOrchestrator.scrubDanglingModuleRefs;
 const applyRepair = repairOrchestrator.applyRepair;
 
-async function detachModuleFromAllCharacters(
-  moduleId: string,
-  userId: string,
-): Promise<readonly string[]> {
-  const entries = await listLumirealmCharacters(charactersApi(), userId, {
-    paginate: true,
-  });
-  const touched: string[] = [];
-  for (const e of entries) {
-    const ids = e.data.user_overrides.attached_module_ids ?? [];
-    if (!ids.includes(moduleId)) continue;
-      const wbId =
-      e.data.user_overrides.attached_module_world_books?.[moduleId] ?? null;
-    const regexIds =
-      e.data.user_overrides.attached_module_regex_script_ids?.[moduleId] ?? [];
-    await updateLumirealm(charactersApi(), e.character.id, userId, (cur) => ({
-      ...cur,
-      user_overrides: mergeUserOverrides(
-        cur.user_overrides,
-        buildDetachModulesPatch(cur.user_overrides, [moduleId]),
-      ),
-    }));
-    invalidateActiveForCharacter(e.character.id, userId);
-    if (wbId) {
-      await removeWorldBookFromCharacter(e.character.id, wbId, userId).catch((err) => {
-        log.warn(`detachModuleFromAllCharacters: removeWorldBookFromCharacter failed char=${e.character.id}: ${errMsg(err)}`);
-      });
-    }
-    if (regexIds.length > 0) {
-      send({
-        type: 'uninstall_module_artifacts',
-        characterId: e.character.id,
-        moduleId,
-        worldBookId: null,
-        regexScriptIds: regexIds,
-      }, userId);
-    }
-    touched.push(e.character.id);
-  }
-  return touched;
-}
-
-type AssetMutationMessage =
-  | Extract<FrontendToBackend, { type: 'add_asset' }>
-  | Extract<FrontendToBackend, { type: 'add_assets' }>
-  | Extract<FrontendToBackend, { type: 'rename_asset' }>
-  | Extract<FrontendToBackend, { type: 'delete_asset' }>;
-
-async function mutateAssetIndex(
-  msg: AssetMutationMessage,
-  userId: string,
-): Promise<{ ok: boolean; reason?: string }> {
-  if (msg.source.kind === 'character') {
-    const characterId = msg.source.characterId;
-    const updated = await updateLumirealm(charactersApi(), characterId, userId, (cur) => {
-      const before = cur.asset_index;
-      if (msg.type === 'add_assets') {
-        let working = before;
-        for (const e of msg.entries) {
-          const r = addAssetToCharacterIndex(working, e.assetName, e.imageId, e.ext);
-          if (r.ok) working = r.index;
-          else log.warn(`add_assets (character ${characterId}): "${e.assetName}" skipped,${r.reason}`);
-        }
-        return { ...cur, asset_index: working };
-      }
-      let result;
-      switch (msg.type) {
-        case 'add_asset':
-          result = addAssetToCharacterIndex(before, msg.assetName, msg.imageId, msg.ext);
-          break;
-        case 'rename_asset':
-          result = renameCharacterAsset(before, msg.oldName, msg.newName);
-          break;
-        case 'delete_asset':
-          result = deleteCharacterAsset(before, msg.assetName);
-          break;
-      }
-      if (!result.ok) {
-        log.warn(
-          `mutateAssetIndex (character ${characterId}): ${msg.type} failed,${result.reason}`,
-        );
-        return cur;
-      }
-      return { ...cur, asset_index: result.index };
-    });
-    if (!updated) return { ok: false, reason: 'character is not a lumirealm card' };
-    return { ok: true };
-  }
-
-  const moduleId = msg.source.moduleId;
-  const env = await readModuleEnvelope(moduleStorage(), userId, moduleId);
-  if (!env) return { ok: false, reason: `module ${moduleId} not in library` };
-  if (msg.type === 'add_assets') {
-    let working = env.asset_index;
-    for (const e of msg.entries) {
-      const r = addAssetToModuleIndex(working, e.assetName, e.imageId, e.ext);
-      if (r.ok) working = r.index;
-      else log.warn(`add_assets (module ${moduleId}): "${e.assetName}" skipped,${r.reason}`);
-    }
-    const nextEnv = { ...env, asset_index: working };
-    await writeModuleEnvelope(moduleStorage(), userId, nextEnv);
-    await pushModules(userId);
-    return { ok: true };
-  }
-  let result;
-  switch (msg.type) {
-    case 'add_asset':
-      result = addAssetToModuleIndex(env.asset_index, msg.assetName, msg.imageId, msg.ext);
-      break;
-    case 'rename_asset':
-      result = renameModuleAsset(env.asset_index, msg.oldName, msg.newName);
-      break;
-    case 'delete_asset':
-      result = deleteModuleAsset(env.asset_index, msg.assetName);
-      break;
-  }
-  if (!result.ok) {
-    return { ok: false, ...(result.reason !== undefined ? { reason: result.reason } : {}) };
-  }
-  const nextEnv = { ...env, asset_index: result.index };
-  await writeModuleEnvelope(moduleStorage(), userId, nextEnv);
-  // Push fresh modules list (asset_count summary changes).
-  await pushModules(userId);
-  return { ok: true };
-}
 
 
-async function mutateTriggerLua(
-  msg: Extract<FrontendToBackend, { type: 'set_trigger_lua' }>,
-  userId: string,
-): Promise<{ ok: boolean; reason?: string }> {
-  if (msg.source.kind === 'character') {
-    const characterId = msg.source.characterId;
-    let outcome: { ok: boolean; reason?: string } = { ok: true };
-    const updated = await updateLumirealm(charactersApi(), characterId, userId, (cur) => {
-      const r = replaceTriggerLuaInArray(cur.payload.triggers, msg.triggerIndex, msg.lua);
-      if (!r.ok || !r.triggers) {
-        outcome = { ok: false, ...(r.reason ? { reason: r.reason } : {}) };
-        return cur;
-      }
-      // Keep `lua_scripts[i]` in sync  - runtime reads it by trigger
-      // index. Re-derive only the affected entry; others stay
-      // verbatim.
-      const newLua = extractLuaForTrigger(r.triggers[msg.triggerIndex]);
-      const nextLuaScripts = [...cur.payload.lua_scripts];
-      while (nextLuaScripts.length <= msg.triggerIndex) nextLuaScripts.push('');
-      nextLuaScripts[msg.triggerIndex] = newLua;
-      // requires.lua becomes the OR of "any non-empty lua_script".
-      // Recompute defensively after mutation.
-      const requiresLua = nextLuaScripts.some((s) => s.length > 0);
-      return {
-        ...cur,
-        payload: {
-          ...cur.payload,
-          triggers: r.triggers,
-          lua_scripts: nextLuaScripts,
-          requires: { ...cur.payload.requires, lua: requiresLua },
-        },
-      };
-    });
-    if (!updated) {
-      return outcome.ok
-        ? { ok: false, reason: 'character is not a lumirealm card' }
-        : outcome;
-    }
-    return outcome;
-  }
-
-  const moduleId = msg.source.moduleId;
-  const env = await readModuleEnvelope(moduleStorage(), userId, moduleId);
-  if (!env) return { ok: false, reason: `module ${moduleId} not in library` };
-  const moduleBody = env.module as { trigger?: readonly unknown[] };
-  const r = replaceTriggerLuaInArray(
-    moduleBody.trigger ?? [],
-    msg.triggerIndex,
-    msg.lua,
-  );
-  if (!r.ok || !r.triggers) {
-    return { ok: false, ...(r.reason ? { reason: r.reason } : {}) };
-  }
-  const nextEnv = {
-    ...env,
-    module: {
-      ...(env.module as Record<string, unknown>),
-      trigger: r.triggers,
-    } as typeof env.module,
-  };
-  await writeModuleEnvelope(moduleStorage(), userId, nextEnv);
-  await pushModules(userId);
-  return { ok: true };
-}
 
 const viewerPushDeps: ViewerPushDeps = {
   assembleCharacter: (characterId, userId) => viewerAssembly.assembleCharacter(characterId, userId),
@@ -2242,125 +1566,7 @@ const viewerPushDeps: ViewerPushDeps = {
   errMsg,
 };
 
-export async function readAttachedModuleEnvelopes(
-  userId: string,
-  attachedIds: readonly string[],
-): Promise<readonly ModuleEnvelope[]> {
-  if (attachedIds.length === 0) return [];
 
-  const directHits: ModuleEnvelope[] = [];
-  const seenIds = new Set<string>();
-  const missingHandles: string[] = [];
-  for (const id of attachedIds) {
-    const env = await readModuleEnvelope(moduleStorage(), userId, id);
-    if (env && !seenIds.has(env.id)) {
-      directHits.push(env);
-      seenIds.add(env.id);
-    } else if (!env) {
-      missingHandles.push(id);
-    }
-  }
-
-  if (missingHandles.length === 0) return directHits;
-
-  // Namespace fallback: Risu modules.ts. Re-uploaded module with
-  // namespace="<old-id>" resolves transparently without re-attach.
-  let library: readonly ModuleIndexEntry[] = [];
-  try {
-    library = await listModuleStore(moduleStorage(), userId);
-  } catch (err) {
-    log.warn(
-      `readAttachedModuleEnvelopes: namespace fallback list failed: ${(err as Error).message}`,
-    );
-    return directHits;
-  }
-
-  const missingSet = new Set(missingHandles);
-  const fallback: ModuleEnvelope[] = [];
-  for (const summary of library) {
-    if (seenIds.has(summary.id)) continue;
-    const env = await readModuleEnvelope(moduleStorage(), userId, summary.id);
-    if (!env) continue;
-    const ns = (env.module as { namespace?: unknown }).namespace;
-    if (typeof ns === 'string' && ns.length > 0 && missingSet.has(ns)) {
-      fallback.push(env);
-      seenIds.add(env.id);
-      log.info(
-        `readAttachedModuleEnvelopes: namespace match,handle="${ns}" → module id=${env.id} ` +
-          `(transparent replacement / aliasing)`,
-      );
-    }
-  }
-
-  for (const h of missingHandles) {
-    const matched = fallback.some((env) => {
-      const ns = (env.module as { namespace?: unknown }).namespace;
-      return typeof ns === 'string' && ns === h;
-    });
-    if (!matched) {
-      log.warn(
-        `readAttachedModuleEnvelopes: handle "${h}" did not resolve via id or namespace,skipping`,
-      );
-    }
-  }
-
-  return [...directHits, ...fallback];
-}
-
-async function loadAttachedModulesForRuntime(
-  userId: string,
-  attachedIds: readonly string[],
-): Promise<readonly import('./state/lumirealm-character.js').AttachedModuleForRuntime[]> {
-  const envelopes = await readAttachedModuleEnvelopes(userId, attachedIds);
-  return envelopes.map((env) => {
-    const m = env.module as {
-      trigger?: readonly unknown[];
-      lowLevelAccess?: unknown;
-      customModuleToggle?: unknown;
-      name?: unknown;
-      backgroundEmbedding?: unknown;
-      namespace?: unknown;
-    };
-    const triggers = Array.isArray(m.trigger) ? (m.trigger as readonly unknown[]) : [];
-    const lua_scripts = triggers.map((t) => {
-      const tEff = (t as { effect?: readonly unknown[] }).effect ?? [];
-      const parts: string[] = [];
-      for (const e of tEff) {
-        const eo = e as { type?: string; code?: string };
-        if (eo.type === 'triggerlua' && typeof eo.code === 'string') {
-          parts.push(eo.code);
-        }
-      }
-      return parts.join('\n');
-    });
-    const runtimeAssetIndex: Record<string, AssetIndexEntry> = {};
-    for (const [name, ref] of Object.entries(env.asset_index)) {
-      runtimeAssetIndex[name] = {
-        imageIds: [ref.imageId],
-        ...(ref.ext !== undefined ? { ext: ref.ext } : {}),
-      };
-    }
-    return {
-      id: env.id,
-      triggers,
-      lua_scripts,
-      asset_index: runtimeAssetIndex,
-      low_level_access: m.lowLevelAccess === true,
-      ...(typeof m.customModuleToggle === 'string' && m.customModuleToggle.length > 0
-        ? { custom_module_toggle: m.customModuleToggle }
-        : {}),
-      ...(typeof m.name === 'string' && m.name.length > 0
-        ? { display_name: m.name }
-        : {}),
-      ...(typeof m.backgroundEmbedding === 'string' && m.backgroundEmbedding.length > 0
-        ? { background_embedding: m.backgroundEmbedding }
-        : {}),
-      ...(typeof m.namespace === 'string' && m.namespace.length > 0
-        ? { namespace: m.namespace }
-        : {}),
-    };
-  });
-}
 
 
 const realmHandle: RealmBackendHandle = setupRealmBackend({
