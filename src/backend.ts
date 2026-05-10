@@ -146,6 +146,7 @@ import {
 } from './handlers/import.js';
 import { createOrphanHandlers } from './handlers/orphan.js';
 import { createRepairHandlers } from './handlers/repair.js';
+import { createLifecycleEventHandlers } from './events/lifecycle.js';
 import {
   getRegisterMessageContentProcessor,
   getRegisterMacroInterceptor,
@@ -4356,567 +4357,64 @@ function sendSetActiveChat(
 // SETTINGS_UPDATED key='activeChatId' fires on chat navigation. Warms the
 // active-card cache and renders bg-html. Does NOT fire `start` binding (Risu
 // fires `start` only inside sendChat, not on chat open).
-spindle.on('SETTINGS_UPDATED', userScoped(async (raw, userId) => {
-  captureUserId(userId, 'SETTINGS_UPDATED');
-  const p = raw as { key?: string; value?: unknown; keys?: string[] };
-  if (p.key !== 'activeChatId') return;
-  const chatId = typeof p.value === 'string' && p.value.length > 0 ? p.value : null;
-  log.info(`event SETTINGS_UPDATED activeChatId=${chatId ?? '<cleared>'} payload=${dumpPayload(raw)}`);
-  const prevChat = userId ? lastActiveChatByUser.get(userId) : undefined;
-  // FE dismounts on any render/clear for a different chat, so both prev and new memos are stale at the moment of transition.
-  if (prevChat !== chatId) {
-    if (prevChat) lastSentBgHtmlByChat.delete(prevChat);
-    if (chatId) lastSentBgHtmlByChat.delete(chatId);
-  }
-  // When chatId clears (ChatView unmount), fire clear_bg_html for the last
-  // mounted chat so fixed-positioned bg widgets don't bleed onto other pages.
-  if (!chatId) {
-    sendSetActiveChat(null, null, userId);
-    const lastChat = userId ? lastActiveChatByUser.get(userId) : undefined;
-    if (lastChat) {
-      log.info(
-        `SETTINGS_UPDATED activeChatId cleared, dismounting bg-host for last chat=${lastChat}`,
-      );
-      try { send({ type: 'clear_bg_html', chatId: lastChat }, userId); }
-      catch (err) { log.warn(`SETTINGS_UPDATED clear_bg_html: ${(err as Error).message}`); }
-      if (userId) lastActiveChatByUser.delete(userId);
-    } else {
-      log.info(`SETTINGS_UPDATED activeChatId cleared, no last chat to dismount`);
-    }
-    return;
-  }
-  if (userId) lastActiveChatByUser.set(userId, chatId);
-  let characterId: string | undefined;
-  try {
-    const chat = await spindle.chats.get(chatId, userId);
-    if (chat?.character_id) characterId = chat.character_id;
-  } catch (err) {
-    log.warn(`SETTINGS_UPDATED activeChatId: chats.get failed: ${(err as Error).message}`);
-  }
-  const active = await ensureActiveCardForChat(chatId, characterId ?? null, userId);
-  log.info(`SETTINGS_UPDATED activeChatId: active=${active ? `characterId=${active.card.character_id} hasBgHtml=${!!active.card.risuPayload.background_html} triggers=${active.card.risuPayload.triggers?.length ?? 0}` : '<none>'}`);
-  // Activation precedes paint: lifter clearAll fires on this edge.
-  sendSetActiveChat(active ? chatId : null, active ? active.card.character_id : null, userId);
-  if (!active) {
-    try { send({ type: 'clear_bg_html', chatId }, userId); } catch { /* */ }
-    return;
-  }
-  invalidateRenderMcpForChat(chatId);
-  await refreshBgHtml(active, chatId, userId);
-  await refreshVariables(active, chatId, userId, { force: true });
-  // Force toggle definitions on chat open; toggle values travel via the variables push above.
-  await refreshToggleDefinitions(active, chatId, userId, { force: true });
-  log.info(`SETTINGS_UPDATED activeChatId: ALL DONE chatId=${chatId}`);
-}));
+const lifecycleHandlers = createLifecycleEventHandlers({
+  captureUserId,
+  extractIds,
+  dumpPayload,
+  activeCardByChat,
+  lastActiveChatByUser,
+  lastSentBgHtmlByChat,
+  compiledByCharacter,
+  worldBookIdsByCharacter,
+  variableState,
+  toggleState,
+  ensureActiveCardForChat,
+  invalidateActiveForCharacter,
+  invalidateRenderMcpForChat,
+  invalidateRenderMcpForMessage,
+  invalidateListenEditPreload,
+  clearActiveAssetIndexes,
+  clearActiveCharacterImage,
+  clearActiveScriptstateDefaults,
+  clearVarOverlay,
+  refreshBgHtml,
+  refreshVariables,
+  refreshToggleDefinitions,
+  runBinding,
+  generationEndedBindings: GENERATION_ENDED_BINDINGS,
+  consumeOwnChatChange,
+  consumeOwnCharacterEdit,
+  consumeIfOurWrite,
+  send,
+  sendSetActiveChat,
+  listCards,
+  pushCards,
+  deleteCardByChar,
+  journalStorage,
+  readImageJournalFile,
+  clearImageJournal,
+  buildLiveImageIdSet,
+  buildOrphanDetectDepsExcluding,
+  deleteImageIds,
+  emitOperationProgress,
+  chatsGet: (chatId, userId) => spindle.chats.get(chatId, userId) as Promise<{ character_id?: string } | null>,
+  log,
+  errMsg,
+});
 
-const chatChangedDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
-const chatChangedCoalescedCount = new Map<string, number>();
-// Accumulates the union of `changedFields` across all events coalesced into
-// a single debounced refresh. Sentinel `'unknown'` means at least one event
-// in the burst had no `changedFields` (e.g. persona reattribution emit at
-// chats.service.ts:977 sends a non-typed payload) , treat as safe-on-unknown
-// and run the full fan-out.
-const chatChangedCoalescedFields = new Map<string, Set<string> | 'unknown'>();
-const CHAT_CHANGED_DEBOUNCE_MS = 50;
-
-// Allow-list of `changedFields` dot-path prefixes that warrant a refresh.
-// Only paths in here cause `refreshResolvedContent` / `refreshBgHtml` /
-// `refreshVariables` to fire on external CHAT_CHANGED. Everything else is
-// admin-only metadata (chat name, avatar, council results, group config,
-// deferred WI state, impersonation preset cleanup, etc.) and is skipped.
-//
-// Audit basis: every `risu-compat/handlers/*.ts` reads from `ctx.vars.get`
-// (which maps to `metadata.macro_variables.{local,global,chat}`) or from
-// `metadata.chat_variables` (Lumi-native chat-scope bag). No handler reads
-// any other `chat.metadata.X` path directly. Character-side fields
-// (`ctx.character.*`, `ctx.identity.*`, `ctx.lorebook`, `ctx.messages.*`)
-// flow through CHARACTER_EDITED / MESSAGE_* events, not CHAT_CHANGED.
-//
-// Future-proofing: if a new handler starts reading from a new chat metadata
-// path, add the prefix here. Allow-list (vs deny-list) is intentional ,
-// errs toward minimum work for the common case; the tradeoff is "we must
-// remember to update this list when adding a handler that reads new chat
-// metadata." That tradeoff is acceptable because adding such a handler is
-// a deliberate code change, easy to spot in review.
-const REFRESH_FIELD_PREFIXES = [
-  'metadata.macro_variables',
-  'metadata.chat_variables',
-] as const;
-
-function changedFieldsRequireRefresh(fields: Set<string> | 'unknown'): boolean {
-  if (fields === 'unknown') return true;
-  for (const f of fields) {
-    for (const prefix of REFRESH_FIELD_PREFIXES) {
-      if (f === prefix || f.startsWith(`${prefix}.`)) return true;
-    }
-  }
-  return false;
-}
-
-function scheduleChatChangedRefresh(
-  chatId: string,
-  characterId: string | null,
-  changedFields: readonly string[] | undefined,
-  userId: string | undefined,
-): void {
-  chatChangedCoalescedCount.set(chatId, (chatChangedCoalescedCount.get(chatId) ?? 0) + 1);
-
-  // Accumulate the union of changedFields across this burst. A single
-  // 'unknown' contaminates the rest , once anything in the burst lacked
-  // a typed payload, we MUST run everything (safe-on-unknown).
-  const prev = chatChangedCoalescedFields.get(chatId);
-  if (changedFields === undefined) {
-    chatChangedCoalescedFields.set(chatId, 'unknown');
-  } else if (prev !== 'unknown') {
-    const merged = (prev instanceof Set) ? prev : new Set<string>();
-    for (const f of changedFields) merged.add(f);
-    chatChangedCoalescedFields.set(chatId, merged);
-  }
-
-  if (chatChangedDebounceTimers.has(chatId)) return;
-  const timer = setTimeout(async () => {
-    chatChangedDebounceTimers.delete(chatId);
-    const coalesced = chatChangedCoalescedCount.get(chatId) ?? 1;
-    chatChangedCoalescedCount.delete(chatId);
-    const accumulatedFields = chatChangedCoalescedFields.get(chatId) ?? 'unknown';
-    chatChangedCoalescedFields.delete(chatId);
-    const requiresRefresh = changedFieldsRequireRefresh(accumulatedFields);
-    try {
-      const active = await ensureActiveCardForChat(chatId, characterId, userId);
-      const fieldsSummary = accumulatedFields === 'unknown'
-        ? 'unknown'
-        : (accumulatedFields.size === 0 ? 'empty' : `[${[...accumulatedFields].slice(0, 6).join(',')}${accumulatedFields.size > 6 ? `,+${accumulatedFields.size - 6}` : ''}]`);
-      log.info(
-        `CHAT_CHANGED (external, debounced): coalesced=${coalesced} ` +
-          `fields=${fieldsSummary} requiresRefresh=${requiresRefresh} ` +
-          `active=${active ? `char=${active.card.character_id}` : '<none>'}`,
-      );
-      if (!active) {
-        try { send({ type: 'clear_bg_html', chatId }, userId); }
-        catch (err) { log.warn(`CHAT_CHANGED clear_bg_html: ${(err as Error).message}`); }
-        return;
-      }
-      if (!requiresRefresh) return;
-      await refreshBgHtml(active, chatId, userId);
-      await refreshVariables(active, chatId, userId, { force: true });
-    } catch (err) {
-      log.error(`scheduleChatChangedRefresh: chat=${chatId} threw: ${errMsg(err)}`);
-    }
-  }, CHAT_CHANGED_DEBOUNCE_MS);
-  if (typeof (timer as { unref?: () => void }).unref === 'function') {
-    (timer as { unref: () => void }).unref();
-  }
-  chatChangedDebounceTimers.set(chatId, timer);
-}
-
-spindle.on('CHAT_CHANGED', userScoped(async (raw, userId) => {
-  captureUserId(userId, 'CHAT_CHANGED');
-  const { chatId, characterId } = extractIds(raw);
-  if (!chatId) { log.warn('CHAT_CHANGED: missing chatId , aborting'); return; }
-
-  // Typed payload (spindle-types 0.4.62+): `chat: {id, ...}, changedFields?: string[]`.
-  // Absent on emits from sources that don't compute the diff , currently
-  // chats.service.ts:977 (bulk persona name reattribution), which sends
-  // `{chatId, reattributedUserMessages}` instead. Treat undefined as
-  // safe-on-unknown , the gating defaults to running everything in that case.
-  const changedFields = (raw as { changedFields?: readonly string[] }).changedFields;
-  const requiresRefresh = changedFieldsRequireRefresh(
-    changedFields === undefined ? 'unknown' : new Set(changedFields),
-  );
-
-  // Cache invalidations are gated on the same predicate. The listenEdit
-  // preload + render-MCP no-op caches both index by content state that's
-  // only affected by var-relevant chat metadata changes; non-var writes
-  // (chat name/avatar edits, council cache, etc.) don't dirty either.
-  if (requiresRefresh) {
-    invalidateListenEditPreload(chatId);
-    invalidateRenderMcpForChat(chatId);
-  }
-
-  const wasOwn = consumeOwnChatChange(chatId);
-  const fieldsPreview = changedFields === undefined
-    ? 'undefined'
-    : (changedFields.length === 0 ? 'empty' : `[${changedFields.slice(0, 4).join(',')}${changedFields.length > 4 ? `,+${changedFields.length - 4}` : ''}]`);
-  log.info(
-    `event CHAT_CHANGED chatId=${chatId} characterId=${characterId ?? '?'} ` +
-      `ownWrite=${wasOwn} fields=${fieldsPreview} requiresRefresh=${requiresRefresh}`,
-  );
-  if (wasOwn) {
-    await ensureActiveCardForChat(chatId, characterId, userId);
-    return;
-  }
-  scheduleChatChangedRefresh(chatId, characterId, changedFields, userId);
-}));
-
-// MESSAGE_SENT: editInput is wired via registerInterceptor.
-// Body resolution happens at render time (post-unbake), so we don't need to
-// re-bake here,just refresh the variables snapshot for the drawer in case
-// the new message references vars that the user wants to inspect.
-spindle.on('MESSAGE_SENT', userScoped(async (raw, userId) => {
-  captureUserId(userId, 'MESSAGE_SENT');
-  const { chatId, characterId } = extractIds(raw);
-  log.info(`event MESSAGE_SENT chatId=${chatId ?? '?'} characterId=${characterId ?? '?'} payload=${dumpPayload(raw)}`);
-  if (!chatId) return;
-  invalidateListenEditPreload(chatId);
-  const active = await ensureActiveCardForChat(chatId, characterId, userId);
-  if (!active) { log.info(`MESSAGE_SENT: no active card , skip`); return; }
-  await refreshVariables(active, chatId, userId);
-}));
-
-const generationsInFlight = new Map<string, number>();
-function isGenerationInFlight(chatId: string): boolean {
-  return (generationsInFlight.get(chatId) ?? 0) > 0;
-}
-
-/** Record an in-flight generation start. Returns true on the 0→1
- *  transition so the caller can emit the streaming-active signal to
- *  the frontend exactly once. */
-function markGenerationStart(chatId: string): boolean {
-  const prev = generationsInFlight.get(chatId) ?? 0;
-  generationsInFlight.set(chatId, prev + 1);
-  return prev === 0;
-}
-
-/** Record an in-flight generation end. Returns true on the N→0
- *  transition so the caller can emit the streaming-inactive signal
- *  exactly once even when multiple GENERATION_ENDED events stack
- *  (re-runs, swipes, etc.). */
-function markGenerationEnd(chatId: string): boolean {
-  const prev = generationsInFlight.get(chatId) ?? 0;
-  if (prev <= 1) {
-    generationsInFlight.delete(chatId);
-    return prev === 1;
-  }
-  generationsInFlight.set(chatId, prev - 1);
-  return false;
-}
-
-spindle.on('GENERATION_STARTED', userScoped(async (raw, userId) => {
-  captureUserId(userId, 'GENERATION_STARTED');
-  const { chatId, characterId } = extractIds(raw);
-  log.info(`event GENERATION_STARTED chatId=${chatId ?? '?'} characterId=${characterId ?? '?'} payload=${dumpPayload(raw)}`);
-  if (!chatId) return;
-  if (markGenerationStart(chatId)) {
-    // 0→1 transition. Tell the frontend portal lifter to pause sweeps
-    // for this chat. The flicker fix at quirks §3.7x: per-chunk Lumi
-    // re-renders briefly toggle the panel between light-DOM-text and
-    // shadow-DOM-text states; our sig flips → drop+re-clone cycle →
-    // user sees 20Hz flicker. Pausing sweeps eliminates the cycle;
-    // post-stream we resume with one clean lift.
-    send({ type: 'generation_state', chatId, active: true }, userId);
-  }
-  const active = await ensureActiveCardForChat(chatId, characterId, userId);
-  if (!active) return;
-  log.info(`GENERATION_STARTED: → runBinding(start)`);
-  await runBinding(active, chatId, 'start', userId);
-  log.info(`GENERATION_STARTED: → runBinding(request)`);
-  await runBinding(active, chatId, 'request', userId);
-  invalidateRenderMcpForChat(chatId);
-  await refreshBgHtml(active, chatId, userId);
-  await refreshVariables(active, chatId, userId);
-}));
-
-spindle.on('GENERATION_ENDED', userScoped(async (raw, userId) => {
-  captureUserId(userId, 'GENERATION_ENDED');
-  const { chatId, characterId } = extractIds(raw);
-  log.info(`event GENERATION_ENDED chatId=${chatId ?? '?'} characterId=${characterId ?? '?'} payload=${dumpPayload(raw)}`);
-  if (!chatId) return;
-  const wentIdle = markGenerationEnd(chatId);
-  if (wentIdle) {
-    // N→0 transition. Resume frontend sweeps; one final sweep will
-    // lift the post-stream panel state cleanly.
-    send({ type: 'generation_state', chatId, active: false }, userId);
-  }
-  const active = await ensureActiveCardForChat(chatId, characterId, userId);
-  if (!active) return;
-  for (const binding of GENERATION_ENDED_BINDINGS) {
-    await runBinding(active, chatId, binding, userId);
-  }
-  invalidateRenderMcpForChat(chatId);
-  await refreshBgHtml(active, chatId, userId);
-  await refreshVariables(active, chatId, userId);
-}));
-
-// User-clicked the abort button (or generation otherwise stopped via
-// AbortController). Lumi emits GENERATION_STOPPED in this path INSTEAD OF
-// GENERATION_ENDED , see g:/mousepad_git/Lumiverse/src/services/generate.service.ts:2197,
-// 2698, 2793, 3153. Without this handler, `generationsInFlight` for the
-// chat stays >0 forever, the FE streaming gate never releases, and the
-// post-stream sweep that would stash the stale source panel never runs.
-// The handoff at handoff-2026-05-04-streaming-flicker.md §11.5 ("Observation A")
-// pins this as the load-bearing missing piece.
-spindle.on('GENERATION_STOPPED', userScoped(async (raw, userId) => {
-  captureUserId(userId, 'GENERATION_STOPPED');
-  const { chatId, characterId } = extractIds(raw);
-  log.info(`event GENERATION_STOPPED chatId=${chatId ?? '?'} characterId=${characterId ?? '?'} payload=${dumpPayload(raw)}`);
-  if (!chatId) return;
-  const wentIdle = markGenerationEnd(chatId);
-  if (wentIdle) {
-    send({ type: 'generation_state', chatId, active: false }, userId);
-  }
-  // No trigger bindings fire on stop (Risu's `output`/`display` bindings
-  // are inside its sendChat, which we already mirror via GENERATION_ENDED
-  // for the success path; abort = no LLM output, no triggers to fire).
-  const active = await ensureActiveCardForChat(chatId, characterId, userId);
-  if (!active) return;
-  invalidateRenderMcpForChat(chatId);
-  await refreshBgHtml(active, chatId, userId);
-  await refreshVariables(active, chatId, userId);
-}));
-
-// MESSAGE_SWIPED  - fires when user swipes to an alternate greeting/response
-// (chats.service.ts). The new swipe's content lands in chat_messages.content
-// raw; the render-MCP cache for this msgId is invalidated so the next render
-// resolves with fresh state. No bake walk (post-unbake).
-spindle.on('MESSAGE_SWIPED', userScoped(async (raw, userId) => {
-  captureUserId(userId, 'MESSAGE_SWIPED');
-  const p = raw as {
-    chatId?: string;
-    message?: { id?: string; chat_id?: string; content?: string };
-    action?: string;
-  };
-  const chatId = p.chatId ?? p.message?.chat_id ?? null;
-  const msgId = p.message?.id ?? null;
-  log.info(`event MESSAGE_SWIPED chatId=${chatId ?? '?'} msgId=${msgId ?? '?'} action=${p.action ?? '?'}`);
-  if (!chatId || !msgId) return;
-  invalidateListenEditPreload(chatId);
-  invalidateRenderMcpForMessage(chatId, msgId);
-  const active = await ensureActiveCardForChat(chatId, null, userId);
-  if (!active) return;
-  await refreshBgHtml(active, chatId, userId);
-  await refreshVariables(active, chatId, userId);
-  // No output/display bindings here. Risu's output trigger fires inside
-  // sendChat (index.svelte.ts,1679), not on the swipe primitive.
-  // For fresh regenerate, GENERATION_ENDED is the correct fire point.
-}));
-
-// Payload shape (chats.service.ts): `{ chatId, message }`.
-// spindle_metadata is stored under extra.spindle_metadata (worker-host.ts).
-interface MessageEditedPayload {
-  readonly chatId?: string;
-  readonly message?: {
-    readonly id?: string;
-    readonly chat_id?: string;
-    readonly content?: string;
-    readonly extra?: { readonly spindle_metadata?: { readonly edited_by?: unknown } };
-    readonly metadata?: { readonly edited_by?: unknown };
-  };
-}
-
-function readEditedBy(payload: MessageEditedPayload): string | null {
-  const fromExtra = payload.message?.extra?.spindle_metadata?.edited_by;
-  if (typeof fromExtra === 'string') return fromExtra;
-  const fromMeta = payload.message?.metadata?.edited_by;
-  if (typeof fromMeta === 'string') return fromMeta;
-  return null;
-}
-
-spindle.on('MESSAGE_EDITED', userScoped(async (raw, userId) => {
-  captureUserId(userId, 'MESSAGE_EDITED');
-  const p = raw as MessageEditedPayload;
-  const chatId = p.chatId ?? p.message?.chat_id ?? null;
-  const msgId = p.message?.id ?? null;
-  if (chatId) invalidateListenEditPreload(chatId);
-  if (!chatId || !msgId) {
-    log.warn(`event MESSAGE_EDITED: missing chatId/msgId payload=${JSON.stringify(raw).slice(0, 200)}`);
-    return;
-  }
-  invalidateRenderMcpForMessage(chatId, msgId);
-  // Self-echo detection. Content cache is one-shot, consumed on match. Our
-  // own writes (Lua setChat, editOutput listenEdit writeback) call
-  // `rememberOurWrite` before `editMessage`; we filter the echo here.
-  const newContent = String(p.message?.content ?? '');
-  if (consumeIfOurWrite(chatId, msgId, newContent)) return;
-  const editedBy = readEditedBy(p);
-  log.info(`event MESSAGE_EDITED (external) chatId=${chatId} msgId=${msgId} editedBy=${editedBy ?? '<none>'} len=${newContent.length}`);
-  // External edit (user typed, streaming finalize, etc.). Storage is raw
-  // post-unbake; render-MCP cache is already invalidated above so the next
-  // render resolves with fresh state. No bake walk.
-}));
-
-// MESSAGE_DELETED: refresh portals against the smaller message list.
-spindle.on('MESSAGE_DELETED', userScoped(async (raw, userId) => {
-  captureUserId(userId, 'MESSAGE_DELETED');
-  const p = raw as { chatId?: string; messageId?: string; message?: { id?: string; chat_id?: string } };
-  const chatId = p.chatId ?? p.message?.chat_id ?? null;
-  const msgId = p.messageId ?? p.message?.id ?? null;
-  log.info(`event MESSAGE_DELETED chatId=${chatId ?? '?'} msgId=${msgId ?? '?'}`);
-  if (!chatId) return;
-  invalidateListenEditPreload(chatId);
-  if (msgId) invalidateRenderMcpForMessage(chatId, msgId);
-  const active = await ensureActiveCardForChat(chatId, null, userId);
-  if (!active) return;
-  // No output/display bindings: Risu has no binding-firing analogue for deletes.
-  await refreshBgHtml(active, chatId, userId);
-  await refreshVariables(active, chatId, userId);
-}));
-
-spindle.on('CHAT_DELETED', userScoped(async (raw, userId) => {
-  captureUserId(userId, 'CHAT_DELETED');
-  const p = raw as { id?: string; chatId?: string };
-  const chatId = p.chatId ?? p.id ?? null;
-  log.info(`event CHAT_DELETED chatId=${chatId ?? '?'}`);
-  if (!chatId) return;
-  invalidateListenEditPreload(chatId);
-  invalidateRenderMcpForChat(chatId);
-  lastSentBgHtmlByChat.delete(chatId);
-  activeCardByChat.delete(chatId);
-  clearActiveAssetIndexes(chatId);
-  clearActiveCharacterImage(chatId);
-  clearActiveScriptstateDefaults(chatId);
-  clearVarOverlay(chatId);
-  variableState.clearChat(chatId);
-  toggleState.clearChat(chatId);
-}));
-
-spindle.on('CHARACTER_DELETED', userScoped(async (raw, uid) => {
-  captureUserId(uid, 'CHARACTER_DELETED');
-  const characterId =
-    (raw as { id?: string }).id
-    ?? extractIds(raw).characterId
-    ?? null;
-  log.info(`event CHARACTER_DELETED characterId=${characterId ?? '?'}`);
-  if (!characterId) return;
-  compiledByCharacter.delete(characterId);
-  const cachedWorldBookIds = worldBookIdsByCharacter.get(characterId) ?? [];
-  worldBookIdsByCharacter.delete(characterId);
-  await deleteCardByChar(characterId, uid, 'cascade');
-
-  // Re-evaluate: deleted char may be the active one.
-  if (uid) {
-    const lastChat = lastActiveChatByUser.get(uid);
-    if (lastChat) {
-      const stillActive = await ensureActiveCardForChat(lastChat, null, uid).catch(() => null);
-      if (!stillActive) sendSetActiveChat(null, null, uid);
-    }
-  }
-
-  if (uid) {
-    const opId = `delete-char-${characterId}-${Date.now()}`;
-    const opTitle = `Cleaning up deleted character`;
-    emitOperationProgress(uid, opId, 'started', opTitle, 'Reading image journal…', null);
-    try {
-      const journalFile = await readImageJournalFile(journalStorage(), uid, characterId);
-      const journalImageIds = journalFile?.imageIds ?? [];
-      let imageStats = { deleted: 0, absent: 0, failed: 0, skipped: 0 };
-      if (journalImageIds.length === 0) {
-        log.info(`CHARACTER_DELETED: no journal for char=${characterId}, nothing to clean`);
-      } else {
-        emitOperationProgress(
-          uid, opId, 'progress', opTitle,
-          `Checking ${journalImageIds.length} asset${journalImageIds.length === 1 ? '' : 's'} against live references…`,
-          0.3,
-        );
-        // Lumi fires CHARACTER_DELETED BEFORE the row is removed, so the
-        // doomed character still passes through listLumirealmCharacters.
-        // Exclude it explicitly so its asset_index doesn't shield its own IDs.
-        const live = await buildLiveImageIdSet(buildOrphanDetectDepsExcluding(uid, characterId));
-        const safeIds: string[] = [];
-        let skipped = 0;
-        for (const id of journalImageIds) {
-          if (typeof id !== 'string' || id.length === 0) continue;
-          if (live.liveIds.has(id)) {
-            skipped++;
-            continue;
-          }
-          safeIds.push(id);
-        }
-        if (skipped > 0) {
-          log.info(
-            `CHARACTER_DELETED: ${skipped}/${journalImageIds.length} asset(s) shielded by other live refs ` +
-              `(likely a Lumi-side duplicate), deleting only ${safeIds.length} character-owned asset(s)`,
-          );
-        }
-        if (safeIds.length > 0) {
-          emitOperationProgress(
-            uid, opId, 'progress', opTitle,
-            `Deleting 0 of ${safeIds.length} asset${safeIds.length === 1 ? '' : 's'}…`,
-            0.4,
-          );
-          const stats = await deleteImageIds(
-            safeIds, uid, `CHARACTER_DELETED(${characterId})`,
-            (processed, total) => {
-              const frac = total > 0 ? 0.4 + (processed / total) * 0.55 : 0.4;
-              emitOperationProgress(
-                uid, opId, 'progress', opTitle,
-                `Deleting ${processed} of ${total} asset${total === 1 ? '' : 's'}…`,
-                frac,
-              );
-            },
-          );
-          imageStats = { ...stats, skipped };
-        } else {
-          imageStats = { deleted: 0, absent: 0, failed: 0, skipped };
-        }
-      }
-      await clearImageJournal(journalStorage(), uid, characterId).catch((err) => {
-        log.warn(`CHARACTER_DELETED: clearImageJournal threw char=${characterId}: ${errMsg(err)}`);
-      });
-      log.info(
-        `CHARACTER_DELETED cleanup: char=${characterId} ` +
-          `imageDelete=deleted:${imageStats.deleted} absent:${imageStats.absent} ` +
-          `failed:${imageStats.failed} skipped:${imageStats.skipped}`,
-      );
-      const summaryLine = journalImageIds.length === 0
-        ? 'No image assets to clean'
-        : imageStats.skipped > 0
-          ? `${imageStats.deleted} asset${imageStats.deleted === 1 ? '' : 's'} deleted (${imageStats.skipped} kept, still referenced)`
-          : `${imageStats.deleted} asset${imageStats.deleted === 1 ? '' : 's'} deleted`;
-      emitOperationProgress(uid, opId, 'done', opTitle, summaryLine, 1);
-    } catch (err) {
-      log.warn(`CHARACTER_DELETED cleanup threw char=${characterId}: ${errMsg(err)}`);
-      emitOperationProgress(uid, opId, 'error', opTitle, '', null, errMsg(err));
-      // Best-effort journal clear so the boot detector doesn't keep flagging.
-      await clearImageJournal(journalStorage(), uid, characterId).catch(() => { /* */ });
-    }
-  }
-
-  send({
-    type: 'cleanup_character_artifacts',
-    characterId,
-    worldBookIds: cachedWorldBookIds,
-  }, uid);
-}));
-
-// CHARACTER_CREATED: refresh drawer. Covers duplication and external imports.
-spindle.on('CHARACTER_CREATED', userScoped(async (raw, userId) => {
-  captureUserId(userId, 'CHARACTER_CREATED');
-  const characterId =
-    (raw as { id?: string }).id
-    ?? extractIds(raw).characterId
-    ?? null;
-  log.info(`event CHARACTER_CREATED characterId=${characterId ?? '?'}`);
-  try {
-    pushCards(await listCards(userId), userId);
-  } catch (err) {
-    log.warn(`CHARACTER_CREATED: pushCards failed: ${errMsg(err)}`);
-  }
-}));
-
-// CHARACTER_EDITED: own writes are tracked via expectCharacterEdit() and skipped.
-// External writes invalidate caches and refresh the drawer.
-spindle.on('CHARACTER_EDITED', userScoped(async (raw, userId) => {
-  captureUserId(userId, 'CHARACTER_EDITED');
-  const characterId =
-    (raw as { id?: string }).id
-    ?? extractIds(raw).characterId
-    ?? null;
-  if (!characterId) {
-    log.warn(`event CHARACTER_EDITED: missing id payload=${dumpPayload(raw)}`);
-    return;
-  }
-  const wasOwn = consumeOwnCharacterEdit(characterId);
-  log.info(`event CHARACTER_EDITED characterId=${characterId} ownWrite=${wasOwn}`);
-  if (wasOwn) {
-    return;
-  }
-  invalidateActiveForCharacter(characterId, userId);
-  try {
-    pushCards(await listCards(userId), userId);
-  } catch (err) {
-    log.warn(`CHARACTER_EDITED: pushCards failed: ${errMsg(err)}`);
-  }
-}));
+spindle.on('SETTINGS_UPDATED', userScoped(lifecycleHandlers.SETTINGS_UPDATED));
+spindle.on('CHAT_CHANGED', userScoped(lifecycleHandlers.CHAT_CHANGED));
+spindle.on('MESSAGE_SENT', userScoped(lifecycleHandlers.MESSAGE_SENT));
+spindle.on('GENERATION_STARTED', userScoped(lifecycleHandlers.GENERATION_STARTED));
+spindle.on('GENERATION_ENDED', userScoped(lifecycleHandlers.GENERATION_ENDED));
+spindle.on('GENERATION_STOPPED', userScoped(lifecycleHandlers.GENERATION_STOPPED));
+spindle.on('MESSAGE_SWIPED', userScoped(lifecycleHandlers.MESSAGE_SWIPED));
+spindle.on('MESSAGE_EDITED', userScoped(lifecycleHandlers.MESSAGE_EDITED));
+spindle.on('MESSAGE_DELETED', userScoped(lifecycleHandlers.MESSAGE_DELETED));
+spindle.on('CHAT_DELETED', userScoped(lifecycleHandlers.CHAT_DELETED));
+spindle.on('CHARACTER_DELETED', userScoped(lifecycleHandlers.CHARACTER_DELETED));
+spindle.on('CHARACTER_CREATED', userScoped(lifecycleHandlers.CHARACTER_CREATED));
+spindle.on('CHARACTER_EDITED', userScoped(lifecycleHandlers.CHARACTER_EDITED));
 
 interface ModuleUploadSession {
   readonly fileName: string;
