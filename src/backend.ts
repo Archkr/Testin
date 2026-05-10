@@ -126,22 +126,6 @@ import { createLorebookImporter } from './state/lorebook-import.js';
 import { createModuleUploader } from './state/module-upload.js';
 import { createOrphanOrchestrator } from './state/orphan-orchestrator.js';
 import {
-  getRegisterMessageContentProcessor,
-  getRegisterMacroInterceptor,
-  getRegisterInterceptor,
-  getRegisterWorldInfoInterceptor,
-  getModalConfirmApi,
-  getRegexScriptsApi,
-  getConnectionsListFn,
-  type MessageContentProcessorCtx,
-  type MessageContentProcessorPatch,
-  type MacroInterceptorCtx,
-  type MacroInterceptorSnapshotEnv,
-  type LlmMessage,
-  type InterceptorContext,
-  type ModalConfirmOptions,
-} from './adapters/spindle-extras.js';
-import {
   collectModuleToggleDsl,
   extractToggleKeys,
   parseToggleSyntax,
@@ -386,12 +370,62 @@ let diagInterceptorCall = 0;
 registerAllMacros();
 
 // Pre-write content processor: resolves CBS before the route handler commits
-// the row. Feature-detected via spindle-extras adapter.
-const registerMessageContentProcessor = getRegisterMessageContentProcessor();
+// the row. Feature-detected: Lumi builds without the hook leave
+// `registerMessageContentProcessor` undefined; falls back to reactive path.
+interface MessageContentProcessorCtx {
+  readonly chatId: string;
+  readonly messageId?: string;
+  readonly content: string;
+  readonly extra?: Record<string, unknown>;
+  readonly origin: 'create' | 'update' | 'swipe_add' | 'swipe_update' | 'render';
+  readonly swipeIndex?: number;
+  readonly userId: string;
+}
+interface MessageContentProcessorPatch {
+  content?: string;
+  extra?: Record<string, unknown>;
+}
+const registerMessageContentProcessor = (spindle as unknown as {
+  registerMessageContentProcessor?: (
+    handler: (
+      ctx: MessageContentProcessorCtx,
+    ) => Promise<MessageContentProcessorPatch | void>,
+    priority?: number,
+  ) => void;
+}).registerMessageContentProcessor;
 
-// Macro interceptor: per-template bulk in-worker CBS resolve, replaces N
-// __macro_invoke__ RPCs with one. Feature-detected via spindle-extras.
-const registerMacroInterceptor = getRegisterMacroInterceptor();
+// Macro interceptor: fires at the top of Lumi's MacroEvaluator.evaluate()
+// for every template, allowing one bulk in-worker CBS resolve per template
+// instead of one __macro_invoke__ RPC per macro occurrence.
+// Feature-detected. Only fires for chats belonging to a Risu-imported
+// character; returns void for all others.
+interface MacroInterceptorSnapshotEnv {
+  readonly commit: boolean;
+  readonly names: Record<string, string>;
+  readonly character: Record<string, unknown>;
+  readonly chat: Record<string, unknown>;
+  readonly system: Record<string, unknown>;
+  readonly variables: {
+    readonly local: Record<string, string>;
+    readonly global: Record<string, string>;
+    readonly chat: Record<string, string>;
+  };
+  readonly extra: Record<string, unknown>;
+}
+interface MacroInterceptorCtx {
+  readonly template: string;
+  readonly env: MacroInterceptorSnapshotEnv;
+  readonly commit: boolean;
+  readonly phase: 'prompt' | 'display' | 'response' | 'other';
+  readonly sourceHint?: string;
+  readonly userId?: string;
+}
+const registerMacroInterceptor = (spindle as unknown as {
+  registerMacroInterceptor?: (
+    handler: (ctx: MacroInterceptorCtx) => Promise<string | void>,
+    priority?: number,
+  ) => void;
+}).registerMacroInterceptor;
 
 if (typeof registerMacroInterceptor === 'function') {
   registerMacroInterceptor((ctx) => withMaybeUser(ctx.userId, async () => {
@@ -868,7 +902,26 @@ if (typeof registerMessageContentProcessor === 'function') {
 }
 
 // listenEdit('editInput') + 'editRequest' chains via Lumi interceptor hook.
-const registerInterceptor = getRegisterInterceptor();
+interface InterceptorContext {
+  chatId?: string;
+  connectionId?: string;
+  personaId?: string;
+  generationType?: 'normal' | 'continue' | 'regenerate' | 'swipe' | 'impersonate';
+}
+interface LlmMessage {
+  role: 'system' | 'user' | 'assistant';
+  content: string;
+  name?: string;
+}
+const registerInterceptor = (spindle as unknown as {
+  registerInterceptor?: (
+    handler: (
+      messages: LlmMessage[],
+      context: unknown,
+    ) => Promise<LlmMessage[] | { messages: LlmMessage[]; parameters?: Record<string, unknown> }>,
+    priority?: number,
+  ) => void;
+}).registerInterceptor;
 
 if (typeof registerInterceptor === 'function') {
   registerInterceptor(async (messages, contextRaw) => {
@@ -1050,7 +1103,10 @@ if (typeof registerInterceptor === 'function') {
   log.info('interceptor: not available on this Lumi build, listenEdit editInput/editRequest will not fire');
 }
 
-const registerWorldInfoInterceptor = getRegisterWorldInfoInterceptor();
+const registerWorldInfoInterceptor =
+  typeof (spindle as unknown as { registerWorldInfoInterceptor?: unknown }).registerWorldInfoInterceptor === 'function'
+    ? (spindle.registerWorldInfoInterceptor.bind(spindle) as typeof spindle.registerWorldInfoInterceptor)
+    : null;
 
 if (registerWorldInfoInterceptor) {
   // log.always , bypasses the user's runtime-log toggle. The decorator
@@ -1334,7 +1390,14 @@ interface SafeConnectionDTO {
 }
 
 async function listConnectionsForUser(userId: string): Promise<readonly SafeConnectionDTO[]> {
-  const listFn = getConnectionsListFn();
+  const anySpindle = spindle as unknown as {
+    connections?: {
+      list?: (uid?: string) => Promise<readonly {
+        id: string; name: string; provider: string; model: string; is_default: boolean;
+      }[]>;
+    };
+  };
+  const listFn = anySpindle.connections?.list;
   if (!listFn) {
     log.warn('listConnectionsForUser: spindle.connections.list not available on this Lumi build');
     return [];
@@ -1466,17 +1529,34 @@ async function backfillImageJournalIfMissing(
   }
 }
 
+interface SpindleModalConfirmLike {
+  readonly confirm?: (options: {
+    title: string;
+    message: string;
+    variant?: 'info' | 'warning' | 'danger' | 'success';
+    confirmLabel?: string;
+    cancelLabel?: string;
+    userId?: string;
+  }) => Promise<{ confirmed: boolean }>;
+}
+
 // Lumi caps each extension at 2 concurrent modals, two boot-time prompts can
 // race (orphan review, lorebook archive). Serialize per-user.
 const modalChainByUser = new Map<string, Promise<unknown>>();
 function queueModalConfirm(
   userId: string,
-  options: Omit<ModalConfirmOptions, 'userId'>,
+  options: {
+    title: string;
+    message: string;
+    variant?: 'info' | 'warning' | 'danger' | 'success';
+    confirmLabel?: string;
+    cancelLabel?: string;
+  },
 ): Promise<{ confirmed: boolean } | null> {
-  const modalApi = getModalConfirmApi();
-  if (!modalApi) return Promise.resolve(null);
+  const modalApi = (spindle as unknown as { modal?: SpindleModalConfirmLike }).modal;
+  if (!modalApi?.confirm) return Promise.resolve(null);
   const run = (): Promise<{ confirmed: boolean } | null> =>
-    modalApi.confirm({ ...options, userId }).catch((err) => {
+    modalApi.confirm!({ ...options, userId }).catch((err) => {
       log.warn(`queueModalConfirm: modal.confirm threw: ${errMsg(err)}`);
       return null;
     });
@@ -1660,7 +1740,14 @@ const orphanOrchestrator = createOrphanOrchestrator({
   imagesApi: spindle.images
     ? { list: (opts) => spindle.images.list(opts as never) as never }
     : null,
-  regexApi: getRegexScriptsApi(),
+  regexApi: ((): import('./state/orphan-orchestrator.js').RegexScriptsApiLike | null => {
+    const api = (spindle as unknown as { regex_scripts?: { list?: unknown; delete?: unknown } }).regex_scripts;
+    if (!api?.list || !api?.delete) return null;
+    return {
+      list: (opts) => (api.list as (opts: { userId?: string; limit?: number; offset?: number }) => Promise<{ data: readonly unknown[]; total: number }>)(opts),
+      delete: (id, userId) => (api.delete as (id: string, userId?: string) => Promise<boolean>)(id, userId),
+    };
+  })(),
   listLumirealmCharacterIds: async (userId) => {
     const entries = await listLumirealmCharacters(charactersApi(), userId, { paginate: true });
     return entries.filter((e) => e.data !== null).map((e) => e.character.id);
@@ -7182,12 +7269,6 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
           send({ type: 'error', message: `pick: ${r.reason ?? 'failed'}` }, userId);
         }
         break;
-      }
-      default: {
-        // Compile-time exhaustiveness: a new FrontendToBackend variant
-        // without a case here trips this assignment.
-        const _exhaustive: never = msg;
-        void _exhaustive;
       }
     }
   } catch (err) {
