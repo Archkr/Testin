@@ -154,6 +154,18 @@ import { createRepairOrchestrator } from './state/repair-orchestrator.js';
 import { createMigrationsRunner } from './state/migrations.js';
 import { createMassMigrationsRunner } from './boot/mass-migrations.js';
 import { createActiveCardLoader } from './state/active-card.js';
+import { createApplySvgRasterIndex } from './boot/svg-raster-apply.js';
+import {
+  makeNudgeGc,
+  makeRefreshPersonaImage,
+  makeSeedAuthorsNoteFromDepthPrompt,
+  makeMaybeFinalizeImport,
+} from './boot/misc.js';
+import { makePromptOrphanReviewIfAny } from './boot/orphan-review.js';
+import { createVariablesTogglesService } from './state/variables-toggles.js';
+import { createSettingsService } from './state/settings-service.js';
+import { makeCaptureUserId } from './boot/capture-user.js';
+import { createImportCardOrchestrator } from './boot/import-card.js';
 import {
   getModalConfirmApi,
   getRegexScriptsApi,
@@ -429,109 +441,19 @@ function makeStateChangedCallback(chatId: string, userId: string | undefined): (
 
 // Per-user settings cache. Defaults to DEFAULT_SETTINGS until first read,
 // so Lua dispatches before `request_settings` arrives fall back gracefully.
-const settingsByUser = new Map<string, RisuCompatSettings>();
 
-async function getSettingsForUser(userId: string): Promise<RisuCompatSettings> {
-  const cached = settingsByUser.get(userId);
-  if (cached) return cached;
-  const loaded = await loadSettings(userStorage(), userId);
-  settingsByUser.set(userId, loaded);
-  log.info(
-    `settings: loaded for user=${userId} ` +
-      `auxConn=${loaded.auxConnectionId ?? '<default>'} ` +
-      `auxModel=${loaded.auxModelOverride ?? '<connection>'}`,
-  );
-  return loaded;
-}
 
-function getCachedSettingsSync(userId: string | undefined): RisuCompatSettings {
-  if (userId === undefined) return DEFAULT_SETTINGS;
-  return settingsByUser.get(userId) ?? DEFAULT_SETTINGS;
-}
-
-async function applySettingsPatch(
-  userId: string,
-  patch: Partial<RisuCompatSettings>,
-): Promise<RisuCompatSettings> {
-  const current = await getSettingsForUser(userId);
-  const merged = mergeSettings(current, patch);
-  await saveSettings(userStorage(), merged, userId);
-  settingsByUser.set(userId, merged);
-  log.info(
-    `settings: saved for user=${userId} ` +
-      `auxConn=${merged.auxConnectionId ?? '<default>'} ` +
-      `auxModel=${merged.auxModelOverride ?? '<connection>'} ` +
-      `dbgReq=${merged.auxDebugCaptureRequest} dbgRes=${merged.auxDebugCaptureResponse}`,
-  );
-  return merged;
-}
-
-let auxDebugCounter = 0;
-
-function makeAuxDebugCapture(
-  chatId: string | null,
-  settings: RisuCompatSettings,
-  userId: string | undefined,
-): ((event: import('./interpreter/runtime.js').AuxDebugCaptureEvent) => void) | undefined {
-  if (!settings.auxDebugCaptureRequest && !settings.auxDebugCaptureResponse) {
-    return undefined;
-  }
-  if (userId === undefined) return undefined;
-  return (event) => {
-    const allowReq = settings.auxDebugCaptureRequest && event.kind === 'request';
-    const allowRes = settings.auxDebugCaptureResponse && (event.kind === 'response' || event.kind === 'error');
-    if (!allowReq && !allowRes) return;
-    try {
-      send({
-        type: 'aux_debug_capture',
-        id: ++auxDebugCounter,
-        ts: Date.now(),
-        kind: event.kind,
-        channel: event.channel,
-        chatId,
-        auxConnectionId: event.auxConnectionId,
-        auxModelOverride: event.auxModelOverride,
-        elapsedMs: event.elapsedMs,
-        payload: event.payload,
-      }, userId);
-    } catch (err) {
-      log.warn(`aux_debug_capture send failed: ${errMsg(err)}`);
-    }
-  };
-}
-
-interface SafeConnectionDTO {
-  readonly id: string;
-  readonly name: string;
-  readonly provider: string;
-  readonly model: string;
-  readonly is_default: boolean;
-}
-
-async function listConnectionsForUser(userId: string): Promise<readonly SafeConnectionDTO[]> {
-  const listFn = getConnectionsListFn();
-  if (!listFn) {
-    log.warn('listConnectionsForUser: spindle.connections.list not available on this Lumi build');
-    return [];
-  }
-  try {
-    const raw = await listFn(userId);
-    return raw.map((c) => ({
-      id: c.id,
-      name: c.name,
-      provider: c.provider,
-      model: c.model,
-      is_default: c.is_default,
-    }));
-  } catch (err) {
-    log.warn(`listConnectionsForUser: list threw: ${errMsg(err)}`);
-    return [];
-  }
-}
 
 // Tracks which userIds have already been bootstrapped by `captureUserId`,
 // so the settings preload + orphan-review prompt fire once per session.
 const capturedUserIds = new Set<string>();
+
+const settingsService = createSettingsService({ userStorage, send, log, errMsg });
+const getSettingsForUser = settingsService.getSettingsForUser;
+const getCachedSettingsSync = settingsService.getCachedSettingsSync;
+const applySettingsPatch = settingsService.applySettingsPatch;
+const makeAuxDebugCapture = settingsService.makeAuxDebugCapture;
+const listConnectionsForUser = settingsService.listConnectionsForUser;
 const activeCardByChat = new Map<string, ActiveCard>();
 // Tracks the last chat each user opened so a page-refresh (SETTINGS_UPDATED
 // dedup'd on same value) can repaint bg-html + portal state.
@@ -661,85 +583,6 @@ function queueModalConfirm(
   return next;
 }
 
-const orphanReviewPromptedFor = new Set<string>();
-async function promptOrphanReviewIfAny(userId: string): Promise<void> {
-  if (orphanReviewPromptedFor.has(userId)) return;
-  orphanReviewPromptedFor.add(userId);
-  const tStart = Date.now();
-  const detected = await detectDeletedWhileOff(userId);
-  const charCount = detected.characterIds.length;
-  const moduleCount = detected.moduleIds.length;
-  if (charCount + moduleCount === 0) {
-    log.info(`orphan-review: nothing detected elapsed=${Date.now() - tStart}ms`);
-    return;
-  }
-  // Surface the actual IDs at info level so the user can verify what's
-  // flagged. Truncate long lists to keep the line readable.
-  const charPreview = detected.characterIds.slice(0, 8).join(',');
-  const charPreviewSuffix = detected.characterIds.length > 8 ? `…(+${detected.characterIds.length - 8})` : '';
-  const modulePreview = detected.moduleIds.slice(0, 8).join(',');
-  const modulePreviewSuffix = detected.moduleIds.length > 8 ? `…(+${detected.moduleIds.length - 8})` : '';
-  log.info(
-    `orphan-review: detected chars=${charCount} modules=${moduleCount} ` +
-      `elapsed=${Date.now() - tStart}ms ` +
-      `charIds=[${charPreview}${charPreviewSuffix}] ` +
-      `moduleIds=[${modulePreview}${modulePreviewSuffix}]`,
-  );
-  const parts: string[] = [];
-  if (charCount > 0) parts.push(`${charCount} character${charCount === 1 ? '' : 's'}`);
-  if (moduleCount > 0) parts.push(`${moduleCount} module${moduleCount === 1 ? '' : 's'}`);
-  const summarySubject = parts.join(' and ');
-  const message =
-    `Found leftover image journals for ${summarySubject} whose Lumi entries ` +
-    `are gone. This includes anything deleted while LumiRealm wasn't running ` +
-    `and incomplete cleanups from earlier sessions. Open Cleanup to review ` +
-    `the actual image assets?`;
-  log.info(`orphan-review: opening confirm modal`);
-  const queued = await queueModalConfirm(userId, {
-    title: 'Leftover RisuAI image entries detected',
-    message,
-    variant: 'info',
-    confirmLabel: 'Review',
-    cancelLabel: 'Dismiss',
-  });
-  let result: { confirmed: boolean } | null = queued;
-  if (queued === null) {
-    log.warn(`orphan-review: spindle.modal.confirm unavailable, falling back to toast`);
-  }
-  // Toast fallback when the modal API is unavailable or threw. The user still
-  // sees something, the journal still gets cleared, and they can scan
-  // manually via Settings to Cleanup.
-  if (result === null) {
-    try {
-      toastFor(userId, 'warning',
-        `Found leftover image journals for ${summarySubject}. ` +
-          `Open Settings, Cleanup to review orphaned image assets.`,
-        { title: 'lumirealm: leftover image entries' },
-      );
-    } catch (err) {
-      log.warn(`orphan-review: toast fallback threw: ${errMsg(err)}`);
-    }
-    result = { confirmed: false };
-  }
-  // Drop the journals either way so the same set never re-prompts. Orphan
-  // images themselves stay in Lumi storage and remain findable via Cleanup.
-  for (const characterId of detected.characterIds) {
-    await clearImageJournal(journalStorage(), userId, characterId).catch((err) => {
-      log.warn(`orphan-review: clearImageJournal threw char=${characterId}: ${errMsg(err)}`);
-    });
-  }
-  for (const moduleId of detected.moduleIds) {
-    await clearModuleImageJournal(journalStorage(), userId, moduleId).catch((err) => {
-      log.warn(`orphan-review: clearModuleImageJournal threw module=${moduleId}: ${errMsg(err)}`);
-    });
-  }
-  log.info(
-    `orphan-review: confirmed=${result.confirmed} cleared chars=${charCount} modules=${moduleCount}`,
-  );
-  if (result.confirmed) {
-    send({ type: 'open_settings_cleanup' }, userId);
-  }
-}
 
 function buildOrphanDetectDeps(userId: string): OrphanDetectDeps {
   return {
@@ -895,6 +738,29 @@ const listStaleCharRegexIds = (userId: string) => orphanOrchestrator.listStaleCh
 const deleteRegexIds = (userId: string, ids: readonly string[]) => orphanOrchestrator.deleteRegexIds(userId, ids);
 const clearDeadJournals = (userId: string) => orphanOrchestrator.clearDeadJournals(userId);
 
+const promptOrphanReviewIfAny = makePromptOrphanReviewIfAny({
+  detectDeletedWhileOff,
+  journalStorage,
+  clearImageJournal,
+  clearModuleImageJournal,
+  queueModalConfirm,
+  toastFor,
+  send,
+  log,
+  errMsg,
+});
+
+const captureUserId = makeCaptureUserId({
+  capturedUserIds,
+  getSettingsForUser,
+  promptOrphanReviewIfAny,
+  // Trampolines: massMigrations is declared further down, this closure resolves it at call time.
+  runMassModuleMigrationIfNeeded: (uid) => massMigrations.runMassModuleMigrationIfNeeded(uid),
+  runMassCharacterMigrationIfNeeded: (uid) => massMigrations.runMassCharacterMigrationIfNeeded(uid),
+  log,
+  errMsg,
+});
+
 
 const scanRepairTargets = (userId: string) => orphanOrchestrator.scanRepairTargets(userId);
 
@@ -903,20 +769,6 @@ const scanRepairTargets = (userId: string) => orphanOrchestrator.scanRepairTarge
 // Uint8Arrays, IPC payloads) rooted for minutes without slack. Force a
 // synchronous full collect after large uploads, ~50-200ms on multi-GiB
 // heaps, no-op when Bun.gc is unavailable.
-function nudgeGc(reason: string): void {
-  const bun = (globalThis as {
-    Bun?: { gc?: (sync: boolean) => number | void };
-  }).Bun;
-  if (!bun?.gc) return;
-  const t0 = Date.now();
-  try {
-    bun.gc(true);
-  } catch (err) {
-    log.warn(`nudgeGc(${reason}): threw, ${errMsg(err)}`);
-    return;
-  }
-  log.info(`nudgeGc(${reason}): elapsed=${Date.now() - t0}ms`);
-}
 
 const pendingImportCompletions = new Map<string, PendingImportCompletion>();
 
@@ -924,6 +776,26 @@ const pendingImportCompletions = new Map<string, PendingImportCompletion>();
 // scan refuses to run while non-zero so an in-flight upload's not-yet-journaled
 // IDs cannot be deleted as orphans.
 let assetUploadsInFlight = 0;
+
+const importCardOrchestrator = createImportCardOrchestrator({
+  extensionVersion: EXTENSION_VERSION,
+  userStorage,
+  requestConsent,
+  worldBookIdsByCharacter,
+  pendingImportCompletions,
+  enterAssetUpload: () => { assetUploadsInFlight++; },
+  exitAssetUpload: () => { assetUploadsInFlight--; },
+  // Trampolines for wiring declared further down.
+  nudgeGc: (reason) => nudgeGc(reason),
+  refreshRisuAssetMap: (charId, userId) => refreshRisuAssetMap(charId, userId),
+  send,
+  listCards,
+  pushCards,
+  toastFor,
+  log,
+  errMsg,
+});
+const importCardFromBytes = importCardOrchestrator.importCardFromBytes;
 
 // True while applyRepair is running. Module attach/detach + drawer mutations
 // gate against this so the snapshot-then-write loop in forceRetranslateAll
@@ -969,156 +841,7 @@ function emitOperationProgress(
   }, userId);
 }
 
-async function applySvgRasterIndex(args: {
-  characterId: string;
-  imageIdByMarker: Readonly<Record<string, string | null>>;
-  userId: string;
-}): Promise<void> {
-  const { characterId, imageIdByMarker, userId } = args;
 
-  // Wire format uses string keys; marker-substitution helper expects numeric.
-  const markerToImageId: Record<number, string | null> = {};
-  for (const [k, v] of Object.entries(imageIdByMarker)) {
-    const n = Number.parseInt(k, 10);
-    if (Number.isFinite(n)) markerToImageId[n] = v;
-  }
-
-  const { substituteSvgMarkers } = await import('./core/svg-rasterize.js');
-  let regexScriptsAfterSubstitution: readonly unknown[] = [];
-  const updated = await updateLumirealm(charactersApi(), characterId, userId, (cur) => {
-    const newRegex = cur.regex_scripts.map((r) => {
-      const before = (r as { replace_string?: string }).replace_string ?? '';
-      if (!before) return r;
-      const after = substituteSvgMarkers(before, markerToImageId);
-      if (after === before) return r;
-      return { ...r, replace_string: after };
-    });
-    const beforeBg = cur.payload.background_html ?? '';
-    const afterBg = beforeBg ? substituteSvgMarkers(beforeBg, markerToImageId) : beforeBg;
-    regexScriptsAfterSubstitution = newRegex;
-    return {
-      ...cur,
-      regex_scripts: newRegex,
-      ...(afterBg !== beforeBg
-        ? { payload: { ...cur.payload, background_html: afterBg } }
-        : {}),
-    };
-  });
-  if (!updated) {
-    log.warn(
-      `applySvgRasterIndex: updateLumirealm failed char=${characterId},character may not be a lumirealm card`,
-    );
-    return;
-  }
-
-  // Re-install all rules. Runtime DOM lifter handles fixed-position content
-  // post-render, so there's no extension-managed partition to filter on.
-  const lumiManaged = regexScriptsAfterSubstitution;
-  if (lumiManaged.length > 0) {
-    let characterName = characterId;
-    try {
-      const ch = await spindle.characters.get(characterId, userId);
-      if (ch && typeof (ch as { name?: unknown }).name === 'string') {
-        characterName = (ch as { name: string }).name;
-      }
-    } catch { /* falls back to id */ }
-    log.info(
-      `applySvgRasterIndex: re-dispatching install_regex_scripts char=${characterId} ` +
-        `count=${lumiManaged.length} (post-SVG-substitution)`,
-    );
-    send({
-      type: 'install_regex_scripts',
-      characterId,
-      characterName,
-      scripts: lumiManaged.map((r) => ({
-        name: (r as { name?: string }).name ?? '',
-        script_id: (r as { script_id?: string }).script_id ?? '',
-        find_regex: (r as { find_regex?: string }).find_regex ?? '',
-        replace_string: (r as { replace_string?: string }).replace_string ?? '',
-        flags: (r as { flags?: string }).flags ?? '',
-        placement: (r as { placement?: readonly string[] }).placement ?? [],
-        scope: (r as { scope?: string }).scope ?? 'character',
-        scope_id: (r as { scope_id?: string }).scope_id ?? characterId,
-        target: (r as { target?: string }).target ?? 'display',
-        min_depth: (r as { min_depth?: number | null }).min_depth ?? null,
-        max_depth: (r as { max_depth?: number | null }).max_depth ?? null,
-        trim_strings: (r as { trim_strings?: readonly string[] }).trim_strings ?? [],
-        run_on_edit: (r as { run_on_edit?: boolean }).run_on_edit ?? false,
-        substitute_macros: (r as { substitute_macros?: string }).substitute_macros ?? 'none',
-        disabled: (r as { disabled?: boolean }).disabled ?? false,
-        sort_order: (r as { sort_order?: number }).sort_order ?? 0,
-        description: (r as { description?: string }).description ?? '',
-        folder: (r as { folder?: string }).folder ?? '',
-        metadata: { ...((r as { metadata?: Record<string, unknown> }).metadata ?? {}) },
-      })) as never,
-    }, userId);
-  }
-
-  const newSvgImageIds = Object.values(markerToImageId).filter(
-    (v): v is string => typeof v === 'string' && v.length > 0,
-  );
-  if (newSvgImageIds.length > 0) {
-    try {
-      await appendImageIdsToJournal(journalStorage(), userId, characterId, newSvgImageIds);
-      log.info(
-        `applySvgRasterIndex: journaled char=${characterId} added=${newSvgImageIds.length}`,
-      );
-    } catch (err) {
-      log.warn(`applySvgRasterIndex: journal append failed char=${characterId}: ${errMsg(err)}`);
-    }
-  }
-
-  const evictedChatIds: string[] = [];
-  for (const [chatId, active] of activeCardByChat) {
-    if (active.card.character_id === characterId) {
-      activeCardByChat.delete(chatId);
-      evictedChatIds.push(chatId);
-    }
-  }
-  if (evictedChatIds.length > 0) {
-    log.info(
-      `applySvgRasterIndex: invalidated ${evictedChatIds.length} active-card entries for char=${characterId}`,
-    );
-    for (const chatId of evictedChatIds) {
-      try {
-        const reloaded = await ensureActiveCardForChat(chatId, null, userId);
-        if (reloaded) {
-          invalidateRenderMcpForChat(chatId);
-          await refreshBgHtml(reloaded, chatId, userId);
-        }
-      } catch (err) {
-        log.warn(`applySvgRasterIndex: refresh chat=${chatId} threw: ${errMsg(err)}`);
-      }
-    }
-  }
-}
-
-async function maybeFinalizeImport(characterId: string): Promise<void> {
-  const pending = pendingImportCompletions.get(characterId);
-  if (!pending) return;
-  if (pending.hasPendingSvgRaster) {
-    log.info(
-      `import.finalize: char=${characterId} still pending,svg=${pending.hasPendingSvgRaster}`,
-    );
-    return;
-  }
-  pendingImportCompletions.delete(characterId);
-  log.info(
-    `import.finalize: char=${characterId} both async ops complete after ${Date.now() - pending.startedAt}ms,emitting phase=done`,
-  );
-  send({
-    type: 'import_progress',
-    phase: 'done',
-    message: `Imported ${pending.characterName}`,
-    fraction: 1,
-    characterId,
-  }, pending.ownerUserId);
-  try {
-    pushCards(await listCards(pending.ownerUserId), pending.ownerUserId);
-  } catch (err) {
-    log.warn(`import.finalize: pushCards failed: ${errMsg(err)}`);
-  }
-}
 
 // Chunked .charx upload: accumulate chunks by sessionId, assemble on commit.
 // Stale sessions are GC'd after IMPORT_SESSION_TIMEOUT_MS.
@@ -1281,219 +1004,6 @@ function pushCards(cards: readonly CardSummary[], userId: string | undefined): v
   send({ type: 'cards_updated', cards }, userId);
 }
 
-async function importCardFromBytes(
-  bytesB64: string,
-  fileName: string,
-  userId: string,
-): Promise<void> {
-  const tStart = Date.now();
-  log.info(`importCardFromBytes: start file=${fileName} b64-bytes=${bytesB64.length} (~${Math.round(bytesB64.length * 0.75)}B decoded) userId=${userId}`);
-
-  const hasSetAvatar = typeof (spindle.characters as { setAvatar?: unknown }).setAvatar === 'function';
-  if (!spindle.images?.upload) {
-    throw new Error(
-      'spindle.images.upload is unavailable,Lumi 0.9.6+ required.',
-    );
-  }
-  const spindleImagesApi = spindle.images;
-  const spindleImportApi: SpindleImportApi = {
-    characters: {
-      create: (input, uid) => {
-        log.info(`spindle.characters.create name=${(input as { name?: string }).name ?? '?'}`);
-        return spindle.characters.create(input as never, uid).then((c) => {
-          log.info(`spindle.characters.create -> id=${c.id}`);
-          return { id: c.id };
-        });
-      },
-      get: (characterId, uid) => spindle.characters.get(characterId, uid),
-      update: (characterId, input, uid) =>
-        spindle.characters.update(characterId, input as never, uid),
-      // characters.list is options-bag for userId (spindle-api.ts)  -
-      // not positional. Importer doesn't actually call list itself but
-      // it's kept to satisfy the SpindleImportApi shape.
-      list: (options) =>
-        spindle.characters.list(options) as unknown as Promise<{
-          data: readonly unknown[];
-          total: number;
-        }>,
-      ...(hasSetAvatar
-        ? {
-            setAvatar: (characterId, avatar, uid) => {
-              log.info(`spindle.characters.setAvatar characterId=${characterId} filename=${avatar.filename ?? '?'} bytes=${avatar.data.byteLength}`);
-              return (spindle.characters as unknown as {
-                setAvatar(
-                  id: string,
-                  avatar: { data: Uint8Array; filename?: string; mime_type?: string },
-                  userId?: string,
-                ): Promise<{ id: string; image_id?: string | null }>;
-              }).setAvatar(characterId, avatar, uid).then((c) => ({
-                id: c.id,
-                image_id: typeof c.image_id === 'string' ? c.image_id : null,
-              }));
-            },
-          }
-        : {}),
-    },
-    world_books: spindle.world_books
-      ? {
-          create: (input, uid) => {
-            log.info(`spindle.world_books.create name=${(input as { name?: string }).name ?? '?'}`);
-            return spindle.world_books.create(input as never, uid).then((w) => {
-              log.info(`spindle.world_books.create -> id=${w.id}`);
-              return { id: w.id };
-            });
-          },
-          update: (bookId, input, uid) =>
-            spindle.world_books.update(bookId, input as never, uid),
-          entries: {
-            create: (bookId, input, uid) =>
-              spindle.world_books.entries.create(bookId, input as never, uid).then((e) => ({ id: e.id })),
-          },
-        }
-      : undefined,
-    images: {
-      upload: (input, uid) =>
-        spindleImagesApi.upload(input, uid).then((img) => ({ id: img.id })),
-      ...(typeof spindleImagesApi.uploadMany === 'function'
-        ? {
-            uploadMany: (items, options) =>
-              spindleImagesApi.uploadMany(items as never, options),
-          }
-        : {}),
-    },
-    requestConsent: (opts) => requestConsent(opts, userId),
-  };
-  if (!spindle.world_books) log.warn(`spindle.world_books unavailable, lorebook entries will be skipped`);
-
-  assetUploadsInFlight++;
-  try {
-    const result = await importCard({
-      bytesB64,
-      fileName,
-      extensionVersion: EXTENSION_VERSION,
-      userId,
-      spindle: spindleImportApi,
-      userStorage: userStorage(),
-      onProgress: (phase, message, fraction) => {
-        log.info(`import.progress phase=${phase} frac=${fraction ?? '?'} msg=${message}`);
-        send({
-          type: 'import_progress',
-          phase: phase as 'decoding' | 'translating' | 'awaiting_consent' | 'creating_character' | 'uploading_assets' | 'saving_payload' | 'done' | 'error',
-          message,
-          fraction,
-        }, userId);
-      },
-    });
-    log.info(
-      `importCard: returned characterId=${result.characterId} name=${result.characterName} ` +
-        `imageIds=${result.imageIds.length} warnings=${result.warnings.length} elapsed=${Date.now() - tStart}ms`,
-    );
-    nudgeGc('card-import');
-
-    // Pre-seed worldBookIdsByCharacter so CHARACTER_DELETED before any chat
-    // open still has the world_book id for cleanup.
-    if (result.createdWorldBookIds.length > 0) {
-      const existing = worldBookIdsByCharacter.get(result.characterId) ?? [];
-      const merged = [...existing];
-      for (const wbId of result.createdWorldBookIds) {
-        if (!merged.includes(wbId)) merged.push(wbId);
-      }
-      worldBookIdsByCharacter.set(result.characterId, merged);
-    }
-
-    await refreshRisuAssetMap(result.characterId, userId).catch((err) => {
-      log.warn(`importCardFromBytes: refreshRisuAssetMap threw char=${result.characterId}: ${errMsg(err)}`);
-    });
-
-    const scriptsToInstall = result.pendingRegexScripts;
-    const byTarget = new Map<string, number>();
-    for (const s of scriptsToInstall) byTarget.set(s.target, (byTarget.get(s.target) ?? 0) + 1);
-    const targetSummary = [...byTarget.entries()].map(([t, n]) => `${t}=${n}`).join(',') || 'none';
-    log.info(
-      `install_regex_scripts: push=${scriptsToInstall.length} ` +
-        `targets=[${targetSummary}] char=${result.characterId}`,
-    );
-    send({
-      type: 'install_regex_scripts',
-      characterId: result.characterId,
-      characterName: result.characterName,
-      scripts: scriptsToInstall,
-    }, userId);
-
-    const hasPendingSvgRaster = result.pendingSvgRasters.length > 0;
-    if (hasPendingSvgRaster) {
-      log.info(
-        `rasterize_svgs: handing off ${result.pendingSvgRasters.length} unique SVG(s) to frontend for char=${result.characterId} ` +
-          `(simple+theme-reactive+animated; templated skipped per manifest)`,
-      );
-      send({
-        type: 'rasterize_svgs',
-        characterId: result.characterId,
-        characterName: result.characterName,
-        svgs: result.pendingSvgRasters
-          .filter((t) => t.classification !== 'templated')
-          .map((t) => ({
-            markerN: t.markerN,
-            svg: t.svg,
-            classification: t.classification as 'simple' | 'theme-reactive' | 'animated',
-            width: t.width,
-            height: t.height,
-          })),
-      }, userId);
-    }
-
-    if (hasPendingSvgRaster) {
-      pendingImportCompletions.set(result.characterId, {
-        hasPendingSvgRaster,
-        characterName: result.characterName,
-        startedAt: Date.now(),
-        ownerUserId: userId,
-      });
-      log.info(
-        `importCardFromBytes: deferring phase=done for char=${result.characterId} ` +
-          `(pending: svg=${hasPendingSvgRaster})`,
-      );
-    } else {
-      log.info(`import done: no pending async ops, sending phase=done`);
-      send({
-        type: 'import_progress',
-        phase: 'done',
-        message: `Imported ${result.characterName}`,
-        fraction: 1,
-        characterId: result.characterId,
-      }, userId);
-      pushCards(await listCards(userId), userId);
-    }
-    for (const warning of result.warnings) {
-      log.warn(`import warning surfaced: ${warning}`);
-      toastFor(userId, 'warning', warning, { title: 'lumirealm' });
-    }
-    log.info(`importCardFromBytes: done file=${fileName} total-elapsed=${Date.now() - tStart}ms`);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    if (err instanceof RisuConsentDeclinedError) {
-      log.info(`import cancelled by user (consent declined) after ${Date.now() - tStart}ms`);
-      send({
-        type: 'import_progress',
-        phase: 'error',
-        message: `Import cancelled, low-level access declined`,
-        fraction: null,
-        error: message,
-      }, userId);
-      return;
-    }
-    log.error(`import failed after ${Date.now() - tStart}ms: ${message}`);
-    send({
-      type: 'import_progress',
-      phase: 'error',
-      message: `Import of ${fileName} failed`,
-      fraction: null,
-      error: message,
-    }, userId);
-  } finally {
-    assetUploadsInFlight--;
-  }
-}
 
 async function deleteCardByChar(
   characterId: string,
@@ -1567,357 +1077,9 @@ function charactersApi(): SpindleCharactersApi {
 
 
 
-async function seedAuthorsNoteFromDepthPrompt(
-  chatId: string,
-  userId: string,
-  characterExtensions: Readonly<Record<string, unknown>>,
-): Promise<void> {
-  let chat: { metadata?: unknown } | null;
-  try {
-    chat = (await spindle.chats.get(chatId, userId)) as { metadata?: unknown } | null;
-  } catch (err) {
-    log.warn(`seedAuthorsNoteFromDepthPrompt: chats.get failed chat=${chatId}: ${errMsg(err)}`);
-    return;
-  }
-  const currentMeta = chat?.metadata && typeof chat.metadata === 'object' && !Array.isArray(chat.metadata)
-    ? (chat.metadata as Record<string, unknown>)
-    : {};
-  const decision = computeDepthPromptSeed(characterExtensions, currentMeta);
-  if (!decision.shouldWrite) return;
-  try {
-    expectChatChange(chatId);
-    await spindle.chats.update(chatId, { metadata: decision.nextMetadata as never }, userId);
-    log.info(
-      `seedAuthorsNoteFromDepthPrompt: ${decision.outcome} chat=${chatId} ` +
-        `preserved_existing=${decision.preservedExisting}`,
-    );
-  } catch (err) {
-    log.warn(`seedAuthorsNoteFromDepthPrompt: chats.update failed chat=${chatId}: ${errMsg(err)}`);
-  }
-}
-
-async function refreshPersonaImage(userId: string): Promise<void> {
-  try {
-    const persona = await spindle.personas.getActive(userId).catch(() => null);
-    const rawId = (persona as { image_id?: unknown } | null)?.image_id;
-    setActivePersonaImage(
-      userId,
-      imageUrlFromId(typeof rawId === 'string' ? rawId : null),
-    );
-  } catch (err) {
-    log.debug(`refreshPersonaImage: ${errMsg(err)}`);
-  }
-}
-
-async function refreshVariables(
-  active: ActiveCard,
-  chatId: string,
-  userId: string | undefined,
-  opts?: { force?: boolean },
-): Promise<void> {
-  if (userId === undefined) {
-    log.debug(`variables.refresh: skip chat=${chatId},userId not yet captured`);
-    return;
-  }
-  let chat: { metadata?: unknown } | null = null;
-  try {
-    chat = (await spindle.chats.get(chatId, userId)) as { metadata?: unknown } | null;
-  } catch (err) {
-    log.warn(`variables.refresh: chats.get failed chat=${chatId}: ${errMsg(err)}`);
-    return;
-  }
-  const mv = ((chat?.metadata as { macro_variables?: unknown } | undefined)
-    ?.macro_variables ?? {}) as {
-      local?: unknown;
-      global?: unknown;
-      chat?: unknown;
-    };
-  const scopes = {
-    local: sanitizeVarMap(mv.local),
-    global: sanitizeVarMap(mv.global),
-    chat: sanitizeVarMap(mv.chat),
-  };
-  // `defaults` is the effective merged map (cardSide + overrides). FE Default
-  // subtab needs both to flag overridden entries and offer "Reset to card default".
-  const cardSide = active.card.risuPayload.scriptstate_defaults ?? {};
-  const overrides = active.lumirealm.user_overrides.default_variables_overrides ?? {};
-  const defaults: Record<string, string> = { ...cardSide, ...overrides };
-  const result = variableState.applySnapshot(chatId, scopes, defaults);
-  if (result.changed || opts?.force) {
-    send({
-      type: 'set_variables',
-      chatId,
-      seq: result.entry.seq,
-      scopes: result.entry.scopes,
-      defaults: result.entry.defaults,
-      defaultsCardSide: cardSide,
-      characterId: active.card.character_id,
-      ts: result.entry.ts,
-    }, userId);
-    const counts =
-      `local=${Object.keys(scopes.local).length} ` +
-      `global=${Object.keys(scopes.global).length} ` +
-      `chat=${Object.keys(scopes.chat).length} ` +
-      `defaults=${Object.keys(defaults).length} ` +
-      `overrides=${Object.keys(overrides).length}`;
-    log.info(
-      `variables.refresh: pushed chat=${chatId} seq=${result.entry.seq} ` +
-        `${counts} forced=${!!opts?.force}`,
-    );
-  } else {
-    log.debug(`variables.refresh: unchanged chat=${chatId} seq=${result.entry.seq}`);
-  }
-}
-
-async function writeLocalVariable(
-  chatId: string,
-  key: string,
-  value: string | null,
-  userId: string,
-): Promise<{ ok: boolean; reason?: string }> {
-  const trimmedKey = key.trim();
-  if (trimmedKey.length === 0) {
-    return { ok: false, reason: 'variable name cannot be empty' };
-  }
-  const active = await ensureActiveCardForChat(chatId, null, userId);
-  if (!active) {
-    return { ok: false, reason: 'not a Risu-imported chat' };
-  }
-
-  let chat: { metadata?: unknown } | null;
-  try {
-    chat = (await spindle.chats.get(chatId, userId)) as { metadata?: unknown } | null;
-  } catch (err) {
-    return { ok: false, reason: `chats.get failed: ${errMsg(err)}` };
-  }
-  const meta = (chat?.metadata ?? {}) as Record<string, unknown>;
-  const mv = (meta['macro_variables'] && typeof meta['macro_variables'] === 'object'
-    ? { ...(meta['macro_variables'] as Record<string, unknown>) }
-    : {}) as Record<string, unknown>;
-  const local = (mv['local'] && typeof mv['local'] === 'object'
-    ? { ...(mv['local'] as Record<string, unknown>) }
-    : {}) as Record<string, unknown>;
-
-  if (value === null) {
-    if (!Object.prototype.hasOwnProperty.call(local, trimmedKey)) {
-      return { ok: true }; // already absent,idempotent no-op
-    }
-    delete local[trimmedKey];
-  } else {
-    // Coerce to string. Empty string is allowed (matches `setvar X ""`).
-    local[trimmedKey] = String(value);
-  }
-  mv['local'] = local;
-
-  try {
-    expectChatChange(chatId);
-    await spindle.chats.update(
-      chatId,
-      { metadata: { ...meta, macro_variables: mv } as never },
-      userId,
-    );
-  } catch (err) {
-    return { ok: false, reason: `chats.update failed: ${errMsg(err)}` };
-  }
-
-  invalidateRenderMcpForChat(chatId);
-  await refreshBgHtml(active, chatId, userId);
-  await refreshVariables(active, chatId, userId, { force: true });
-
-  log.info(
-    `variables.write: chat=${chatId} key=${trimmedKey} ` +
-      (value === null ? 'deleted' : `len=${String(value).length}`),
-  );
-  return { ok: true };
-}
 
 
-function toggleToWire(t: SidebarToggle): SidebarToggleWire {
-  switch (t.type) {
-    case 'group':
-    case 'groupEnd':
-    case 'divider':
-      return {
-        type: t.type,
-        ...(t.key !== undefined ? { key: t.key } : {}),
-        ...(t.value !== undefined ? { value: t.value } : {}),
-      };
-    case 'caption':
-      return {
-        type: 'caption',
-        ...(t.key !== undefined ? { key: t.key } : {}),
-        value: t.value ?? '',
-      };
-    case 'select':
-      return {
-        type: 'select',
-        key: t.key,
-        value: t.value,
-        options: [...t.options],
-      };
-    case undefined:
-    case 'text':
-    case 'textarea':
-      return {
-        type: t.type ?? 'checkbox',
-        key: t.key,
-        value: t.value,
-        ...(t.options !== undefined ? { options: [...t.options] } : {}),
-      };
-  }
-}
 
-async function loadToggleDsl(
-  characterId: string,
-  userId: string,
-): Promise<{
-  flatToggles: readonly SidebarToggle[];
-  attribution: Record<string, string>;
-}> {
-  const fetched = await readLumirealm(charactersApi(), characterId, userId);
-  if (!fetched || !fetched.data) return { flatToggles: [], attribution: {} };
-  const attachedIds = fetched.data.user_overrides.attached_module_ids ?? [];
-  if (attachedIds.length === 0) return { flatToggles: [], attribution: {} };
-
-  const envelopes = await readAttachedModuleEnvelopes(userId, attachedIds);
-  const modulesForToggle = envelopes.map((env) => {
-    const m = env.module as { customModuleToggle?: unknown; name?: unknown };
-    return {
-      customModuleToggle: typeof m.customModuleToggle === 'string' ? m.customModuleToggle : '',
-      displayName: typeof m.name === 'string' ? m.name : env.id,
-    };
-  });
-
-  // Build per-module attribution alongside the concatenated DSL by
-  // parsing each module's DSL in isolation, then unioning the keys.
-  const attribution: Record<string, string> = {};
-  for (const m of modulesForToggle) {
-    if (!m.customModuleToggle) continue;
-    const localFlat = parseToggleSyntax(m.customModuleToggle);
-    for (const k of extractToggleKeys(localFlat)) {
-      // First module wins on collision.
-      if (!Object.prototype.hasOwnProperty.call(attribution, k)) {
-        attribution[k] = m.displayName;
-      }
-    }
-  }
-
-  const concat = collectModuleToggleDsl(modulesForToggle);
-  const flatToggles = parseToggleSyntax(concat);
-  return { flatToggles, attribution };
-}
-
-async function refreshToggleDefinitions(
-  active: ActiveCard,
-  chatId: string,
-  userId: string | undefined,
-  opts?: { force?: boolean },
-): Promise<void> {
-  if (userId === undefined) {
-    log.debug(`toggles.refresh: skip chat=${chatId},userId not yet captured`);
-    return;
-  }
-  const { flatToggles, attribution } = await loadToggleDsl(
-    active.card.character_id,
-    userId,
-  );
-  const wire = flatToggles.map(toggleToWire);
-  const result = toggleState.applySnapshot(chatId, wire, attribution);
-  if (result.changed || opts?.force) {
-    send({
-      type: 'set_toggle_definitions',
-      chatId,
-      seq: result.entry.seq,
-      toggles: result.entry.toggles,
-      attribution: result.entry.attribution,
-      ts: result.entry.ts,
-    }, userId);
-    log.info(
-      `toggles.refresh: pushed chat=${chatId} seq=${result.entry.seq} ` +
-        `count=${wire.length} keys=${extractToggleKeys(flatToggles).length} forced=${!!opts?.force}`,
-    );
-  } else {
-    log.debug(`toggles.refresh: unchanged chat=${chatId} seq=${result.entry.seq}`);
-  }
-}
-
-async function writeToggleValue(
-  chatId: string,
-  key: string,
-  value: string | null,
-  userId: string,
-): Promise<{ ok: boolean; reason?: string }> {
-  const trimmedKey = key.trim();
-  if (trimmedKey.length === 0) {
-    return { ok: false, reason: 'toggle key cannot be empty' };
-  }
-  const active = await ensureActiveCardForChat(chatId, null, userId);
-  if (!active) {
-    return { ok: false, reason: 'not a Risu-imported chat' };
-  }
-
-  let chat: { metadata?: unknown } | null;
-  try {
-    chat = (await spindle.chats.get(chatId, userId)) as { metadata?: unknown } | null;
-  } catch (err) {
-    return { ok: false, reason: `chats.get failed: ${errMsg(err)}` };
-  }
-  const meta = (chat?.metadata ?? {}) as Record<string, unknown>;
-  const mv = (meta['macro_variables'] && typeof meta['macro_variables'] === 'object'
-    ? { ...(meta['macro_variables'] as Record<string, unknown>) }
-    : {}) as Record<string, unknown>;
-  const global = (mv['global'] && typeof mv['global'] === 'object'
-    ? { ...(mv['global'] as Record<string, unknown>) }
-    : {}) as Record<string, unknown>;
-
-  const storeKey = `toggle_${trimmedKey}`;
-  if (value === null) {
-    if (!Object.prototype.hasOwnProperty.call(global, storeKey)) {
-      return { ok: true };
-    }
-    delete global[storeKey];
-  } else {
-    global[storeKey] = String(value);
-  }
-  mv['global'] = global;
-
-  try {
-    expectChatChange(chatId);
-    await spindle.chats.update(
-      chatId,
-      { metadata: { ...meta, macro_variables: mv } as never },
-      userId,
-    );
-  } catch (err) {
-    return { ok: false, reason: `chats.update failed: ${errMsg(err)}` };
-  }
-
-  invalidateRenderMcpForChat(chatId);
-  await refreshBgHtml(active, chatId, userId);
-  await refreshVariables(active, chatId, userId, { force: true });
-
-  log.info(
-    `toggles.write: chat=${chatId} key=${storeKey} ` +
-      (value === null ? 'deleted' : `len=${String(value).length}`),
-  );
-  return { ok: true };
-}
-
-function sanitizeVarMap(raw: unknown): Record<string, string> {
-  if (!raw || typeof raw !== 'object') return {};
-  const out: Record<string, string> = {};
-  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
-    if (typeof k !== 'string') continue;
-    if (v === undefined || v === null) {
-      out[k] = '';
-    } else if (typeof v === 'string') {
-      out[k] = v;
-    } else {
-      try { out[k] = String(v); } catch { out[k] = ''; }
-    }
-  }
-  return out;
-}
 
 
 // Per-chat memo of the last bg-html signature, dedupes redundant sends across the SETTINGS_UPDATED + CHAT_CHANGED + GENERATION_* fan-out on chat-open.
@@ -1930,35 +1092,6 @@ function dumpPayload(raw: unknown): string {
 
 // Capture userId from every event callback so operator-scoped Spindle calls
 // succeed before any frontend message arrives.
-function captureUserId(userId: string | undefined, where: string): void {
-  if (!userId || capturedUserIds.has(userId)) return;
-  capturedUserIds.add(userId);
-  log.info(`captureUserId: bootstrap from ${where} userId=${userId}`);
-  void getSettingsForUser(userId).catch((err) => {
-    log.warn(`captureUserId: settings preload failed for user=${userId}: ${errMsg(err)}`);
-  });
-  // Deferred so orphan-review doesn't compete with chat-open work.
-  setTimeout(() => {
-    void promptOrphanReviewIfAny(userId).catch((err) => {
-      log.warn(`captureUserId: orphan-review prompt failed: ${errMsg(err)}`);
-    });
-  }, 3000);
-  // Modules first since characters attach to them, then characters.
-  setTimeout(() => {
-    void (async () => {
-      try {
-        await runMassModuleMigrationIfNeeded(userId);
-      } catch (err) {
-        log.warn(`captureUserId: mass module migration failed: ${errMsg(err)}`);
-      }
-      try {
-        await runMassCharacterMigrationIfNeeded(userId);
-      } catch (err) {
-        log.warn(`captureUserId: mass character migration failed: ${errMsg(err)}`);
-      }
-    })();
-  }, 3000);
-}
 
 // Decoupled from bg-html paint so empty-bg cards activate.
 function sendSetActiveChat(
@@ -1972,6 +1105,18 @@ function sendSetActiveChat(
     log.warn(`sendSetActiveChat: ${(err as Error).message}`);
   }
 }
+
+const nudgeGc = makeNudgeGc(log, errMsg);
+const refreshPersonaImage = makeRefreshPersonaImage({ log, errMsg });
+const seedAuthorsNoteFromDepthPrompt = makeSeedAuthorsNoteFromDepthPrompt({ log, errMsg });
+const maybeFinalizeImport = makeMaybeFinalizeImport({
+  pendingImportCompletions,
+  send,
+  listCards,
+  pushCards,
+  log,
+  errMsg,
+});
 
 const activeCardLoader = createActiveCardLoader({
   extensionVersion: EXTENSION_VERSION,
@@ -2023,6 +1168,34 @@ const bgHtmlRefresher = createBgHtmlRefresher({
   errMsg,
 });
 const refreshBgHtml = bgHtmlRefresher.refresh;
+
+const applySvgRasterIndex = createApplySvgRasterIndex({
+  updateLumirealm: (charId, userId, fn) => updateLumirealm(charactersApi(), charId, userId, fn),
+  send,
+  appendImageIdsToJournal: (userId, charId, ids) => appendImageIdsToJournal(journalStorage(), userId, charId, ids),
+  activeCardByChat,
+  ensureActiveCardForChat,
+  invalidateRenderMcpForChat,
+  refreshBgHtml,
+  log,
+  errMsg,
+});
+
+const variablesTogglesService = createVariablesTogglesService({
+  variableState,
+  toggleState,
+  readLumirealm: (charId, userId) => readLumirealm(charactersApi(), charId, userId),
+  readAttachedModuleEnvelopes: (userId, ids) => readAttachedModuleEnvelopes(userId, ids),
+  ensureActiveCardForChat,
+  refreshBgHtml,
+  send,
+  log,
+  errMsg,
+});
+const refreshVariables = variablesTogglesService.refreshVariables;
+const writeLocalVariable = variablesTogglesService.writeLocalVariable;
+const refreshToggleDefinitions = variablesTogglesService.refreshToggleDefinitions;
+const writeToggleValue = variablesTogglesService.writeToggleValue;
 
 const triggerDispatcher = createTriggerDispatcher({
   compiledByCharacter,
@@ -2837,8 +2010,6 @@ const massMigrations = createMassMigrationsRunner({
   log,
   errMsg,
 });
-const runMassModuleMigrationIfNeeded = massMigrations.runMassModuleMigrationIfNeeded;
-const runMassCharacterMigrationIfNeeded = massMigrations.runMassCharacterMigrationIfNeeded;
 
 const repairOrchestrator = createRepairOrchestrator({
   listLumirealmCharacters: async (userId) => {
