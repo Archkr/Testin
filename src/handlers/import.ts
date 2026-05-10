@@ -1,0 +1,321 @@
+import type { CardSummary } from '../types/messages.js';
+import type { ActiveCard } from '../interpreter/dispatch.js';
+import type { HostVersionCheckResult } from '../util/version-check.js';
+import type { Handler } from './types.js';
+
+export interface ImportSession {
+  readonly fileName: string;
+  readonly totalBytes: number;
+  readonly totalChunks: number;
+  readonly buffer: (Uint8Array | null)[];
+  readonly ownerUserId: string;
+  receivedBytes: number;
+  receivedChunks: number;
+  startedAt: number;
+  lastActivity: number;
+}
+
+export interface PendingImportCompletion {
+  hasPendingSvgRaster: boolean;
+  characterName: string;
+  startedAt: number;
+  ownerUserId: string;
+}
+
+export type OperationPhase = 'started' | 'progress' | 'done' | 'error';
+
+export interface ImportHandlerDeps {
+  readonly importSessions: Map<string, ImportSession>;
+  readonly pendingImportCompletions: Map<string, PendingImportCompletion>;
+  readonly lastSentBgHtmlByChat: Map<string, string>;
+  readonly activeCardByChat: Map<string, ActiveCard>;
+  readonly lastActiveChatByUser: Map<string, string>;
+  readonly hostVersionCheckRef: { current: HostVersionCheckResult | null };
+  readonly getMissingPermissions: () => readonly string[];
+  readonly permissionPurpose: Readonly<Record<string, string>>;
+  readonly validateUploadShape: (
+    totalBytes: unknown,
+    totalChunks: unknown,
+  ) => { ok: true } | { ok: false; reason: string };
+  readonly listCards: (userId: string) => Promise<readonly CardSummary[]>;
+  readonly pushCards: (cards: readonly CardSummary[], userId: string) => void;
+  readonly ensureActiveCardForChat: (
+    chatId: string,
+    characterId: string | null,
+    userId: string,
+  ) => Promise<ActiveCard | null>;
+  readonly sendSetActiveChat: (
+    activeChatId: string | null,
+    activeCharacterId: string | null,
+    userId: string,
+  ) => void;
+  readonly invalidateRenderMcpForChat: (chatId: string) => void;
+  readonly refreshBgHtml: (active: ActiveCard, chatId: string, userId: string) => Promise<void>;
+  readonly refreshVariables: (
+    active: ActiveCard,
+    chatId: string,
+    userId: string,
+    opts?: { force?: boolean },
+  ) => Promise<void>;
+  readonly importAnyFormat: (bytesB64: string, fileName: string, userId: string) => Promise<void>;
+  readonly applySvgRasterIndex: (args: {
+    characterId: string;
+    imageIdByMarker: Readonly<Record<string, string | null>>;
+    userId: string;
+  }) => Promise<void>;
+  readonly maybeFinalizeImport: (characterId: string) => Promise<void>;
+  readonly characterGet: (characterId: string, userId: string) => Promise<{ name?: string } | null>;
+  readonly deleteCardByChar: (characterId: string, userId: string, mode: 'soft' | 'cascade') => Promise<void>;
+  readonly emitOperationProgress: (
+    userId: string,
+    operationId: string,
+    phase: OperationPhase,
+    title: string,
+    message: string,
+    fraction: number | null,
+    error?: string,
+  ) => void;
+  readonly notifyHostVersionOutdated: (msg: unknown, userId: string) => void;
+  readonly notifyMissingPermissions: (msg: unknown, userId: string) => void;
+  readonly log: { readonly info: (m: string) => void; readonly warn: (m: string) => void; readonly error: (m: string) => void };
+  readonly errMsg: (e: unknown) => string;
+}
+
+export function createImportHandlers(deps: ImportHandlerDeps): {
+  readonly get_cards: Handler<'get_cards'>;
+  readonly import_card_init: Handler<'import_card_init'>;
+  readonly import_card_chunk: Handler<'import_card_chunk'>;
+  readonly import_card_commit: Handler<'import_card_commit'>;
+  readonly import_card_abort: Handler<'import_card_abort'>;
+  readonly register_svg_raster_index: Handler<'register_svg_raster_index'>;
+  readonly delete_card: Handler<'delete_card'>;
+} {
+  return {
+    get_cards: async (_msg, ctx) => {
+      const hostVersionCheck = deps.hostVersionCheckRef.current;
+      if (hostVersionCheck?.needsUpdate) {
+        deps.notifyHostVersionOutdated({
+          type: 'notify_host_version_outdated',
+          hostVersion: hostVersionCheck.hostVersion,
+          minimum: hostVersionCheck.minimum,
+          message: hostVersionCheck.message,
+        }, ctx.userId);
+      }
+      const missingPerms = deps.getMissingPermissions();
+      if (missingPerms.length > 0) {
+        const purposes: Record<string, string> = {};
+        for (const p of missingPerms) purposes[p] = deps.permissionPurpose[p] ?? p;
+        deps.log.warn(`get_cards: pushing notify_missing_permissions missing=[${missingPerms.join(',')}] userId=${ctx.userId}`);
+        deps.notifyMissingPermissions({
+          type: 'notify_missing_permissions',
+          missing: missingPerms,
+          purposes,
+        }, ctx.userId);
+      }
+      let cleared = 0;
+      for (const [chatId] of deps.lastSentBgHtmlByChat) {
+        const active = deps.activeCardByChat.get(chatId);
+        if (active && active.ownerUserId === ctx.userId) {
+          deps.lastSentBgHtmlByChat.delete(chatId);
+          cleared++;
+        }
+      }
+      const lastChatHint = deps.lastActiveChatByUser.get(ctx.userId);
+      if (lastChatHint && deps.lastSentBgHtmlByChat.delete(lastChatHint)) cleared++;
+      if (cleared > 0) {
+        deps.log.info(`get_cards: cleared ${cleared} bg-html send memo(s) for FE remount`);
+      }
+      deps.pushCards(await deps.listCards(ctx.userId), ctx.userId);
+      const lastChat = deps.lastActiveChatByUser.get(ctx.userId);
+      if (lastChat) {
+        deps.log.info(`get_cards: re-painting bg+scope-css for lastChat=${lastChat} userId=${ctx.userId}`);
+        try {
+          const active = await deps.ensureActiveCardForChat(lastChat, null, ctx.userId);
+          deps.sendSetActiveChat(
+            active ? lastChat : null,
+            active ? active.card.character_id : null,
+            ctx.userId,
+          );
+          if (active) {
+            deps.invalidateRenderMcpForChat(lastChat);
+            await deps.refreshBgHtml(active, lastChat, ctx.userId);
+            await deps.refreshVariables(active, lastChat, ctx.userId, { force: true });
+          }
+        } catch (err) {
+          deps.log.warn(`get_cards: rehydrate failed chat=${lastChat}: ${deps.errMsg(err)}`);
+        }
+      } else {
+        deps.sendSetActiveChat(null, null, ctx.userId);
+      }
+    },
+    import_card_init: async (msg, ctx) => {
+      deps.log.info(
+        `import_card_init: sessionId=${msg.sessionId} file=${msg.fileName} ` +
+          `totalBytes=${msg.totalBytes} totalChunks=${msg.totalChunks}`,
+      );
+      const shape = deps.validateUploadShape(msg.totalBytes, msg.totalChunks);
+      if (!shape.ok) {
+        deps.log.warn(`import_card_init: rejected sessionId=${msg.sessionId} userId=${ctx.userId}: ${shape.reason}`);
+        ctx.send({ type: 'error', message: `import_card_init: ${shape.reason}`, sessionId: msg.sessionId }, ctx.userId);
+        return;
+      }
+      const existing = deps.importSessions.get(msg.sessionId);
+      if (existing) {
+        if (existing.ownerUserId !== ctx.userId) {
+          deps.log.warn(`import_card_init: sessionId=${msg.sessionId} owned by ${existing.ownerUserId}, rejecting cross-user reuse from ${ctx.userId}`);
+          ctx.send({ type: 'error', message: `Session id collision; pick a fresh id` }, ctx.userId);
+          return;
+        }
+        deps.log.warn(`import_card_init: replacing existing session ${msg.sessionId}`);
+      }
+      deps.importSessions.set(msg.sessionId, {
+        fileName: msg.fileName,
+        totalBytes: msg.totalBytes,
+        totalChunks: msg.totalChunks,
+        buffer: new Array(msg.totalChunks).fill(null),
+        ownerUserId: ctx.userId,
+        receivedBytes: 0,
+        receivedChunks: 0,
+        startedAt: Date.now(),
+        lastActivity: Date.now(),
+      });
+      ctx.send({ type: 'import_upload_ack', sessionId: msg.sessionId, seq: -1, receivedBytes: 0 }, ctx.userId);
+    },
+    import_card_chunk: async (msg, ctx) => {
+      const session = deps.importSessions.get(msg.sessionId);
+      if (!session) {
+        deps.log.warn(`import_card_chunk: unknown sessionId=${msg.sessionId} seq=${msg.seq},dropping`);
+        ctx.send({ type: 'error', message: `Unknown upload session ${msg.sessionId}. Re-import the card.` }, ctx.userId);
+        return;
+      }
+      if (session.ownerUserId !== ctx.userId) {
+        deps.log.warn(`import_card_chunk: ownership mismatch sessionId=${msg.sessionId} owner=${session.ownerUserId} sender=${ctx.userId ?? '<none>'}`);
+        ctx.send({ type: 'error', message: `Unknown upload session ${msg.sessionId}. Re-import the card.` }, ctx.userId);
+        return;
+      }
+      if (msg.seq < 0 || msg.seq >= session.totalChunks) {
+        deps.log.warn(`import_card_chunk: seq=${msg.seq} out of range (total=${session.totalChunks})`);
+        return;
+      }
+      if (session.buffer[msg.seq] !== null) {
+        deps.log.warn(`import_card_chunk: duplicate seq=${msg.seq} on session ${msg.sessionId},overwriting`);
+      }
+      const chunkBytes = new Uint8Array(Buffer.from(msg.bytesB64Chunk, 'base64'));
+      session.buffer[msg.seq] = chunkBytes;
+      session.receivedBytes += chunkBytes.byteLength;
+      session.receivedChunks += 1;
+      session.lastActivity = Date.now();
+      ctx.send({
+        type: 'import_upload_ack',
+        sessionId: msg.sessionId,
+        seq: msg.seq,
+        receivedBytes: session.receivedBytes,
+      }, ctx.userId);
+    },
+    import_card_commit: async (msg, ctx) => {
+      const session = deps.importSessions.get(msg.sessionId);
+      if (!session) {
+        deps.log.warn(`import_card_commit: unknown sessionId=${msg.sessionId}`);
+        ctx.send({ type: 'error', message: `Unknown upload session ${msg.sessionId}. Re-import the card.` }, ctx.userId);
+        return;
+      }
+      if (session.ownerUserId !== ctx.userId) {
+        deps.log.warn(`import_card_commit: ownership mismatch sessionId=${msg.sessionId} owner=${session.ownerUserId} sender=${ctx.userId ?? '<none>'}`);
+        ctx.send({ type: 'error', message: `Unknown upload session ${msg.sessionId}. Re-import the card.` }, ctx.userId);
+        return;
+      }
+      deps.log.info(
+        `import_card_commit: sessionId=${msg.sessionId} received=${session.receivedChunks}/${session.totalChunks} ` +
+          `bytes=${session.receivedBytes}/${session.totalBytes} elapsed=${Date.now() - session.startedAt}ms`,
+      );
+      if (session.receivedChunks !== session.totalChunks) {
+        const missing: number[] = [];
+        for (let i = 0; i < session.totalChunks; i++) {
+          if (session.buffer[i] === null) missing.push(i);
+        }
+        deps.importSessions.delete(msg.sessionId);
+        const missingList = missing.length > 12 ? `${missing.slice(0, 12).join(',')}…(+${missing.length - 12})` : missing.join(',');
+        deps.log.error(`import_card_commit: missing chunks=[${missingList}],aborting`);
+        ctx.send({
+          type: 'import_progress',
+          phase: 'error',
+          message: `Upload incomplete: ${missing.length} of ${session.totalChunks} chunks missing`,
+          fraction: null,
+          error: `Missing chunks: ${missingList}`,
+        }, ctx.userId);
+        return;
+      }
+      if (session.receivedBytes !== session.totalBytes) {
+        deps.log.warn(`import_card_commit: byte count mismatch received=${session.receivedBytes} expected=${session.totalBytes},proceeding anyway`);
+      }
+      const assembled = new Uint8Array(session.receivedBytes);
+      let offset = 0;
+      for (const chunk of session.buffer) {
+        if (!chunk) continue;
+        assembled.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+      const fileName = session.fileName;
+      deps.importSessions.delete(msg.sessionId);
+      ctx.send({ type: 'import_upload_ack', sessionId: msg.sessionId, seq: -2, receivedBytes: session.receivedBytes }, ctx.userId);
+      deps.log.info(`import_card_commit: assembled ${assembled.byteLength} bytes, running importCard`);
+      const bytesB64 = Buffer.from(assembled).toString('base64');
+      await deps.importAnyFormat(bytesB64, fileName, session.ownerUserId);
+    },
+    import_card_abort: async (msg, ctx) => {
+      const session = deps.importSessions.get(msg.sessionId);
+      if (session && session.ownerUserId !== ctx.userId) {
+        deps.log.warn(`import_card_abort: ownership mismatch sessionId=${msg.sessionId} owner=${session.ownerUserId} sender=${ctx.userId ?? '<none>'},ignoring`);
+        return;
+      }
+      const existed = deps.importSessions.delete(msg.sessionId);
+      deps.log.info(`import_card_abort: sessionId=${msg.sessionId} existed=${existed} reason=${msg.reason ?? '<none>'}`);
+    },
+    register_svg_raster_index: async (msg, ctx) => {
+      const pendingForSvgCheck = deps.pendingImportCompletions.get(msg.characterId);
+      if (!pendingForSvgCheck) {
+        deps.log.warn(`register_svg_raster_index: no pending import char=${msg.characterId} sender=${ctx.userId},rejecting (late replay or fabrication)`);
+        ctx.send({ type: 'error', message: 'register_svg_raster_index: no pending import' }, ctx.userId);
+        return;
+      }
+      if (pendingForSvgCheck.ownerUserId !== ctx.userId) {
+        deps.log.warn(`register_svg_raster_index: ownership mismatch char=${msg.characterId} owner=${pendingForSvgCheck.ownerUserId} sender=${ctx.userId}`);
+        ctx.send({ type: 'error', message: 'register_svg_raster_index: ownership mismatch' }, ctx.userId);
+        return;
+      }
+      const total = Object.keys(msg.imageIdByMarker).length;
+      const successful = Object.values(msg.imageIdByMarker).filter(
+        (v) => typeof v === 'string' && v.length > 0,
+      ).length;
+      const failed = total - successful;
+      deps.log.info(
+        `register_svg_raster_index: char=${msg.characterId} total=${total} successful=${successful} failed=${failed}`,
+      );
+      await deps.applySvgRasterIndex({
+        characterId: msg.characterId,
+        imageIdByMarker: msg.imageIdByMarker,
+        userId: ctx.userId,
+      });
+      pendingForSvgCheck.hasPendingSvgRaster = false;
+      deps.log.info(`register_svg_raster_index: cleared svg-pending flag char=${msg.characterId}`);
+      await deps.maybeFinalizeImport(msg.characterId);
+    },
+    delete_card: async (msg, ctx) => {
+      const opId = `delete-card-${msg.characterId}-${Date.now()}`;
+      let cardName = msg.characterId.slice(0, 8);
+      try {
+        const c = await deps.characterGet(msg.characterId, ctx.userId);
+        if (c?.name) cardName = c.name;
+      } catch { /* fall through with id-based label */ }
+      const opTitle = `Removing card "${cardName}" from LumiRealm`;
+      deps.emitOperationProgress(ctx.userId, opId, 'started', opTitle, 'Clearing extension data…', null);
+      try {
+        await deps.deleteCardByChar(msg.characterId, ctx.userId, 'soft');
+        deps.emitOperationProgress(ctx.userId, opId, 'done', opTitle, 'Removed', 1);
+      } catch (err) {
+        deps.log.warn(`delete_card: threw char=${msg.characterId}: ${deps.errMsg(err)}`);
+        deps.emitOperationProgress(ctx.userId, opId, 'error', opTitle, '', null, deps.errMsg(err));
+      }
+    },
+  };
+}

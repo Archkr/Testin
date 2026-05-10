@@ -1,6 +1,6 @@
 declare const spindle: import('lumiverse-spindle-types').SpindleAPI;
 
-import type { FrontendToBackend, BackendToFrontend, CardSummary, OrphanAssetEntry } from './types/messages.js';
+import type { FrontendToBackend, BackendToFrontend, CardSummary } from './types/messages.js';
 import { errMsg } from './util/coerce.js';
 import {
   setupRealmBackend,
@@ -119,12 +119,45 @@ import {
   PERMISSION_PURPOSE,
 } from './state/permissions.js';
 import { buildDispatchSeams } from './state/dispatch-seams.js';
-import { pushViewerData, type ViewerPushDeps } from './state/viewer-push.js';
+import type { ViewerPushDeps } from './state/viewer-push.js';
 import { createViewerAssembly } from './state/viewer-assembly.js';
 import { mergeLangBlock } from './state/translation-merge.js';
 import { createLorebookImporter } from './state/lorebook-import.js';
 import { createModuleUploader } from './state/module-upload.js';
 import { createOrphanOrchestrator } from './state/orphan-orchestrator.js';
+import type { Handler, HandlerCallCtx, HandlerRegistry } from './handlers/types.js';
+import { createScreenHandlers } from './handlers/screen.js';
+import { createConsentHandlers } from './handlers/consent.js';
+import { createConnectionsHandlers } from './handlers/connections.js';
+import { createLogHandlers } from './handlers/log.js';
+import { createSettingsHandlers } from './handlers/settings.js';
+import { createTranslationsHandlers } from './handlers/translations.js';
+import { createVariablesHandlers } from './handlers/variables.js';
+import { createTogglesHandlers } from './handlers/toggles.js';
+import { createDispatchHandlers } from './handlers/dispatch.js';
+import { createLorebookHandlers } from './handlers/lorebook.js';
+import { createAssetsHandlers } from './handlers/assets.js';
+import { createViewerHandlers } from './handlers/viewer.js';
+import { createModuleHandlers } from './handlers/module.js';
+import {
+  createImportHandlers,
+  type ImportSession,
+  type PendingImportCompletion,
+} from './handlers/import.js';
+import { createOrphanHandlers } from './handlers/orphan.js';
+import { createRepairHandlers } from './handlers/repair.js';
+import {
+  getRegisterMessageContentProcessor,
+  getRegisterMacroInterceptor,
+  getRegisterInterceptor,
+  getRegisterWorldInfoInterceptor,
+  getModalConfirmApi,
+  getRegexScriptsApi,
+  getConnectionsListFn,
+  type LlmMessage,
+  type InterceptorContext,
+  type ModalConfirmOptions,
+} from './adapters/spindle-extras.js';
 import {
   collectModuleToggleDsl,
   extractToggleKeys,
@@ -164,8 +197,6 @@ import {
   loadPersistedLogState,
   persistLogState,
   isLogThreshold,
-  type LogState,
-  type LogStateSnapshot,
 } from './log/store.js';
 import { resolveAlertDismissal } from './interpreter/alert-bridge.js';
 import { resolvePickResolution } from './interpreter/pick-bridge.js';
@@ -194,10 +225,7 @@ import type {
   AttachedModuleSummary,
   ModuleSummary,
 } from './types/messages.js';
-import {
-  projectModuleLorebookEntries,
-  projectModuleRegexEntries,
-} from './state/module-artifact-project.js';
+import { projectModuleRegexEntries } from './state/module-artifact-project.js';
 import {
   buildCharacterViewerData,
   buildModuleViewerData,
@@ -370,62 +398,12 @@ let diagInterceptorCall = 0;
 registerAllMacros();
 
 // Pre-write content processor: resolves CBS before the route handler commits
-// the row. Feature-detected: Lumi builds without the hook leave
-// `registerMessageContentProcessor` undefined; falls back to reactive path.
-interface MessageContentProcessorCtx {
-  readonly chatId: string;
-  readonly messageId?: string;
-  readonly content: string;
-  readonly extra?: Record<string, unknown>;
-  readonly origin: 'create' | 'update' | 'swipe_add' | 'swipe_update' | 'render';
-  readonly swipeIndex?: number;
-  readonly userId: string;
-}
-interface MessageContentProcessorPatch {
-  content?: string;
-  extra?: Record<string, unknown>;
-}
-const registerMessageContentProcessor = (spindle as unknown as {
-  registerMessageContentProcessor?: (
-    handler: (
-      ctx: MessageContentProcessorCtx,
-    ) => Promise<MessageContentProcessorPatch | void>,
-    priority?: number,
-  ) => void;
-}).registerMessageContentProcessor;
+// the row. Feature-detected via spindle-extras adapter.
+const registerMessageContentProcessor = getRegisterMessageContentProcessor();
 
-// Macro interceptor: fires at the top of Lumi's MacroEvaluator.evaluate()
-// for every template, allowing one bulk in-worker CBS resolve per template
-// instead of one __macro_invoke__ RPC per macro occurrence.
-// Feature-detected. Only fires for chats belonging to a Risu-imported
-// character; returns void for all others.
-interface MacroInterceptorSnapshotEnv {
-  readonly commit: boolean;
-  readonly names: Record<string, string>;
-  readonly character: Record<string, unknown>;
-  readonly chat: Record<string, unknown>;
-  readonly system: Record<string, unknown>;
-  readonly variables: {
-    readonly local: Record<string, string>;
-    readonly global: Record<string, string>;
-    readonly chat: Record<string, string>;
-  };
-  readonly extra: Record<string, unknown>;
-}
-interface MacroInterceptorCtx {
-  readonly template: string;
-  readonly env: MacroInterceptorSnapshotEnv;
-  readonly commit: boolean;
-  readonly phase: 'prompt' | 'display' | 'response' | 'other';
-  readonly sourceHint?: string;
-  readonly userId?: string;
-}
-const registerMacroInterceptor = (spindle as unknown as {
-  registerMacroInterceptor?: (
-    handler: (ctx: MacroInterceptorCtx) => Promise<string | void>,
-    priority?: number,
-  ) => void;
-}).registerMacroInterceptor;
+// Macro interceptor: per-template bulk in-worker CBS resolve, replaces N
+// __macro_invoke__ RPCs with one. Feature-detected via spindle-extras.
+const registerMacroInterceptor = getRegisterMacroInterceptor();
 
 if (typeof registerMacroInterceptor === 'function') {
   registerMacroInterceptor((ctx) => withMaybeUser(ctx.userId, async () => {
@@ -902,26 +880,7 @@ if (typeof registerMessageContentProcessor === 'function') {
 }
 
 // listenEdit('editInput') + 'editRequest' chains via Lumi interceptor hook.
-interface InterceptorContext {
-  chatId?: string;
-  connectionId?: string;
-  personaId?: string;
-  generationType?: 'normal' | 'continue' | 'regenerate' | 'swipe' | 'impersonate';
-}
-interface LlmMessage {
-  role: 'system' | 'user' | 'assistant';
-  content: string;
-  name?: string;
-}
-const registerInterceptor = (spindle as unknown as {
-  registerInterceptor?: (
-    handler: (
-      messages: LlmMessage[],
-      context: unknown,
-    ) => Promise<LlmMessage[] | { messages: LlmMessage[]; parameters?: Record<string, unknown> }>,
-    priority?: number,
-  ) => void;
-}).registerInterceptor;
+const registerInterceptor = getRegisterInterceptor();
 
 if (typeof registerInterceptor === 'function') {
   registerInterceptor(async (messages, contextRaw) => {
@@ -1103,10 +1062,7 @@ if (typeof registerInterceptor === 'function') {
   log.info('interceptor: not available on this Lumi build, listenEdit editInput/editRequest will not fire');
 }
 
-const registerWorldInfoInterceptor =
-  typeof (spindle as unknown as { registerWorldInfoInterceptor?: unknown }).registerWorldInfoInterceptor === 'function'
-    ? (spindle.registerWorldInfoInterceptor.bind(spindle) as typeof spindle.registerWorldInfoInterceptor)
-    : null;
+const registerWorldInfoInterceptor = getRegisterWorldInfoInterceptor();
 
 if (registerWorldInfoInterceptor) {
   // log.always , bypasses the user's runtime-log toggle. The decorator
@@ -1390,14 +1346,7 @@ interface SafeConnectionDTO {
 }
 
 async function listConnectionsForUser(userId: string): Promise<readonly SafeConnectionDTO[]> {
-  const anySpindle = spindle as unknown as {
-    connections?: {
-      list?: (uid?: string) => Promise<readonly {
-        id: string; name: string; provider: string; model: string; is_default: boolean;
-      }[]>;
-    };
-  };
-  const listFn = anySpindle.connections?.list;
+  const listFn = getConnectionsListFn();
   if (!listFn) {
     log.warn('listConnectionsForUser: spindle.connections.list not available on this Lumi build');
     return [];
@@ -1529,34 +1478,17 @@ async function backfillImageJournalIfMissing(
   }
 }
 
-interface SpindleModalConfirmLike {
-  readonly confirm?: (options: {
-    title: string;
-    message: string;
-    variant?: 'info' | 'warning' | 'danger' | 'success';
-    confirmLabel?: string;
-    cancelLabel?: string;
-    userId?: string;
-  }) => Promise<{ confirmed: boolean }>;
-}
-
 // Lumi caps each extension at 2 concurrent modals, two boot-time prompts can
 // race (orphan review, lorebook archive). Serialize per-user.
 const modalChainByUser = new Map<string, Promise<unknown>>();
 function queueModalConfirm(
   userId: string,
-  options: {
-    title: string;
-    message: string;
-    variant?: 'info' | 'warning' | 'danger' | 'success';
-    confirmLabel?: string;
-    cancelLabel?: string;
-  },
+  options: Omit<ModalConfirmOptions, 'userId'>,
 ): Promise<{ confirmed: boolean } | null> {
-  const modalApi = (spindle as unknown as { modal?: SpindleModalConfirmLike }).modal;
-  if (!modalApi?.confirm) return Promise.resolve(null);
+  const modalApi = getModalConfirmApi();
+  if (!modalApi) return Promise.resolve(null);
   const run = (): Promise<{ confirmed: boolean } | null> =>
-    modalApi.confirm!({ ...options, userId }).catch((err) => {
+    modalApi.confirm({ ...options, userId }).catch((err) => {
       log.warn(`queueModalConfirm: modal.confirm threw: ${errMsg(err)}`);
       return null;
     });
@@ -1740,14 +1672,7 @@ const orphanOrchestrator = createOrphanOrchestrator({
   imagesApi: spindle.images
     ? { list: (opts) => spindle.images.list(opts as never) as never }
     : null,
-  regexApi: ((): import('./state/orphan-orchestrator.js').RegexScriptsApiLike | null => {
-    const api = (spindle as unknown as { regex_scripts?: { list?: unknown; delete?: unknown } }).regex_scripts;
-    if (!api?.list || !api?.delete) return null;
-    return {
-      list: (opts) => (api.list as (opts: { userId?: string; limit?: number; offset?: number }) => Promise<{ data: readonly unknown[]; total: number }>)(opts),
-      delete: (id, userId) => (api.delete as (id: string, userId?: string) => Promise<boolean>)(id, userId),
-    };
-  })(),
+  regexApi: getRegexScriptsApi(),
   listLumirealmCharacterIds: async (userId) => {
     const entries = await listLumirealmCharacters(charactersApi(), userId, { paginate: true });
     return entries.filter((e) => e.data !== null).map((e) => e.character.id);
@@ -2056,12 +1981,6 @@ function nudgeGc(reason: string): void {
   log.info(`nudgeGc(${reason}): elapsed=${Date.now() - t0}ms`);
 }
 
-interface PendingImportCompletion {
-  hasPendingSvgRaster: boolean;
-  characterName: string;
-  startedAt: number;
-  ownerUserId: string;
-}
 const pendingImportCompletions = new Map<string, PendingImportCompletion>();
 
 // Tracks asset-upload-bearing operations (card import, module upload). Cleanup
@@ -2263,17 +2182,6 @@ async function maybeFinalizeImport(characterId: string): Promise<void> {
 
 // Chunked .charx upload: accumulate chunks by sessionId, assemble on commit.
 // Stale sessions are GC'd after IMPORT_SESSION_TIMEOUT_MS.
-interface ImportSession {
-  readonly fileName: string;
-  readonly totalBytes: number;
-  readonly totalChunks: number;
-  readonly buffer: (Uint8Array | null)[];
-  readonly ownerUserId: string;
-  receivedBytes: number;
-  receivedChunks: number;
-  startedAt: number;
-  lastActivity: number;
-}
 const importSessions = new Map<string, ImportSession>();
 const IMPORT_SESSION_TIMEOUT_MS = 5 * 60 * 1000; // 5 min
 
@@ -2402,19 +2310,6 @@ async function ensureLogStateLoaded(userId: string): Promise<void> {
   await loadPersistedLogState(userStorage(), userId);
   logStateLoadedFor.add(userId);
 }
-function sendLogState(userId: string | undefined): void {
-  const s: LogStateSnapshot = logStore.getState(userId);
-  send({
-    type: 'log_state_pushed',
-    enabled: s.enabled,
-    includeChatData: s.includeChatData,
-    level: s.level,
-    eventCount: s.eventCount,
-    bufferBytes: s.bufferBytes,
-  }, userId);
-}
-
-
 async function listCards(userId: string | undefined): Promise<readonly CardSummary[]> {
   const t0 = Date.now();
   log.info(`listCards: start userId=${userId ?? '<none>'}`);
@@ -6056,6 +5951,175 @@ const HIGH_VOLUME_FRONTEND_MSG_TYPES: ReadonlySet<string> = new Set([
   'upload_module_chunk',
 ]);
 
+const screenHandlers = createScreenHandlers({ setScreenDims, log });
+const consentHandlers = createConsentHandlers({
+  pendingConsents,
+  resolveAlertDismissal,
+  resolvePickResolution,
+  log,
+});
+const connectionsHandlers = createConnectionsHandlers({ listConnectionsForUser, log });
+const logHandlers = createLogHandlers({
+  extensionVersion: EXTENSION_VERSION,
+  logStore,
+  isLogThreshold,
+  ensureLogStateLoaded,
+  persistLogState,
+  userStorage,
+  lastActiveChatByUser,
+});
+const settingsHandlers = createSettingsHandlers({
+  getSettingsForUser,
+  applySettingsPatch,
+  normalizeSettingsPatch,
+});
+const translationsHandlers = createTranslationsHandlers({
+  persistModuleTranslation,
+  persistCharacterTranslation,
+});
+const variablesHandlers = createVariablesHandlers({
+  writeLocalVariable,
+  ensureActiveCardForChat,
+  refreshVariables,
+});
+const togglesHandlers = createTogglesHandlers({
+  writeToggleValue,
+  ensureActiveCardForChat,
+  refreshToggleDefinitions,
+  log,
+});
+const dispatchHandlers = createDispatchHandlers({
+  dispatchManualTrigger,
+  dispatchButtonClick,
+  log,
+});
+const lorebookHandlers = createLorebookHandlers({ lorebookImporter });
+const assetsHandlers = createAssetsHandlers({
+  blockedByRepair,
+  mutateAssetIndex,
+  viewerPushDeps,
+  charactersAttachedTo,
+  invalidateActiveForCharacter,
+  refreshRisuAssetMap,
+  log,
+  errMsg,
+});
+const viewerHandlers = createViewerHandlers({
+  blockedByRepair,
+  charactersApi,
+  updateLumirealm,
+  mutateTriggerLua,
+  viewerAssembly,
+  viewerPushDeps,
+  charactersAttachedTo,
+  invalidateActiveForCharacter,
+  log,
+  errMsg,
+});
+const importHandlers = createImportHandlers({
+  importSessions,
+  pendingImportCompletions,
+  lastSentBgHtmlByChat,
+  activeCardByChat,
+  lastActiveChatByUser,
+  hostVersionCheckRef: { get current() { return hostVersionCheck; } } as { current: HostVersionCheckResult | null },
+  getMissingPermissions,
+  permissionPurpose: PERMISSION_PURPOSE,
+  validateUploadShape,
+  listCards: async (uid) => listCards(uid),
+  pushCards,
+  ensureActiveCardForChat,
+  sendSetActiveChat,
+  invalidateRenderMcpForChat,
+  refreshBgHtml,
+  refreshVariables,
+  importAnyFormat: (b64, name, uid) => realmHandle.importAnyFormat(b64, name, uid),
+  applySvgRasterIndex,
+  maybeFinalizeImport,
+  characterGet: async (cid, uid) => {
+    try {
+      const c = await spindle.characters.get(cid, uid);
+      return c ? { ...(c.name ? { name: c.name } : {}) } : null;
+    } catch { return null; }
+  },
+  deleteCardByChar: (cid, uid, mode) => deleteCardByChar(cid, uid, mode),
+  emitOperationProgress,
+  notifyHostVersionOutdated: (msg, uid) => spindle.sendToFrontend(msg as never, uid),
+  notifyMissingPermissions: (msg, uid) => spindle.sendToFrontend(msg as never, uid),
+  log,
+  errMsg,
+});
+const orphanHandlers = createOrphanHandlers({
+  assetUploadsInFlightRef: { get current() { return assetUploadsInFlight; } } as { current: number },
+  scanOrphanedImages,
+  buildOrphanDetectDeps,
+  deleteImageIds,
+  emitOperationProgress,
+  log,
+  errMsg,
+});
+const repairHandlers = createRepairHandlers({
+  assetUploadsInFlightRef: { get current() { return assetUploadsInFlight; } } as { current: number },
+  repairInFlightByUser,
+  scanRepairTargets,
+  applyRepair,
+  log,
+  errMsg,
+});
+const moduleHandlers = createModuleHandlers({
+  moduleUploadSessions,
+  worldBookIdsByCharacter,
+  validateUploadShape,
+  processModuleUpload,
+  nudgeGc,
+  readModuleEnvelope: (uid, moduleId) => readModuleEnvelope(moduleStorage(), uid, moduleId),
+  readModuleImageJournalImageIds: async (uid, moduleId) => {
+    const file = await readModuleImageJournalFile(journalStorage(), uid, moduleId);
+    return file?.imageIds ?? [];
+  },
+  clearModuleImageJournal: (uid, moduleId) => clearModuleImageJournal(journalStorage(), uid, moduleId),
+  deleteModuleFromStore: (uid, moduleId) => deleteModuleFromStore(moduleStorage(), uid, moduleId),
+  deleteSharedWorldBook: (wbId, uid) => spindle.world_books.delete(wbId, uid).then(() => undefined),
+  buildOrphanDetectDeps,
+  deleteImageIds,
+  detachModuleFromAllCharacters,
+  attachModuleToCharacter,
+  detachModuleFromCharacter,
+  charactersAttachedTo,
+  refreshAttachedModule,
+  pushModules,
+  pushAttachedForCharacter,
+  charactersApi,
+  updateLumirealm,
+  mergeUserOverrides,
+  invalidateActiveForCharacter,
+  emitOperationProgress,
+  blockedByRepair,
+  log,
+  errMsg,
+});
+
+// Typed exhaustive registry: any new FrontendToBackend variant without a
+// handler entry here trips a compile-time error.
+const handlerRegistry: HandlerRegistry = {
+  ...importHandlers,
+  ...consentHandlers,
+  ...dispatchHandlers,
+  ...variablesHandlers,
+  ...settingsHandlers,
+  ...translationsHandlers,
+  ...connectionsHandlers,
+  ...togglesHandlers,
+  ...moduleHandlers,
+  ...assetsHandlers,
+  ...viewerHandlers,
+  ...lorebookHandlers,
+  ...screenHandlers,
+  ...logHandlers,
+  ...orphanHandlers,
+  ...repairHandlers,
+};
+
 spindle.onFrontendMessage(userScoped(async (raw, userId) => {
   captureUserId(userId, 'frontend-message');
   const msg = raw as FrontendToBackend;
@@ -6069,1208 +6133,14 @@ spindle.onFrontendMessage(userScoped(async (raw, userId) => {
     log.warn(`frontend msg type=${msg.type} dropped: no userId`);
     return;
   }
+  const ctx: HandlerCallCtx = { userId, send, log, errMsg };
   try {
     if (isRealmFrontendMessage(msg)) {
       await realmHandle.handle(msg, userId);
       return;
     }
-    switch (msg.type) {
-      case 'get_cards': {
-        if (hostVersionCheck?.needsUpdate) {
-          spindle.sendToFrontend({
-            type: 'notify_host_version_outdated',
-            hostVersion: hostVersionCheck.hostVersion,
-            minimum: hostVersionCheck.minimum,
-            message: hostVersionCheck.message,
-          }, userId);
-        }
-        const missingPerms = getMissingPermissions();
-        if (missingPerms.length > 0) {
-          const purposes: Record<string, string> = {};
-          for (const p of missingPerms) purposes[p] = PERMISSION_PURPOSE[p] ?? p;
-          log.warn(`get_cards: pushing notify_missing_permissions missing=[${missingPerms.join(',')}] userId=${userId}`);
-          spindle.sendToFrontend({
-            type: 'notify_missing_permissions',
-            missing: missingPerms,
-            purposes,
-          }, userId);
-        }
-        // FE remount needs the rehydrate path to resend bg-html. Drop only
-        // memos for chats owned by THIS user so a peer's chats keep their
-        // dedup state and avoid an 89KB CSS re-parse + shadow re-adopt.
-        let cleared = 0;
-        for (const [chatId, _] of lastSentBgHtmlByChat) {
-          const active = activeCardByChat.get(chatId);
-          if (active && active.ownerUserId === userId) {
-            lastSentBgHtmlByChat.delete(chatId);
-            cleared++;
-          }
-        }
-        const lastChatHint = lastActiveChatByUser.get(userId);
-        if (lastChatHint && lastSentBgHtmlByChat.delete(lastChatHint)) cleared++;
-        if (cleared > 0) {
-          log.info(`get_cards: cleared ${cleared} bg-html send memo(s) for FE remount`);
-        }
-        pushCards(await listCards(userId), userId);
-        const lastChat = lastActiveChatByUser.get(userId);
-        if (lastChat) {
-          log.info(`get_cards: re-painting bg+scope-css for lastChat=${lastChat} userId=${userId}`);
-          try {
-            const active = await ensureActiveCardForChat(lastChat, null, userId);
-            // FE remount lost activeRisuChatId; reaffirm before paint.
-            sendSetActiveChat(
-              active ? lastChat : null,
-              active ? active.card.character_id : null,
-              userId,
-            );
-            if (active) {
-              invalidateRenderMcpForChat(lastChat);
-              await refreshBgHtml(active, lastChat, userId);
-              await refreshVariables(active, lastChat, userId, { force: true });
-            }
-          } catch (err) {
-            log.warn(`get_cards: rehydrate failed chat=${lastChat}: ${errMsg(err)}`);
-          }
-        } else {
-          sendSetActiveChat(null, null, userId);
-        }
-        break;
-      }
-      case 'import_card_init': {
-        log.info(
-          `import_card_init: sessionId=${msg.sessionId} file=${msg.fileName} ` +
-            `totalBytes=${msg.totalBytes} totalChunks=${msg.totalChunks}`,
-        );
-        const shape = validateUploadShape(msg.totalBytes, msg.totalChunks);
-        if (!shape.ok) {
-          log.warn(`import_card_init: rejected sessionId=${msg.sessionId} userId=${userId}: ${shape.reason}`);
-          send({ type: 'error', message: `import_card_init: ${shape.reason}`, sessionId: msg.sessionId }, userId);
-          break;
-        }
-        const existing = importSessions.get(msg.sessionId);
-        if (existing) {
-          if (existing.ownerUserId !== userId) {
-            log.warn(`import_card_init: sessionId=${msg.sessionId} owned by ${existing.ownerUserId}, rejecting cross-user reuse from ${userId}`);
-            send({ type: 'error', message: `Session id collision; pick a fresh id` }, userId);
-            break;
-          }
-          log.warn(`import_card_init: replacing existing session ${msg.sessionId}`);
-        }
-        importSessions.set(msg.sessionId, {
-          fileName: msg.fileName,
-          totalBytes: msg.totalBytes,
-          totalChunks: msg.totalChunks,
-          buffer: new Array(msg.totalChunks).fill(null),
-          ownerUserId: userId,
-          receivedBytes: 0,
-          receivedChunks: 0,
-          startedAt: Date.now(),
-          lastActivity: Date.now(),
-        });
-        send({ type: 'import_upload_ack', sessionId: msg.sessionId, seq: -1, receivedBytes: 0 }, userId);
-        break;
-      }
-      case 'import_card_chunk': {
-        const session = importSessions.get(msg.sessionId);
-        if (!session) {
-          log.warn(`import_card_chunk: unknown sessionId=${msg.sessionId} seq=${msg.seq},dropping`);
-          send({ type: 'error', message: `Unknown upload session ${msg.sessionId}. Re-import the card.` }, userId);
-          break;
-        }
-        if (session.ownerUserId !== userId) {
-          log.warn(`import_card_chunk: ownership mismatch sessionId=${msg.sessionId} owner=${session.ownerUserId} sender=${userId ?? '<none>'}`);
-          send({ type: 'error', message: `Unknown upload session ${msg.sessionId}. Re-import the card.` }, userId);
-          break;
-        }
-        if (msg.seq < 0 || msg.seq >= session.totalChunks) {
-          log.warn(`import_card_chunk: seq=${msg.seq} out of range (total=${session.totalChunks})`);
-          break;
-        }
-        if (session.buffer[msg.seq] !== null) {
-          log.warn(`import_card_chunk: duplicate seq=${msg.seq} on session ${msg.sessionId},overwriting`);
-        }
-        const chunkBytes = new Uint8Array(Buffer.from(msg.bytesB64Chunk, 'base64'));
-        session.buffer[msg.seq] = chunkBytes;
-        session.receivedBytes += chunkBytes.byteLength;
-        session.receivedChunks += 1;
-        session.lastActivity = Date.now();
-        send({
-          type: 'import_upload_ack',
-          sessionId: msg.sessionId,
-          seq: msg.seq,
-          receivedBytes: session.receivedBytes,
-        }, userId);
-        break;
-      }
-      case 'import_card_commit': {
-        const session = importSessions.get(msg.sessionId);
-        if (!session) {
-          log.warn(`import_card_commit: unknown sessionId=${msg.sessionId}`);
-          send({ type: 'error', message: `Unknown upload session ${msg.sessionId}. Re-import the card.` }, userId);
-          break;
-        }
-        if (session.ownerUserId !== userId) {
-          log.warn(`import_card_commit: ownership mismatch sessionId=${msg.sessionId} owner=${session.ownerUserId} sender=${userId ?? '<none>'}`);
-          send({ type: 'error', message: `Unknown upload session ${msg.sessionId}. Re-import the card.` }, userId);
-          break;
-        }
-        log.info(
-          `import_card_commit: sessionId=${msg.sessionId} received=${session.receivedChunks}/${session.totalChunks} ` +
-            `bytes=${session.receivedBytes}/${session.totalBytes} elapsed=${Date.now() - session.startedAt}ms`,
-        );
-        if (session.receivedChunks !== session.totalChunks) {
-          const missing: number[] = [];
-          for (let i = 0; i < session.totalChunks; i++) {
-            if (session.buffer[i] === null) missing.push(i);
-          }
-          importSessions.delete(msg.sessionId);
-          const missingList = missing.length > 12 ? `${missing.slice(0, 12).join(',')}…(+${missing.length - 12})` : missing.join(',');
-          log.error(`import_card_commit: missing chunks=[${missingList}],aborting`);
-          send({
-            type: 'import_progress',
-            phase: 'error',
-            message: `Upload incomplete: ${missing.length} of ${session.totalChunks} chunks missing`,
-            fraction: null,
-            error: `Missing chunks: ${missingList}`,
-          }, userId);
-          break;
-        }
-        if (session.receivedBytes !== session.totalBytes) {
-          log.warn(`import_card_commit: byte count mismatch received=${session.receivedBytes} expected=${session.totalBytes},proceeding anyway`);
-        }
-        const assembled = new Uint8Array(session.receivedBytes);
-        let offset = 0;
-        for (const chunk of session.buffer) {
-          if (!chunk) continue;
-          assembled.set(chunk, offset);
-          offset += chunk.byteLength;
-        }
-        const fileName = session.fileName;
-        importSessions.delete(msg.sessionId);
-        send({ type: 'import_upload_ack', sessionId: msg.sessionId, seq: -2, receivedBytes: session.receivedBytes }, userId);
-        log.info(`import_card_commit: assembled ${assembled.byteLength} bytes, running importCard`);
-        const bytesB64 = Buffer.from(assembled).toString('base64');
-        await realmHandle.importAnyFormat(bytesB64, fileName, session.ownerUserId);
-        break;
-      }
-      case 'import_card_abort': {
-        const session = importSessions.get(msg.sessionId);
-        if (session && session.ownerUserId !== userId) {
-          log.warn(`import_card_abort: ownership mismatch sessionId=${msg.sessionId} owner=${session.ownerUserId} sender=${userId ?? '<none>'},ignoring`);
-          break;
-        }
-        const existed = importSessions.delete(msg.sessionId);
-        log.info(`import_card_abort: sessionId=${msg.sessionId} existed=${existed} reason=${msg.reason ?? '<none>'}`);
-        break;
-      }
-      case 'register_svg_raster_index': {
-        // Require an in-flight import: late replays add no value (the FE
-        // only sends this in response to our `rasterize_svgs` push) and let
-        // a user rewrite their own regex_scripts SVG markers post-import.
-        const pendingForSvgCheck = pendingImportCompletions.get(msg.characterId);
-        if (!pendingForSvgCheck) {
-          log.warn(`register_svg_raster_index: no pending import char=${msg.characterId} sender=${userId},rejecting (late replay or fabrication)`);
-          send({ type: 'error', message: 'register_svg_raster_index: no pending import' }, userId);
-          break;
-        }
-        if (pendingForSvgCheck.ownerUserId !== userId) {
-          log.warn(`register_svg_raster_index: ownership mismatch char=${msg.characterId} owner=${pendingForSvgCheck.ownerUserId} sender=${userId}`);
-          send({ type: 'error', message: 'register_svg_raster_index: ownership mismatch' }, userId);
-          break;
-        }
-        const total = Object.keys(msg.imageIdByMarker).length;
-        const successful = Object.values(msg.imageIdByMarker).filter(
-          (v) => typeof v === 'string' && v.length > 0,
-        ).length;
-        const failed = total - successful;
-        log.info(
-          `register_svg_raster_index: char=${msg.characterId} total=${total} successful=${successful} failed=${failed}`,
-        );
-        await applySvgRasterIndex({
-          characterId: msg.characterId,
-          imageIdByMarker: msg.imageIdByMarker,
-          userId,
-        });
-        pendingForSvgCheck.hasPendingSvgRaster = false;
-        log.info(`register_svg_raster_index: cleared svg-pending flag char=${msg.characterId}`);
-        await maybeFinalizeImport(msg.characterId);
-        break;
-      }
-      case 'delete_card': {
-        const opId = `delete-card-${msg.characterId}-${Date.now()}`;
-        let cardName = msg.characterId.slice(0, 8);
-        try {
-          const c = await spindle.characters.get(msg.characterId, userId);
-          if (c?.name) cardName = c.name;
-        } catch { /* fall through with id-based label */ }
-        const opTitle = `Removing card "${cardName}" from LumiRealm`;
-        emitOperationProgress(userId, opId, 'started', opTitle, 'Clearing extension data…', null);
-        try {
-          await deleteCardByChar(msg.characterId, userId, 'soft');
-          emitOperationProgress(userId, opId, 'done', opTitle, 'Removed', 1);
-        } catch (err) {
-          log.warn(`delete_card: threw char=${msg.characterId}: ${errMsg(err)}`);
-          emitOperationProgress(userId, opId, 'error', opTitle, '', null, errMsg(err));
-        }
-        break;
-      }
-      case 'consent_response': {
-        const pending = pendingConsents.get(msg.requestId);
-        if (!pending) {
-          log.warn(`consent_response: no pending request for requestId=${msg.requestId}`);
-          send({ type: 'error', message: `consent: unknown request` }, userId);
-          break;
-        }
-        if (pending.ownerUserId !== userId) {
-          log.warn(`consent_response: ownership mismatch requestId=${msg.requestId} owner=${pending.ownerUserId} responder=${userId ?? '<none>'}`);
-          send({ type: 'error', message: `consent: unknown request` }, userId);
-          break;
-        }
-        pendingConsents.delete(msg.requestId);
-        log.info(`consent_response: requestId=${msg.requestId} confirmed=${msg.confirmed}`);
-        pending.resolver(msg.confirmed);
-        break;
-      }
-      case 'manual_trigger': {
-        log.info(`manual_trigger: triggerName=${msg.triggerName} triggerId=${msg.triggerId ?? '<none>'} chatId=${msg.chatId}`);
-        await dispatchManualTrigger(msg.chatId, msg.triggerName, msg.triggerId, userId);
-        break;
-      }
-      case 'manual_button_click': {
-        log.info(`manual_button_click: btn=${msg.btn} btnId=${msg.btnId ?? '<none>'} chatId=${msg.chatId}`);
-        await dispatchButtonClick(msg.chatId, msg.btn, msg.btnId, userId);
-        break;
-      }
-      case 'set_variable': {
-        if (msg.scope !== 'local') {
-          send({ type: 'error', message: `Only local scope is editable from the Variables tab (got: ${msg.scope})` }, userId);
-          break;
-        }
-        const result = await writeLocalVariable(msg.chatId, msg.key, msg.value, userId);
-        if (!result.ok) {
-          send({ type: 'error', message: `Set ${msg.key}: ${result.reason ?? 'failed'}` }, userId);
-        }
-        break;
-      }
-      case 'delete_variable': {
-        if (msg.scope !== 'local') {
-          send({ type: 'error', message: `Only local scope is editable from the Variables tab (got: ${msg.scope})` }, userId);
-          break;
-        }
-        const result = await writeLocalVariable(msg.chatId, msg.key, null, userId);
-        if (!result.ok) {
-          send({ type: 'error', message: `Delete ${msg.key}: ${result.reason ?? 'failed'}` }, userId);
-        }
-        break;
-      }
-      case 'request_settings': {
-        const settings = await getSettingsForUser(userId);
-        send({
-          type: 'settings_pushed',
-          settings: {
-            schema_version: 1,
-            auxConnectionId: settings.auxConnectionId,
-            auxModelOverride: settings.auxModelOverride,
-            auxSamplers: settings.auxSamplers,
-            submodelConnectionId: settings.submodelConnectionId,
-            submodelModelOverride: settings.submodelModelOverride,
-            submodelSamplers: settings.submodelSamplers,
-            auxDebugCaptureRequest: settings.auxDebugCaptureRequest,
-            auxDebugCaptureResponse: settings.auxDebugCaptureResponse,
-            legacyMediaFindings: settings.legacyMediaFindings,
-            translateEnabled: settings.translateEnabled,
-          },
-        }, userId);
-        break;
-      }
-      case 'update_settings': {
-        const patch = normalizeSettingsPatch(msg.patch);
-        const merged = await applySettingsPatch(userId, patch);
-        send({
-          type: 'settings_pushed',
-          settings: {
-            schema_version: 1,
-            auxConnectionId: merged.auxConnectionId,
-            auxModelOverride: merged.auxModelOverride,
-            auxSamplers: merged.auxSamplers,
-            submodelConnectionId: merged.submodelConnectionId,
-            submodelModelOverride: merged.submodelModelOverride,
-            submodelSamplers: merged.submodelSamplers,
-            auxDebugCaptureRequest: merged.auxDebugCaptureRequest,
-            auxDebugCaptureResponse: merged.auxDebugCaptureResponse,
-            legacyMediaFindings: merged.legacyMediaFindings,
-            translateEnabled: merged.translateEnabled,
-          },
-        }, userId);
-        break;
-      }
-      case 'cache_module_translation': {
-        await persistModuleTranslation(userId, msg);
-        break;
-      }
-      case 'cache_character_translation': {
-        await persistCharacterTranslation(userId, msg);
-        break;
-      }
-      case 'request_connections_list': {
-        const connections = await listConnectionsForUser(userId);
-        log.info(`request_connections_list: returning ${connections.length} connection(s) for user=${userId}`);
-        send({
-          type: 'connections_list_pushed',
-          connections,
-        }, userId);
-        break;
-      }
-      case 'request_variables_snapshot': {
-        const active = await ensureActiveCardForChat(msg.chatId, null, userId);
-        if (active) {
-          await refreshVariables(active, msg.chatId, userId, { force: true });
-        } else {
-          send({
-            type: 'set_variables',
-            chatId: msg.chatId,
-            seq: 1,
-            scopes: { local: {}, global: {}, chat: {} },
-            defaults: {},
-            ts: Date.now(),
-          }, userId);
-        }
-        break;
-      }
-      case 'request_toggle_definitions': {
-        const active = await ensureActiveCardForChat(msg.chatId, null, userId);
-        if (active) {
-          await refreshToggleDefinitions(active, msg.chatId, userId, { force: true });
-        } else {
-          send({
-            type: 'set_toggle_definitions',
-            chatId: msg.chatId,
-            seq: 1,
-            toggles: [],
-            attribution: {},
-            ts: Date.now(),
-          }, userId);
-        }
-        break;
-      }
-      case 'set_toggle': {
-        const result = await writeToggleValue(msg.chatId, msg.key, msg.value, userId);
-        if (!result.ok) {
-          log.warn(`set_toggle failed: ${result.reason ?? 'unknown'}`);
-          send({ type: 'error', message: `set toggle failed: ${result.reason ?? 'unknown'}` }, userId);
-        }
-        break;
-      }
-      case 'upload_module_init': {
-        log.info(
-          `upload_module_init: sessionId=${msg.sessionId} file=${msg.fileName} ` +
-            `totalBytes=${msg.totalBytes} totalChunks=${msg.totalChunks}`,
-        );
-        const shape = validateUploadShape(msg.totalBytes, msg.totalChunks);
-        if (!shape.ok) {
-          log.warn(`upload_module_init: rejected sessionId=${msg.sessionId} userId=${userId}: ${shape.reason}`);
-          send({ type: 'error', message: `upload_module_init: ${shape.reason}`, sessionId: msg.sessionId }, userId);
-          break;
-        }
-        const existingMod = moduleUploadSessions.get(msg.sessionId);
-        if (existingMod && existingMod.ownerUserId !== userId) {
-          log.warn(`upload_module_init: sessionId=${msg.sessionId} owned by ${existingMod.ownerUserId}, rejecting cross-user reuse from ${userId}`);
-          send({ type: 'error', message: `Session id collision; pick a fresh id` }, userId);
-          break;
-        }
-        moduleUploadSessions.set(msg.sessionId, {
-          fileName: msg.fileName,
-          totalBytes: msg.totalBytes,
-          totalChunks: msg.totalChunks,
-          buffer: new Array(msg.totalChunks).fill(null),
-          ownerUserId: userId,
-          receivedBytes: 0,
-          receivedChunks: 0,
-          startedAt: Date.now(),
-          lastActivity: Date.now(),
-        });
-        send({
-          type: 'module_upload_ack',
-          sessionId: msg.sessionId,
-          seq: -1,
-          receivedBytes: 0,
-        }, userId);
-        break;
-      }
-      case 'upload_module_chunk': {
-        const session = moduleUploadSessions.get(msg.sessionId);
-        if (!session) {
-          send({ type: 'error', message: `upload_module_chunk: unknown sessionId ${msg.sessionId}` }, userId);
-          break;
-        }
-        if (session.ownerUserId !== userId) {
-          log.warn(`upload_module_chunk: ownership mismatch sessionId=${msg.sessionId} owner=${session.ownerUserId} sender=${userId ?? '<none>'}`);
-          send({ type: 'error', message: `upload_module_chunk: unknown sessionId ${msg.sessionId}` }, userId);
-          break;
-        }
-        if (msg.seq < 0 || msg.seq >= session.totalChunks) break;
-        const chunkBytes = new Uint8Array(Buffer.from(msg.bytesB64Chunk, 'base64'));
-        if (session.buffer[msg.seq] === null) {
-          session.receivedChunks += 1;
-        }
-        session.buffer[msg.seq] = chunkBytes;
-        session.receivedBytes += chunkBytes.byteLength;
-        session.lastActivity = Date.now();
-        send({
-          type: 'module_upload_ack',
-          sessionId: msg.sessionId,
-          seq: msg.seq,
-          receivedBytes: session.receivedBytes,
-        }, userId);
-        break;
-      }
-      case 'upload_module_commit': {
-        const session = moduleUploadSessions.get(msg.sessionId);
-        if (!session) {
-          send({ type: 'error', message: `upload_module_commit: unknown sessionId ${msg.sessionId}` }, userId);
-          break;
-        }
-        if (session.ownerUserId !== userId) {
-          log.warn(`upload_module_commit: ownership mismatch sessionId=${msg.sessionId} owner=${session.ownerUserId} sender=${userId}`);
-          send({ type: 'error', message: `upload_module_commit: unknown sessionId ${msg.sessionId}` }, userId);
-          break;
-        }
-        if (session.receivedChunks !== session.totalChunks) {
-          const missing = [];
-          for (let i = 0; i < session.totalChunks; i++) {
-            if (session.buffer[i] === null) missing.push(i);
-          }
-          send({
-            type: 'error',
-            message: `upload_module_commit: missing ${missing.length} chunk(s) [${missing.slice(0, 5).join(',')}…]`,
-          }, userId);
-          moduleUploadSessions.delete(msg.sessionId);
-          break;
-        }
-        const totalBytes = session.receivedBytes;
-        const tConcatStart = Date.now();
-        let combined = new Uint8Array(totalBytes);
-        let offset = 0;
-        for (let i = 0; i < session.totalChunks; i++) {
-          const c = session.buffer[i]!;
-          combined.set(c, offset);
-          offset += c.byteLength;
-          // Drop the per-chunk reference so GC can reclaim while we walk.
-          (session.buffer as Array<Uint8Array | null>)[i] = null;
-        }
-        const concatMs = Date.now() - tConcatStart;
-        log.info(
-          `upload_module_commit: concat done bytes=${totalBytes} chunks=${session.totalChunks} elapsed=${concatMs}ms`,
-        );
-        const fileName = session.fileName;
-        moduleUploadSessions.delete(msg.sessionId);
-        send({
-          type: 'module_upload_ack',
-          sessionId: msg.sessionId,
-          seq: -2,
-          receivedBytes: session.receivedBytes,
-        }, userId);
-        send({
-          type: 'import_progress',
-          phase: 'translating',
-          message: `Translating ${fileName}…`,
-          fraction: 0.3,
-        }, userId);
-        try {
-          const handoff = combined;
-          // Drop our local reference so processModuleUpload owns the only one.
-          // Inside processModuleUpload, decodeRisum can free the buffer once
-          // assets are extracted into per-asset Uint8Arrays.
-          combined = new Uint8Array(0);
-          const { envelope: env } = await processModuleUpload(
-            handoff,
-            fileName,
-            userId,
-          );
-          nudgeGc('module-upload');
-          const moduleName = typeof env.module.name === 'string' && env.module.name.length > 0
-            ? env.module.name
-            : env.id;
-          send({
-            type: 'import_progress',
-            phase: 'saving_payload',
-            message: `Saved ${moduleName}`,
-            fraction: 0.95,
-          }, userId);
-          const attachedBefore = await charactersAttachedTo(env.id, userId);
-          await pushModules(userId);
-          if (attachedBefore.length > 0) {
-            log.info(
-              `upload_module_commit: auto-refreshing ${attachedBefore.length} character(s) ` +
-                `attached to module ${env.id}`,
-            );
-            for (const charId of attachedBefore) {
-              await refreshAttachedModule(charId, env, userId);
-            }
-          }
-          send({
-            type: 'import_progress',
-            phase: 'done',
-            message: `Imported ${moduleName}`,
-            fraction: 1,
-          }, userId);
-        } catch (err) {
-          send({
-            type: 'import_progress',
-            phase: 'error',
-            message: 'Module upload failed',
-            fraction: null,
-            error: errMsg(err),
-          }, userId);
-          send({
-            type: 'error',
-            message: `Module decode/save failed: ${errMsg(err)}`,
-          }, userId);
-        }
-        break;
-      }
-      case 'upload_module_abort': {
-        const session = moduleUploadSessions.get(msg.sessionId);
-        if (session && session.ownerUserId !== userId) {
-          log.warn(`upload_module_abort: ownership mismatch sessionId=${msg.sessionId} owner=${session.ownerUserId} sender=${userId ?? '<none>'},ignoring`);
-          break;
-        }
-        const existed = moduleUploadSessions.delete(msg.sessionId);
-        log.info(
-          `upload_module_abort: sessionId=${msg.sessionId} existed=${existed} reason=${msg.reason ?? '<none>'}`,
-        );
-        break;
-      }
-      case 'request_modules': {
-        await pushModules(userId);
-        break;
-      }
-      case 'delete_module': {
-        const envelopeForDelete = await readModuleEnvelope(moduleStorage(), userId, msg.moduleId);
-        const moduleName = envelopeForDelete?.module?.name || msg.moduleId.slice(0, 8);
-        const opId = `delete-module-${msg.moduleId}-${Date.now()}`;
-        const opTitle = `Deleting module "${moduleName}"`;
-        emitOperationProgress(userId, opId, 'started', opTitle, 'Detaching from characters…', null);
-        try {
-          const sharedWbId = envelopeForDelete?.installed_world_book_id ?? null;
-          // Capture the journal's image-id list now, before the envelope is
-          // gone. We use the journal (not envelope.asset_index) because re-uploads
-          // append to the journal, so the journal is the superset of every ID
-          // we ever uploaded for this module.
-          const journalFile = await readModuleImageJournalFile(journalStorage(), userId, msg.moduleId);
-          const journalImageIds = journalFile?.imageIds ?? [];
-
-          const touched = await detachModuleFromAllCharacters(msg.moduleId, userId);
-          if (sharedWbId) {
-            emitOperationProgress(
-              userId, opId, 'progress', opTitle,
-              `Removing shared world book…`,
-              0.3,
-            );
-            try {
-              await spindle.world_books.delete(sharedWbId, userId);
-              log.info(`delete_module: deleted shared world_book wb=${sharedWbId} module=${msg.moduleId}`);
-            } catch (err) {
-              log.warn(`delete_module: shared world_book delete failed wb=${sharedWbId}: ${errMsg(err)}`);
-            }
-          }
-
-          emitOperationProgress(userId, opId, 'progress', opTitle, 'Removing module envelope…', 0.45);
-          await deleteModuleFromStore(moduleStorage(), userId, msg.moduleId);
-
-          // Cross-reference safety: with the envelope removed, build the live
-          // set and only delete journal IDs that no other character/module
-          // references. Same primitive as the manual Cleanup tab.
-          let imageDeleteStats = { deleted: 0, absent: 0, failed: 0, skipped: 0 };
-          if (journalImageIds.length > 0) {
-            emitOperationProgress(
-              userId, opId, 'progress', opTitle,
-              `Checking ${journalImageIds.length} asset${journalImageIds.length === 1 ? '' : 's'} against live references…`,
-              0.55,
-            );
-            const live = await buildLiveImageIdSet(buildOrphanDetectDeps(userId));
-            const safeIds: string[] = [];
-            let skipped = 0;
-            for (const id of journalImageIds) {
-              if (typeof id !== 'string' || id.length === 0) continue;
-              if (live.liveIds.has(id)) {
-                skipped++;
-                continue;
-              }
-              safeIds.push(id);
-            }
-            if (skipped > 0) {
-              log.info(
-                `delete_module: ${skipped}/${journalImageIds.length} asset(s) shielded by other live refs, ` +
-                  `deleting only ${safeIds.length} module-owned asset(s)`,
-              );
-            }
-            if (safeIds.length > 0) {
-              emitOperationProgress(
-                userId, opId, 'progress', opTitle,
-                `Deleting 0 of ${safeIds.length} asset${safeIds.length === 1 ? '' : 's'}…`,
-                0.6,
-              );
-              const stats = await deleteImageIds(
-                safeIds, userId, `delete_module(${msg.moduleId})`,
-                (processed, total) => {
-                  // Map processed/total into the 0.6..0.95 progress band.
-                  const frac = total > 0 ? 0.6 + (processed / total) * 0.35 : 0.6;
-                  emitOperationProgress(
-                    userId, opId, 'progress', opTitle,
-                    `Deleting ${processed} of ${total} asset${total === 1 ? '' : 's'}…`,
-                    frac,
-                  );
-                },
-              );
-              imageDeleteStats = { ...stats, skipped };
-            } else {
-              imageDeleteStats = { deleted: 0, absent: 0, failed: 0, skipped };
-            }
-          }
-
-          await clearModuleImageJournal(journalStorage(), userId, msg.moduleId).catch((err) => {
-            log.warn(`delete_module: clearModuleImageJournal threw module=${msg.moduleId}: ${errMsg(err)}`);
-          });
-
-          log.info(
-            `delete_module: id=${msg.moduleId} detachedFromChars=${touched.length} ` +
-              `imageDelete=deleted:${imageDeleteStats.deleted} ` +
-              `absent:${imageDeleteStats.absent} failed:${imageDeleteStats.failed} ` +
-              `skipped:${imageDeleteStats.skipped}`,
-          );
-          await pushModules(userId);
-          for (const charId of touched) {
-            await pushAttachedForCharacter(charId, userId);
-          }
-          const detachLine = `Detached from ${touched.length} character${touched.length === 1 ? '' : 's'}`;
-          const assetLine = journalImageIds.length === 0
-            ? ''
-            : imageDeleteStats.skipped > 0
-              ? `, ${imageDeleteStats.deleted} asset${imageDeleteStats.deleted === 1 ? '' : 's'} deleted (${imageDeleteStats.skipped} kept, still referenced)`
-              : `, ${imageDeleteStats.deleted} asset${imageDeleteStats.deleted === 1 ? '' : 's'} deleted`;
-          emitOperationProgress(userId, opId, 'done', opTitle, `${detachLine}${assetLine}`, 1);
-        } catch (err) {
-          log.warn(`delete_module: threw module=${msg.moduleId}: ${errMsg(err)}`);
-          emitOperationProgress(userId, opId, 'error', opTitle, '', null, errMsg(err));
-          send({ type: 'error', message: `Module delete failed: ${errMsg(err)}` }, userId);
-        }
-        break;
-      }
-      case 'attach_module': {
-        if (blockedByRepair(userId, 'attach_module')) break;
-        const result = await attachModuleToCharacter(
-          msg.characterId,
-          msg.moduleId,
-          userId,
-        );
-        if (!result.ok) {
-          send({ type: 'error', message: `attach_module: ${result.reason ?? 'failed'}` }, userId);
-          break;
-        }
-        await pushAttachedForCharacter(msg.characterId, userId);
-        await pushModules(userId);
-        break;
-      }
-      case 'detach_module': {
-        if (blockedByRepair(userId, 'detach_module')) break;
-        const result = await detachModuleFromCharacter(
-          msg.characterId,
-          msg.moduleId,
-          userId,
-        );
-        if (!result.ok) {
-          send({ type: 'error', message: `detach_module: ${result.reason ?? 'failed'}` }, userId);
-          break;
-        }
-        await pushAttachedForCharacter(msg.characterId, userId);
-        await pushModules(userId);
-        break;
-      }
-      case 'module_artifacts_installed': {
-        // Frontend finished its cookie-auth POSTs; stash the resulting
-        // resource ids on the character's user_overrides so future
-        // detach can find + delete them. Also re-invalidate the
-        // active-card cache so the next chat-tick re-synthesizes
-        // (the merged card already includes the module's
-        // triggers/lua/assets via attached_module_ids; the world_book
-        // / regex are written into Lumi's own tables and don't pass
-        // through synthesize, so this invalidation is defensive).
-        await updateLumirealm(charactersApi(), msg.characterId, userId, (cur) => {
-          const wb = { ...(cur.user_overrides.attached_module_world_books ?? {}) };
-          // Null wb in a reply means "regex-only install/refresh", leave the
-          // existing tracking intact (the shared wb survives the refresh).
-          if (msg.worldBookId) wb[msg.moduleId] = msg.worldBookId;
-          const rx = { ...(cur.user_overrides.attached_module_regex_script_ids ?? {}) };
-          if (msg.regexScriptIds.length > 0) rx[msg.moduleId] = msg.regexScriptIds;
-          else delete rx[msg.moduleId];
-          return {
-            ...cur,
-            user_overrides: mergeUserOverrides(cur.user_overrides, {
-              attached_module_world_books: Object.keys(wb).length > 0 ? wb : null,
-              attached_module_regex_script_ids: Object.keys(rx).length > 0 ? rx : null,
-            }),
-          };
-        });
-        if (msg.worldBookId) {
-          const existing = worldBookIdsByCharacter.get(msg.characterId) ?? [];
-          if (!existing.includes(msg.worldBookId)) {
-            worldBookIdsByCharacter.set(msg.characterId, [...existing, msg.worldBookId]);
-          }
-        }
-        invalidateActiveForCharacter(msg.characterId, userId);
-        log.info(
-          `module_artifacts_installed: char=${msg.characterId} module=${msg.moduleId} ` +
-            `worldBookId=${msg.worldBookId ?? 'null'} regex=${msg.regexScriptIds.length}`,
-        );
-        break;
-      }
-      case 'module_artifacts_uninstalled': {
-        log.info(
-          `module_artifacts_uninstalled: char=${msg.characterId} module=${msg.moduleId} ok=${msg.ok}`,
-        );
-        break;
-      }
-      case 'add_asset':
-      case 'add_assets':
-      case 'rename_asset':
-      case 'delete_asset': {
-        if (blockedByRepair(userId, msg.type)) break;
-        const result = await mutateAssetIndex(msg, userId);
-        if (!result.ok) {
-          send({ type: 'error', message: `${msg.type}: ${result.reason ?? 'failed'}` }, userId);
-          break;
-        }
-        await pushViewerData({ source: msg.source, context: msg.type, userId }, viewerPushDeps);
-        if (msg.source.kind === 'module') {
-          const attached = await charactersAttachedTo(msg.source.moduleId, userId);
-          for (const charId of attached) {
-            invalidateActiveForCharacter(charId, userId);
-            await refreshRisuAssetMap(charId, userId).catch((err) => {
-              log.warn(`${msg.type}: refreshRisuAssetMap failed char=${charId}: ${errMsg(err)}`);
-            });
-          }
-          if (attached.length > 0) {
-            log.info(
-              `${msg.type}: invalidated ${attached.length} attached character(s) for module ${msg.source.moduleId}`,
-            );
-          }
-        } else {
-          invalidateActiveForCharacter(msg.source.characterId, userId);
-          await refreshRisuAssetMap(msg.source.characterId, userId).catch((err) => {
-            log.warn(`${msg.type}: refreshRisuAssetMap failed char=${msg.source.kind === 'character' ? msg.source.characterId : '?'}: ${errMsg(err)}`);
-          });
-        }
-        break;
-      }
-      case 'set_default_variable':
-      case 'delete_default_variable': {
-        if (blockedByRepair(userId, msg.type)) break;
-        const updated = await updateLumirealm(charactersApi(), msg.characterId, userId, (cur) => {
-          const overrides = { ...(cur.user_overrides.default_variables_overrides ?? {}) };
-          if (msg.type === 'set_default_variable') {
-            const trimmedName = msg.name.trim();
-            if (trimmedName.length === 0) return cur;
-            overrides[trimmedName] = String(msg.value);
-          } else {
-            if (!Object.prototype.hasOwnProperty.call(overrides, msg.name)) return cur;
-            delete overrides[msg.name];
-          }
-          return {
-            ...cur,
-            user_overrides: {
-              ...cur.user_overrides,
-              ...(Object.keys(overrides).length > 0
-                ? { default_variables_overrides: overrides }
-                : {}),
-            },
-          };
-        });
-        if (!updated) {
-          send({ type: 'error', message: `${msg.type}: not a lumirealm character` }, userId);
-          break;
-        }
-        await pushViewerData(
-          { source: { kind: 'character', characterId: msg.characterId }, context: msg.type, userId },
-          viewerPushDeps,
-        );
-        // Defaults feed buildSyntheticStoredCard's mergedDefaults; invalidate
-        // active card so the next chat-tick re-synthesises with the new
-        // override applied.
-        invalidateActiveForCharacter(msg.characterId, userId);
-        log.info(
-          `${msg.type}: char=${msg.characterId} name=${msg.name}` +
-            (msg.type === 'set_default_variable'
-              ? ` len=${String(msg.value).length}`
-              : ' (override removed)'),
-        );
-        break;
-      }
-      case 'import_lorebook': {
-        await lorebookImporter.handle(msg, userId);
-        break;
-      }
-      case 'set_trigger_lua': {
-        if (blockedByRepair(userId, 'set_trigger_lua')) break;
-        const result = await mutateTriggerLua(msg, userId);
-        if (!result.ok) {
-          send({ type: 'error', message: `set_trigger_lua: ${result.reason ?? 'failed'}` }, userId);
-          break;
-        }
-        await pushViewerData({ source: msg.source, context: 'set_trigger_lua', userId }, viewerPushDeps);
-        if (msg.source.kind === 'module') {
-          const attached = await charactersAttachedTo(msg.source.moduleId, userId);
-          for (const charId of attached) invalidateActiveForCharacter(charId, userId);
-        } else {
-          invalidateActiveForCharacter(msg.source.characterId, userId);
-        }
-        break;
-      }
-      case 'set_background_html': {
-        if (blockedByRepair(userId, 'set_background_html')) break;
-        const characterId = msg.characterId;
-        const html = typeof msg.html === 'string' && msg.html.length > 0 ? msg.html : null;
-        const updated = await updateLumirealm(charactersApi(), characterId, userId, (cur) => ({
-          ...cur,
-          payload: { ...cur.payload, background_html: html },
-        }));
-        if (!updated) {
-          send({ type: 'error', message: 'set_background_html: character is not a lumirealm card' }, userId);
-          break;
-        }
-        invalidateActiveForCharacter(characterId, userId);
-        await pushViewerData(
-          { source: { kind: 'character', characterId }, context: 'set_background_html', userId },
-          viewerPushDeps,
-        );
-        break;
-      }
-      case 'request_viewer_data': {
-        try {
-          const data = msg.source.kind === 'character'
-            ? await viewerAssembly.assembleCharacter(msg.source.characterId, userId)
-            : await viewerAssembly.assembleModule(msg.source.moduleId, userId);
-          if (data) send({ type: 'viewer_data_pushed', data }, userId);
-          else send({
-            type: 'error',
-            message: msg.source.kind === 'character'
-              ? `Viewer: character ${msg.source.characterId} is not a lumirealm card.`
-              : `Viewer: module ${msg.source.moduleId} not found in library.`,
-          }, userId);
-        } catch (err) {
-          send({ type: 'error', message: `Viewer assembly failed: ${errMsg(err)}` }, userId);
-        }
-        break;
-      }
-      case 'screen_dims': {
-        if (userId) {
-          setScreenDims(userId, { width: Number(msg.width) || 0, height: Number(msg.height) || 0 });
-          log.debug(`screen_dims: user=${userId} w=${msg.width} h=${msg.height}`);
-        } else {
-          log.warn(`screen_dims: received but userId is empty, cache not updated`);
-        }
-        break;
-      }
-      case 'log_request_state': {
-        if (userId) await ensureLogStateLoaded(userId);
-        sendLogState(userId);
-        break;
-      }
-      case 'log_set_state': {
-        const next: Partial<LogState> = {
-          enabled: !!msg.enabled,
-          includeChatData: !!msg.includeChatData,
-        };
-        if (isLogThreshold(msg.level)) next.level = msg.level;
-        logStore.setState(next, userId);
-        await persistLogState(userStorage(), userId);
-        sendLogState(userId);
-        break;
-      }
-      case 'log_request_export': {
-        const snap = logStore.snapshot(userId);
-        send({
-          type: 'log_export_pushed',
-          events: snap.events,
-          session: {
-            extensionVersion: EXTENSION_VERSION,
-            userId,
-            activeChatId: lastActiveChatByUser.get(userId) ?? null,
-            activeCharacterId: null,
-          },
-        }, userId);
-        break;
-      }
-      case 'log_clear': {
-        logStore.clear(userId);
-        sendLogState(userId);
-        break;
-      }
-      case 'request_orphan_scan': {
-        if (assetUploadsInFlight > 0) {
-          send({
-            type: 'orphan_scan_result',
-            orphans: [],
-            summary: {
-              scannedTotal: 0, liveCharacterRefs: 0, liveModuleRefs: 0,
-              liveJournalRefs: 0, charactersScanned: 0, modulesScanned: 0,
-              elapsedMs: 0, totalOrphans: 0, truncated: false,
-            },
-            error: 'An import or module upload is in progress. Wait for it to finish, then scan again.',
-          }, userId);
-          break;
-        }
-        send({ type: 'orphan_scan_started' }, userId);
-        try {
-          const report = await scanOrphanedImages(userId);
-          log.info(
-            `orphan-scan: owned=${report.summary.scannedTotal} ` +
-              `live(char=${report.summary.liveCharacterRefs} ` +
-              `module=${report.summary.liveModuleRefs} ` +
-              `journal=${report.summary.liveJournalRefs}) ` +
-              `chars=${report.summary.charactersScanned} ` +
-              `modules=${report.summary.modulesScanned} ` +
-              `orphans=${report.summary.totalOrphans}${report.summary.truncated ? `(shown=${report.orphans.length})` : ''} ` +
-              `elapsed=${report.summary.elapsedMs}ms`,
-          );
-          send({
-            type: 'orphan_scan_result',
-            orphans: report.orphans,
-            summary: report.summary,
-          }, userId);
-        } catch (err) {
-          log.warn(`orphan-scan: failed: ${errMsg(err)}`);
-          send({
-            type: 'orphan_scan_result',
-            orphans: [],
-            summary: {
-              scannedTotal: 0, liveCharacterRefs: 0, liveModuleRefs: 0,
-              liveJournalRefs: 0, charactersScanned: 0, modulesScanned: 0,
-              elapsedMs: 0, totalOrphans: 0, truncated: false,
-            },
-            error: errMsg(err),
-          }, userId);
-        }
-        break;
-      }
-      case 'delete_orphan_assets': {
-        const requested = msg.imageIds.length;
-        if (assetUploadsInFlight > 0) {
-          send({
-            type: 'orphan_delete_result',
-            requested, deleted: 0, absent: 0, failed: 0, skipped: 0,
-            skippedIds: [],
-            error: 'An import or module upload is in progress. Wait for it to finish before deleting.',
-          }, userId);
-          break;
-        }
-        if (requested === 0) {
-          send({
-            type: 'orphan_delete_result',
-            requested: 0, deleted: 0, absent: 0, failed: 0, skipped: 0,
-            skippedIds: [],
-          }, userId);
-          break;
-        }
-        const opId = `delete-orphans-${Date.now()}`;
-        const opTitle = `Deleting ${requested} orphan asset${requested === 1 ? '' : 's'}`;
-        emitOperationProgress(userId, opId, 'started', opTitle, 'Verifying live references…', null);
-        try {
-          // Re-verify against the live set immediately before deletion. An
-          // import or asset-add finishing between scan and delete would have
-          // committed new IDs to live storage, those must not be deleted.
-          const live = await buildLiveImageIdSet(buildOrphanDetectDeps(userId));
-          const safeIds: string[] = [];
-          const skippedIds: string[] = [];
-          for (const id of msg.imageIds) {
-            if (typeof id !== 'string' || id.length === 0) continue;
-            if (live.liveIds.has(id)) {
-              skippedIds.push(id);
-              continue;
-            }
-            safeIds.push(id);
-          }
-          if (skippedIds.length > 0) {
-            log.warn(
-              `orphan-cleanup: ${skippedIds.length} ID(s) became live between scan and delete, skipping`,
-            );
-          }
-          if (safeIds.length === 0) {
-            emitOperationProgress(
-              userId, opId, 'done', opTitle,
-              `Nothing to delete (${skippedIds.length} skipped,became live)`,
-              1,
-            );
-          } else {
-            emitOperationProgress(
-              userId, opId, 'progress', opTitle,
-              `Deleting 0 of ${safeIds.length}…`,
-              0,
-            );
-          }
-          const stats = safeIds.length > 0
-            ? await deleteImageIds(
-                safeIds, userId, 'orphan-cleanup',
-                (processed, total) => {
-                  emitOperationProgress(
-                    userId, opId, 'progress', opTitle,
-                    `Deleting ${processed} of ${total}…`,
-                    total > 0 ? processed / total : null,
-                  );
-                },
-              )
-            : { deleted: 0, absent: 0, failed: 0 };
-          log.info(
-            `orphan-cleanup: requested=${requested} deleted=${stats.deleted} ` +
-              `absent=${stats.absent} failed=${stats.failed} skipped=${skippedIds.length}`,
-          );
-          if (safeIds.length > 0) {
-            const tail = stats.failed > 0
-              ? ` (${stats.failed} failed)`
-              : stats.absent > 0
-                ? ` (${stats.absent} already gone)`
-                : '';
-            emitOperationProgress(
-              userId, opId, 'done', opTitle,
-              `Deleted ${stats.deleted} of ${safeIds.length}${tail}`,
-              1,
-            );
-          }
-          send({
-            type: 'orphan_delete_result',
-            requested,
-            deleted: stats.deleted,
-            absent: stats.absent,
-            failed: stats.failed,
-            skipped: skippedIds.length,
-            skippedIds,
-          }, userId);
-        } catch (err) {
-          log.warn(`orphan-cleanup: threw: ${errMsg(err)}`);
-          emitOperationProgress(userId, opId, 'error', opTitle, '', null, errMsg(err));
-          send({
-            type: 'orphan_delete_result',
-            requested, deleted: 0, absent: 0, failed: requested, skipped: 0,
-            skippedIds: [],
-            error: errMsg(err),
-          }, userId);
-        }
-        break;
-      }
-      case 'request_repair_scan': {
-        if (assetUploadsInFlight > 0) {
-          send({
-            type: 'repair_scan_result',
-            summary: {
-              staleModuleRegex: 0, staleCharRegex: 0, deadJournals: 0,
-              charactersToRetranslate: 0, modulesToReattach: 0,
-              danglingModuleRefs: 0, elapsedMs: 0,
-            },
-            error: 'An import or module upload is in progress. Wait for it to finish, then scan again.',
-          }, userId);
-          break;
-        }
-        try {
-          const summary = await scanRepairTargets(userId);
-          log.info(
-            `repair-scan: staleModuleRegex=${summary.staleModuleRegex} ` +
-              `staleCharRegex=${summary.staleCharRegex} ` +
-              `deadJournals=${summary.deadJournals} ` +
-              `charsToRetranslate=${summary.charactersToRetranslate} ` +
-              `modulesToReattach=${summary.modulesToReattach} ` +
-              `danglingModuleRefs=${summary.danglingModuleRefs} ` +
-              `elapsed=${summary.elapsedMs}ms`,
-          );
-          send({ type: 'repair_scan_result', summary }, userId);
-        } catch (err) {
-          log.warn(`repair-scan: failed: ${errMsg(err)}`);
-          send({
-            type: 'repair_scan_result',
-            summary: {
-              staleModuleRegex: 0, staleCharRegex: 0, deadJournals: 0,
-              charactersToRetranslate: 0, modulesToReattach: 0,
-              danglingModuleRefs: 0, elapsedMs: 0,
-            },
-            error: errMsg(err),
-          }, userId);
-        }
-        break;
-      }
-      case 'apply_repair': {
-        if (assetUploadsInFlight > 0) {
-          send({
-            type: 'repair_apply_result',
-            result: {
-              staleCharRegexDeleted: 0, staleModuleRegexDeleted: 0,
-              deadJournalsCleared: 0, charactersRetranslated: 0,
-              charactersSkippedLegacy: 0, modulesReattached: 0,
-              modulesScrubbed: 0, elapsedMs: 0,
-            },
-            error: 'An import or module upload is in progress. Wait for it to finish before applying.',
-          }, userId);
-          break;
-        }
-        if (repairInFlightByUser.has(userId)) {
-          send({
-            type: 'repair_apply_result',
-            result: {
-              staleCharRegexDeleted: 0, staleModuleRegexDeleted: 0,
-              deadJournalsCleared: 0, charactersRetranslated: 0,
-              charactersSkippedLegacy: 0, modulesReattached: 0,
-              modulesScrubbed: 0, elapsedMs: 0,
-            },
-            error: 'A repair is already in progress.',
-          }, userId);
-          break;
-        }
-        repairInFlightByUser.add(userId);
-        try {
-          const result = await applyRepair(userId, msg.options);
-          log.info(
-            `repair-apply: charRegex=${result.staleCharRegexDeleted} ` +
-              `moduleRegex=${result.staleModuleRegexDeleted} ` +
-              `journals=${result.deadJournalsCleared} ` +
-              `retranslated=${result.charactersRetranslated} ` +
-              `skippedLegacy=${result.charactersSkippedLegacy} ` +
-              `modulesReattached=${result.modulesReattached} ` +
-              `modulesScrubbed=${result.modulesScrubbed} ` +
-              `elapsed=${result.elapsedMs}ms`,
-          );
-          send({ type: 'repair_apply_result', result }, userId);
-        } catch (err) {
-          log.warn(`repair-apply: failed: ${errMsg(err)}`);
-          send({
-            type: 'repair_apply_result',
-            result: {
-              staleCharRegexDeleted: 0, staleModuleRegexDeleted: 0,
-              deadJournalsCleared: 0, charactersRetranslated: 0,
-              charactersSkippedLegacy: 0, modulesReattached: 0,
-              modulesScrubbed: 0, elapsedMs: 0,
-            },
-            error: errMsg(err),
-          }, userId);
-        } finally {
-          repairInFlightByUser.delete(userId);
-        }
-        break;
-      }
-      case 'alert_dismissed': {
-        const r = resolveAlertDismissal(msg.requestId, userId);
-        if (!r.ok) {
-          log.warn(`alert_dismissed: ${r.reason} requestId=${msg.requestId} responder=${userId ?? '<none>'}`);
-          send({ type: 'error', message: `alert: ${r.reason ?? 'failed'}` }, userId);
-        }
-        break;
-      }
-      case 'pick_resolved': {
-        const r = resolvePickResolution(msg.requestId, userId, msg.value);
-        if (!r.ok) {
-          log.warn(`pick_resolved: ${r.reason} requestId=${msg.requestId} responder=${userId ?? '<none>'}`);
-          send({ type: 'error', message: `pick: ${r.reason ?? 'failed'}` }, userId);
-        }
-        break;
-      }
-    }
+    const handler = handlerRegistry[msg.type] as Handler<typeof msg.type>;
+    await handler(msg as never, ctx);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     log.error(`Frontend message handler error (type=${(msg as { type?: string }).type ?? '?'}): ${message}`);
