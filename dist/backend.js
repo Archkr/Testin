@@ -9118,6 +9118,23 @@ var init_iteration_blocks = __esm(() => {
   });
 });
 
+// src/util/role-coerce.ts
+function risuRoleToLumi(r) {
+  return r === "user" ? "user" : "assistant";
+}
+function lumiRoleToRisu(r) {
+  return r === "user" ? "user" : "char";
+}
+function normalizeRoleToLumi(r) {
+  if (r === "user" || r === "assistant" || r === "system")
+    return r;
+  if (r === "char" || r === "bot")
+    return "assistant";
+  if (r === "sys")
+    return "system";
+  return null;
+}
+
 // src/risu-compat/handlers/context-reads.ts
 function register(name, handler, description) {
   registry.register({
@@ -9162,15 +9179,18 @@ var init_context_reads = __esm(() => {
   register("role", (ctx) => {
     if (ctx.cbsContext)
       return "null";
+    if (ctx.role !== null)
+      return lumiRoleToRisu(ctx.role);
     if (ctx.isFirstMessage)
       return "char";
-    if (ctx.role !== null)
-      return ctx.role;
     return "null";
   }, "Returns the role of the current message ('user', 'char'/'assistant', 'system').");
   register("isfirstmsg", (ctx) => {
     if (ctx.cbsContext)
       return "0";
+    if (ctx.currentMessageIndex !== null && ctx.currentMessageIndex !== undefined) {
+      return ctx.currentMessageIndex === -1 ? "1" : "0";
+    }
     return ctx.isFirstMessage ? "1" : "0";
   }, "Returns '1' if the current context is the first (greeting) message, '0' otherwise.");
   register("unixtime", (ctx) => Math.floor(ctx.clock.now() / 1000).toString(), "Returns the current unix timestamp in seconds.");
@@ -10889,8 +10909,6 @@ var init_dispatch = __esm(() => {
 // src/interpreter/evaluator/scanner.ts
 var exports_scanner = {};
 __export(exports_scanner, {
-  stopHandlerProfile: () => stopHandlerProfile,
-  startHandlerProfile: () => startHandlerProfile,
   risuEscape: () => risuEscape2,
   normalizeMacroName: () => normalizeMacroName,
   evaluate: () => evaluate
@@ -10918,24 +10936,6 @@ function tryCalcShortcut(payload, ctx) {
     return null;
   }
 }
-function startHandlerProfile() {
-  handlerProfileAls.enabled = true;
-  handlerProfileAls.byName.clear();
-}
-function stopHandlerProfile() {
-  handlerProfileAls.enabled = false;
-  const out = [];
-  for (const [name, s] of handlerProfileAls.byName) {
-    out.push({
-      name,
-      calls: s.calls,
-      totalMs: s.totalNs / 1e6,
-      meanMicros: s.calls > 0 ? s.totalNs / s.calls / 1000 : 0,
-      maxMicros: s.maxNs / 1000
-    });
-  }
-  return out.sort((a, b) => b.totalMs - a.totalMs);
-}
 function dispatchLeaf(payload, ctx, callStack) {
   const calc = tryCalcShortcut(payload, ctx);
   if (calc !== null)
@@ -10944,22 +10944,8 @@ function dispatchLeaf(payload, ctx, callStack) {
   const entry = lookup(name);
   if (!entry)
     return null;
-  const profile = handlerProfileAls.enabled;
-  const t0 = profile ? process.hrtime.bigint() : 0n;
   try {
     const result = entry.handler(ctx, args, payload);
-    if (profile) {
-      const ns = Number(process.hrtime.bigint() - t0);
-      let s = handlerProfileAls.byName.get(name);
-      if (!s) {
-        s = { calls: 0, totalNs: 0, maxNs: 0 };
-        handlerProfileAls.byName.set(name, s);
-      }
-      s.calls += 1;
-      s.totalNs += ns;
-      if (ns > s.maxNs)
-        s.maxNs = ns;
-    }
     if (typeof result === "string" && result.includes("{{") && result !== `{{${payload}}}`) {
       return evaluate(result, ctx, { callStack });
     }
@@ -10976,22 +10962,6 @@ function evaluate(template, ctx, opts = {}) {
   const innerCtx = callStack === ctx.callStack ? ctx : Object.assign(Object.create(Object.getPrototypeOf(ctx) ?? null), ctx, {
     callStack
   });
-  const TRACE = template.length >= 1e5 && callStack === 1;
-  const traceLog = [];
-  let traceWall0 = 0;
-  let traceCpu0 = null;
-  let traceLastPtr = 0;
-  let traceLastWall = 0;
-  let traceLastCpu = null;
-  if (TRACE) {
-    traceWall0 = performance.now();
-    traceLastWall = traceWall0;
-    try {
-      traceLastCpu = process.cpuUsage();
-      traceCpu0 = traceLastCpu;
-    } catch {}
-    startHandlerProfile();
-  }
   let da = template.replace(/<(user|char|bot)>/gi, "{{$1}}");
   let pointer = 0;
   const nested = [""];
@@ -10999,30 +10969,7 @@ function evaluate(template, ctx, opts = {}) {
   const pureModeNest = new Map;
   const blockNestType = new Map;
   const isPureMode = () => pureModeNest.size > 0;
-  const CHECKPOINT_EVERY = 25000;
-  let nextCheckpoint = TRACE ? CHECKPOINT_EVERY : Number.POSITIVE_INFINITY;
   while (pointer < da.length) {
-    if (TRACE && pointer >= nextCheckpoint) {
-      const wallNow = performance.now();
-      let cpuMs = 0;
-      try {
-        const cpuNow = process.cpuUsage();
-        if (traceLastCpu) {
-          const du = cpuNow.user - traceLastCpu.user;
-          const ds = cpuNow.system - traceLastCpu.system;
-          cpuMs = (du + ds) / 1000;
-        }
-        traceLastCpu = cpuNow;
-      } catch {}
-      traceLog.push({
-        ptr: pointer - traceLastPtr,
-        wallMs: wallNow - traceLastWall,
-        cpuMs
-      });
-      traceLastPtr = pointer;
-      traceLastWall = wallNow;
-      nextCheckpoint = pointer + CHECKPOINT_EVERY;
-    }
     const ch = da[pointer];
     switch (ch) {
       case "{": {
@@ -11169,35 +11116,6 @@ function evaluate(template, ctx, opts = {}) {
     }
     pointer++;
   }
-  if (TRACE && traceLog.length > 0) {
-    const totalWall = performance.now() - traceWall0;
-    let totalCpu = 0;
-    try {
-      if (traceCpu0) {
-        const cpuFinal = process.cpuUsage();
-        totalCpu = (cpuFinal.user - traceCpu0.user + (cpuFinal.system - traceCpu0.system)) / 1000;
-      }
-    } catch {}
-    if (totalWall >= 500) {
-      const slowest = traceLog.map((c, i) => ({ ...c, idx: i })).sort((a, b) => b.wallMs - a.wallMs).slice(0, 6);
-      const summary = slowest.map((c) => `[${c.idx}@${(c.idx * CHECKPOINT_EVERY).toString(36)}: ptr+${c.ptr} wall=${c.wallMs.toFixed(0)}ms cpu=${c.cpuMs.toFixed(0)}ms]`).join(" ");
-      const log = globalThis.spindle?.log?.info;
-      const msg = `[scanner-trace] tmpl_len=${template.length} totalWall=${totalWall.toFixed(0)}ms totalCpu=${totalCpu.toFixed(0)}ms checkpoints=${traceLog.length} slowest=${summary}`;
-      if (typeof log === "function")
-        log(msg);
-      else
-        console.info(msg);
-    }
-  }
-  if (TRACE && handlerProfileAls.enabled) {
-    const top = stopHandlerProfile().slice(0, 8);
-    const log = globalThis.spindle?.log?.info;
-    const msg = `[handler-profile] tmpl_len=${template.length} top=` + top.map((h) => `[${h.name}: calls=${h.calls} total=${h.totalMs.toFixed(0)}ms mean=${h.meanMicros.toFixed(1)}us max=${h.maxMicros.toFixed(0)}us]`).join(" ");
-    if (typeof log === "function")
-      log(msg);
-    else
-      console.info(msg);
-  }
   if (nested.length === 1) {
     return nested[0];
   }
@@ -11208,14 +11126,10 @@ function evaluate(template, ctx, opts = {}) {
   }
   return nested[0] + result;
 }
-var CALL_STACK_LIMIT = 20, handlerProfileAls;
+var CALL_STACK_LIMIT = 20;
 var init_scanner = __esm(() => {
   init_dispatch();
   init_cbs();
-  handlerProfileAls = globalThis.__handlerProfileAls ?? (globalThis.__handlerProfileAls = {
-    enabled: false,
-    byName: new Map
-  });
 });
 
 // node_modules/fengari-web/dist/fengari-web.bundle.js
@@ -26452,6 +26366,23 @@ function getActivePersonaImage(userId) {
     return "";
   return personaImageByUser.get(userId) ?? "";
 }
+// src/interpreter/messages-cache.ts
+var cache = new Map;
+function getCachedMessages(chatId) {
+  if (!chatId)
+    return null;
+  return cache.get(chatId) ?? null;
+}
+function setCachedMessages(chatId, messages) {
+  if (!chatId)
+    return;
+  cache.set(chatId, messages);
+}
+function invalidateCachedMessages(chatId) {
+  if (!chatId)
+    return;
+  cache.delete(chatId);
+}
 
 // src/interpreter/macros.ts
 var spindleGlobal = typeof spindle !== "undefined" ? spindle : undefined;
@@ -26612,6 +26543,7 @@ function buildRuntimeContext(mctx) {
   const lastMessage = String(env.chat?.lastMessage ?? "");
   const lastUser = String(env.chat?.lastUserMessage ?? "");
   const lastChar = String(env.chat?.lastCharMessage ?? "");
+  const cachedFull = chatId ? getCachedMessages(chatId) : null;
   const synthesized = [];
   if (lastUser)
     synthesized.push({ role: "user", content: lastUser, createdAt: 0 });
@@ -26620,12 +26552,13 @@ function buildRuntimeContext(mctx) {
   if (lastMessage && !synthesized.some((m) => m.content === lastMessage)) {
     synthesized.push({ role: "assistant", content: lastMessage, createdAt: 0 });
   }
+  const effective = cachedFull ?? synthesized;
   const messages = {
-    all: () => synthesized,
-    last: () => synthesized[synthesized.length - 1] ?? null,
+    all: () => effective,
+    last: () => effective[effective.length - 1] ?? null,
     lastOf: (role) => {
-      for (let i = synthesized.length - 1;i >= 0; i--) {
-        const m = synthesized[i];
+      for (let i = effective.length - 1;i >= 0; i--) {
+        const m = effective[i];
         if (m.role === role)
           return m;
       }
@@ -26633,10 +26566,12 @@ function buildRuntimeContext(mctx) {
     },
     count: (role) => {
       if (role === undefined) {
+        if (cachedFull)
+          return effective.length;
         return env.chat?.messageCount != null ? messageCount : synthesized.length;
       }
       let n = 0;
-      for (const m of synthesized)
+      for (const m of effective)
         if (m.role === role)
           n++;
       return n;
@@ -26695,7 +26630,11 @@ function buildRuntimeContext(mctx) {
     rng: { random: () => Math.random() },
     clock: { now: () => Date.now() },
     triggerId: null,
-    role: null,
+    role: (() => {
+      const dyn = env.dynamicMacros;
+      const r = typeof dyn?.role === "string" ? dyn.role : null;
+      return r ? normalizeRoleToLumi(r) : null;
+    })(),
     functions,
     aiModel: String(env.system?.model ?? ""),
     axModel: "",
@@ -27051,6 +26990,7 @@ function buildEvaluatorContext(input) {
   const lastMessage = String(chat.lastMessage ?? "");
   const lastUser = String(chat.lastUserMessage ?? "");
   const lastChar = String(chat.lastCharMessage ?? "");
+  const fullMessages = chat.messages;
   const synthesized = [];
   if (lastUser)
     synthesized.push({ role: "user", content: lastUser, createdAt: 0 });
@@ -27059,12 +26999,13 @@ function buildEvaluatorContext(input) {
   if (lastMessage && !synthesized.some((m) => m.content === lastMessage)) {
     synthesized.push({ role: "assistant", content: lastMessage, createdAt: 0 });
   }
+  const effective = fullMessages ?? synthesized;
   const messages = {
-    all: () => synthesized,
-    last: () => synthesized[synthesized.length - 1] ?? null,
+    all: () => effective,
+    last: () => effective[effective.length - 1] ?? null,
     lastOf: (role) => {
-      for (let i = synthesized.length - 1;i >= 0; i--) {
-        const m = synthesized[i];
+      for (let i = effective.length - 1;i >= 0; i--) {
+        const m = effective[i];
         if (m.role === role)
           return m;
       }
@@ -27072,10 +27013,12 @@ function buildEvaluatorContext(input) {
     },
     count: (role) => {
       if (role === undefined) {
+        if (fullMessages)
+          return effective.length;
         return chat.messageCount != null ? messageCount : synthesized.length;
       }
       let n = 0;
-      for (const m of synthesized)
+      for (const m of effective)
         if (m.role === role)
           n++;
       return n;
@@ -27125,7 +27068,7 @@ function buildEvaluatorContext(input) {
     rng: { random: () => Math.random() },
     clock: { now: () => Date.now() },
     triggerId: null,
-    role: null,
+    role: input.currentMessageRoleOverride ? normalizeRoleToLumi(input.currentMessageRoleOverride) : null,
     functions,
     aiModel: input.system?.model ?? "",
     axModel: "",
@@ -27158,27 +27101,27 @@ function buildEvaluatorContext(input) {
 
 // src/state/recent-flush-cache.ts
 var MAX_CHATS = 100;
-var cache = new Map;
+var cache2 = new Map;
 function rememberRecentFlush(chatId, vars) {
-  if (cache.has(chatId))
-    cache.delete(chatId);
-  cache.set(chatId, { ...vars });
-  if (cache.size > MAX_CHATS) {
-    const oldest = cache.keys().next().value;
+  if (cache2.has(chatId))
+    cache2.delete(chatId);
+  cache2.set(chatId, { ...vars });
+  if (cache2.size > MAX_CHATS) {
+    const oldest = cache2.keys().next().value;
     if (oldest !== undefined)
-      cache.delete(oldest);
+      cache2.delete(oldest);
   }
 }
 function getRecentFlush(chatId) {
-  const entry = cache.get(chatId);
+  const entry = cache2.get(chatId);
   if (!entry)
     return null;
-  cache.delete(chatId);
-  cache.set(chatId, entry);
+  cache2.delete(chatId);
+  cache2.set(chatId, entry);
   return entry;
 }
 function invalidateRecentFlush(chatId) {
-  cache.delete(chatId);
+  cache2.delete(chatId);
 }
 
 // src/interpreter/runtime/chat-state.ts
@@ -27225,29 +27168,27 @@ async function saveVars(api, vars, chatId) {
 // src/interpreter/listenedit-preload.ts
 var log = makeSafeLogger("listenEdit.preload");
 var CACHE_TTL_MS = 150;
-var cache2 = new Map;
+var cache3 = new Map;
 function invalidateListenEditPreload(chatId) {
-  if (cache2.delete(chatId)) {
+  if (cache3.delete(chatId)) {
     log.debug(`invalidate chat=${chatId}`);
   }
 }
 async function preloadForListenEditChain(api, chatId, characterId) {
   if (chatId) {
-    const cached = cache2.get(chatId);
+    const cached = cache3.get(chatId);
     if (cached && Date.now() - cached.ts < CACHE_TTL_MS && cached.characterId === (characterId ?? null)) {
       log.trace(`cache.hit chat=${chatId} age=${Date.now() - cached.ts}ms ` + `entries=${cached.snapshot.lorebook?.entries.length ?? 0} msgs=${cached.snapshot.messagesRaw?.length ?? 0}`);
       return cached.snapshot;
     }
   }
   const t0 = Date.now();
-  const tVars0 = Date.now();
   const [varsResult, msgsResult, charResult] = await Promise.allSettled([
     loadVars(api, chatId),
     api.chat.getMessages(),
     characterId && api.characters?.get ? api.characters.get(characterId) : Promise.resolve(null)
   ]);
   const tParallel = Date.now() - t0;
-  const tVarsMs = Date.now() - tVars0;
   let varsCache;
   if (varsResult.status === "fulfilled")
     varsCache = varsResult.value;
@@ -27288,9 +27229,9 @@ async function preloadForListenEditChain(api, chatId, characterId) {
     ...lorebook !== undefined ? { lorebook } : {}
   };
   if (chatId) {
-    cache2.set(chatId, { snapshot, ts: Date.now(), characterId: characterId ?? null });
+    cache3.set(chatId, { snapshot, ts: Date.now(), characterId: characterId ?? null });
   }
-  log.info(`preload.done chat=${chatId ?? "<none>"} parallel_fetch=${tParallel}ms vars=${tVarsMs}ms ` + `total=${Date.now() - t0}ms ` + `vars=${varsCache ? Object.keys(varsCache).length : "<failed>"} ` + `msgs=${messagesRaw?.length ?? "<failed>"} ` + `lore_entries=${lorebook?.entries.length ?? "<failed>"} ` + `cached=${chatId ? "yes" : "no"}`);
+  log.trace(`preload.done chat=${chatId ?? "<none>"} parallel_fetch=${tParallel}ms ` + `total=${Date.now() - t0}ms ` + `vars=${varsCache ? Object.keys(varsCache).length : "<failed>"} ` + `msgs=${messagesRaw?.length ?? "<failed>"} ` + `lore_entries=${lorebook?.entries.length ?? "<failed>"} ` + `cached=${chatId ? "yes" : "no"}`);
   return snapshot;
 }
 
@@ -27366,9 +27307,17 @@ class ToggleStateStore {
       return { changed: false, entry: existing };
     }
     const seq = (existing?.seq ?? 0) + 1;
+    const clonedAttribution = {};
+    for (const [k, v] of Object.entries(attribution)) {
+      clonedAttribution[k] = {
+        name: v.name,
+        moduleId: v.moduleId,
+        ...v.translatedName !== undefined ? { translatedName: v.translatedName } : {}
+      };
+    }
     const entry = {
       toggles: toggles.map(cloneToggle),
-      attribution: { ...attribution },
+      attribution: clonedAttribution,
       seq,
       ts: Date.now()
     };
@@ -27389,6 +27338,10 @@ class ToggleStateStore {
   }
 }
 function cloneToggle(t) {
+  const common = {
+    ...t.translatedValue !== undefined ? { translatedValue: t.translatedValue } : {},
+    ...t.moduleId !== undefined ? { moduleId: t.moduleId } : {}
+  };
   switch (t.type) {
     case "group":
     case "groupEnd":
@@ -27396,20 +27349,24 @@ function cloneToggle(t) {
       return {
         type: t.type,
         ...t.key !== undefined ? { key: t.key } : {},
-        ...t.value !== undefined ? { value: t.value } : {}
+        ...t.value !== undefined ? { value: t.value } : {},
+        ...common
       };
     case "caption":
       return {
         type: "caption",
         ...t.key !== undefined ? { key: t.key } : {},
-        value: t.value
+        value: t.value,
+        ...common
       };
     case "select":
       return {
         type: "select",
         key: t.key,
         value: t.value,
-        options: [...t.options]
+        options: [...t.options],
+        ...t.translatedOptionsByOriginal !== undefined ? { translatedOptionsByOriginal: { ...t.translatedOptionsByOriginal } } : {},
+        ...common
       };
     case "text":
     case "textarea":
@@ -27418,7 +27375,8 @@ function cloneToggle(t) {
         type: t.type,
         key: t.key,
         value: t.value,
-        ...t.options !== undefined ? { options: [...t.options] } : {}
+        ...t.options !== undefined ? { options: [...t.options] } : {},
+        ...common
       };
   }
 }
@@ -27426,7 +27384,10 @@ function signature2(toggles, attribution) {
   const attrKeys = Object.keys(attribution).sort();
   return JSON.stringify({
     t: toggles,
-    a: attrKeys.map((k) => [k, attribution[k] ?? ""])
+    a: attrKeys.map((k) => {
+      const v = attribution[k];
+      return v ? [k, v.name, v.translatedName ?? null, v.moduleId] : [k];
+    })
   });
 }
 
@@ -30179,6 +30140,7 @@ function createLifecycleEventHandlers(deps) {
       }
       deps.invalidateRenderMcpForChat(chatId);
       deps.invalidateMacroInterceptorForChat(chatId);
+      deps.refreshMessagesCache(chatId, userId);
       await deps.refreshBgHtml(active, chatId, userId);
       await deps.refreshVariables(active, chatId, userId, { force: true });
       await deps.refreshToggleDefinitions(active, chatId, userId, { force: true });
@@ -30216,6 +30178,7 @@ function createLifecycleEventHandlers(deps) {
       if (!chatId)
         return;
       deps.invalidateListenEditPreload(chatId);
+      deps.refreshMessagesCache(chatId, userId);
       const active = await deps.ensureActiveCardForChat(chatId, characterId, userId);
       if (!active) {
         deps.log.info(`MESSAGE_SENT: no active card , skip`);
@@ -30262,6 +30225,7 @@ function createLifecycleEventHandlers(deps) {
       }
       deps.invalidateRenderMcpForChat(chatId);
       deps.invalidateMacroInterceptorForChat(chatId);
+      deps.refreshMessagesCache(chatId, userId);
       await deps.refreshBgHtml(active, chatId, userId);
       await deps.refreshVariables(active, chatId, userId);
     },
@@ -30293,6 +30257,7 @@ function createLifecycleEventHandlers(deps) {
         return;
       deps.invalidateListenEditPreload(chatId);
       deps.invalidateRenderMcpForMessage(chatId, msgId);
+      deps.refreshMessagesCache(chatId, userId);
       const active = await deps.ensureActiveCardForChat(chatId, null, userId);
       if (!active)
         return;
@@ -30311,6 +30276,7 @@ function createLifecycleEventHandlers(deps) {
         return;
       }
       deps.invalidateRenderMcpForMessage(chatId, msgId);
+      deps.refreshMessagesCache(chatId, userId);
       const newContent = String(p.message?.content ?? "");
       if (deps.consumeIfOurWrite(chatId, msgId, newContent))
         return;
@@ -30328,6 +30294,7 @@ function createLifecycleEventHandlers(deps) {
       deps.invalidateListenEditPreload(chatId);
       if (msgId)
         deps.invalidateRenderMcpForMessage(chatId, msgId);
+      deps.refreshMessagesCache(chatId, userId);
       const active = await deps.ensureActiveCardForChat(chatId, null, userId);
       if (!active)
         return;
@@ -30344,6 +30311,7 @@ function createLifecycleEventHandlers(deps) {
       deps.invalidateListenEditPreload(chatId);
       deps.invalidateRenderMcpForChat(chatId);
       deps.invalidateMacroInterceptorForChat(chatId);
+      deps.invalidateMessagesCache(chatId);
       invalidateRecentFlush(chatId);
       deps.lastSentBgHtmlByChat.delete(chatId);
       deps.activeCardByChat.delete(chatId);
@@ -30478,6 +30446,7 @@ function runPipeline(input) {
     ...input.screenWidth !== undefined ? { screenWidth: input.screenWidth } : {},
     ...input.screenHeight !== undefined ? { screenHeight: input.screenHeight } : {},
     ...input.currentMessageIndexOverride !== undefined ? { currentMessageIndexOverride: input.currentMessageIndexOverride } : {},
+    ...input.currentMessageRoleOverride !== undefined ? { currentMessageRoleOverride: input.currentMessageRoleOverride } : {},
     ...input.legacyMediaFindings !== undefined ? { legacyMediaFindings: input.legacyMediaFindings } : {},
     ...input.modulesByNamespace ? { modulesByNamespace: input.modulesByNamespace } : {},
     ...input.positionPt ? { positionPt: input.positionPt } : {},
@@ -30497,9 +30466,6 @@ function workerEvalEnabled() {
     return false;
   }
 }
-
-// src/interceptors/lumi-hooks.ts
-init_scanner();
 
 // src/interpreter/risu-chat-view.ts
 function buildRisuChatView(input) {
@@ -30718,14 +30684,6 @@ function makeArraysDictsApi(vars) {
     dictKeys: (name) => Object.keys(readDict(name)),
     dictValues: (name) => Object.values(readDict(name))
   };
-}
-
-// src/util/role-coerce.ts
-function risuRoleToLumi(r) {
-  return r === "user" ? "user" : "assistant";
-}
-function lumiRoleToRisu(r) {
-  return r === "user" ? "user" : "char";
 }
 // src/interpreter/runtime/unsupported.ts
 function unsupported(feature, reason) {
@@ -31623,7 +31581,6 @@ function samplersToWire(samplers) {
   }
   return Object.keys(out).length === 0 ? null : out;
 }
-
 // src/interpreter/runtime/dispatch-context.ts
 import { AsyncLocalStorage } from "async_hooks";
 var dispatchAls = new AsyncLocalStorage;
@@ -32657,7 +32614,7 @@ async function runListenEditChain(triggers, mode, value, meta, api, data, script
   if (eligible.length === 0)
     return value;
   const chainStart = Date.now();
-  log2.info(`chain.start mode=${mode} eligible=${eligible.length}/${triggers.length} ` + `value_len=${typeof value === "string" ? value.length : Array.isArray(value) ? value.length : -1} ` + `chatId=${opts.chatId ?? "<none>"} characterId=${opts.characterId ?? "<none>"}`);
+  log2.trace(`chain.start mode=${mode} eligible=${eligible.length}/${triggers.length} ` + `value_len=${typeof value === "string" ? value.length : Array.isArray(value) ? value.length : -1} ` + `chatId=${opts.chatId ?? "<none>"} characterId=${opts.characterId ?? "<none>"}`);
   const tPreload = Date.now();
   const preloaded = await preloadForListenEditChain(api, opts.chatId, opts.characterId ?? null);
   const preloadMs = Date.now() - tPreload;
@@ -32693,6 +32650,11 @@ async function runListenEditChain(triggers, mode, value, meta, api, data, script
       });
       const runLuaMs = Date.now() - tRunLuaStart;
       totalRunLuaMs += runLuaMs;
+      try {
+        await runtime2.flush();
+      } catch (err) {
+        log2.warn(`trigger[${i}] mode=${mode} flush failed \u2014 ${errMsg(err)}; continuing chain`);
+      }
       if (typeof result === "string") {
         try {
           const parsed = JSON.parse(result);
@@ -32705,15 +32667,13 @@ async function runListenEditChain(triggers, mode, value, meta, api, data, script
       }
       const triggerTotal = Date.now() - tStart;
       const otherMs = triggerTotal - factoryMs - serdeMs - runLuaMs;
-      const valueLenAfter = typeof current === "string" ? current.length : -1;
-      log2.info(`trigger[${i}] mode=${mode} elapsed=${triggerTotal}ms ` + `factory=${factoryMs}ms serde=${serdeMs}ms runLua=${runLuaMs}ms ` + `other=${otherMs}ms (lua_len=${t.luaCode.length}) value_len_after=${valueLenAfter}`);
+      log2.trace(`trigger[${i}] mode=${mode} elapsed=${triggerTotal}ms ` + `factory=${factoryMs}ms serde=${serdeMs}ms runLua=${runLuaMs}ms ` + `other=${otherMs}ms (lua_len=${t.luaCode.length})`);
     } catch (err) {
       log2.warn(`trigger[${i}] mode=${mode} elapsed=${Date.now() - tStart}ms THREW \u2014 ${errMsg(err)}; keeping prior value`);
     }
   }
   const chainTotal = Date.now() - chainStart;
-  const finalLen = typeof current === "string" ? current.length : -1;
-  log2.info(`chain.done mode=${mode} elapsed=${chainTotal}ms eligible=${eligible.length} ` + `preload=${preloadMs}ms ` + `factory_sum=${totalFactoryMs}ms runLua_sum=${totalRunLuaMs}ms ` + `serde_sum=${totalSerdeMs}ms ` + `other=${chainTotal - preloadMs - totalFactoryMs - totalRunLuaMs - totalSerdeMs}ms ` + `final_value_len=${finalLen} chatId=${opts.chatId ?? "<none>"}`);
+  log2.trace(`chain.done mode=${mode} elapsed=${chainTotal}ms eligible=${eligible.length} ` + `preload=${preloadMs}ms ` + `factory_sum=${totalFactoryMs}ms runLua_sum=${totalRunLuaMs}ms ` + `serde_sum=${totalSerdeMs}ms ` + `other=${chainTotal - preloadMs - totalFactoryMs - totalRunLuaMs - totalSerdeMs}ms ` + `chatId=${opts.chatId ?? "<none>"}`);
   return current;
 }
 
@@ -32853,7 +32813,7 @@ function puaDecodeFeMacros(text, tokens) {
 var log4 = makeSafeLogger("render-mcp-cache");
 var TTL_MS2 = 5000;
 var MAX_ENTRIES = 500;
-var cache3 = new Map;
+var cache4 = new Map;
 var inFlight = new Map;
 var hitCount = 0;
 var missCount = 0;
@@ -32870,34 +32830,34 @@ function fnv1a(s) {
   return h >>> 0;
 }
 function evictIfNeeded(now) {
-  if (cache3.size < MAX_ENTRIES)
+  if (cache4.size < MAX_ENTRIES)
     return;
-  for (const [k, v] of cache3) {
+  for (const [k, v] of cache4) {
     if (now - v.ts > TTL_MS2)
-      cache3.delete(k);
+      cache4.delete(k);
   }
-  if (cache3.size < MAX_ENTRIES)
+  if (cache4.size < MAX_ENTRIES)
     return;
   let oldestKey = null;
   let oldestTs = Infinity;
-  for (const [k, v] of cache3) {
+  for (const [k, v] of cache4) {
     if (v.ts < oldestTs) {
       oldestTs = v.ts;
       oldestKey = k;
     }
   }
   if (oldestKey)
-    cache3.delete(oldestKey);
+    cache4.delete(oldestKey);
 }
 function lookupRenderMcp(chatId, msgId, content) {
-  const entry = cache3.get(key(chatId, msgId));
+  const entry = cache4.get(key(chatId, msgId));
   if (!entry) {
     missCount += 1;
     return null;
   }
   const now = Date.now();
   if (now - entry.ts > TTL_MS2) {
-    cache3.delete(key(chatId, msgId));
+    cache4.delete(key(chatId, msgId));
     missCount += 1;
     return null;
   }
@@ -32915,7 +32875,7 @@ function lookupRenderMcp(chatId, msgId, content) {
 function cacheRenderMcp(chatId, msgId, content, result) {
   const now = Date.now();
   evictIfNeeded(now);
-  cache3.set(key(chatId, msgId), {
+  cache4.set(key(chatId, msgId), {
     contentHash: fnv1a(content),
     contentLen: content.length,
     result,
@@ -32945,9 +32905,9 @@ function markRenderMcpInFlight(chatId, msgId, content, promise) {
 function invalidateRenderMcpForChat(chatId) {
   const prefix = `${chatId}::`;
   let removed = 0;
-  for (const k of cache3.keys()) {
+  for (const k of cache4.keys()) {
     if (k.startsWith(prefix)) {
-      cache3.delete(k);
+      cache4.delete(k);
       removed += 1;
     }
   }
@@ -32960,19 +32920,19 @@ function invalidateRenderMcpForChat(chatId) {
 }
 function invalidateRenderMcpForMessage(chatId, msgId) {
   const k = key(chatId, msgId);
-  if (cache3.delete(k))
+  if (cache4.delete(k))
     log4.debug(`invalidate chat=${chatId} msg=${msgId}`);
   inFlight.delete(k);
 }
 function renderMcpCacheStats() {
-  return { size: cache3.size, hits: hitCount, misses: missCount, inFlightHits: inFlightHitCount, inFlightSize: inFlight.size };
+  return { size: cache4.size, hits: hitCount, misses: missCount, inFlightHits: inFlightHitCount, inFlightSize: inFlight.size };
 }
 
 // src/state/macro-interceptor-cache.ts
 var log5 = makeSafeLogger("macro-interceptor-cache");
 var TTL_MS3 = 5000;
 var MAX_ENTRIES2 = 500;
-var cache4 = new Map;
+var cache5 = new Map;
 var hitCount2 = 0;
 var missCount2 = 0;
 function fnv1a2(s) {
@@ -32987,35 +32947,35 @@ function key2(chatId, template, commit) {
   return `${chatId}::${commit ? "c" : "d"}::${template.length}::${fnv1a2(template)}`;
 }
 function evictIfNeeded2(now) {
-  if (cache4.size < MAX_ENTRIES2)
+  if (cache5.size < MAX_ENTRIES2)
     return;
-  for (const [k, v] of cache4) {
+  for (const [k, v] of cache5) {
     if (now - v.ts > TTL_MS3)
-      cache4.delete(k);
+      cache5.delete(k);
   }
-  if (cache4.size < MAX_ENTRIES2)
+  if (cache5.size < MAX_ENTRIES2)
     return;
   let oldestKey = null;
   let oldestTs = Infinity;
-  for (const [k, v] of cache4) {
+  for (const [k, v] of cache5) {
     if (v.ts < oldestTs) {
       oldestTs = v.ts;
       oldestKey = k;
     }
   }
   if (oldestKey)
-    cache4.delete(oldestKey);
+    cache5.delete(oldestKey);
 }
 function lookupMacroInterceptor(chatId, template, commit) {
   const k = key2(chatId, template, commit);
-  const entry = cache4.get(k);
+  const entry = cache5.get(k);
   if (!entry) {
     missCount2 += 1;
     return null;
   }
   const now = Date.now();
   if (now - entry.ts > TTL_MS3) {
-    cache4.delete(k);
+    cache5.delete(k);
     missCount2 += 1;
     return null;
   }
@@ -33025,14 +32985,14 @@ function lookupMacroInterceptor(chatId, template, commit) {
 function cacheMacroInterceptor(chatId, template, commit, result) {
   const now = Date.now();
   evictIfNeeded2(now);
-  cache4.set(key2(chatId, template, commit), { result, ts: now });
+  cache5.set(key2(chatId, template, commit), { result, ts: now });
 }
 function invalidateMacroInterceptorForChat(chatId) {
   const prefix = `${chatId}::`;
   let removed = 0;
-  for (const k of cache4.keys()) {
+  for (const k of cache5.keys()) {
     if (k.startsWith(prefix)) {
-      cache4.delete(k);
+      cache5.delete(k);
       removed += 1;
     }
   }
@@ -33040,7 +33000,7 @@ function invalidateMacroInterceptorForChat(chatId) {
     log5.debug(`invalidate chat=${chatId} entries=${removed}`);
 }
 function macroInterceptorCacheStats() {
-  return { size: cache4.size, hits: hitCount2, misses: missCount2 };
+  return { size: cache5.size, hits: hitCount2, misses: missCount2 };
 }
 
 // src/state/recent-writes.ts
@@ -33048,45 +33008,45 @@ var log6 = makeSafeLogger("recent-writes");
 var TTL_MS4 = 60000;
 var MAX_ENTRIES3 = 100;
 var RAPID_CONSUME_MS = 100;
-var cache5 = new Map;
+var cache6 = new Map;
 function key3(chatId, msgId) {
   return `${chatId}::${msgId}`;
 }
 function rememberOurWrite(chatId, msgId, content) {
   const now = Date.now();
-  if (cache5.size >= MAX_ENTRIES3) {
-    for (const [k, v] of cache5) {
+  if (cache6.size >= MAX_ENTRIES3) {
+    for (const [k, v] of cache6) {
       if (now - v.ts > TTL_MS4)
-        cache5.delete(k);
+        cache6.delete(k);
     }
-    if (cache5.size >= MAX_ENTRIES3) {
+    if (cache6.size >= MAX_ENTRIES3) {
       let oldestKey = null;
       let oldestTs = Infinity;
-      for (const [k, v] of cache5) {
+      for (const [k, v] of cache6) {
         if (v.ts < oldestTs) {
           oldestTs = v.ts;
           oldestKey = k;
         }
       }
       if (oldestKey)
-        cache5.delete(oldestKey);
+        cache6.delete(oldestKey);
     }
   }
-  cache5.set(key3(chatId, msgId), { content, ts: now });
+  cache6.set(key3(chatId, msgId), { content, ts: now });
 }
 function consumeIfOurWrite(chatId, msgId, content) {
   const k = key3(chatId, msgId);
-  const entry = cache5.get(k);
+  const entry = cache6.get(k);
   if (!entry)
     return false;
   const elapsed = Date.now() - entry.ts;
   if (elapsed > TTL_MS4) {
-    cache5.delete(k);
+    cache6.delete(k);
     return false;
   }
   if (entry.content !== content)
     return false;
-  cache5.delete(k);
+  cache6.delete(k);
   if (elapsed >= RAPID_CONSUME_MS) {
     log6.info(`consumeIfOurWrite: late match chat=${chatId} msg=${msgId} elapsed=${elapsed}ms content_len=${content.length} ` + `\u2014 normal echoes are <${RAPID_CONSUME_MS}ms; if user reports a "my edit reverted" symptom soon after, suspect false-positive`);
   }
@@ -34516,31 +34476,6 @@ function createLumiInterceptors(deps) {
   let mcpEnterSeq = 0;
   let lastCacheStatsAt = 0;
   let lastMicCacheStatsAt = 0;
-  const SLOW_DUMP_MAX_PER_SESSION = 5;
-  let slowDumpsThisSession = 0;
-  async function dumpSlowMacroInterceptorArgs(callId, ctx, elapsedMs, tBuildCtxMs, tScannerMs) {
-    if (slowDumpsThisSession >= SLOW_DUMP_MAX_PER_SESSION)
-      return;
-    if (!ctx.userId)
-      return;
-    slowDumpsThisSession += 1;
-    const ts = new Date().toISOString().replace(/[:.]/g, "-");
-    const path = `lumirealm/diagnostics/slow-mic-${ts}-${callId}.json`;
-    const dump = {
-      callId,
-      capturedAt: ts,
-      elapsedMs,
-      tBuildCtxMs,
-      tScannerMs,
-      phase: ctx.phase,
-      commit: ctx.commit,
-      userId: ctx.userId,
-      template: ctx.template,
-      env: ctx.env
-    };
-    await spindle.userStorage.setJson(path, dump, { userId: ctx.userId });
-    log8.info(`[slow-mic-dump] wrote ${path} (template_len=${ctx.template.length} elapsed=${elapsedMs}ms ${slowDumpsThisSession}/${SLOW_DUMP_MAX_PER_SESSION})`);
-  }
   function withMaybeUser(userId, fn) {
     return userId !== undefined ? userIdAls.run(userId, fn) : fn();
   }
@@ -34585,7 +34520,7 @@ function createLumiInterceptors(deps) {
       const hasMarker = /\u2605[A-Z_]+\u2605|###[A-Z_]+###/.test(ctx.template);
       const chatEnv = ctx.env.chat;
       const sourceHint = ctx.sourceHint;
-      log8.info(`macroInterceptor.enter #${callId} chat=${chatId ?? "<none>"} active_present=${activeBefore} ` + `commit=${ctx.commit} phase=${ctx.phase} sourceHint=${sourceHint ?? "<none>"} userId=${ctx.userId ?? "<none>"} ` + `tmpl_len=${ctx.template.length} has_marker=${hasMarker} ` + `lumi_messageCount=${chatEnv?.messageCount ?? "?"} lumi_lastMessageId=${chatEnv?.lastMessageId ?? "?"} ` + `tmpl_head=${JSON.stringify(templateHead)}`);
+      log8.trace(`macroInterceptor.enter #${callId} chat=${chatId ?? "<none>"} active_present=${activeBefore} ` + `commit=${ctx.commit} phase=${ctx.phase} sourceHint=${sourceHint ?? "<none>"} userId=${ctx.userId ?? "<none>"} ` + `tmpl_len=${ctx.template.length} has_marker=${hasMarker} ` + `lumi_messageCount=${chatEnv?.messageCount ?? "?"} lumi_lastMessageId=${chatEnv?.lastMessageId ?? "?"} ` + `tmpl_head=${JSON.stringify(templateHead)}`);
       if (!ctx.template.includes("{{")) {
         log8.trace(`macroInterceptor.exit #${callId} path=no_cbs elapsed=${Date.now() - t0}ms`);
         return;
@@ -34623,19 +34558,20 @@ function createLumiInterceptors(deps) {
       const screenDims = getScreenDims(ctx.userId);
       const charImage = getActiveCharacterImage(chatId);
       const personaImage = getActivePersonaImage(ctx.userId);
-      const dynChatIndex = ctx.env.dynamicMacros?.chat_index;
+      const dynamicMacros = ctx.env.dynamicMacros;
+      const dynChatIndex = dynamicMacros?.chat_index;
       const dynChatIndexNum = typeof dynChatIndex === "string" && /^-?\d+$/.test(dynChatIndex) ? parseInt(dynChatIndex, 10) - 1 : undefined;
-      const tPrep = Date.now();
+      const dynRole = typeof dynamicMacros?.role === "string" ? dynamicMacros.role : undefined;
+      const cachedMessages = getCachedMessages(chatId);
       let resolved;
-      let tBuildCtxMs = 0;
-      let tScannerMs = 0;
-      let tRunPipelineMs = 0;
       try {
-        const tRunStart = Date.now();
-        const ctxInput = {
+        resolved = runPipeline({
+          template: ctx.template,
+          phase: ctx.commit ? "commit" : "display",
           chatId,
           ...ctx.userId !== undefined ? { userId: ctx.userId } : {},
           ...dynChatIndexNum !== undefined ? { currentMessageIndexOverride: dynChatIndexNum } : {},
+          ...dynRole !== undefined ? { currentMessageRoleOverride: dynRole } : {},
           characterId: active.card.character_id,
           userName: namesEnv.user ?? "",
           charName: namesEnv.char ?? charCard.name ?? "",
@@ -34659,7 +34595,8 @@ function createLumiInterceptors(deps) {
             ...typeof envChat.lastMessage === "string" ? { lastMessage: envChat.lastMessage } : {},
             ...typeof envChat.lastUserMessage === "string" ? { lastUserMessage: envChat.lastUserMessage } : {},
             ...typeof envChat.lastCharMessage === "string" ? { lastCharMessage: envChat.lastCharMessage } : {},
-            ...typeof envChat.lastMessageId === "number" ? { lastMessageId: envChat.lastMessageId } : {}
+            ...typeof envChat.lastMessageId === "number" ? { lastMessageId: envChat.lastMessageId } : {},
+            ...cachedMessages ? { messages: cachedMessages } : {}
           },
           variables: {
             local: ctx.env.variables.local,
@@ -34670,21 +34607,12 @@ function createLumiInterceptors(deps) {
           ...screenDims ? { screenWidth: screenDims.width, screenHeight: screenDims.height } : {},
           legacyMediaFindings: deps.getCachedSettingsSync(ctx.userId).legacyMediaFindings,
           ...deps.modulesByNamespaceFromCard(active.card) ? { modulesByNamespace: deps.modulesByNamespaceFromCard(active.card) } : {},
-          ...getDecoratorBuffers(chatId)?.positionPt ? { positionPt: getDecoratorBuffers(chatId).positionPt } : {},
-          commit: ctx.commit !== false
-        };
-        const tBuildStart = Date.now();
-        const evalCtx = buildEvaluatorContext(ctxInput);
-        tBuildCtxMs = Date.now() - tBuildStart;
-        const tScanStart = Date.now();
-        resolved = evaluate(ctx.template, evalCtx);
-        tScannerMs = Date.now() - tScanStart;
-        tRunPipelineMs = Date.now() - tRunStart;
+          ...getDecoratorBuffers(chatId)?.positionPt ? { positionPt: getDecoratorBuffers(chatId).positionPt } : {}
+        });
       } catch (err) {
         log8.warn(`macroInterceptor: runPipeline threw chat=${chatId} phase=${ctx.phase}: ${errMsg2(err)}. Passing through.`);
         return;
       }
-      const tPipelineDoneMs = Date.now() - tPrep;
       const resolvedMarker = /\u2605[A-Z_]+\u2605|###[A-Z_]+###/.exec(resolved)?.[0] ?? null;
       const stillHasRaw = resolved.includes("{{risu_") || resolved.includes("{{getvar::") || resolved.includes("{{#risu_");
       if (!ctx.commit && !mcpRenderAvailable) {
@@ -34725,17 +34653,7 @@ function createLumiInterceptors(deps) {
         cacheMacroInterceptor(chatId, ctx.template, ctx.commit !== false, resolved);
         maybeEmitMicCacheStats();
       }
-      const elapsedTotal = Date.now() - t0;
-      const slow = elapsedTotal > 500;
-      const logFn = slow ? log8.info : log8.trace;
-      logFn(`macroInterceptor.exit #${callId} path=resolved elapsed=${elapsedTotal}ms ` + `prep=${tPrep - t0}ms runPipeline=${tRunPipelineMs}ms ` + `(buildCtx=${tBuildCtxMs}ms scanner=${tScannerMs}ms) ` + `post_pipeline=${elapsedTotal - tPipelineDoneMs - (tPrep - t0)}ms ` + `in_len=${ctx.template.length} out_len=${resolved.length} ` + `sourceHint=${sourceHint ?? "<none>"} ` + `marker=${resolvedMarker ?? "none"} still_has_raw_cbs=${stillHasRaw} ` + `out_head=${JSON.stringify(resolved.slice(0, 120))}`);
-      if (slow) {
-        try {
-          await dumpSlowMacroInterceptorArgs(callId, ctx, elapsedTotal, tBuildCtxMs, tScannerMs);
-        } catch (e) {
-          log8.warn(`macroInterceptor: dumpSlowArgs threw: ${errMsg2(e)}`);
-        }
-      }
+      log8.trace(`macroInterceptor.exit #${callId} path=resolved elapsed=${Date.now() - t0}ms ` + `in_len=${ctx.template.length} out_len=${resolved.length} ` + `marker=${resolvedMarker ?? "none"} still_has_raw_cbs=${stillHasRaw} ` + `out_head=${JSON.stringify(resolved.slice(0, 120))}`);
       if (resolved.length > 200) {
         const panelMatches = resolved.match(/<div[^>]*class="[^"]*(?:sys-backdrop|sys-panel|status-?panel)[^"]*"/g);
         if (panelMatches && panelMatches.length > 0) {
@@ -34812,7 +34730,6 @@ function createLumiInterceptors(deps) {
             source: t,
             luaCode: luaScripts[i] ?? ""
           }));
-          log8.info(`[mcp-render-deep] #${seq} chat=${ctx.chatId} msg=${ctx.messageId ?? "<?>"} hasLua=${hasLuaTrigger} triggers=${triggers2.length} atActions=${renderAtActions.length} raw_len=${ctx.content.length} raw_has_cbs=${ctx.content.indexOf("{{") >= 0} idx=${messageIndex}`);
           try {
             const editApi = makeSpindleHost({
               chatId: ctx.chatId,
@@ -34830,12 +34747,11 @@ function createLumiInterceptors(deps) {
                 resolveTemplate: (text) => deps.resolveReadonly(text, ctx.chatId, active.card.character_id, ctx.userId, { cbsContext: true })
               });
               chainMs = Date.now() - tChain;
-              log8.info(`[mcp-render-deep] #${seq} after-listenEdit elapsed=${chainMs}ms in_len=${ctx.content.length} out_len=${transformed.length} delta=${transformed.length - ctx.content.length} unchanged=${transformed === ctx.content} out_has_cbs=${transformed.indexOf("{{") >= 0} out_head=${JSON.stringify(transformed.slice(0, 120))}`);
+              log8.trace(`messageContentProcessor.render chain.elapsed #${seq} chain=${chainMs}ms (mcp_total_so_far=${Date.now() - tStart}ms)`);
             }
             let atActionsMs = 0;
             if (renderAtActions.length > 0) {
               const tAt = Date.now();
-              const beforeAtLen = transformed.length;
               try {
                 transformed = await runAtActionsForPhase(renderAtActions, "editdisplay", transformed, {
                   api: editApi,
@@ -34846,12 +34762,9 @@ function createLumiInterceptors(deps) {
                 log8.warn(`messageContentProcessor.render at-actions threw: ${errMsg2(err)}. Continuing with prior content.`);
               }
               atActionsMs = Date.now() - tAt;
-              log8.info(`[mcp-render-deep] #${seq} after-atActions elapsed=${atActionsMs}ms in_len=${beforeAtLen} out_len=${transformed.length}`);
             }
             let resolveMs = 0;
-            const beforeResolveLen = transformed.length;
-            const beforeResolveHasCbs = transformed.indexOf("{{") >= 0;
-            if (beforeResolveHasCbs) {
+            if (transformed.indexOf("{{") >= 0) {
               const tResolve = Date.now();
               try {
                 const enc = puaEncodeFeMacros(transformed);
@@ -34862,7 +34775,6 @@ function createLumiInterceptors(deps) {
               }
               resolveMs = Date.now() - tResolve;
             }
-            log8.info(`[mcp-render-deep] #${seq} after-resolve elapsed=${resolveMs}ms in_len=${beforeResolveLen} in_had_cbs=${beforeResolveHasCbs} out_len=${transformed.length}`);
             const totalMs = Date.now() - tStart;
             const otherOverhead = totalMs - chainMs - atActionsMs - resolveMs - (tB - tA);
             if (transformed === ctx.content) {
@@ -34870,14 +34782,14 @@ function createLumiInterceptors(deps) {
                 cacheRenderMcp(ctx.chatId, ctx.messageId, ctx.content, { kind: "noop" });
               }
               workResolve({ kind: "noop" });
-              log8.info(`messageContentProcessor.exit #${seq} path=render-noop chat=${ctx.chatId} msg=${ctx.messageId ?? "<?>"} idx=${messageIndex} total=${totalMs}ms (chain=${chainMs}ms at_actions=${atActionsMs}ms resolve=${resolveMs}ms ensure=${tB - tA}ms other=${otherOverhead}ms)`);
+              log8.trace(`messageContentProcessor.exit #${seq} path=render-noop chat=${ctx.chatId} msg=${ctx.messageId ?? "<?>"} idx=${messageIndex} total=${totalMs}ms (chain=${chainMs}ms at_actions=${atActionsMs}ms resolve=${resolveMs}ms ensure=${tB - tA}ms other=${otherOverhead}ms)`);
               return;
             }
             if (ctx.messageId) {
               cacheRenderMcp(ctx.chatId, ctx.messageId, ctx.content, { kind: "transformed", content: transformed });
             }
             workResolve({ kind: "transformed", content: transformed });
-            log8.info(`messageContentProcessor.exit #${seq} path=render-transformed chat=${ctx.chatId} msg=${ctx.messageId ?? "<?>"} idx=${messageIndex} before_len=${ctx.content.length} after_len=${transformed.length} total=${totalMs}ms (chain=${chainMs}ms at_actions=${atActionsMs}ms resolve=${resolveMs}ms ensure=${tB - tA}ms other=${otherOverhead}ms)`);
+            log8.trace(`messageContentProcessor.exit #${seq} path=render-transformed chat=${ctx.chatId} msg=${ctx.messageId ?? "<?>"} idx=${messageIndex} before_len=${ctx.content.length} after_len=${transformed.length} total=${totalMs}ms (chain=${chainMs}ms at_actions=${atActionsMs}ms resolve=${resolveMs}ms ensure=${tB - tA}ms other=${otherOverhead}ms)`);
             return { content: transformed };
           } catch (err) {
             workReject(err);
@@ -35252,7 +35164,7 @@ function createReadonlyResolver(deps) {
   async function resolve(template, chatId, characterId, userId, opts) {
     const cbsContext = opts?.cbsContext === true;
     const t0 = Date.now();
-    log8.info(`resolveReadonly: START chat=${chatId} char=${characterId} userId=${userId ?? "<none>"} cbs=${cbsContext} template_len=${template.length} ` + `template[0..200]=${JSON.stringify(template.slice(0, 200))}`);
+    log8.debug(`resolveReadonly: START chat=${chatId} char=${characterId} userId=${userId ?? "<none>"} cbs=${cbsContext} template_len=${template.length} ` + `template[0..200]=${JSON.stringify(template.slice(0, 200))}`);
     if (cbsContext) {
       if (userId === undefined) {
         log8.warn(`resolveReadonly: cbs called before userId captured chat=${chatId},returning template verbatim`);
@@ -35260,7 +35172,7 @@ function createReadonlyResolver(deps) {
       }
       try {
         const out = await resolveInWorker(template, chatId, characterId, userId, true);
-        log8.info(`resolveReadonly: DONE (cbs worker-eval) chat=${chatId} elapsed=${Date.now() - t0}ms out_len=${out.length} ` + `out[0..200]=${JSON.stringify(out.slice(0, 200))}`);
+        log8.debug(`resolveReadonly: DONE (cbs worker-eval) chat=${chatId} elapsed=${Date.now() - t0}ms out_len=${out.length} ` + `out[0..200]=${JSON.stringify(out.slice(0, 200))}`);
         return out;
       } catch (err) {
         log8.error(`resolveReadonly: cbs worker-eval threw chat=${chatId}: ${err.message}. Returning template verbatim.`);
@@ -35273,7 +35185,7 @@ function createReadonlyResolver(deps) {
       } else {
         try {
           const out = await resolveInWorker(template, chatId, characterId, userId, cbsContext);
-          log8.info(`resolveReadonly: DONE (worker-eval) chat=${chatId} elapsed=${Date.now() - t0}ms out_len=${out.length} ` + `out[0..200]=${JSON.stringify(out.slice(0, 200))}`);
+          log8.debug(`resolveReadonly: DONE (worker-eval) chat=${chatId} elapsed=${Date.now() - t0}ms out_len=${out.length} ` + `out[0..200]=${JSON.stringify(out.slice(0, 200))}`);
           return out;
         } catch (err) {
           log8.error(`resolveReadonly: worker-eval threw chat=${chatId}: ${err.message}. Falling back to legacy path.`);
@@ -35287,7 +35199,7 @@ function createReadonlyResolver(deps) {
         commit: false,
         ...userId === undefined ? {} : { userId }
       });
-      log8.info(`resolveReadonly: DONE chat=${chatId} elapsed=${Date.now() - t0}ms out_len=${result.text.length} ` + `diagnostics=${(result.diagnostics ?? []).length} out[0..200]=${JSON.stringify(result.text.slice(0, 200))}`);
+      log8.debug(`resolveReadonly: DONE chat=${chatId} elapsed=${Date.now() - t0}ms out_len=${result.text.length} ` + `diagnostics=${(result.diagnostics ?? []).length} out[0..200]=${JSON.stringify(result.text.slice(0, 200))}`);
       return result.text;
     } catch (err) {
       log8.error(`resolveReadonly: THREW chat=${chatId} elapsed=${Date.now() - t0}ms: ${err.message}`);
@@ -36925,18 +36837,6 @@ function parseToggleSyntax(template) {
     return [];
   }
 }
-function collectModuleToggleDsl(modules) {
-  let out = "";
-  for (const m of modules) {
-    const dsl = m.customModuleToggle;
-    if (typeof dsl === "string" && dsl.length > 0) {
-      out += `
-` + dsl + `
-`;
-    }
-  }
-  return out;
-}
 function extractToggleKeys(flat) {
   const seen = new Set;
   const out = [];
@@ -36974,7 +36874,18 @@ function sanitizeVarMap(raw) {
   }
   return out;
 }
-function toggleToWire(t) {
+function toggleToWire(t, moduleId, toggleTranslations) {
+  const tx = (s) => {
+    if (s === undefined || s.length === 0)
+      return;
+    const cached = toggleTranslations[s];
+    return cached !== undefined && cached !== s ? cached : undefined;
+  };
+  const translatedValue = tx(t.value);
+  const base = {
+    moduleId,
+    ...translatedValue !== undefined ? { translatedValue } : {}
+  };
   switch (t.type) {
     case "group":
     case "groupEnd":
@@ -36982,21 +36893,32 @@ function toggleToWire(t) {
       return {
         type: t.type,
         ...t.key !== undefined ? { key: t.key } : {},
-        ...t.value !== undefined ? { value: t.value } : {}
+        ...t.value !== undefined ? { value: t.value } : {},
+        ...base
       };
     case "caption":
       return {
         type: "caption",
         ...t.key !== undefined ? { key: t.key } : {},
-        value: t.value ?? ""
+        value: t.value ?? "",
+        ...base
       };
-    case "select":
+    case "select": {
+      const optionsMap = {};
+      for (const opt of t.options) {
+        const cached = toggleTranslations[opt];
+        if (cached !== undefined && cached !== opt)
+          optionsMap[opt] = cached;
+      }
       return {
         type: "select",
         key: t.key,
         value: t.value,
-        options: [...t.options]
+        options: [...t.options],
+        ...Object.keys(optionsMap).length > 0 ? { translatedOptionsByOriginal: optionsMap } : {},
+        ...base
       };
+    }
     case undefined:
     case "text":
     case "textarea":
@@ -37004,12 +36926,14 @@ function toggleToWire(t) {
         type: t.type ?? "checkbox",
         key: t.key,
         value: t.value,
-        ...t.options !== undefined ? { options: [...t.options] } : {}
+        ...t.options !== undefined ? { options: [...t.options] } : {},
+        ...base
       };
   }
 }
 function createVariablesTogglesService(deps) {
   const {
+    translateLang,
     variableState,
     toggleState,
     readLumirealm: readLumirealm2,
@@ -37103,41 +37027,49 @@ function createVariablesTogglesService(deps) {
   async function loadToggleDsl(characterId, userId) {
     const fetched = await readLumirealm2(characterId, userId);
     if (!fetched || !fetched.data)
-      return { flatToggles: [], attribution: {} };
+      return { wireRows: [], attribution: {}, keyCount: 0 };
     const attachedIds = fetched.data.user_overrides.attached_module_ids ?? [];
     if (attachedIds.length === 0)
-      return { flatToggles: [], attribution: {} };
+      return { wireRows: [], attribution: {}, keyCount: 0 };
     const envelopes = await readAttachedModuleEnvelopes(userId, attachedIds);
-    const modulesForToggle = envelopes.map((env) => {
-      const m = env.module;
-      return {
-        customModuleToggle: typeof m.customModuleToggle === "string" ? m.customModuleToggle : "",
-        displayName: typeof m.name === "string" ? m.name : env.id
-      };
-    });
     const attribution = {};
-    for (const m of modulesForToggle) {
-      if (!m.customModuleToggle)
+    const wireRows = [];
+    let keyCount = 0;
+    for (const env of envelopes) {
+      const m = env.module;
+      const dsl = typeof m.customModuleToggle === "string" ? m.customModuleToggle : "";
+      if (!dsl)
         continue;
-      const localFlat = parseToggleSyntax(m.customModuleToggle);
+      const localFlat = parseToggleSyntax(dsl);
+      if (localFlat.length === 0)
+        continue;
+      const originalName = typeof m.name === "string" && m.name.length > 0 ? m.name : env.id;
+      const translatedName = env.translations?.[translateLang]?.name;
+      const entry = {
+        name: originalName,
+        moduleId: env.id,
+        ...translatedName && translatedName.length > 0 ? { translatedName } : {}
+      };
       for (const k of extractToggleKeys(localFlat)) {
         if (!Object.prototype.hasOwnProperty.call(attribution, k)) {
-          attribution[k] = m.displayName;
+          attribution[k] = entry;
         }
       }
+      keyCount += extractToggleKeys(localFlat).length;
+      const toggleTranslations = env.translations?.[translateLang]?.toggles ?? {};
+      for (const t of localFlat) {
+        wireRows.push(toggleToWire(t, env.id, toggleTranslations));
+      }
     }
-    const concat = collectModuleToggleDsl(modulesForToggle);
-    const flatToggles = parseToggleSyntax(concat);
-    return { flatToggles, attribution };
+    return { wireRows, attribution, keyCount };
   }
   async function refreshToggleDefinitions(active, chatId, userId, opts) {
     if (userId === undefined) {
       log8.debug(`toggles.refresh: skip chat=${chatId},userId not yet captured`);
       return;
     }
-    const { flatToggles, attribution } = await loadToggleDsl(active.card.character_id, userId);
-    const wire = flatToggles.map(toggleToWire);
-    const result = toggleState.applySnapshot(chatId, wire, attribution);
+    const { wireRows, attribution, keyCount } = await loadToggleDsl(active.card.character_id, userId);
+    const result = toggleState.applySnapshot(chatId, wireRows, attribution);
     if (result.changed || opts?.force) {
       send({
         type: "set_toggle_definitions",
@@ -37147,7 +37079,7 @@ function createVariablesTogglesService(deps) {
         attribution: result.entry.attribution,
         ts: result.entry.ts
       }, userId);
-      log8.info(`toggles.refresh: pushed chat=${chatId} seq=${result.entry.seq} ` + `count=${wire.length} keys=${extractToggleKeys(flatToggles).length} forced=${!!opts?.force}`);
+      log8.info(`toggles.refresh: pushed chat=${chatId} seq=${result.entry.seq} ` + `count=${wireRows.length} keys=${keyCount} forced=${!!opts?.force}`);
     } else {
       log8.debug(`toggles.refresh: unchanged chat=${chatId} seq=${result.entry.seq}`);
     }
@@ -38374,11 +38306,23 @@ function mergeLangBlock(args) {
       };
     }
   }
+  const existingToggles = args.existing.toggles ?? {};
+  const nextToggles = { ...existingToggles };
+  if (args.toggleItems) {
+    for (const item of args.toggleItems) {
+      if (!item.original)
+        continue;
+      if (typeof item.translated !== "string")
+        continue;
+      nextToggles[item.original] = item.translated;
+    }
+  }
   return {
     ...args.existing,
     ...args.name !== undefined ? { name: args.name } : {},
     ...args.description !== undefined ? { description: args.description } : {},
-    ...Object.keys(nextLore).length > 0 ? { lorebook: nextLore } : {}
+    ...Object.keys(nextLore).length > 0 ? { lorebook: nextLore } : {},
+    ...Object.keys(nextToggles).length > 0 ? { toggles: nextToggles } : {}
   };
 }
 
@@ -38482,7 +38426,8 @@ function createModulePushes(deps) {
       existing: env.translations?.[lang] ?? {},
       ...msg.name !== undefined ? { name: msg.name } : {},
       ...msg.description !== undefined ? { description: msg.description } : {},
-      ...msg.lorebook !== undefined ? { lorebookItems: msg.lorebook } : {}
+      ...msg.lorebook !== undefined ? { lorebookItems: msg.lorebook } : {},
+      ...msg.toggles !== undefined ? { toggleItems: msg.toggles } : {}
     });
     const next = {
       ...env,
@@ -39465,7 +39410,9 @@ var applySvgRasterIndex = createApplySvgRasterIndex({
   log: log8,
   errMsg
 });
+var TRANSLATE_TARGET_LANG = "en";
 var variablesTogglesService = createVariablesTogglesService({
+  translateLang: TRANSLATE_TARGET_LANG,
   variableState,
   toggleState,
   readLumirealm: (charId, userId) => readLumirealm(charactersApi(), charId, userId),
@@ -39507,6 +39454,35 @@ createLumiInterceptors({
   log: log8,
   errMsg
 }).registerAll();
+var messagesCacheInflight = new Map;
+async function refreshMessagesCache(chatId, _userId) {
+  if (!chatId)
+    return;
+  const existing = messagesCacheInflight.get(chatId);
+  if (existing)
+    return existing;
+  const task = (async () => {
+    try {
+      const raw = await spindle.chat.getMessages(chatId);
+      const arr = Array.isArray(raw) ? raw : [];
+      const sliced = arr.length > 0 && arr[0] && arr[0].role !== "user" ? arr.slice(1) : arr;
+      const msgs = sliced.map((m) => {
+        const role = m.role === "user" ? "user" : "assistant";
+        const content = typeof m.content === "string" ? m.content : "";
+        const sendDate = typeof m.send_date === "number" ? m.send_date : null;
+        const createdAt = typeof m.created_at === "number" ? m.created_at : null;
+        return { role, content, createdAt: sendDate ?? createdAt ?? 0 };
+      });
+      setCachedMessages(chatId, msgs);
+    } catch (err) {
+      log8.warn(`refreshMessagesCache: chat=${chatId} failed: ${errMsg(err)}`);
+    } finally {
+      messagesCacheInflight.delete(chatId);
+    }
+  })();
+  messagesCacheInflight.set(chatId, task);
+  return task;
+}
 var lifecycleHandlers = createLifecycleEventHandlers({
   captureUserId,
   extractIds,
@@ -39524,6 +39500,8 @@ var lifecycleHandlers = createLifecycleEventHandlers({
   invalidateRenderMcpForMessage,
   invalidateMacroInterceptorForChat,
   invalidateListenEditPreload,
+  refreshMessagesCache,
+  invalidateMessagesCache: invalidateCachedMessages,
   clearActiveAssetIndexes,
   clearActiveCharacterImage,
   clearActiveScriptstateDefaults,
@@ -39604,7 +39582,6 @@ async function processModuleUpload(bytesIn, fileName, userId) {
     assetUploadsInFlight--;
   }
 }
-var TRANSLATE_TARGET_LANG = "en";
 var modulePushes = createModulePushes({
   translateLang: TRANSLATE_TARGET_LANG,
   readLumirealm: (charId, userId) => readLumirealm(charactersApi(), charId, userId),

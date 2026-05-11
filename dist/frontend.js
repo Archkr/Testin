@@ -7028,6 +7028,9 @@ async function translateModuleDescription(moduleId, desc) {
 async function translateLorebookComment(scope, sourceHash, comment) {
   return singleton?.request(scope, sourceHash, comment, "comment") ?? comment;
 }
+async function translateModuleToggleText(moduleId, original) {
+  return singleton?.request({ kind: "module", moduleId }, original, original, "toggle") ?? original;
+}
 function setModuleScopeLang(moduleId, lang) {
   singleton?.setScopeLang({ kind: "module", moduleId }, lang);
 }
@@ -7067,13 +7070,18 @@ function setupTranslateOrchestrator(opts) {
       for (const [hash, comment] of batch.lorebook.entries()) {
         lorebook.push({ sourceHash: hash, comment });
       }
+      const toggles = [];
+      for (const [original, translated] of batch.toggles.entries()) {
+        toggles.push({ original, translated });
+      }
       const msg = {
         type: "cache_module_translation",
         moduleId,
         lang: "en",
         ...batch.name !== undefined ? { name: batch.name.translated } : {},
         ...batch.description !== undefined ? { description: batch.description.translated } : {},
-        ...lorebook.length > 0 ? { lorebook } : {}
+        ...lorebook.length > 0 ? { lorebook } : {},
+        ...toggles.length > 0 ? { toggles } : {}
       };
       opts.sendToBackend(msg);
     }
@@ -7099,13 +7107,15 @@ function setupTranslateOrchestrator(opts) {
     if (scope.kind === "module") {
       let batch = moduleBatches.get(scope.moduleId);
       if (!batch) {
-        batch = { lorebook: new Map };
+        batch = { lorebook: new Map, toggles: new Map };
         moduleBatches.set(scope.moduleId, batch);
       }
       if (kind === "name")
         batch.name = { translated };
       else if (kind === "description")
         batch.description = { translated };
+      else if (kind === "toggle")
+        batch.toggles.set(key, translated);
       else
         batch.lorebook.set(key, translated);
     } else {
@@ -7116,7 +7126,7 @@ function setupTranslateOrchestrator(opts) {
       }
       if (kind === "name")
         batch.name = { translated };
-      else
+      else if (kind === "comment")
         batch.lorebook.set(key, translated);
     }
     scheduleFlush();
@@ -9806,15 +9816,18 @@ function mountTogglesPanel(opts) {
       det.open = true;
       const sum = document.createElement("summary");
       sum.className = "lr-toggle-group-summary";
-      sum.textContent = t.value ?? "Group";
+      sum.textContent = pickDisplayValue(t) ?? "Group";
+      kickValueTranslate(t, sum);
       det.appendChild(sum);
       const children = t.children ?? [];
       const groupAttr = pickGroupAttribution(children);
       if (groupAttr) {
         const attr = document.createElement("div");
         attr.className = "lr-toggle-attribution";
-        attr.textContent = groupAttr;
-        attr.title = `From module: ${groupAttr}`;
+        const display = pickAttributionDisplay(groupAttr);
+        attr.textContent = display;
+        attr.title = `From module: ${display}`;
+        kickAttributionTranslate(groupAttr, attr);
         det.appendChild(attr);
       }
       const body = document.createElement("div");
@@ -9830,7 +9843,8 @@ function mountTogglesPanel(opts) {
     if (t.type === "caption") {
       const cap = document.createElement("div");
       cap.className = "lr-toggle-caption";
-      cap.textContent = t.value;
+      cap.textContent = pickDisplayValue(t) ?? t.value;
+      kickValueTranslate(t, cap);
       return cap;
     }
     if (t.type === "divider") {
@@ -9839,7 +9853,8 @@ function mountTogglesPanel(opts) {
       if (t.value) {
         const lbl = document.createElement("span");
         lbl.className = "lr-toggle-divider-label";
-        lbl.textContent = t.value;
+        lbl.textContent = pickDisplayValue(t) ?? t.value;
+        kickValueTranslate(t, lbl);
         div.appendChild(lbl);
       }
       const hr = document.createElement("hr");
@@ -9850,6 +9865,27 @@ function mountTogglesPanel(opts) {
       return null;
     return renderInteractive(t);
   }
+  function pickDisplayValue(t) {
+    if (!getTranslateEnabled())
+      return t.value;
+    return t.translatedValue ?? t.value;
+  }
+  function kickValueTranslate(t, el) {
+    if (!getTranslateEnabled())
+      return;
+    if (t.translatedValue)
+      return;
+    if (!t.moduleId)
+      return;
+    const original = t.value;
+    if (!original || original.length === 0)
+      return;
+    translateModuleToggleText(t.moduleId, original).then((tx) => {
+      if (tx && tx !== original && el.isConnected && getTranslateEnabled()) {
+        el.textContent = tx;
+      }
+    });
+  }
   function renderInteractive(t) {
     const row = document.createElement("div");
     row.className = "lr-toggle-row";
@@ -9859,7 +9895,8 @@ function mountTogglesPanel(opts) {
     label.className = "lr-toggle-label";
     const labelText = document.createElement("span");
     labelText.className = "lr-toggle-label-text";
-    labelText.textContent = t.value;
+    labelText.textContent = pickDisplayValue(t) ?? t.value;
+    kickValueTranslate(t, labelText);
     label.appendChild(labelText);
     const key = t.key;
     if (t.type === "checkbox") {
@@ -9879,13 +9916,26 @@ function mountTogglesPanel(opts) {
       sel.className = "lr-toggle-select";
       const stored = readToggle(key);
       const options = t.options ?? [];
+      const txMap = t.translatedOptionsByOriginal ?? {};
+      const translateOn = getTranslateEnabled();
       for (let i = 0;i < options.length; i++) {
+        const original = options[i] ?? "";
         const opt = document.createElement("option");
         opt.value = String(i);
-        opt.textContent = options[i] ?? "";
+        const cached = translateOn ? txMap[original] : undefined;
+        opt.textContent = cached ?? original;
         if (stored === String(i))
           opt.selected = true;
         sel.appendChild(opt);
+        if (translateOn && !cached && t.moduleId && original.length > 0) {
+          const capturedOpt = opt;
+          const capturedOriginal = original;
+          translateModuleToggleText(t.moduleId, capturedOriginal).then((tx) => {
+            if (tx && tx !== capturedOriginal && capturedOpt.isConnected && getTranslateEnabled()) {
+              capturedOpt.textContent = tx;
+            }
+          });
+        }
       }
       if (!stored && options.length > 0) {
         sel.selectedIndex = 0;
@@ -9976,6 +10026,27 @@ function mountTogglesPanel(opts) {
     }
     return null;
   }
+  function pickAttributionDisplay(a) {
+    if (!getTranslateEnabled())
+      return a.name;
+    return a.translatedName ?? a.name;
+  }
+  function kickAttributionTranslate(a, el) {
+    if (!getTranslateEnabled())
+      return;
+    if (a.translatedName)
+      return;
+    if (!a.name || a.name.length === 0)
+      return;
+    const moduleId = a.moduleId;
+    const original = a.name;
+    translateModuleName(moduleId, original).then((tx) => {
+      if (tx && tx !== original && el.isConnected && getTranslateEnabled()) {
+        el.textContent = tx;
+        el.title = `From module: ${tx}`;
+      }
+    });
+  }
   function readToggle(key) {
     if (!values)
       return "";
@@ -9997,6 +10068,30 @@ function mountTogglesPanel(opts) {
     renderStatus();
     renderList();
   }
+  function seedScopeLangs(toggles) {
+    const corpusByModule = new Map;
+    for (const t of toggles) {
+      if (!t.moduleId)
+        continue;
+      let bucket = corpusByModule.get(t.moduleId);
+      if (!bucket) {
+        bucket = [];
+        corpusByModule.set(t.moduleId, bucket);
+      }
+      if (typeof t.value === "string" && t.value.length > 0)
+        bucket.push(t.value);
+      if (t.type === "select") {
+        for (const o of t.options) {
+          if (typeof o === "string" && o.length > 0)
+            bucket.push(o);
+        }
+      }
+    }
+    for (const [moduleId, corpus] of corpusByModule.entries()) {
+      setModuleScopeLang(moduleId, dominantScriptLang(corpus));
+    }
+  }
+  const unsubTranslate = subscribeTranslateEnabled(() => render());
   function handleBackendMessage(msg) {
     if (msg.type === "set_toggle_definitions") {
       if (defs && defs.chatId === msg.chatId && defs.seq > msg.seq)
@@ -10007,6 +10102,7 @@ function mountTogglesPanel(opts) {
         toggles: msg.toggles,
         attribution: msg.attribution
       };
+      seedScopeLangs(msg.toggles);
       log.info(`toggles-tab.set_toggle_definitions: chat=${msg.chatId} seq=${msg.seq} count=${msg.toggles.length}`);
       render();
       return;
@@ -10051,6 +10147,9 @@ function mountTogglesPanel(opts) {
     setActiveChatId,
     destroy() {
       log.info("toggles-panel: destroy");
+      try {
+        unsubTranslate();
+      } catch {}
       try {
         root.replaceChildren();
       } catch {}
@@ -11595,6 +11694,210 @@ function dumpHidePanelState() {
   };
 }
 
+// src/bghtml/quote-marks.ts
+var SKIP_TAGS = new Set([
+  "STYLE",
+  "SCRIPT",
+  "CODE",
+  "PRE",
+  "TEXTAREA",
+  "SVG",
+  "MATH",
+  "IFRAME"
+]);
+var DOUBLE_QUOTE_RE = /"([^"\n]+?)"/g;
+var SINGLE_QUOTE_RE = /(?<![\w$])'([^'\n]+?)'(?![\w$])/g;
+var MARK_OWN_ATTR = "data-lr-risu-quote";
+function setupQuoteMarks(flog2) {
+  const watched = new WeakSet;
+  const observers = [];
+  function shouldSkipText(textNode, root) {
+    let p = textNode.parentNode;
+    while (p && p !== root) {
+      if (p instanceof Element) {
+        const tag = p.tagName;
+        if (SKIP_TAGS.has(tag))
+          return true;
+        if (tag === "MARK" && p.hasAttribute(MARK_OWN_ATTR))
+          return true;
+      }
+      p = p.parentNode;
+    }
+    return false;
+  }
+  function buildRangeTree(ranges) {
+    ranges.sort((a, b) => a.start - b.start || b.end - a.end);
+    const roots = [];
+    const stack = [];
+    for (const r of ranges) {
+      while (stack.length > 0 && stack[stack.length - 1].end <= r.start) {
+        stack.pop();
+      }
+      const top = stack[stack.length - 1];
+      if (top && r.end > top.end)
+        continue;
+      const node = { start: r.start, end: r.end, kind: r.kind, children: [] };
+      if (top)
+        top.children.push(node);
+      else
+        roots.push(node);
+      stack.push(node);
+    }
+    return roots;
+  }
+  function renderRangeNode(text, node, doc) {
+    const mark = doc.createElement("mark");
+    mark.setAttribute("risu-mark", node.kind);
+    mark.setAttribute(MARK_OWN_ATTR, "");
+    let cursor = node.start;
+    for (const child of node.children) {
+      if (cursor < child.start)
+        mark.appendChild(doc.createTextNode(text.slice(cursor, child.start)));
+      mark.appendChild(renderRangeNode(text, child, doc));
+      cursor = child.end;
+    }
+    if (cursor < node.end)
+      mark.appendChild(doc.createTextNode(text.slice(cursor, node.end)));
+    return mark;
+  }
+  function transformTextNode(node) {
+    const t = node.nodeValue || "";
+    if (t.indexOf('"') < 0 && t.indexOf("'") < 0)
+      return;
+    const ranges = [];
+    DOUBLE_QUOTE_RE.lastIndex = 0;
+    let m;
+    while ((m = DOUBLE_QUOTE_RE.exec(t)) !== null) {
+      ranges.push({ start: m.index, end: m.index + m[0].length, kind: "quote2" });
+    }
+    SINGLE_QUOTE_RE.lastIndex = 0;
+    while ((m = SINGLE_QUOTE_RE.exec(t)) !== null) {
+      ranges.push({ start: m.index, end: m.index + m[0].length, kind: "quote1" });
+    }
+    if (ranges.length === 0)
+      return;
+    const tree = buildRangeTree(ranges);
+    if (tree.length === 0)
+      return;
+    const doc = node.ownerDocument;
+    if (!doc)
+      return;
+    const frag = doc.createDocumentFragment();
+    let cursor = 0;
+    for (const root of tree) {
+      if (cursor < root.start)
+        frag.appendChild(doc.createTextNode(t.slice(cursor, root.start)));
+      frag.appendChild(renderRangeNode(t, root, doc));
+      cursor = root.end;
+    }
+    if (cursor < t.length)
+      frag.appendChild(doc.createTextNode(t.slice(cursor)));
+    const parent = node.parentNode;
+    if (parent)
+      parent.replaceChild(frag, node);
+  }
+  function collectTextNodes(node, shadow, out) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      if (!shouldSkipText(node, shadow))
+        out.push(node);
+      return;
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE && node.nodeType !== 11)
+      return;
+    if (node instanceof Element) {
+      const tag = node.tagName;
+      if (SKIP_TAGS.has(tag))
+        return;
+      if (tag === "MARK" && node.hasAttribute(MARK_OWN_ATTR))
+        return;
+    }
+    let child = node.firstChild;
+    while (child) {
+      const next = child.nextSibling;
+      collectTextNodes(child, shadow, out);
+      child = next;
+    }
+  }
+  function walkSubtree(root, shadow) {
+    const targets = [];
+    collectTextNodes(root, shadow, targets);
+    for (const node of targets) {
+      try {
+        transformTextNode(node);
+      } catch (err) {
+        flog2.warn("quote-marks: transform threw", err);
+      }
+    }
+  }
+  function walkShadow(shadow) {
+    if (!shadow)
+      return;
+    walkSubtree(shadow, shadow);
+  }
+  function watchShadow(shadow) {
+    if (watched.has(shadow))
+      return;
+    watched.add(shadow);
+    let scheduled = false;
+    const pending = new Set;
+    const observer = new MutationObserver((mutations) => {
+      for (const mut of mutations) {
+        if (mut.type === "characterData") {
+          if (mut.target.nodeType === Node.TEXT_NODE)
+            pending.add(mut.target);
+          continue;
+        }
+        for (const n of mut.addedNodes) {
+          if (n.nodeType === Node.ELEMENT_NODE || n.nodeType === Node.TEXT_NODE) {
+            pending.add(n);
+          }
+        }
+      }
+      if (!scheduled && pending.size > 0) {
+        scheduled = true;
+        requestAnimationFrame(() => {
+          scheduled = false;
+          const targets = Array.from(pending);
+          pending.clear();
+          for (const n of targets) {
+            if (!n.isConnected)
+              continue;
+            if (n.nodeType === Node.TEXT_NODE) {
+              if (!shouldSkipText(n, shadow)) {
+                try {
+                  transformTextNode(n);
+                } catch (err) {
+                  flog2.warn("quote-marks: transform threw", err);
+                }
+              }
+            } else {
+              walkSubtree(n, shadow);
+            }
+          }
+        });
+      }
+    });
+    try {
+      observer.observe(shadow, { childList: true, subtree: true, characterData: true });
+      observers.push(observer);
+    } catch (err) {
+      flog2.warn("quote-marks: observe failed", err);
+    }
+  }
+  return {
+    walkShadow,
+    watchShadow,
+    destroy() {
+      for (const o of observers) {
+        try {
+          o.disconnect();
+        } catch {}
+      }
+      observers.length = 0;
+    }
+  };
+}
+
 // src/bghtml/island-styles.ts
 function getHidePanelSheetForIsland() {
   return getHidePanelSheet();
@@ -11615,6 +11918,7 @@ function setupIslandStyles(flog2, opts = {}) {
       destroy: () => {}
     };
   }
+  const quoteMarks = setupQuoteMarks(flog2);
   let crossRuleSheets = [];
   let lastSheetCss = null;
   let lastCrossRuleKey = null;
@@ -11664,6 +11968,10 @@ function setupIslandStyles(flog2, opts = {}) {
       const initialBase = shadow.querySelector("style[data-lumi-island-base]");
       if (initialBase)
         initialBase.remove();
+      if (sheet.cssRules.length > 0) {
+        quoteMarks.walkShadow(shadow);
+        quoteMarks.watchShadow(shadow);
+      }
       adoptionCount++;
       if (adoptionCount <= 8) {
         const host = shadow.host;
@@ -11874,8 +12182,7 @@ function rescopeRisuEnvironment(input) {
   const rootHits = (css.match(/:root\b(?!,)/g) ?? []).length;
   css = css.replaceAll(/:root\b(?!,)/g, ":root,:host");
   css += `
-/* Risu chat-shell baseline plus host overflow. */
-` + `:host{font-size:0.875rem;line-height:1.25rem;overflow:visible !important}
+:host{overflow:visible !important}
 `;
   return {
     css,
