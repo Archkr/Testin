@@ -24,6 +24,7 @@ import { expectChatChange } from '../state/own-chat-change.js';
 import { invalidateRecentFlush } from '../state/recent-flush-cache.js';
 import { getActiveAssetIndexes } from '../interpreter/asset-cache.js';
 import { getScreenDims } from '../interpreter/screen-dims-cache.js';
+import { getCachedMessages } from '../interpreter/messages-cache.js';
 import {
   getActiveCharacterImage,
   getActivePersonaImage,
@@ -223,6 +224,7 @@ export function createLumiInterceptors(deps: CreateLumiInterceptorsDeps): LumiIn
         ? parseInt(dynChatIndex, 10) - 1
         : undefined;
       const dynRole = typeof dynamicMacros?.role === 'string' ? dynamicMacros.role : undefined;
+      const cachedMessages = getCachedMessages(chatId);
 
       let resolved: string;
       try {
@@ -257,6 +259,7 @@ export function createLumiInterceptors(deps: CreateLumiInterceptorsDeps): LumiIn
             ...(typeof envChat.lastUserMessage === 'string' ? { lastUserMessage: envChat.lastUserMessage } : {}),
             ...(typeof envChat.lastCharMessage === 'string' ? { lastCharMessage: envChat.lastCharMessage } : {}),
             ...(typeof envChat.lastMessageId === 'number' ? { lastMessageId: envChat.lastMessageId } : {}),
+            ...(cachedMessages ? { messages: cachedMessages } : {}),
           },
           variables: {
             local: ctx.env.variables.local,

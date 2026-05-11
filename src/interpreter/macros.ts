@@ -21,6 +21,7 @@ import { getDecoratorBuffers } from './decorator-buffers.js';
 import { getActiveCharacterImage, getActivePersonaImage } from './image-cache.js';
 import type { AssetIndexEntry } from '../payload/types.js';
 import { normalizeRoleToLumi } from '../util/role-coerce.js';
+import { getCachedMessages } from './messages-cache.js';
 
 import { makeSafeLogger } from '../util/safe-log.js';
 
@@ -244,30 +245,34 @@ export function buildRuntimeContext(mctx: MacroInvokeCtx): RisuRuntimeContext {
   const lastMessage = String(env.chat?.lastMessage ?? '');
   const lastUser = String(env.chat?.lastUserMessage ?? '');
   const lastChar = String(env.chat?.lastCharMessage ?? '');
+  // Risu-frame full array (greeting stripped) when the cache has it. Synthesized
+  // last-user+last-char is the bootstrap fallback for chat-wide contexts.
+  const cachedFull = chatId ? getCachedMessages(chatId) : null;
   const synthesized: Message[] = [];
   if (lastUser) synthesized.push({ role: 'user', content: lastUser, createdAt: 0 });
   if (lastChar) synthesized.push({ role: 'assistant', content: lastChar, createdAt: 0 });
   if (lastMessage && !synthesized.some((m) => m.content === lastMessage)) {
     synthesized.push({ role: 'assistant', content: lastMessage, createdAt: 0 });
   }
+  const effective: readonly Message[] = cachedFull ?? synthesized;
 
   const messages = {
-    all: () => synthesized,
-    last: () => synthesized[synthesized.length - 1] ?? null,
+    all: () => effective,
+    last: () => effective[effective.length - 1] ?? null,
     lastOf: (role: Message['role']): Message | null => {
-      for (let i = synthesized.length - 1; i >= 0; i--) {
-        const m = synthesized[i]!;
+      for (let i = effective.length - 1; i >= 0; i--) {
+        const m = effective[i]!;
         if (m.role === role) return m;
       }
       return null;
     },
     count: (role?: Message['role']) => {
-      // Use presence check, not ||: messageCount can be 0 on greeting-only chats.
       if (role === undefined) {
+        if (cachedFull) return effective.length;
         return env.chat?.messageCount != null ? messageCount : synthesized.length;
       }
       let n = 0;
-      for (const m of synthesized) if (m.role === role) n++;
+      for (const m of effective) if (m.role === role) n++;
       return n;
     },
   };

@@ -67,9 +67,13 @@ register("role", (ctx) => {
   return "null";
 }, "Returns the role of the current message ('user', 'char'/'assistant', 'system').");
 
-// Risu cbs() default returns '0' (no cbsConditions.firstmsg).
+// Greeting is Risu chatID === -1. ctx.isFirstMessage is the chat-wide fallback
+// for prompt-assembly / lorebook contexts that have no per-message index.
 register("isfirstmsg", (ctx) => {
   if (ctx.cbsContext) return "0";
+  if (ctx.currentMessageIndex !== null && ctx.currentMessageIndex !== undefined) {
+    return ctx.currentMessageIndex === -1 ? "1" : "0";
+  }
   return ctx.isFirstMessage ? "1" : "0";
 }, "Returns '1' if the current context is the first (greeting) message, '0' otherwise.");
 

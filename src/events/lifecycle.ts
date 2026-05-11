@@ -35,6 +35,8 @@ export interface LifecycleEventHandlerDeps {
   readonly invalidateRenderMcpForMessage: (chatId: string, messageId: string) => void;
   readonly invalidateMacroInterceptorForChat: (chatId: string) => void;
   readonly invalidateListenEditPreload: (chatId: string) => void;
+  readonly refreshMessagesCache: (chatId: string, userId: string | undefined) => Promise<void>;
+  readonly invalidateMessagesCache: (chatId: string) => void;
   readonly clearActiveAssetIndexes: (chatId: string) => void;
   readonly clearActiveCharacterImage: (chatId: string) => void;
   readonly clearActiveScriptstateDefaults: (chatId: string) => void;
@@ -293,6 +295,7 @@ export function createLifecycleEventHandlers(deps: LifecycleEventHandlerDeps): L
       }
       deps.invalidateRenderMcpForChat(chatId);
       deps.invalidateMacroInterceptorForChat(chatId);
+      void deps.refreshMessagesCache(chatId, userId);
       await deps.refreshBgHtml(active, chatId, userId);
       await deps.refreshVariables(active, chatId, userId, { force: true });
       await deps.refreshToggleDefinitions(active, chatId, userId, { force: true });
@@ -335,6 +338,7 @@ export function createLifecycleEventHandlers(deps: LifecycleEventHandlerDeps): L
       deps.log.info(`event MESSAGE_SENT chatId=${chatId ?? '?'} characterId=${characterId ?? '?'} payload=${deps.dumpPayload(raw)}`);
       if (!chatId) return;
       deps.invalidateListenEditPreload(chatId);
+      void deps.refreshMessagesCache(chatId, userId);
       const active = await deps.ensureActiveCardForChat(chatId, characterId, userId);
       if (!active) { deps.log.info(`MESSAGE_SENT: no active card , skip`); return; }
       await deps.refreshVariables(active, chatId, userId);
@@ -376,6 +380,7 @@ export function createLifecycleEventHandlers(deps: LifecycleEventHandlerDeps): L
       }
       deps.invalidateRenderMcpForChat(chatId);
       deps.invalidateMacroInterceptorForChat(chatId);
+      void deps.refreshMessagesCache(chatId, userId);
       await deps.refreshBgHtml(active, chatId, userId);
       await deps.refreshVariables(active, chatId, userId);
     },
@@ -410,6 +415,7 @@ export function createLifecycleEventHandlers(deps: LifecycleEventHandlerDeps): L
       if (!chatId || !msgId) return;
       deps.invalidateListenEditPreload(chatId);
       deps.invalidateRenderMcpForMessage(chatId, msgId);
+      void deps.refreshMessagesCache(chatId, userId);
       const active = await deps.ensureActiveCardForChat(chatId, null, userId);
       if (!active) return;
       // No output/display bindings on swipe, Risu fires output triggers
@@ -429,6 +435,7 @@ export function createLifecycleEventHandlers(deps: LifecycleEventHandlerDeps): L
         return;
       }
       deps.invalidateRenderMcpForMessage(chatId, msgId);
+      void deps.refreshMessagesCache(chatId, userId);
       const newContent = String(p.message?.content ?? '');
       // Self-echo: own writes (Lua setChat, editOutput writeback) called
       // rememberOurWrite before editMessage, filter the echo here.
@@ -446,6 +453,7 @@ export function createLifecycleEventHandlers(deps: LifecycleEventHandlerDeps): L
       if (!chatId) return;
       deps.invalidateListenEditPreload(chatId);
       if (msgId) deps.invalidateRenderMcpForMessage(chatId, msgId);
+      void deps.refreshMessagesCache(chatId, userId);
       const active = await deps.ensureActiveCardForChat(chatId, null, userId);
       if (!active) return;
       // No bindings fire here, Risu has no binding-firing analogue for deletes.
@@ -462,6 +470,7 @@ export function createLifecycleEventHandlers(deps: LifecycleEventHandlerDeps): L
       deps.invalidateListenEditPreload(chatId);
       deps.invalidateRenderMcpForChat(chatId);
       deps.invalidateMacroInterceptorForChat(chatId);
+      deps.invalidateMessagesCache(chatId);
       invalidateRecentFlush(chatId);
       deps.lastSentBgHtmlByChat.delete(chatId);
       deps.activeCardByChat.delete(chatId);

@@ -111,6 +111,7 @@ export interface BuildEvaluatorCtxInput {
     readonly lastUserMessage?: string;
     readonly lastCharMessage?: string;
     readonly lastMessageId?: number;
+    readonly messages?: readonly Message[];
   };
   readonly variables: {
     readonly local?: Readonly<Record<string, string>>;
@@ -240,28 +241,34 @@ export function buildEvaluatorContext(input: BuildEvaluatorCtxInput): EvaluatorC
   const lastMessage = String(chat.lastMessage ?? "");
   const lastUser = String(chat.lastUserMessage ?? "");
   const lastChar = String(chat.lastCharMessage ?? "");
+  // Prefer the full pre-loaded array when the caller supplied it (lumi-hooks
+  // pulls from messages-cache). Synthesized lastUser+lastChar is the fallback
+  // for chat-wide / bootstrap contexts where the cache is missing.
+  const fullMessages = chat.messages;
   const synthesized: Message[] = [];
   if (lastUser) synthesized.push({ role: "user", content: lastUser, createdAt: 0 });
   if (lastChar) synthesized.push({ role: "assistant", content: lastChar, createdAt: 0 });
   if (lastMessage && !synthesized.some((m) => m.content === lastMessage)) {
     synthesized.push({ role: "assistant", content: lastMessage, createdAt: 0 });
   }
+  const effective: readonly Message[] = fullMessages ?? synthesized;
   const messages = {
-    all: () => synthesized,
-    last: () => synthesized[synthesized.length - 1] ?? null,
+    all: () => effective,
+    last: () => effective[effective.length - 1] ?? null,
     lastOf: (role: Message["role"]): Message | null => {
-      for (let i = synthesized.length - 1; i >= 0; i--) {
-        const m = synthesized[i]!;
+      for (let i = effective.length - 1; i >= 0; i--) {
+        const m = effective[i]!;
         if (m.role === role) return m;
       }
       return null;
     },
     count: (role?: Message["role"]): number => {
       if (role === undefined) {
+        if (fullMessages) return effective.length;
         return chat.messageCount != null ? messageCount : synthesized.length;
       }
       let n = 0;
-      for (const m of synthesized) if (m.role === role) n++;
+      for (const m of effective) if (m.role === role) n++;
       return n;
     },
   };

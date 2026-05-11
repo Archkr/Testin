@@ -65,6 +65,7 @@ import {
 } from './interpreter/modules-by-namespace-cache.js';
 import { clearVarOverlay } from './interpreter/evaluator/context.js';
 import { invalidateListenEditPreload } from './interpreter/listenedit-preload.js';
+import { setCachedMessages, invalidateCachedMessages } from './interpreter/messages-cache.js';
 import { setScreenDims } from './interpreter/screen-dims-cache.js';
 import { VariableStateStore } from './state/variables-state.js';
 import { ToggleStateStore } from './state/toggle-state.js';
@@ -865,6 +866,36 @@ createLumiInterceptors({
   errMsg,
 }).registerAll();
 
+// Strip msgs[0] when it's the greeting (non-user) so cached array sits in
+// Risu frame, currentMessageIndex (also Risu-frame) indexes correctly.
+const messagesCacheInflight = new Map<string, Promise<void>>();
+async function refreshMessagesCache(chatId: string, _userId: string | undefined): Promise<void> {
+  if (!chatId) return;
+  const existing = messagesCacheInflight.get(chatId);
+  if (existing) return existing;
+  const task = (async () => {
+    try {
+      const raw = (await spindle.chat.getMessages(chatId)) as readonly Record<string, unknown>[];
+      const arr = Array.isArray(raw) ? raw : [];
+      const sliced = arr.length > 0 && arr[0] && arr[0].role !== 'user' ? arr.slice(1) : arr;
+      const msgs = sliced.map((m) => {
+        const role = m.role === 'user' ? ('user' as const) : ('assistant' as const);
+        const content = typeof m.content === 'string' ? m.content : '';
+        const sendDate = typeof m.send_date === 'number' ? m.send_date : null;
+        const createdAt = typeof m.created_at === 'number' ? m.created_at : null;
+        return { role, content, createdAt: sendDate ?? createdAt ?? 0 };
+      });
+      setCachedMessages(chatId, msgs);
+    } catch (err) {
+      log.warn(`refreshMessagesCache: chat=${chatId} failed: ${errMsg(err)}`);
+    } finally {
+      messagesCacheInflight.delete(chatId);
+    }
+  })();
+  messagesCacheInflight.set(chatId, task);
+  return task;
+}
+
 // SETTINGS_UPDATED activeChatId fires on chat navigation. Warms the active-card cache and renders bg-html.
 const lifecycleHandlers = createLifecycleEventHandlers({
   captureUserId,
@@ -884,6 +915,8 @@ const lifecycleHandlers = createLifecycleEventHandlers({
   invalidateRenderMcpForMessage,
   invalidateMacroInterceptorForChat,
   invalidateListenEditPreload,
+  refreshMessagesCache,
+  invalidateMessagesCache: invalidateCachedMessages,
   clearActiveAssetIndexes,
   clearActiveCharacterImage,
   clearActiveScriptstateDefaults,
