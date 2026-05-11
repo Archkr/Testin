@@ -21,9 +21,11 @@ type Scope = ModuleScope | CharacterScope;
 
 const FLUSH_INTERVAL_MS = 250;
 
+export type TranslateKind = 'name' | 'description' | 'comment' | 'toggle';
+
 export interface TranslateOrchestrator {
   // Returns `original` if browser translator is unavailable or text is empty.
-  request(scope: Scope, key: string, original: string, kind: 'name' | 'description' | 'comment'): Promise<string>;
+  request(scope: Scope, key: string, original: string, kind: TranslateKind): Promise<string>;
   // Pin a source language for a scope. Skips per-string detection inside the scope.
   setScopeLang(scope: Scope, lang: string | null): void;
   flush(): void;
@@ -63,6 +65,11 @@ export async function translateLorebookComment(
   return singleton?.request(scope, sourceHash, comment, 'comment') ?? comment;
 }
 
+export async function translateModuleToggleText(moduleId: string, original: string): Promise<string> {
+  // Toggle row identity IS the text itself, so key === original.
+  return singleton?.request({ kind: 'module', moduleId }, original, original, 'toggle') ?? original;
+}
+
 // `lang === null` means the scope is already in the target language, skip translation.
 // `lang === undefined` resets the scope so the next request falls back to per-string detection.
 export function setModuleScopeLang(moduleId: string, lang: string | null): void {
@@ -80,6 +87,7 @@ export function setupTranslateOrchestrator(opts: TranslateOrchestratorOpts): Tra
     name?: { translated: string };
     description?: { translated: string };
     lorebook: Map<string, string>;
+    toggles: Map<string, string>;
   }>();
   const characterBatches = new Map<string, {
     name?: { translated: string };
@@ -113,6 +121,10 @@ export function setupTranslateOrchestrator(opts: TranslateOrchestratorOpts): Tra
       for (const [hash, comment] of batch.lorebook.entries()) {
         lorebook.push({ sourceHash: hash, comment });
       }
+      const toggles: Array<{ original: string; translated: string }> = [];
+      for (const [original, translated] of batch.toggles.entries()) {
+        toggles.push({ original, translated });
+      }
       const msg: FrontendToBackend = {
         type: 'cache_module_translation',
         moduleId,
@@ -120,6 +132,7 @@ export function setupTranslateOrchestrator(opts: TranslateOrchestratorOpts): Tra
         ...(batch.name !== undefined ? { name: batch.name.translated } : {}),
         ...(batch.description !== undefined ? { description: batch.description.translated } : {}),
         ...(lorebook.length > 0 ? { lorebook } : {}),
+        ...(toggles.length > 0 ? { toggles } : {}),
       };
       opts.sendToBackend(msg);
     }
@@ -141,15 +154,16 @@ export function setupTranslateOrchestrator(opts: TranslateOrchestratorOpts): Tra
     characterBatches.clear();
   }
 
-  function enqueue(scope: Scope, key: string, kind: 'name' | 'description' | 'comment', translated: string): void {
+  function enqueue(scope: Scope, key: string, kind: TranslateKind, translated: string): void {
     if (scope.kind === 'module') {
       let batch = moduleBatches.get(scope.moduleId);
       if (!batch) {
-        batch = { lorebook: new Map() };
+        batch = { lorebook: new Map(), toggles: new Map() };
         moduleBatches.set(scope.moduleId, batch);
       }
       if (kind === 'name') batch.name = { translated };
       else if (kind === 'description') batch.description = { translated };
+      else if (kind === 'toggle') batch.toggles.set(key, translated);
       else batch.lorebook.set(key, translated);
     } else {
       let batch = characterBatches.get(scope.characterId);
@@ -158,7 +172,7 @@ export function setupTranslateOrchestrator(opts: TranslateOrchestratorOpts): Tra
         characterBatches.set(scope.characterId, batch);
       }
       if (kind === 'name') batch.name = { translated };
-      else batch.lorebook.set(key, translated);
+      else if (kind === 'comment') batch.lorebook.set(key, translated);
     }
     scheduleFlush();
   }
@@ -167,7 +181,7 @@ export function setupTranslateOrchestrator(opts: TranslateOrchestratorOpts): Tra
     scope: Scope,
     key: string,
     original: string,
-    kind: 'name' | 'description' | 'comment',
+    kind: TranslateKind,
   ): Promise<string> {
     if (!original || original.trim().length === 0) return original;
     const flightKey = inFlightKey(scope, key, original);

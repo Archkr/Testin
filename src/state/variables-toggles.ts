@@ -5,7 +5,6 @@ import type { BackendToFrontend, SidebarToggleWire } from '../types/messages.js'
 import type { LumirealmCharacterData } from '../payload/types.js';
 import type { ModuleEnvelope } from './modules-store.js';
 import {
-  collectModuleToggleDsl,
   extractToggleKeys,
   parseToggleSyntax,
   type SidebarToggle,
@@ -33,7 +32,21 @@ function sanitizeVarMap(raw: unknown): Record<string, string> {
   return out;
 }
 
-function toggleToWire(t: SidebarToggle): SidebarToggleWire {
+function toggleToWire(
+  t: SidebarToggle,
+  moduleId: string,
+  toggleTranslations: Readonly<Record<string, string>>,
+): SidebarToggleWire {
+  const tx = (s: string | undefined): string | undefined => {
+    if (s === undefined || s.length === 0) return undefined;
+    const cached = toggleTranslations[s];
+    return cached !== undefined && cached !== s ? cached : undefined;
+  };
+  const translatedValue = tx(t.value);
+  const base = {
+    moduleId,
+    ...(translatedValue !== undefined ? { translatedValue } : {}),
+  };
   switch (t.type) {
     case 'group':
     case 'groupEnd':
@@ -42,20 +55,32 @@ function toggleToWire(t: SidebarToggle): SidebarToggleWire {
         type: t.type,
         ...(t.key !== undefined ? { key: t.key } : {}),
         ...(t.value !== undefined ? { value: t.value } : {}),
+        ...base,
       };
     case 'caption':
       return {
         type: 'caption',
         ...(t.key !== undefined ? { key: t.key } : {}),
         value: t.value ?? '',
+        ...base,
       };
-    case 'select':
+    case 'select': {
+      const optionsMap: Record<string, string> = {};
+      for (const opt of t.options) {
+        const cached = toggleTranslations[opt];
+        if (cached !== undefined && cached !== opt) optionsMap[opt] = cached;
+      }
       return {
         type: 'select',
         key: t.key,
         value: t.value,
         options: [...t.options],
+        ...(Object.keys(optionsMap).length > 0
+          ? { translatedOptionsByOriginal: optionsMap }
+          : {}),
+        ...base,
       };
+    }
     case undefined:
     case 'text':
     case 'textarea':
@@ -64,11 +89,13 @@ function toggleToWire(t: SidebarToggle): SidebarToggleWire {
         key: t.key,
         value: t.value,
         ...(t.options !== undefined ? { options: [...t.options] } : {}),
+        ...base,
       };
   }
 }
 
 export interface VariablesTogglesDeps {
+  readonly translateLang: string;
   readonly variableState: VariableStateStore;
   readonly toggleState: ToggleStateStore;
   readonly readLumirealm: (
@@ -123,6 +150,7 @@ export interface VariablesTogglesService {
 
 export function createVariablesTogglesService(deps: VariablesTogglesDeps): VariablesTogglesService {
   const {
+    translateLang,
     variableState,
     toggleState,
     readLumirealm,
@@ -261,39 +289,45 @@ export function createVariablesTogglesService(deps: VariablesTogglesDeps): Varia
     characterId: string,
     userId: string,
   ): Promise<{
-    flatToggles: readonly SidebarToggle[];
+    wireRows: readonly SidebarToggleWire[];
     attribution: Record<string, string>;
+    keyCount: number;
   }> {
     const fetched = await readLumirealm(characterId, userId);
-    if (!fetched || !fetched.data) return { flatToggles: [], attribution: {} };
+    if (!fetched || !fetched.data) return { wireRows: [], attribution: {}, keyCount: 0 };
     const attachedIds = fetched.data.user_overrides.attached_module_ids ?? [];
-    if (attachedIds.length === 0) return { flatToggles: [], attribution: {} };
+    if (attachedIds.length === 0) return { wireRows: [], attribution: {}, keyCount: 0 };
 
     const envelopes = await readAttachedModuleEnvelopes(userId, attachedIds);
-    const modulesForToggle = envelopes.map((env) => {
-      const m = env.module as { customModuleToggle?: unknown; name?: unknown };
-      return {
-        customModuleToggle: typeof m.customModuleToggle === 'string' ? m.customModuleToggle : '',
-        displayName: typeof m.name === 'string' ? m.name : env.id,
-      };
-    });
 
-    // Build per-module attribution alongside the concatenated DSL by parsing each module's DSL in isolation, then unioning the keys.
     const attribution: Record<string, string> = {};
-    for (const m of modulesForToggle) {
-      if (!m.customModuleToggle) continue;
-      const localFlat = parseToggleSyntax(m.customModuleToggle);
+    const wireRows: SidebarToggleWire[] = [];
+    let keyCount = 0;
+
+    for (const env of envelopes) {
+      const m = env.module as { customModuleToggle?: unknown; name?: unknown };
+      const dsl = typeof m.customModuleToggle === 'string' ? m.customModuleToggle : '';
+      if (!dsl) continue;
+      const localFlat: readonly SidebarToggle[] = parseToggleSyntax(dsl);
+      if (localFlat.length === 0) continue;
+
+      const translatedName = env.translations?.[translateLang]?.name;
+      const originalName = typeof m.name === 'string' ? m.name : env.id;
+      const attributionName = translatedName && translatedName.length > 0 ? translatedName : originalName;
       for (const k of extractToggleKeys(localFlat)) {
-        // First module wins on collision.
         if (!Object.prototype.hasOwnProperty.call(attribution, k)) {
-          attribution[k] = m.displayName;
+          attribution[k] = attributionName;
         }
+      }
+      keyCount += extractToggleKeys(localFlat).length;
+
+      const toggleTranslations = env.translations?.[translateLang]?.toggles ?? {};
+      for (const t of localFlat) {
+        wireRows.push(toggleToWire(t, env.id, toggleTranslations));
       }
     }
 
-    const concat = collectModuleToggleDsl(modulesForToggle);
-    const flatToggles = parseToggleSyntax(concat);
-    return { flatToggles, attribution };
+    return { wireRows, attribution, keyCount };
   }
 
   async function refreshToggleDefinitions(
@@ -306,12 +340,11 @@ export function createVariablesTogglesService(deps: VariablesTogglesDeps): Varia
       log.debug(`toggles.refresh: skip chat=${chatId},userId not yet captured`);
       return;
     }
-    const { flatToggles, attribution } = await loadToggleDsl(
+    const { wireRows, attribution, keyCount } = await loadToggleDsl(
       active.card.character_id,
       userId,
     );
-    const wire = flatToggles.map(toggleToWire);
-    const result = toggleState.applySnapshot(chatId, wire, attribution);
+    const result = toggleState.applySnapshot(chatId, wireRows, attribution);
     if (result.changed || opts?.force) {
       send({
         type: 'set_toggle_definitions',
@@ -323,7 +356,7 @@ export function createVariablesTogglesService(deps: VariablesTogglesDeps): Varia
       }, userId);
       log.info(
         `toggles.refresh: pushed chat=${chatId} seq=${result.entry.seq} ` +
-          `count=${wire.length} keys=${extractToggleKeys(flatToggles).length} forced=${!!opts?.force}`,
+          `count=${wireRows.length} keys=${keyCount} forced=${!!opts?.force}`,
       );
     } else {
       log.debug(`toggles.refresh: unchanged chat=${chatId} seq=${result.entry.seq}`);

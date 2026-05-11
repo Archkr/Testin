@@ -821,7 +821,10 @@ const applySvgRasterIndex = createApplySvgRasterIndex({
   errMsg,
 });
 
+const TRANSLATE_TARGET_LANG = 'en';
+
 const variablesTogglesService = createVariablesTogglesService({
+  translateLang: TRANSLATE_TARGET_LANG,
   variableState,
   toggleState,
   readLumirealm: (charId, userId) => readLumirealm(charactersApi(), charId, userId),
@@ -1022,8 +1025,6 @@ async function processModuleUpload(
 
 
 
-
-const TRANSLATE_TARGET_LANG = 'en';
 
 const modulePushes = createModulePushes({
   translateLang: TRANSLATE_TARGET_LANG,

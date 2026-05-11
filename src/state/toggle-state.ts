@@ -1,6 +1,4 @@
-// Per-chat toggle-definition snapshot store. Twin of variables-state.ts.
-// Deduplicates `set_toggle_definitions` pushes via signature. Toggle values
-// flow through `set_variables` separately.
+// Per-chat toggle-definition snapshot store. Dedups pushes via signature.
 
 import type { SidebarToggleWire } from '../types/messages.js';
 
@@ -58,6 +56,10 @@ export class ToggleStateStore {
 }
 
 function cloneToggle(t: SidebarToggleWire): SidebarToggleWire {
+  const common = {
+    ...(t.translatedValue !== undefined ? { translatedValue: t.translatedValue } : {}),
+    ...(t.moduleId !== undefined ? { moduleId: t.moduleId } : {}),
+  };
   switch (t.type) {
     case 'group':
     case 'groupEnd':
@@ -66,12 +68,14 @@ function cloneToggle(t: SidebarToggleWire): SidebarToggleWire {
         type: t.type,
         ...(t.key !== undefined ? { key: t.key } : {}),
         ...(t.value !== undefined ? { value: t.value } : {}),
+        ...common,
       };
     case 'caption':
       return {
         type: 'caption',
         ...(t.key !== undefined ? { key: t.key } : {}),
         value: t.value,
+        ...common,
       };
     case 'select':
       return {
@@ -79,6 +83,10 @@ function cloneToggle(t: SidebarToggleWire): SidebarToggleWire {
         key: t.key,
         value: t.value,
         options: [...t.options],
+        ...(t.translatedOptionsByOriginal !== undefined
+          ? { translatedOptionsByOriginal: { ...t.translatedOptionsByOriginal } }
+          : {}),
+        ...common,
       };
     case 'text':
     case 'textarea':
@@ -88,6 +96,7 @@ function cloneToggle(t: SidebarToggleWire): SidebarToggleWire {
         key: t.key,
         value: t.value,
         ...(t.options !== undefined ? { options: [...t.options] } : {}),
+        ...common,
       };
   }
 }
@@ -96,7 +105,6 @@ function signature(
   toggles: readonly SidebarToggleWire[],
   attribution: Readonly<Record<string, string>>,
 ): string {
-  // Toggles are order-sensitive (DSL group nesting). Attribution keys sorted for stability.
   const attrKeys = Object.keys(attribution).sort();
   return JSON.stringify({
     t: toggles,

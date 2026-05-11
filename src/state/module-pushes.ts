@@ -173,6 +173,7 @@ export function createModulePushes(deps: ModulePushesDeps): ModulePushes {
       ...(msg.name !== undefined ? { name: msg.name } : {}),
       ...(msg.description !== undefined ? { description: msg.description } : {}),
       ...(msg.lorebook !== undefined ? { lorebookItems: msg.lorebook } : {}),
+      ...(msg.toggles !== undefined ? { toggleItems: msg.toggles } : {}),
     });
     const next: typeof env = {
       ...env,

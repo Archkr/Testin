@@ -5,6 +5,9 @@ import type {
   VariableScopes,
 } from '../types/messages.js';
 import type { FrontendLog } from './drawer.js';
+import { getTranslateEnabled, subscribeTranslateEnabled } from './translate-toggle.js';
+import { translateModuleToggleText, setModuleScopeLang } from './translate-orchestrator.js';
+import { dominantScriptLang } from './browser-translator.js';
 
 // Renders customModuleToggle DSL for the active chat.
 // Risu citations: util.ts, modules.ts, Toggles.svelte:86,95,100,118-119
@@ -103,7 +106,8 @@ export function mountTogglesPanel(opts: MountTogglesPanelOptions): TogglesTabHan
       det.open = true;
       const sum = document.createElement('summary');
       sum.className = 'lr-toggle-group-summary';
-      sum.textContent = t.value ?? 'Group';
+      sum.textContent = pickDisplayValue(t) ?? 'Group';
+      kickValueTranslate(t, sum);
       det.appendChild(sum);
       const children = t.children ?? [];
       const groupAttr = pickGroupAttribution(children);
@@ -126,7 +130,8 @@ export function mountTogglesPanel(opts: MountTogglesPanelOptions): TogglesTabHan
     if (t.type === 'caption') {
       const cap = document.createElement('div');
       cap.className = 'lr-toggle-caption';
-      cap.textContent = t.value;
+      cap.textContent = pickDisplayValue(t) ?? t.value;
+      kickValueTranslate(t, cap);
       return cap;
     }
     if (t.type === 'divider') {
@@ -135,15 +140,34 @@ export function mountTogglesPanel(opts: MountTogglesPanelOptions): TogglesTabHan
       if (t.value) {
         const lbl = document.createElement('span');
         lbl.className = 'lr-toggle-divider-label';
-        lbl.textContent = t.value;
+        lbl.textContent = pickDisplayValue(t) ?? t.value;
+        kickValueTranslate(t, lbl);
         div.appendChild(lbl);
       }
       const hr = document.createElement('hr');
       div.appendChild(hr);
       return div;
     }
-    if (t.type === 'groupEnd') return null; // consumed by groupFlat
+    if (t.type === 'groupEnd') return null;
     return renderInteractive(t);
+  }
+
+  function pickDisplayValue(t: SidebarToggleWire): string | undefined {
+    if (!getTranslateEnabled()) return t.value;
+    return t.translatedValue ?? t.value;
+  }
+
+  function kickValueTranslate(t: SidebarToggleWire, el: HTMLElement): void {
+    if (!getTranslateEnabled()) return;
+    if (t.translatedValue) return;
+    if (!t.moduleId) return;
+    const original = t.value;
+    if (!original || original.length === 0) return;
+    void translateModuleToggleText(t.moduleId, original).then((tx) => {
+      if (tx && tx !== original && el.isConnected && getTranslateEnabled()) {
+        el.textContent = tx;
+      }
+    });
   }
 
   function renderInteractive(t: SidebarToggleWire): HTMLElement {
@@ -156,7 +180,8 @@ export function mountTogglesPanel(opts: MountTogglesPanelOptions): TogglesTabHan
     label.className = 'lr-toggle-label';
     const labelText = document.createElement('span');
     labelText.className = 'lr-toggle-label-text';
-    labelText.textContent = (t as { value: string }).value;
+    labelText.textContent = pickDisplayValue(t) ?? (t as { value: string }).value;
+    kickValueTranslate(t, labelText);
     label.appendChild(labelText);
 
     const key = (t as { key: string }).key;
@@ -178,12 +203,28 @@ export function mountTogglesPanel(opts: MountTogglesPanelOptions): TogglesTabHan
       sel.className = 'lr-toggle-select';
       const stored = readToggle(key);
       const options = t.options ?? [];
+      const txMap = t.translatedOptionsByOriginal ?? {};
+      const translateOn = getTranslateEnabled();
       for (let i = 0; i < options.length; i++) {
+        const original = options[i] ?? '';
         const opt = document.createElement('option');
         opt.value = String(i);
-        opt.textContent = options[i] ?? '';
+        const cached = translateOn ? txMap[original] : undefined;
+        opt.textContent = cached ?? original;
         if (stored === String(i)) opt.selected = true;
         sel.appendChild(opt);
+        if (translateOn && !cached && t.moduleId && original.length > 0) {
+          const capturedOpt = opt;
+          const capturedOriginal = original;
+          void translateModuleToggleText(t.moduleId, capturedOriginal).then((tx) => {
+            if (
+              tx && tx !== capturedOriginal &&
+              capturedOpt.isConnected && getTranslateEnabled()
+            ) {
+              capturedOpt.textContent = tx;
+            }
+          });
+        }
       }
       if (!stored && options.length > 0) {
         sel.selectedIndex = 0;
@@ -278,9 +319,31 @@ export function mountTogglesPanel(opts: MountTogglesPanelOptions): TogglesTabHan
     renderList();
   }
 
+  function seedScopeLangs(toggles: readonly SidebarToggleWire[]): void {
+    const corpusByModule = new Map<string, string[]>();
+    for (const t of toggles) {
+      if (!t.moduleId) continue;
+      let bucket = corpusByModule.get(t.moduleId);
+      if (!bucket) {
+        bucket = [];
+        corpusByModule.set(t.moduleId, bucket);
+      }
+      if (typeof t.value === 'string' && t.value.length > 0) bucket.push(t.value);
+      if (t.type === 'select') {
+        for (const o of t.options) {
+          if (typeof o === 'string' && o.length > 0) bucket.push(o);
+        }
+      }
+    }
+    for (const [moduleId, corpus] of corpusByModule.entries()) {
+      setModuleScopeLang(moduleId, dominantScriptLang(corpus));
+    }
+  }
+
+  const unsubTranslate = subscribeTranslateEnabled(() => render());
+
   function handleBackendMessage(msg: BackendToFrontend): void {
     if (msg.type === 'set_toggle_definitions') {
-      // Out-of-order push guard.
       if (defs && defs.chatId === msg.chatId && defs.seq > msg.seq) return;
       defs = {
         chatId: msg.chatId,
@@ -288,6 +351,7 @@ export function mountTogglesPanel(opts: MountTogglesPanelOptions): TogglesTabHan
         toggles: msg.toggles,
         attribution: msg.attribution,
       };
+      seedScopeLangs(msg.toggles);
       log.info(`toggles-tab.set_toggle_definitions: chat=${msg.chatId} seq=${msg.seq} count=${msg.toggles.length}`);
       render();
       return;
@@ -331,6 +395,7 @@ export function mountTogglesPanel(opts: MountTogglesPanelOptions): TogglesTabHan
     setActiveChatId,
     destroy(): void {
       log.info('toggles-panel: destroy');
+      try { unsubTranslate(); } catch { /* ignore */ }
       try { root.replaceChildren(); } catch { /* ignore */ }
     },
   };

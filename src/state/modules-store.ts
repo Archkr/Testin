@@ -62,6 +62,9 @@ export interface ModuleLangTranslation {
   readonly description?: string;
   // Lorebook entry translations keyed by extensions._risu_source_hash.
   readonly lorebook?: Readonly<Record<string, EntryTranslation>>;
+  // Toggle DSL labels + caption / divider / group / option text, keyed by original text.
+  // Per-row identity is the text itself, so two rows with identical text share one translation.
+  readonly toggles?: Readonly<Record<string, string>>;
 }
 
 export interface EntryTranslation {

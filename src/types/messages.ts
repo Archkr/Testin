@@ -224,6 +224,7 @@ export type FrontendToBackend =
       name?: string;
       description?: string;
       lorebook?: ReadonlyArray<{ readonly sourceHash: string; readonly comment?: string }>;
+      toggles?: ReadonlyArray<{ readonly original: string; readonly translated: string }>;
     }
   | {
       type: 'cache_character_translation';
@@ -778,21 +779,51 @@ export type LogLevelWire = 'silent' | 'error' | 'warn' | 'info' | 'debug' | 'tra
 /** Wire shape for one parsed toggle row. Mirrors `SidebarToggle` from
  *  `src/core/toggle-syntax.ts`, duplicated here to avoid a dep on `core/`. */
 export type SidebarToggleWire =
-  | { readonly type: 'group'; readonly key?: string; readonly value?: string }
-  | { readonly type: 'groupEnd'; readonly key?: string; readonly value?: string }
-  | { readonly type: 'caption'; readonly key?: string; readonly value: string }
-  | { readonly type: 'divider'; readonly key?: string; readonly value?: string }
+  | {
+      readonly type: 'group';
+      readonly key?: string;
+      readonly value?: string;
+      readonly translatedValue?: string;
+      readonly moduleId?: string;
+    }
+  | {
+      readonly type: 'groupEnd';
+      readonly key?: string;
+      readonly value?: string;
+      readonly translatedValue?: string;
+      readonly moduleId?: string;
+    }
+  | {
+      readonly type: 'caption';
+      readonly key?: string;
+      readonly value: string;
+      readonly translatedValue?: string;
+      readonly moduleId?: string;
+    }
+  | {
+      readonly type: 'divider';
+      readonly key?: string;
+      readonly value?: string;
+      readonly translatedValue?: string;
+      readonly moduleId?: string;
+    }
   | {
       readonly type: 'select';
       readonly key: string;
       readonly value: string;
+      readonly translatedValue?: string;
       readonly options: readonly string[];
+      /** Partial map keyed by ORIGINAL option text. Missing entries fall back to original. */
+      readonly translatedOptionsByOriginal?: Readonly<Record<string, string>>;
+      readonly moduleId?: string;
     }
   | {
       readonly type: 'text' | 'textarea' | 'checkbox';
       readonly key: string;
       readonly value: string;
+      readonly translatedValue?: string;
       readonly options?: readonly string[];
+      readonly moduleId?: string;
     };
 
 export interface AuxSamplersWire {
