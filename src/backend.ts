@@ -167,6 +167,7 @@ import {
   readEnvelope as readModuleEnvelope,
   writeEnvelope as writeModuleEnvelope,
 } from './state/modules-store.js';
+import { registerLumiagentBridge } from './lumiagent-bridge.js';
 
 const EXTENSION_VERSION = '0.1.0';
 
@@ -979,6 +980,11 @@ const moduleUploadSessions = new Map<string, ModuleUploadSession>();
 function moduleStorage(): import('./state/modules-store.js').UserStorageLike {
   return spindle.userStorage as unknown as import('./state/modules-store.js').UserStorageLike;
 }
+
+// Expose modules to LumiAgent (and any other extension that implements the
+// `lumiagent.*` surface-provider protocol). One-line opt-in; see
+// `src/lumiagent-bridge.ts` for the full protocol.
+registerLumiagentBridge(spindle, moduleStorage, (msg) => spindle.log.info(msg));
 
 const moduleUploader = createModuleUploader({
   decodeRisum,

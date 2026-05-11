@@ -39010,6 +39010,188 @@ function checkHostVersion(hostVersion, minimum) {
     message: `LumiRealm requires Lumiverse ${minimum} or newer, but this host is running ${hostVersion}. ` + `Some features may fail or behave unexpectedly. Update Lumiverse for the intended experience.`
   };
 }
+// src/lumiagent-bridge.ts
+var MANIFEST = {
+  extension: { id: "lumirealm", name: "LumiRealm", version: "0.1.0" },
+  surfaces: [
+    {
+      id: "module_envelope",
+      label: "Risu modules",
+      item_kind: "module envelope",
+      description: "Pre-translate Risu module envelopes. Each module carries its own triggers, lua scripts, background HTML, regex projection, and asset indexes. " + "The lorebook + regex_scripts of an ATTACHED module are also installed as Lumi-level entities (character world books / regex scripts) and editable through the normal LumiAgent tools \u2014 this surface gives you access to the source-of-truth envelope, which survives translator schema migrations.",
+      scope: { kind: "per_character" },
+      fields: [
+        { path: "filename", label: "Filename", type: "string", editable: false },
+        { path: "module.name", label: "Name", type: "string", editable: true },
+        { path: "module.description", label: "Description", type: "string", editable: true, large: true },
+        { path: "module.backgroundHTML", label: "Background HTML", description: "Module-level UI HTML/CSS rendered at chat time after macro substitution.", type: "string", editable: true, large: true },
+        { path: "module.triggers", label: "Triggers (V2 effects)", description: "V2 effect array. String-bearing leaves (button labels, dialog choices) are translatable; do not change opcode structure.", type: "array", editable: true },
+        { path: "module.lua_scripts", label: "Lua scripts", description: "Read-only territory unless the user explicitly asks. Touch string literals only.", type: "array", editable: true },
+        { path: "module.lorebook", label: "Lorebook (envelope copy)", description: "Pre-translation source. The INSTALLED copy is editable via edit_world_book_entry; only edit here when migration-safety matters.", type: "array", editable: true },
+        { path: "module.regex", label: "Regex scripts (envelope copy)", description: "Pre-projection source. The INSTALLED copy is editable via edit_regex_script_field; only edit here when migration-safety matters.", type: "array", editable: true },
+        { path: "module.scriptstate_defaults", label: "Script state defaults", type: "object", editable: true },
+        { path: "translator_schema_version", label: "Translator schema version", type: "any", editable: false }
+      ]
+    }
+  ]
+};
+function parsePath(path) {
+  const segments = [];
+  let i = 0;
+  while (i < path.length) {
+    const ch = path[i];
+    if (ch === ".") {
+      i++;
+      continue;
+    }
+    if (ch === "[") {
+      const end = path.indexOf("]", i);
+      if (end < 0)
+        throw new Error(`unclosed bracket in path at index ${i}`);
+      const inner = path.slice(i + 1, end);
+      if (/^\d+$/.test(inner)) {
+        segments.push({ kind: "index", value: parseInt(inner, 10) });
+      } else if (inner.startsWith("'") && inner.endsWith("'") && inner.length >= 2 || inner.startsWith('"') && inner.endsWith('"') && inner.length >= 2) {
+        segments.push({ kind: "key", value: inner.slice(1, -1) });
+      } else {
+        throw new Error(`bracket contents must be a number or quoted string: [${inner}]`);
+      }
+      i = end + 1;
+      continue;
+    }
+    let j = i;
+    while (j < path.length && path[j] !== "." && path[j] !== "[")
+      j++;
+    const key4 = path.slice(i, j);
+    if (key4.length === 0)
+      throw new Error(`empty key at index ${i}`);
+    segments.push({ kind: "key", value: key4 });
+    i = j;
+  }
+  return segments;
+}
+function getAtPath(obj, segments) {
+  let cur = obj;
+  for (const seg of segments) {
+    if (cur === null || cur === undefined)
+      return;
+    if (seg.kind === "key") {
+      if (typeof cur !== "object" || Array.isArray(cur))
+        return;
+      cur = cur[seg.value];
+    } else {
+      if (!Array.isArray(cur))
+        return;
+      cur = cur[seg.value];
+    }
+  }
+  return cur;
+}
+function setAtPath(root, segments, value) {
+  if (segments.length === 0)
+    return value;
+  const [head, ...rest] = segments;
+  if (head.kind === "index") {
+    const arr = Array.isArray(root) ? [...root] : [];
+    arr[head.value] = setAtPath(arr[head.value], rest, value);
+    return arr;
+  }
+  const obj = root && typeof root === "object" && !Array.isArray(root) ? { ...root } : {};
+  obj[head.value] = setAtPath(obj[head.value], rest, value);
+  return obj;
+}
+async function getAttachedModuleIdsForCharacter(spindle2, userId, characterId) {
+  try {
+    const c = await spindle2.characters.get(characterId, userId);
+    const lumi = c?.extensions?.["lumirealm"];
+    const overrides = lumi?.["user_overrides"];
+    const ids = overrides?.["attached_module_ids"];
+    if (Array.isArray(ids))
+      return ids.filter((x) => typeof x === "string");
+    return [];
+  } catch {
+    return [];
+  }
+}
+async function dispatchRequest(spindle2, moduleStorage, req) {
+  if (req.surfaceId !== "module_envelope") {
+    throw new Error(`unknown surface: ${req.surfaceId}`);
+  }
+  if (req.op === "list_items") {
+    let allowed = null;
+    if (req.characterId) {
+      const attached = await getAttachedModuleIdsForCharacter(spindle2, req.userId, req.characterId);
+      allowed = new Set(attached);
+    }
+    const summaries = await listModules(moduleStorage(), req.userId);
+    const filtered = allowed === null ? [...summaries] : summaries.filter((s) => allowed.has(s.id));
+    const items = filtered.map((s) => ({
+      id: s.id,
+      label: s.name || s.filename,
+      brief: {
+        filename: s.filename,
+        lorebook_count: s.lorebook_count,
+        regex_count: s.regex_count,
+        trigger_count: s.trigger_count,
+        asset_count: s.asset_count,
+        low_level_access: s.low_level_access,
+        has_cjs: s.has_cjs
+      }
+    }));
+    return { items, total: items.length };
+  }
+  if (req.op === "read_item") {
+    const env = await readEnvelope(moduleStorage(), req.userId, req.itemId);
+    if (!env)
+      throw new Error(`module ${req.itemId} not found`);
+    if (!req.field)
+      return { value: env };
+    const segs = parsePath(req.field);
+    return { value: getAtPath(env, segs) };
+  }
+  if (req.op === "write_field") {
+    const env = await readEnvelope(moduleStorage(), req.userId, req.itemId);
+    if (!env)
+      throw new Error(`module ${req.itemId} not found`);
+    const segs = parsePath(req.field);
+    const next = setAtPath(env, segs, req.value);
+    if (next.schema_version !== env.schema_version) {
+      throw new Error("cannot change schema_version via lumiagent.write_field");
+    }
+    if (next.id !== env.id) {
+      throw new Error("cannot change module id via lumiagent.write_field");
+    }
+    await writeEnvelope(moduleStorage(), req.userId, next);
+    return { ok: true };
+  }
+  throw new Error(`unknown op: ${req.op}`);
+}
+var ALLOWED_CALLERS = new Set(["lumiagent"]);
+function registerLumiagentBridge(spindle2, moduleStorage, log8 = () => {}) {
+  spindle2.rpcPool.sync("lumiagent.describe", MANIFEST);
+  spindle2.rpcPool.handle("lumiagent.execute", async (rctx) => {
+    const requesterId = rctx.requesterExtensionId;
+    if (!requesterId)
+      throw new Error("requester extension id missing");
+    if (!ALLOWED_CALLERS.has(requesterId)) {
+      log8(`lumiagent-bridge: rejected call from unauthorised extension "${requesterId}"`);
+      throw new Error("not authorised");
+    }
+    let req;
+    try {
+      req = await spindle2.rpcPool.read(`${requesterId}.lumiagent.external_request`);
+    } catch (err) {
+      throw new Error(`could not read pending request from ${requesterId}: ${err.message}`);
+    }
+    if (!req || typeof req !== "object")
+      throw new Error("malformed request");
+    if (!req.userId)
+      throw new Error("request missing userId");
+    return dispatchRequest(spindle2, moduleStorage, req);
+  });
+  log8("lumiagent surface bridge ready (modules)");
+}
+
 // src/backend.ts
 var EXTENSION_VERSION = "0.1.0";
 var MINIMUM_LUMIVERSE_VERSION = "0.9.7";
@@ -39643,6 +39825,7 @@ var moduleUploadSessions = new Map;
 function moduleStorage() {
   return spindle.userStorage;
 }
+registerLumiagentBridge(spindle, moduleStorage, (msg) => spindle.log.info(msg));
 var moduleUploader = createModuleUploader({
   decodeRisum,
   parseSchema: (data) => risuModuleSchema.safeParse(data),
