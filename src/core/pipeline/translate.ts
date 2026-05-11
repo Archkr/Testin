@@ -16,10 +16,7 @@ import { TranslationError } from "../errors.js";
 import { CatalogIndex } from "../cbs/catalog/loader.js";
 import { rewriteText } from "../cbs/rewrite/text.js";
 import { buildRisuPayload } from "./risu-payload.js";
-import {
-  extractGlobalFontDeclarations,
-  prependCssToBgHtml,
-} from "../mappers/font-hoist.js";
+import { prepareBackgroundHtmlForRuntime } from "../mappers/background-html.js";
 import {
   SvgIndexer,
   extractAndReplaceSvgs,
@@ -474,21 +471,16 @@ export function translateFromCharxBundle(
     const payloadUntranslated = untranslated.utility_bot
       ? { utility_bot: true }
       : undefined;
-    const hoistedFontCss = extractGlobalFontDeclarations(
-      regexScripts.map((r) => r.replace_string ?? ""),
-    );
-    let bgHtmlForPayload =
-      hoistedFontCss
-        ? prependCssToBgHtml(charMap.extracted.backgroundHTML ?? null, hoistedFontCss)
-        : charMap.extracted.backgroundHTML;
-    if (bgHtmlForPayload && bgHtmlForPayload.indexOf("<svg") >= 0) {
-      const r = extractAndReplaceSvgs(bgHtmlForPayload, svgIndexer);
-      svgTemplatedSkipped += r.templatedSkipped;
-      svgDangerousSkipped += r.dangerousSkipped;
-      bgHtmlForPayload = r.rewritten;
-    }
+    const rawBg = charMap.extracted.backgroundHTML ?? null;
+    const prepared = prepareBackgroundHtmlForRuntime(rawBg, {
+      regexReplaceStrings: regexScripts.map((r) => r.replace_string ?? ""),
+      svgIndexer,
+    });
+    svgTemplatedSkipped += prepared.svgTemplatedSkipped;
+    svgDangerousSkipped += prepared.svgDangerousSkipped;
+    const bgHtmlForPayload = prepared.translated;
     const adjustedExtracted =
-      hoistedFontCss || bgHtmlForPayload !== charMap.extracted.backgroundHTML
+      bgHtmlForPayload !== rawBg
         ? { ...charMap.extracted, backgroundHTML: bgHtmlForPayload }
         : charMap.extracted;
     risuPayload = buildRisuPayload({

@@ -1,9 +1,13 @@
-import type { FrontendToBackend } from '../types/messages.js';
+import type { BackendToFrontend, FrontendToBackend } from '../types/messages.js';
 import type { LumirealmCharacterData } from '../payload/types.js';
 import type { SpindleCharactersApi } from '../state/lumirealm-character.js';
 import type { ViewerPushDeps } from '../state/viewer-push.js';
 import type { ViewerAssembly } from '../state/viewer-assembly.js';
 import { pushViewerData } from '../state/viewer-push.js';
+import {
+  extractCardSideBackgroundHtml,
+  prepareBackgroundHtmlForRuntime,
+} from '../core/mappers/background-html.js';
 import type { Handler } from './types.js';
 
 type SetTriggerLuaMsg = Extract<FrontendToBackend, { type: 'set_trigger_lua' }>;
@@ -22,7 +26,8 @@ export interface ViewerHandlerDeps {
   readonly viewerPushDeps: ViewerPushDeps;
   readonly charactersAttachedTo: (moduleId: string, userId: string) => Promise<readonly string[]>;
   readonly invalidateActiveForCharacter: (characterId: string, userId: string) => void;
-  readonly log: { readonly info: (m: string) => void };
+  readonly send: (msg: BackendToFrontend, userId: string) => void;
+  readonly log: { readonly info: (m: string) => void; readonly warn: (m: string) => void };
   readonly errMsg: (e: unknown) => string;
 }
 
@@ -79,20 +84,78 @@ export function createViewerHandlers(deps: ViewerHandlerDeps): {
     set_background_html: async (msg, ctx) => {
       if (deps.blockedByRepair(ctx.userId, msg.type)) return;
       const characterId = msg.characterId;
-      const html = typeof msg.html === 'string' && msg.html.length > 0 ? msg.html : null;
-      const updated = await deps.updateLumirealm(deps.charactersApi(), characterId, ctx.userId, (cur) => ({
-        ...cur,
-        payload: { ...cur.payload, background_html: html },
-      }));
+      const raw = typeof msg.html === 'string' && msg.html.length > 0 ? msg.html : null;
+
+      let characterName = characterId;
+      let prepared: ReturnType<typeof prepareBackgroundHtmlForRuntime> | null = null;
+
+      const updated = await deps.updateLumirealm(deps.charactersApi(), characterId, ctx.userId, (cur) => {
+        if (raw === null) {
+          const cardSide = extractCardSideBackgroundHtml(cur);
+          if (cardSide !== null) {
+            prepared = prepareBackgroundHtmlForRuntime(cardSide, {
+              regexReplaceStrings: cur.regex_scripts.map((r) => r.replace_string ?? ''),
+            });
+          }
+          const { background_html_source: _omit, ...restPayload } = {
+            ...cur.payload,
+            background_html: cardSide === null ? cur.payload.background_html : (prepared!.translated),
+          };
+          void _omit;
+          return { ...cur, payload: restPayload };
+        }
+        prepared = prepareBackgroundHtmlForRuntime(raw, {
+          regexReplaceStrings: cur.regex_scripts.map((r) => r.replace_string ?? ''),
+        });
+        return {
+          ...cur,
+          payload: {
+            ...cur.payload,
+            background_html: prepared.translated,
+            background_html_source: raw,
+          },
+        };
+      });
       if (!updated) {
         ctx.send({ type: 'error', message: 'set_background_html: character is not a lumirealm card' }, ctx.userId);
         return;
       }
+      const charName = (updated as { character?: { name?: unknown } }).character?.name;
+      if (typeof charName === 'string' && charName.length > 0) characterName = charName;
       deps.invalidateActiveForCharacter(characterId, ctx.userId);
       await pushViewerData(
         { source: { kind: 'character', characterId }, context: 'set_background_html', userId: ctx.userId },
         deps.viewerPushDeps,
       );
+
+      if (prepared !== null) {
+        const p = prepared as ReturnType<typeof prepareBackgroundHtmlForRuntime>;
+        const rasterable = p.pendingSvgs.filter((t) => t.classification !== 'templated');
+        if (rasterable.length > 0) {
+          deps.log.info(
+            `set_background_html: dispatching ${rasterable.length} SVG raster task(s) for char=${characterId} ` +
+              `(templated_skipped=${p.svgTemplatedSkipped} dangerous_skipped=${p.svgDangerousSkipped})`,
+          );
+          deps.send({
+            type: 'rasterize_svgs',
+            characterId,
+            characterName,
+            svgs: rasterable.map((t) => ({
+              markerN: t.markerN,
+              svg: t.svg,
+              classification: t.classification as 'simple' | 'theme-reactive' | 'animated',
+              width: t.width,
+              height: t.height,
+            })),
+          }, ctx.userId);
+        }
+        deps.log.info(
+          `set_background_html: char=${characterId} raw_len=${raw?.length ?? 0} ` +
+            `translated_len=${p.translated?.length ?? 0} svgs_pending=${rasterable.length}`,
+        );
+      } else {
+        deps.log.info(`set_background_html: char=${characterId} cleared`);
+      }
     },
     set_trigger_lua: async (msg, ctx) => {
       if (deps.blockedByRepair(ctx.userId, 'set_trigger_lua')) return;

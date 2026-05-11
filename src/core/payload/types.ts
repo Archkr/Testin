@@ -106,6 +106,8 @@ export interface LumirealmCharacterData {
     readonly additional_assets: readonly RisuAsset[];
     readonly emotion_images: readonly RisuAsset[];
     readonly background_html: string | null;
+    /** Pre-translate raw, viewer textarea seeds from this when set. */
+    readonly background_html_source?: string | null;
     readonly utility_bot: boolean;
     readonly scriptstate_defaults: Readonly<Record<string, string>>;
     readonly requires: RisuRequires;

@@ -23381,6 +23381,247 @@ function slugify2(s) {
 
 // src/core/mappers/background-html.ts
 init_text();
+
+// src/core/mappers/font-hoist.ts
+function extractGlobalFontDeclarations(replaceStrings) {
+  if (replaceStrings.length === 0)
+    return "";
+  const seen = new Set;
+  const out = [];
+  for (const html of replaceStrings) {
+    if (!html || html.indexOf("<style") < 0)
+      continue;
+    if (html.indexOf("@font-face") < 0 && html.indexOf("@import") < 0)
+      continue;
+    for (const css of iterateStyleBlocks(html)) {
+      for (const rule of iterateGlobalAtRules(css)) {
+        const norm = normalizeWhitespace(rule);
+        if (seen.has(norm))
+          continue;
+        seen.add(norm);
+        out.push(rule);
+      }
+    }
+  }
+  return out.join(`
+`);
+}
+function prependCssToBgHtml(bgHtml, css) {
+  if (!css || css.length === 0)
+    return bgHtml;
+  const trimmed = css.trim();
+  if (trimmed.length === 0)
+    return bgHtml;
+  const wrap = `<style data-risu-hoisted>${trimmed}</style>`;
+  if (!bgHtml || bgHtml.length === 0)
+    return wrap;
+  const styleOpen = bgHtml.indexOf("<style");
+  if (styleOpen < 0)
+    return `${wrap}
+${bgHtml}`;
+  const styleOpenEnd = bgHtml.indexOf(">", styleOpen);
+  if (styleOpenEnd < 0)
+    return `${wrap}
+${bgHtml}`;
+  const head = bgHtml.slice(0, styleOpenEnd + 1);
+  const tail = bgHtml.slice(styleOpenEnd + 1);
+  return `${head}
+${trimmed}
+${tail}`;
+}
+function* iterateStyleBlocks(html) {
+  const len = html.length;
+  let i = 0;
+  while (i < len) {
+    const openStart = html.indexOf("<style", i);
+    if (openStart < 0)
+      return;
+    const openEnd = html.indexOf(">", openStart);
+    if (openEnd < 0)
+      return;
+    const closeStart = html.indexOf("</style", openEnd);
+    if (closeStart < 0)
+      return;
+    yield html.slice(openEnd + 1, closeStart);
+    const closeEnd = html.indexOf(">", closeStart);
+    i = closeEnd < 0 ? len : closeEnd + 1;
+  }
+}
+function* iterateGlobalAtRules(css) {
+  const len = css.length;
+  let i = 0;
+  while (i < len) {
+    i = skipWsAndComments(css, i);
+    if (i >= len)
+      return;
+    if (css[i] !== "@") {
+      i = skipPastNextBlockOrSemi(css, i);
+      continue;
+    }
+    const atStart = i;
+    i++;
+    const nameStart = i;
+    while (i < len && isAtNameChar(css[i]))
+      i++;
+    const name = css.slice(nameStart, i).toLowerCase();
+    while (i < len && css[i] !== "{" && css[i] !== ";") {
+      if (css[i] === '"' || css[i] === "'") {
+        i = skipString(css, i);
+        continue;
+      }
+      if (css[i] === "/" && css[i + 1] === "*") {
+        i = skipComment(css, i);
+        continue;
+      }
+      i++;
+    }
+    if (i >= len)
+      return;
+    if (css[i] === ";") {
+      const end = i + 1;
+      if (name === "import")
+        yield css.slice(atStart, end);
+      i = end;
+      continue;
+    }
+    i++;
+    const blockEnd = skipMatchingBrace(css, i);
+    const fullEnd = blockEnd < len && css[blockEnd] === "}" ? blockEnd + 1 : blockEnd;
+    if (name === "font-face")
+      yield css.slice(atStart, fullEnd);
+    i = fullEnd;
+  }
+}
+function isAtNameChar(c) {
+  return c >= "a" && c <= "z" || c >= "A" && c <= "Z" || c >= "0" && c <= "9" || c === "-" || c === "_";
+}
+function skipWsAndComments(css, start) {
+  const len = css.length;
+  let i = start;
+  while (i < len) {
+    const c = css[i];
+    if (c === " " || c === "\t" || c === `
+` || c === "\r" || c === "\f") {
+      i++;
+      continue;
+    }
+    if (c === "/" && css[i + 1] === "*") {
+      i = skipComment(css, i);
+      continue;
+    }
+    break;
+  }
+  return i;
+}
+function skipComment(css, start) {
+  const len = css.length;
+  let i = start + 2;
+  while (i < len && !(css[i] === "*" && css[i + 1] === "/"))
+    i++;
+  return i < len ? i + 2 : len;
+}
+function skipString(css, start) {
+  const len = css.length;
+  const quote = css[start];
+  let i = start + 1;
+  while (i < len) {
+    const c = css[i];
+    if (c === "\\" && i + 1 < len) {
+      i += 2;
+      continue;
+    }
+    if (c === quote)
+      return i + 1;
+    i++;
+  }
+  return len;
+}
+function skipMatchingBrace(css, start) {
+  const len = css.length;
+  let i = start;
+  let depth = 1;
+  while (i < len && depth > 0) {
+    const c = css[i];
+    if (c === '"' || c === "'") {
+      i = skipString(css, i);
+      continue;
+    }
+    if (c === "/" && css[i + 1] === "*") {
+      i = skipComment(css, i);
+      continue;
+    }
+    if (c === "{")
+      depth++;
+    else if (c === "}") {
+      depth--;
+      if (depth === 0)
+        return i;
+    }
+    i++;
+  }
+  return len;
+}
+function skipPastNextBlockOrSemi(css, start) {
+  const len = css.length;
+  let i = start;
+  while (i < len) {
+    const c = css[i];
+    if (c === '"' || c === "'") {
+      i = skipString(css, i);
+      continue;
+    }
+    if (c === "/" && css[i + 1] === "*") {
+      i = skipComment(css, i);
+      continue;
+    }
+    if (c === "{") {
+      i = skipMatchingBrace(css, i + 1);
+      return i < len && css[i] === "}" ? i + 1 : i;
+    }
+    if (c === ";")
+      return i + 1;
+    i++;
+  }
+  return len;
+}
+function normalizeWhitespace(s) {
+  return s.replace(/\s+/g, " ").trim();
+}
+
+// src/core/mappers/background-html.ts
+init_svg_rasterize();
+function extractCardSideBackgroundHtml(data) {
+  const card = data.source?.card;
+  const raw = card?.data?.extensions?.risuai?.backgroundHTML;
+  return typeof raw === "string" && raw.length > 0 ? raw : null;
+}
+function prepareBackgroundHtmlForRuntime(raw, opts) {
+  const indexer = opts.svgIndexer ?? new SvgIndexer;
+  if (raw === null || raw.length === 0) {
+    return {
+      translated: null,
+      pendingSvgs: indexer.getTasks(),
+      svgTemplatedSkipped: 0,
+      svgDangerousSkipped: 0
+    };
+  }
+  const hoistedFontCss = extractGlobalFontDeclarations(opts.regexReplaceStrings);
+  let translated = hoistedFontCss ? prependCssToBgHtml(raw, hoistedFontCss) ?? raw : raw;
+  let svgTemplatedSkipped = 0;
+  let svgDangerousSkipped = 0;
+  if (translated && translated.indexOf("<svg") >= 0) {
+    const r = extractAndReplaceSvgs(translated, indexer);
+    translated = r.rewritten;
+    svgTemplatedSkipped = r.templatedSkipped;
+    svgDangerousSkipped = r.dangerousSkipped;
+  }
+  return {
+    translated,
+    pendingSvgs: indexer.getTasks(),
+    svgTemplatedSkipped,
+    svgDangerousSkipped
+  };
+}
 function buildBackgroundHtmlScript(html, opts) {
   if (typeof html !== "string" || html.length === 0)
     return { file: null, issues: [] };
@@ -23658,212 +23899,6 @@ function buildRisuPayload(input) {
     ...input.untranslated ? { untranslated: input.untranslated } : {}
   };
   return payload;
-}
-
-// src/core/mappers/font-hoist.ts
-function extractGlobalFontDeclarations(replaceStrings) {
-  if (replaceStrings.length === 0)
-    return "";
-  const seen = new Set;
-  const out = [];
-  for (const html of replaceStrings) {
-    if (!html || html.indexOf("<style") < 0)
-      continue;
-    if (html.indexOf("@font-face") < 0 && html.indexOf("@import") < 0)
-      continue;
-    for (const css of iterateStyleBlocks(html)) {
-      for (const rule of iterateGlobalAtRules(css)) {
-        const norm = normalizeWhitespace(rule);
-        if (seen.has(norm))
-          continue;
-        seen.add(norm);
-        out.push(rule);
-      }
-    }
-  }
-  return out.join(`
-`);
-}
-function prependCssToBgHtml(bgHtml, css) {
-  if (!css || css.length === 0)
-    return bgHtml;
-  const trimmed = css.trim();
-  if (trimmed.length === 0)
-    return bgHtml;
-  const wrap = `<style data-risu-hoisted>${trimmed}</style>`;
-  if (!bgHtml || bgHtml.length === 0)
-    return wrap;
-  const styleOpen = bgHtml.indexOf("<style");
-  if (styleOpen < 0)
-    return `${wrap}
-${bgHtml}`;
-  const styleOpenEnd = bgHtml.indexOf(">", styleOpen);
-  if (styleOpenEnd < 0)
-    return `${wrap}
-${bgHtml}`;
-  const head = bgHtml.slice(0, styleOpenEnd + 1);
-  const tail = bgHtml.slice(styleOpenEnd + 1);
-  return `${head}
-${trimmed}
-${tail}`;
-}
-function* iterateStyleBlocks(html) {
-  const len = html.length;
-  let i = 0;
-  while (i < len) {
-    const openStart = html.indexOf("<style", i);
-    if (openStart < 0)
-      return;
-    const openEnd = html.indexOf(">", openStart);
-    if (openEnd < 0)
-      return;
-    const closeStart = html.indexOf("</style", openEnd);
-    if (closeStart < 0)
-      return;
-    yield html.slice(openEnd + 1, closeStart);
-    const closeEnd = html.indexOf(">", closeStart);
-    i = closeEnd < 0 ? len : closeEnd + 1;
-  }
-}
-function* iterateGlobalAtRules(css) {
-  const len = css.length;
-  let i = 0;
-  while (i < len) {
-    i = skipWsAndComments(css, i);
-    if (i >= len)
-      return;
-    if (css[i] !== "@") {
-      i = skipPastNextBlockOrSemi(css, i);
-      continue;
-    }
-    const atStart = i;
-    i++;
-    const nameStart = i;
-    while (i < len && isAtNameChar(css[i]))
-      i++;
-    const name = css.slice(nameStart, i).toLowerCase();
-    while (i < len && css[i] !== "{" && css[i] !== ";") {
-      if (css[i] === '"' || css[i] === "'") {
-        i = skipString(css, i);
-        continue;
-      }
-      if (css[i] === "/" && css[i + 1] === "*") {
-        i = skipComment(css, i);
-        continue;
-      }
-      i++;
-    }
-    if (i >= len)
-      return;
-    if (css[i] === ";") {
-      const end = i + 1;
-      if (name === "import")
-        yield css.slice(atStart, end);
-      i = end;
-      continue;
-    }
-    i++;
-    const blockEnd = skipMatchingBrace(css, i);
-    const fullEnd = blockEnd < len && css[blockEnd] === "}" ? blockEnd + 1 : blockEnd;
-    if (name === "font-face")
-      yield css.slice(atStart, fullEnd);
-    i = fullEnd;
-  }
-}
-function isAtNameChar(c) {
-  return c >= "a" && c <= "z" || c >= "A" && c <= "Z" || c >= "0" && c <= "9" || c === "-" || c === "_";
-}
-function skipWsAndComments(css, start) {
-  const len = css.length;
-  let i = start;
-  while (i < len) {
-    const c = css[i];
-    if (c === " " || c === "\t" || c === `
-` || c === "\r" || c === "\f") {
-      i++;
-      continue;
-    }
-    if (c === "/" && css[i + 1] === "*") {
-      i = skipComment(css, i);
-      continue;
-    }
-    break;
-  }
-  return i;
-}
-function skipComment(css, start) {
-  const len = css.length;
-  let i = start + 2;
-  while (i < len && !(css[i] === "*" && css[i + 1] === "/"))
-    i++;
-  return i < len ? i + 2 : len;
-}
-function skipString(css, start) {
-  const len = css.length;
-  const quote = css[start];
-  let i = start + 1;
-  while (i < len) {
-    const c = css[i];
-    if (c === "\\" && i + 1 < len) {
-      i += 2;
-      continue;
-    }
-    if (c === quote)
-      return i + 1;
-    i++;
-  }
-  return len;
-}
-function skipMatchingBrace(css, start) {
-  const len = css.length;
-  let i = start;
-  let depth = 1;
-  while (i < len && depth > 0) {
-    const c = css[i];
-    if (c === '"' || c === "'") {
-      i = skipString(css, i);
-      continue;
-    }
-    if (c === "/" && css[i + 1] === "*") {
-      i = skipComment(css, i);
-      continue;
-    }
-    if (c === "{")
-      depth++;
-    else if (c === "}") {
-      depth--;
-      if (depth === 0)
-        return i;
-    }
-    i++;
-  }
-  return len;
-}
-function skipPastNextBlockOrSemi(css, start) {
-  const len = css.length;
-  let i = start;
-  while (i < len) {
-    const c = css[i];
-    if (c === '"' || c === "'") {
-      i = skipString(css, i);
-      continue;
-    }
-    if (c === "/" && css[i + 1] === "*") {
-      i = skipComment(css, i);
-      continue;
-    }
-    if (c === "{") {
-      i = skipMatchingBrace(css, i + 1);
-      return i < len && css[i] === "}" ? i + 1 : i;
-    }
-    if (c === ";")
-      return i + 1;
-    i++;
-  }
-  return len;
-}
-function normalizeWhitespace(s) {
-  return s.replace(/\s+/g, " ").trim();
 }
 
 // src/core/pipeline/translate.ts
@@ -24200,15 +24235,15 @@ function translateFromCharxBundle(bundle, opts = {}) {
   let risuPayload = null;
   if (mode !== "walking-skeleton") {
     const payloadUntranslated = untranslated.utility_bot ? { utility_bot: true } : undefined;
-    const hoistedFontCss = extractGlobalFontDeclarations(regexScripts.map((r) => r.replace_string ?? ""));
-    let bgHtmlForPayload = hoistedFontCss ? prependCssToBgHtml(charMap.extracted.backgroundHTML ?? null, hoistedFontCss) : charMap.extracted.backgroundHTML;
-    if (bgHtmlForPayload && bgHtmlForPayload.indexOf("<svg") >= 0) {
-      const r = extractAndReplaceSvgs(bgHtmlForPayload, svgIndexer);
-      svgTemplatedSkipped += r.templatedSkipped;
-      svgDangerousSkipped += r.dangerousSkipped;
-      bgHtmlForPayload = r.rewritten;
-    }
-    const adjustedExtracted = hoistedFontCss || bgHtmlForPayload !== charMap.extracted.backgroundHTML ? { ...charMap.extracted, backgroundHTML: bgHtmlForPayload } : charMap.extracted;
+    const rawBg = charMap.extracted.backgroundHTML ?? null;
+    const prepared = prepareBackgroundHtmlForRuntime(rawBg, {
+      regexReplaceStrings: regexScripts.map((r) => r.replace_string ?? ""),
+      svgIndexer
+    });
+    svgTemplatedSkipped += prepared.svgTemplatedSkipped;
+    svgDangerousSkipped += prepared.svgDangerousSkipped;
+    const bgHtmlForPayload = prepared.translated;
+    const adjustedExtracted = bgHtmlForPayload !== rawBg ? { ...charMap.extracted, backgroundHTML: bgHtmlForPayload } : charMap.extracted;
     risuPayload = buildRisuPayload({
       translatorVersion: TRANSLATOR_VERSION,
       risuSpecVersion: RISU_SPEC_VERSION,
@@ -25563,6 +25598,33 @@ async function applyV6BackfillArrayIndex(args, deps) {
     ]
   };
 }
+async function applyV8RetranslateUserBgHtml(args, deps) {
+  const raw = args.envelope.payload.background_html_source;
+  if (typeof raw !== "string" || raw.length === 0) {
+    return { nextEnvelope: args.envelope, notes: ["no user-edited bg-html, skipped"] };
+  }
+  const prepared = prepareBackgroundHtmlForRuntime(raw, {
+    regexReplaceStrings: args.envelope.regex_scripts.map((r) => r.replace_string ?? "")
+  });
+  if (prepared.pendingSvgs.length > 0) {
+    deps.dispatchSvgRasterize(args.characterId, args.characterName, prepared.pendingSvgs);
+  }
+  return {
+    nextEnvelope: {
+      ...args.envelope,
+      payload: {
+        ...args.envelope.payload,
+        background_html: prepared.translated
+      }
+    },
+    notes: [
+      `re-translated user-edited bg-html (raw_len=${raw.length})`,
+      `translated_len=${prepared.translated?.length ?? 0}`,
+      `svgs_pending=${prepared.pendingSvgs.length}`,
+      `templated_skipped=${prepared.svgTemplatedSkipped}`
+    ]
+  };
+}
 var CHARACTER_MIGRATIONS = [
   {
     version: 5,
@@ -25586,6 +25648,12 @@ var CHARACTER_MIGRATIONS = [
     description: "Reinstall regex_scripts with new shape (Risu-comment names + dividers as never-match disabled rows).",
     touches: ["regex_scripts"],
     apply: applyV7ReinstallRegex
+  },
+  {
+    version: 8,
+    description: "Re-translate user-edited bg-html through the unified prepare pipeline (font hoist + SVG raster). Fixes any user edits saved with the prior lazy pass-through.",
+    touches: ["payload.background_html", "svg_raster"],
+    apply: applyV8RetranslateUserBgHtml
   }
 ];
 var CURRENT_CHARACTER_SCHEMA_VERSION = CHARACTER_MIGRATIONS.length > 0 ? Math.max(...CHARACTER_MIGRATIONS.map((m) => m.version)) : 1;
@@ -27612,6 +27680,16 @@ function fmtRef(value, type) {
 
 // src/state/viewer-data.ts
 var imageUrl = (imageId) => imageUrlFromId(imageId);
+function pickBackgroundHtmlForViewer(data) {
+  const userRaw = data.payload.background_html_source;
+  if (typeof userRaw === "string")
+    return userRaw.length > 0 ? userRaw : null;
+  const cardSideRaw = extractCardSideBackgroundHtml(data);
+  if (cardSideRaw !== null)
+    return cardSideRaw;
+  const translated = data.payload.background_html;
+  return typeof translated === "string" && translated.length > 0 ? translated : null;
+}
 function serializeDefaultsToText(rec) {
   const keys = Object.keys(rec).sort((a, b) => a.localeCompare(b));
   return keys.map((k) => `${k}=${rec[k] ?? ""}`).join(`
@@ -27647,8 +27725,7 @@ function buildCharacterViewerData(input) {
     });
   }
   assets.sort((a, b) => a.name.localeCompare(b.name));
-  const bgRaw = input.data.payload.background_html;
-  const backgroundHtml = typeof bgRaw === "string" && bgRaw.length > 0 ? bgRaw : null;
+  const backgroundHtml = pickBackgroundHtmlForViewer(input.data);
   const cardDefaults = input.data.payload.scriptstate_defaults ?? {};
   const masterText = input.data.user_overrides.default_variables_text;
   const legacyOverrides = input.data.user_overrides.default_variables_overrides;
@@ -29216,17 +29293,66 @@ function createViewerHandlers(deps) {
       if (deps.blockedByRepair(ctx.userId, msg.type))
         return;
       const characterId = msg.characterId;
-      const html = typeof msg.html === "string" && msg.html.length > 0 ? msg.html : null;
-      const updated = await deps.updateLumirealm(deps.charactersApi(), characterId, ctx.userId, (cur) => ({
-        ...cur,
-        payload: { ...cur.payload, background_html: html }
-      }));
+      const raw = typeof msg.html === "string" && msg.html.length > 0 ? msg.html : null;
+      let characterName = characterId;
+      let prepared = null;
+      const updated = await deps.updateLumirealm(deps.charactersApi(), characterId, ctx.userId, (cur) => {
+        if (raw === null) {
+          const cardSide = extractCardSideBackgroundHtml(cur);
+          if (cardSide !== null) {
+            prepared = prepareBackgroundHtmlForRuntime(cardSide, {
+              regexReplaceStrings: cur.regex_scripts.map((r) => r.replace_string ?? "")
+            });
+          }
+          const { background_html_source: _omit, ...restPayload } = {
+            ...cur.payload,
+            background_html: cardSide === null ? cur.payload.background_html : prepared.translated
+          };
+          return { ...cur, payload: restPayload };
+        }
+        prepared = prepareBackgroundHtmlForRuntime(raw, {
+          regexReplaceStrings: cur.regex_scripts.map((r) => r.replace_string ?? "")
+        });
+        return {
+          ...cur,
+          payload: {
+            ...cur.payload,
+            background_html: prepared.translated,
+            background_html_source: raw
+          }
+        };
+      });
       if (!updated) {
         ctx.send({ type: "error", message: "set_background_html: character is not a lumirealm card" }, ctx.userId);
         return;
       }
+      const charName = updated.character?.name;
+      if (typeof charName === "string" && charName.length > 0)
+        characterName = charName;
       deps.invalidateActiveForCharacter(characterId, ctx.userId);
       await pushViewerData({ source: { kind: "character", characterId }, context: "set_background_html", userId: ctx.userId }, deps.viewerPushDeps);
+      if (prepared !== null) {
+        const p = prepared;
+        const rasterable = p.pendingSvgs.filter((t) => t.classification !== "templated");
+        if (rasterable.length > 0) {
+          deps.log.info(`set_background_html: dispatching ${rasterable.length} SVG raster task(s) for char=${characterId} ` + `(templated_skipped=${p.svgTemplatedSkipped} dangerous_skipped=${p.svgDangerousSkipped})`);
+          deps.send({
+            type: "rasterize_svgs",
+            characterId,
+            characterName,
+            svgs: rasterable.map((t) => ({
+              markerN: t.markerN,
+              svg: t.svg,
+              classification: t.classification,
+              width: t.width,
+              height: t.height
+            }))
+          }, ctx.userId);
+        }
+        deps.log.info(`set_background_html: char=${characterId} raw_len=${raw?.length ?? 0} ` + `translated_len=${p.translated?.length ?? 0} svgs_pending=${rasterable.length}`);
+      } else {
+        deps.log.info(`set_background_html: char=${characterId} cleared`);
+      }
     },
     set_trigger_lua: async (msg, ctx) => {
       if (deps.blockedByRepair(ctx.userId, "set_trigger_lua"))
@@ -39814,6 +39940,7 @@ var viewerHandlers = createViewerHandlers({
   viewerPushDeps,
   charactersAttachedTo,
   invalidateActiveForCharacter,
+  send,
   log: log8,
   errMsg
 });

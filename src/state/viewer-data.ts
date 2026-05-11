@@ -12,11 +12,22 @@ import type {
 import type { LumirealmCharacterData, StoredRegexScript } from '../payload/types.js';
 import type { ModuleEnvelope } from './modules-store.js';
 import { imageUrlFromId } from '../interpreter/image-cache.js';
+import { extractCardSideBackgroundHtml } from '../core/mappers/background-html.js';
 import { summarizeEffect } from './viewer-effects.js';
 import { loreBookSchema } from '../core/schemas/lorebook.js';
 import { mapLoreBookWithStats } from '../core/mappers/lorebook.js';
 
 const imageUrl = (imageId: string) => imageUrlFromId(imageId);
+
+function pickBackgroundHtmlForViewer(data: LumirealmCharacterData): string | null {
+  const userRaw = data.payload.background_html_source;
+  if (typeof userRaw === 'string') return userRaw.length > 0 ? userRaw : null;
+  const cardSideRaw = extractCardSideBackgroundHtml(data);
+  if (cardSideRaw !== null) return cardSideRaw;
+  const translated = data.payload.background_html;
+  return typeof translated === 'string' && translated.length > 0 ? translated : null;
+}
+
 
 function serializeDefaultsToText(rec: Readonly<Record<string, string>>): string {
   const keys = Object.keys(rec).sort((a, b) => a.localeCompare(b));
@@ -98,10 +109,7 @@ export function buildCharacterViewerData(input: {
   }
   assets.sort((a, b) => a.name.localeCompare(b.name)); // stable order for the UI
 
-  const bgRaw = input.data.payload.background_html;
-  const backgroundHtml = typeof bgRaw === 'string' && bgRaw.length > 0
-    ? bgRaw
-    : null;
+  const backgroundHtml = pickBackgroundHtmlForViewer(input.data);
 
   const cardDefaults = input.data.payload.scriptstate_defaults ?? {};
   const masterText = input.data.user_overrides.default_variables_text;

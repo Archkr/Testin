@@ -1317,6 +1317,7 @@ const viewerHandlers = createViewerHandlers({
   viewerPushDeps,
   charactersAttachedTo,
   invalidateActiveForCharacter,
+  send,
   log,
   errMsg,
 });

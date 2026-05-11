@@ -92,10 +92,9 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
   let renamingAssetName: string | null = null;
   let editingTriggerIndex: number | null = null;
   let editingTriggerLua = '';
-  let editingBackgroundHtml = false;
-  let editingBackgroundHtmlBuffer = '';
   // null = no unsaved changes (textarea derives from snapshot)
   let defaultsTextBuffer: string | null = null;
+  let bgHtmlTextBuffer: string | null = null;
 
   const intro = document.createElement('p');
   intro.className = 'lrv-intro';
@@ -276,9 +275,8 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
     // manual dropdown change doesn't keep stale buffers around.
     editingTriggerIndex = null;
     editingTriggerLua = '';
-    editingBackgroundHtml = false;
-    editingBackgroundHtmlBuffer = '';
     defaultsTextBuffer = null;
+    bgHtmlTextBuffer = null;
     renamingAssetName = null;
     assetSearchTerm = '';
     // Modules have no creator notes, jump straight to Assets.
@@ -388,7 +386,13 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
       label: 'Triggers',
       render: () => renderTriggersSection(d.triggers),
     });
-    if (d.backgroundHtml) {
+    if (isCharacter) {
+      tabs.push({
+        id: 'background',
+        label: ' HTML',
+        render: () => renderBackgroundHtmlSection(d.backgroundHtml ?? ''),
+      });
+    } else if (d.backgroundHtml) {
       tabs.push({
         id: 'background',
         label: ' HTML',
@@ -461,94 +465,118 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
 
   function renderBackgroundHtmlSection(html: string): HTMLElement {
     const det = document.createElement('section');
-    if (editingBackgroundHtml) {
-      const editor = document.createElement('div');
-      editor.className = 'lrv-trigger-editor';
-      const ta = document.createElement('textarea');
-      ta.className = 'lrv-trigger-textarea';
-      ta.spellcheck = false;
-      ta.value = editingBackgroundHtmlBuffer;
-      ta.rows = Math.max(12, Math.min(30, editingBackgroundHtmlBuffer.split('\n').length + 2));
-      ta.addEventListener('input', () => {
-        editingBackgroundHtmlBuffer = ta.value;
-      });
-      ta.addEventListener('keydown', (e) => {
-        if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
-          e.preventDefault();
-          commitBackgroundHtmlEdit();
-        } else if (e.key === 'Escape') {
-          e.preventDefault();
-          editingBackgroundHtml = false;
-          editingBackgroundHtmlBuffer = '';
-          render();
-        }
-      });
-      editor.appendChild(ta);
-      const actions = document.createElement('div');
-      actions.className = 'lrv-trigger-edit-actions';
-      const saveBtn = document.createElement('button');
-      saveBtn.type = 'button';
-      saveBtn.className = 'lrv-asset-action lrv-asset-action-primary';
-      saveBtn.textContent = 'Save';
-      saveBtn.title = 'Save (Ctrl+Enter)';
-      saveBtn.addEventListener('click', () => commitBackgroundHtmlEdit());
-      actions.appendChild(saveBtn);
-      const clearBtn = document.createElement('button');
-      clearBtn.type = 'button';
-      clearBtn.className = 'lrv-asset-action lrv-asset-action-danger';
-      clearBtn.textContent = 'Clear';
-      clearBtn.title = 'Clear background HTML.';
-      clearBtn.addEventListener('click', () => {
-        if (!window.confirm('Clear background HTML?')) return;
-        editingBackgroundHtmlBuffer = '';
-        commitBackgroundHtmlEdit();
-      });
-      actions.appendChild(clearBtn);
-      const cancelBtn = document.createElement('button');
-      cancelBtn.type = 'button';
-      cancelBtn.className = 'lrv-asset-action';
-      cancelBtn.textContent = 'Cancel';
-      cancelBtn.title = 'Cancel (Esc)';
-      cancelBtn.addEventListener('click', () => {
-        editingBackgroundHtml = false;
-        editingBackgroundHtmlBuffer = '';
-        render();
-      });
-      actions.appendChild(cancelBtn);
-      editor.appendChild(actions);
-      det.appendChild(editor);
-      queueMicrotask(() => { ta.focus(); });
-    } else {
-      const pre = document.createElement('pre');
-      pre.className = 'lrv-pre';
-      pre.textContent = html;
-      det.appendChild(pre);
-      const editBtn = document.createElement('button');
-      editBtn.type = 'button';
-      editBtn.className = 'lrv-asset-action';
-      editBtn.textContent = 'Edit bg-html';
-      editBtn.style.margin = '6px 12px 10px 12px';
-      editBtn.addEventListener('click', () => {
-        editingBackgroundHtml = true;
-        editingBackgroundHtmlBuffer = html;
-        render();
-      });
-      det.appendChild(editBtn);
-    }
-    return det;
-  }
+    det.className = 'lrv-section lrv-defaults-section';
 
-  function commitBackgroundHtmlEdit(): void {
-    if (!viewerData || viewerData.source.kind !== 'character') return;
-    const html = editingBackgroundHtmlBuffer.length > 0 ? editingBackgroundHtmlBuffer : null;
-    log.info(`viewer-panel: set_background_html charId=${viewerData.source.characterId} len=${editingBackgroundHtmlBuffer.length}`);
-    sendToBackend({
-      type: 'set_background_html',
-      characterId: viewerData.source.characterId,
-      html,
+    if (!viewerData || viewerData.source.kind !== 'character') {
+      const empty = document.createElement('div');
+      empty.className = 'lrv-empty';
+      empty.textContent = 'Modules do not carry background HTML.';
+      det.appendChild(empty);
+      return det;
+    }
+    const characterId = viewerData.source.characterId;
+
+    const note = document.createElement('p');
+    note.className = 'lrv-defaults-note';
+    note.textContent =
+      'Risu-style pre-translate background HTML. Paste Risu modder HTML here, ' +
+      'collision rename + iframe policy run on save.';
+    det.appendChild(note);
+
+    const snapshotText = html;
+    const value = bgHtmlTextBuffer ?? snapshotText;
+    const dirty = bgHtmlTextBuffer !== null && bgHtmlTextBuffer !== snapshotText;
+
+    const ta = document.createElement('textarea');
+    ta.className = 'lrv-defaults-textarea';
+    ta.spellcheck = false;
+    ta.value = value;
+    ta.rows = Math.max(12, Math.min(30, value.split('\n').length + 2));
+    ta.placeholder = '<style>\n  /* background CSS */\n</style>\n<div class="bg">…</div>';
+    ta.addEventListener('input', () => {
+      bgHtmlTextBuffer = ta.value;
+      const lines = ta.value.split('\n').length;
+      ta.rows = Math.max(12, Math.min(30, lines + 2));
+      paintStatus();
+      saveBtn.disabled = !dirtyNow();
+      revertBtn.disabled = !dirtyNow();
     });
-    editingBackgroundHtml = false;
-    editingBackgroundHtmlBuffer = '';
+    ta.addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+        e.preventDefault();
+        commitSave();
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        revert();
+      }
+    });
+    det.appendChild(ta);
+
+    const actions = document.createElement('div');
+    actions.className = 'lrv-defaults-actions';
+
+    const statusEl = document.createElement('span');
+    statusEl.className = 'lrv-defaults-status';
+    actions.appendChild(statusEl);
+
+    const saveBtn = document.createElement('button');
+    saveBtn.type = 'button';
+    saveBtn.className = 'lrv-asset-action lrv-asset-action-primary';
+    saveBtn.textContent = 'Save';
+    saveBtn.title = 'Persist background HTML (Ctrl+Enter).';
+    saveBtn.disabled = !dirty;
+    saveBtn.addEventListener('click', commitSave);
+    actions.appendChild(saveBtn);
+
+    const revertBtn = document.createElement('button');
+    revertBtn.type = 'button';
+    revertBtn.className = 'lrv-asset-action';
+    revertBtn.textContent = 'Revert';
+    revertBtn.title = 'Discard unsaved edits (Esc).';
+    revertBtn.disabled = !dirty;
+    revertBtn.addEventListener('click', revert);
+    actions.appendChild(revertBtn);
+
+    const resetBtn = document.createElement('button');
+    resetBtn.type = 'button';
+    resetBtn.className = 'lrv-asset-action lrv-asset-action-danger';
+    resetBtn.textContent = 'Reset to card defaults';
+    resetBtn.title = 'Discard user edits, fall back to the card-side baseline.';
+    resetBtn.addEventListener('click', () => {
+      if (!window.confirm('Reset background HTML to the card-side baseline? Your edits are discarded.')) return;
+      log.info(`viewer-panel: set_background_html charId=${characterId} reset`);
+      sendToBackend({ type: 'set_background_html', characterId, html: null });
+      bgHtmlTextBuffer = null;
+    });
+    actions.appendChild(resetBtn);
+
+    det.appendChild(actions);
+    paintStatus();
+    return det;
+
+    function dirtyNow(): boolean {
+      return bgHtmlTextBuffer !== null && bgHtmlTextBuffer !== snapshotText;
+    }
+    function paintStatus(): void {
+      if (dirtyNow()) {
+        statusEl.textContent = 'Unsaved changes';
+        statusEl.classList.add('lrv-defaults-status-dirty');
+      } else {
+        statusEl.textContent = snapshotText.length > 0 ? 'Saved' : 'Empty';
+        statusEl.classList.remove('lrv-defaults-status-dirty');
+      }
+    }
+    function commitSave(): void {
+      const text = bgHtmlTextBuffer ?? '';
+      const out = text.length > 0 ? text : null;
+      log.info(`viewer-panel: set_background_html charId=${characterId} len=${text.length}`);
+      sendToBackend({ type: 'set_background_html', characterId, html: out });
+      bgHtmlTextBuffer = null;
+    }
+    function revert(): void {
+      bgHtmlTextBuffer = null;
+      render();
+    }
   }
 
 
@@ -1738,6 +1766,9 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
         }
         if (defaultsTextBuffer !== null && d.source.kind === 'character' && defaultsTextBuffer === d.defaultVariablesText) {
           defaultsTextBuffer = null;
+        }
+        if (bgHtmlTextBuffer !== null && d.source.kind === 'character' && bgHtmlTextBuffer === (d.backgroundHtml ?? '')) {
+          bgHtmlTextBuffer = null;
         }
         classifyViewerScope(d);
         render();

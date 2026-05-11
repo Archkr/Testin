@@ -2,6 +2,7 @@
 // after each apply for resumability across worker restarts.
 
 import { translateFromStoredSource } from '../core/pipeline/translate.js';
+import { prepareBackgroundHtmlForRuntime } from '../core/mappers/background-html.js';
 import type { CatalogIndex } from '../core/cbs/catalog/loader.js';
 import type { LumiBundle } from '../core/pipeline/index.js';
 import type { SvgRasterTask } from '../core/svg-rasterize.js';
@@ -292,6 +293,37 @@ async function applyV6BackfillArrayIndex(
   };
 }
 
+async function applyV8RetranslateUserBgHtml(
+  args: CharacterMigrationStepArgs,
+  deps: MigrationDeps,
+): Promise<CharacterMigrationStepResult> {
+  const raw = args.envelope.payload.background_html_source;
+  if (typeof raw !== 'string' || raw.length === 0) {
+    return { nextEnvelope: args.envelope, notes: ['no user-edited bg-html, skipped'] };
+  }
+  const prepared = prepareBackgroundHtmlForRuntime(raw, {
+    regexReplaceStrings: args.envelope.regex_scripts.map((r) => r.replace_string ?? ''),
+  });
+  if (prepared.pendingSvgs.length > 0) {
+    deps.dispatchSvgRasterize(args.characterId, args.characterName, prepared.pendingSvgs);
+  }
+  return {
+    nextEnvelope: {
+      ...args.envelope,
+      payload: {
+        ...args.envelope.payload,
+        background_html: prepared.translated,
+      },
+    },
+    notes: [
+      `re-translated user-edited bg-html (raw_len=${raw.length})`,
+      `translated_len=${prepared.translated?.length ?? 0}`,
+      `svgs_pending=${prepared.pendingSvgs.length}`,
+      `templated_skipped=${prepared.svgTemplatedSkipped}`,
+    ],
+  };
+}
+
 export const CHARACTER_MIGRATIONS: readonly CharacterMigrationStep[] = [
   {
     version: 5,
@@ -318,6 +350,13 @@ export const CHARACTER_MIGRATIONS: readonly CharacterMigrationStep[] = [
       'Reinstall regex_scripts with new shape (Risu-comment names + dividers as never-match disabled rows).',
     touches: ['regex_scripts'],
     apply: applyV7ReinstallRegex,
+  },
+  {
+    version: 8,
+    description:
+      'Re-translate user-edited bg-html through the unified prepare pipeline (font hoist + SVG raster). Fixes any user edits saved with the prior lazy pass-through.',
+    touches: ['payload.background_html', 'svg_raster'],
+    apply: applyV8RetranslateUserBgHtml,
   },
 ];
 
