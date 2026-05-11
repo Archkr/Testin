@@ -116,6 +116,13 @@ export async function runListenEditChain<T>(
       });
       const runLuaMs = Date.now() - tRunLuaStart;
       totalRunLuaMs += runLuaMs;
+      try {
+        await runtime.flush();
+      } catch (err) {
+        log.warn(
+          `trigger[${i}] mode=${mode} flush failed — ${errMsg(err)}; continuing chain`,
+        );
+      }
       if (typeof result === "string") {
         try {
           const parsed = JSON.parse(result) as T;
