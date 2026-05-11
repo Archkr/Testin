@@ -3,7 +3,6 @@
 import type {
   ViewerAssetEntry,
   ViewerData,
-  ViewerDefaultVariable,
   ViewerLorebookEntry,
   ViewerLorebookGroup,
   ViewerRegexEntry,
@@ -18,6 +17,26 @@ import { loreBookSchema } from '../core/schemas/lorebook.js';
 import { mapLoreBookWithStats } from '../core/mappers/lorebook.js';
 
 const imageUrl = (imageId: string) => imageUrlFromId(imageId);
+
+function serializeDefaultsToText(rec: Readonly<Record<string, string>>): string {
+  const keys = Object.keys(rec).sort((a, b) => a.localeCompare(b));
+  return keys.map((k) => `${k}=${rec[k] ?? ''}`).join('\n');
+}
+
+function computeDefaultsText(
+  cardDefaults: Readonly<Record<string, string>>,
+  masterText: string | undefined,
+  legacyOverrides: Readonly<Record<string, string>> | undefined,
+): { defaultVariablesText: string; defaultVariablesUserEdited: boolean } {
+  if (typeof masterText === 'string') {
+    return { defaultVariablesText: masterText, defaultVariablesUserEdited: true };
+  }
+  if (legacyOverrides && Object.keys(legacyOverrides).length > 0) {
+    const merged: Record<string, string> = { ...cardDefaults, ...legacyOverrides };
+    return { defaultVariablesText: serializeDefaultsToText(merged), defaultVariablesUserEdited: true };
+  }
+  return { defaultVariablesText: serializeDefaultsToText(cardDefaults), defaultVariablesUserEdited: false };
+}
 
 
 export interface FetchedWorldBook {
@@ -85,33 +104,13 @@ export function buildCharacterViewerData(input: {
     : null;
 
   const cardDefaults = input.data.payload.scriptstate_defaults ?? {};
-  const overrides = input.data.user_overrides.default_variables_overrides ?? {};
-  const defaultVariables: ViewerDefaultVariable[] = [];
-  // Union of names: overrides may add new names that weren't in the card.
-  const seen = new Set<string>();
-  for (const name of Object.keys(cardDefaults)) {
-    seen.add(name);
-    const cardValue = cardDefaults[name] ?? '';
-    const overrideValue = Object.prototype.hasOwnProperty.call(overrides, name)
-      ? overrides[name] ?? ''
-      : null;
-    defaultVariables.push({
-      name,
-      value: overrideValue ?? cardValue,
-      cardDefault: cardValue,
-      overridden: overrideValue !== null,
-    });
-  }
-  for (const name of Object.keys(overrides)) {
-    if (seen.has(name)) continue;
-    defaultVariables.push({
-      name,
-      value: overrides[name] ?? '',
-      cardDefault: '',
-      overridden: true,
-    });
-  }
-  defaultVariables.sort((a, b) => a.name.localeCompare(b.name));
+  const masterText = input.data.user_overrides.default_variables_text;
+  const legacyOverrides = input.data.user_overrides.default_variables_overrides;
+  const { defaultVariablesText, defaultVariablesUserEdited } = computeDefaultsText(
+    cardDefaults,
+    masterText,
+    legacyOverrides,
+  );
 
   const lorebook: ViewerLorebookGroup[] = [];
   for (const wb of input.worldBooks ?? []) {
@@ -176,7 +175,8 @@ export function buildCharacterViewerData(input: {
     assets,
     cjs: null,
     backgroundHtml,
-    defaultVariables,
+    defaultVariablesText,
+    defaultVariablesUserEdited,
     ts: input.ts ?? Date.now(),
     fetchWarnings: input.fetchWarnings ?? [],
     ...(input.data.source === undefined ? { lorebookNeedsReimport: true } : {}),
@@ -406,7 +406,8 @@ export function buildModuleViewerData(input: {
     assets,
     cjs: typeof m.cjs === 'string' && m.cjs.length > 0 ? m.cjs : null,
     backgroundHtml: null, // modules don't have bg-html
-    defaultVariables: [], // modules don't carry scriptstate defaults
+    defaultVariablesText: '', // modules don't carry scriptstate defaults
+    defaultVariablesUserEdited: false,
     ts: input.ts ?? Date.now(),
     fetchWarnings: [],
   };

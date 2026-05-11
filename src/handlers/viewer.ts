@@ -28,8 +28,7 @@ export interface ViewerHandlerDeps {
 
 export function createViewerHandlers(deps: ViewerHandlerDeps): {
   readonly request_viewer_data: Handler<'request_viewer_data'>;
-  readonly set_default_variable: Handler<'set_default_variable'>;
-  readonly delete_default_variable: Handler<'delete_default_variable'>;
+  readonly set_default_variables_text: Handler<'set_default_variables_text'>;
   readonly set_background_html: Handler<'set_background_html'>;
   readonly set_trigger_lua: Handler<'set_trigger_lua'>;
 } {
@@ -50,22 +49,21 @@ export function createViewerHandlers(deps: ViewerHandlerDeps): {
         ctx.send({ type: 'error', message: `Viewer assembly failed: ${deps.errMsg(err)}` }, ctx.userId);
       }
     },
-    set_default_variable: async (msg, ctx) => {
+    set_default_variables_text: async (msg, ctx) => {
       if (deps.blockedByRepair(ctx.userId, msg.type)) return;
+      const nextText = typeof msg.text === 'string' ? msg.text : null;
       const updated = await deps.updateLumirealm(deps.charactersApi(), msg.characterId, ctx.userId, (cur) => {
-        const overrides = { ...(cur.user_overrides.default_variables_overrides ?? {}) };
-        const trimmedName = msg.name.trim();
-        if (trimmedName.length === 0) return cur;
-        overrides[trimmedName] = String(msg.value);
-        return {
-          ...cur,
-          user_overrides: {
-            ...cur.user_overrides,
-            ...(Object.keys(overrides).length > 0
-              ? { default_variables_overrides: overrides }
-              : {}),
-          },
+        const {
+          default_variables_text: _t,
+          default_variables_overrides: _o,
+          ...rest
+        } = cur.user_overrides;
+        void _t; void _o;
+        const nextUO = {
+          ...rest,
+          ...(nextText !== null ? { default_variables_text: nextText } : {}),
         };
+        return { ...cur, user_overrides: nextUO };
       });
       if (!updated) {
         ctx.send({ type: 'error', message: `${msg.type}: not a lumirealm character` }, ctx.userId);
@@ -76,34 +74,7 @@ export function createViewerHandlers(deps: ViewerHandlerDeps): {
         deps.viewerPushDeps,
       );
       deps.invalidateActiveForCharacter(msg.characterId, ctx.userId);
-      deps.log.info(`${msg.type}: char=${msg.characterId} name=${msg.name} len=${String(msg.value).length}`);
-    },
-    delete_default_variable: async (msg, ctx) => {
-      if (deps.blockedByRepair(ctx.userId, msg.type)) return;
-      const updated = await deps.updateLumirealm(deps.charactersApi(), msg.characterId, ctx.userId, (cur) => {
-        const overrides = { ...(cur.user_overrides.default_variables_overrides ?? {}) };
-        if (!Object.prototype.hasOwnProperty.call(overrides, msg.name)) return cur;
-        delete overrides[msg.name];
-        return {
-          ...cur,
-          user_overrides: {
-            ...cur.user_overrides,
-            ...(Object.keys(overrides).length > 0
-              ? { default_variables_overrides: overrides }
-              : {}),
-          },
-        };
-      });
-      if (!updated) {
-        ctx.send({ type: 'error', message: `${msg.type}: not a lumirealm character` }, ctx.userId);
-        return;
-      }
-      await pushViewerData(
-        { source: { kind: 'character', characterId: msg.characterId }, context: msg.type, userId: ctx.userId },
-        deps.viewerPushDeps,
-      );
-      deps.invalidateActiveForCharacter(msg.characterId, ctx.userId);
-      deps.log.info(`${msg.type}: char=${msg.characterId} name=${msg.name} (override removed)`);
+      deps.log.info(`${msg.type}: char=${msg.characterId} ${nextText === null ? 'cleared' : `len=${nextText.length}`}`);
     },
     set_background_html: async (msg, ctx) => {
       if (deps.blockedByRepair(ctx.userId, msg.type)) return;

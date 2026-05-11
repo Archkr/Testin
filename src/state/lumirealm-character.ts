@@ -338,15 +338,18 @@ export function buildSyntheticStoredCard(
   risuai: RisuaiBlob,
   attachedModules: readonly AttachedModuleForRuntime[] = [],
 ): StoredRisuCard {
-  // Prefer lumirealm.payload.scriptstate_defaults; older blobs fall back to risuai.defaultVariables.
+  // Risu-parity master string wins outright when present.
+  // Otherwise prefer lumirealm.payload baseline + legacy per-key overrides.
   const lumiDefaults = data.payload.scriptstate_defaults;
   const cardDefaults = lumiDefaults && Object.keys(lumiDefaults).length > 0
     ? lumiDefaults
     : parseScriptstateDefaults(
         typeof risuai.defaultVariables === 'string' ? risuai.defaultVariables : null,
       );
-  const overrides = data.user_overrides.default_variables_overrides ?? {};
-  const mergedDefaults: Record<string, string> = { ...cardDefaults, ...overrides };
+  const masterText = data.user_overrides.default_variables_text;
+  const mergedDefaults: Record<string, string> = typeof masterText === 'string'
+    ? parseScriptstateDefaults(masterText)
+    : { ...cardDefaults, ...(data.user_overrides.default_variables_overrides ?? {}) };
 
   const lumiUtilityBot = data.payload.utility_bot;
   const cardUtilityBot = typeof lumiUtilityBot === 'boolean'

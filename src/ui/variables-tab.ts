@@ -5,19 +5,7 @@ import type {
 } from '../types/messages.js';
 import type { FrontendLog } from './drawer.js';
 
-// State → Variables. Three subtabs:
-//   Default  , character-level defaults (cardSide + user_overrides). Editable;
-//              per-character storage propagates across all chats with that
-//              character, mirroring Risu's defaultVariables semantics.
-//   Local    , chat.metadata.macro_variables.local , what Risu's
-//              setvar/setChatVar/Lua setState write to. Editable per-chat.
-//   Lumi     , global + chat Lumi-native scopes. Read-only (Risu cards don't
-//              touch these; surfaced for diagnostics).
-//
-// The same row component renders all three subtabs so the visual is uniform ,
-// inline `name | value-input | actions`. (Pre-fix the Default editor used the
-// inline pattern but Local used a separate-textarea modal pattern; user found
-// the inconsistency confusing.)
+// Two subtabs (Local + Lumi). Default-vars editor lives in Viewer → Defaults.
 
 interface Snapshot {
   readonly chatId: string;
@@ -29,12 +17,11 @@ interface Snapshot {
   readonly ts: number;
 }
 
-type SubTabId = 'default' | 'local' | 'lumi';
+type SubTabId = 'local' | 'lumi';
 
 const SUB_TABS: ReadonlyArray<{ id: SubTabId; label: string; title: string }> = [
-  { id: 'default', label: 'Default', title: 'Character-level default variables. Persist across chats with this character.' },
-  { id: 'local',   label: 'Local',   title: 'Chat-scoped variables. setvar / setChatVar / Lua setState write here.' },
-  { id: 'lumi',    label: 'Lumi',    title: 'Lumi-native global + chat scopes. Read-only — Risu cards don\'t use these.' },
+  { id: 'local', label: 'Local', title: 'Chat-scoped variables. setvar / setChatVar / Lua setState write here.' },
+  { id: 'lumi',  label: 'Lumi',  title: 'Lumi-native global + chat scopes. Read-only, Risu cards do not use these.' },
 ];
 
 export interface VariablesTabHandle {
@@ -120,15 +107,11 @@ export function mountVariablesPanel(
   let activeChatId: string | null = null;
   let snapshot: Snapshot | null = null;
   let filterTerm = '';
-  let activeSubTab: SubTabId = 'default';
-  // Per-key edit buffers keyed by `${subtab}:${name}` so the same name in
-  // different scopes doesn't share a buffer. Survive backend re-pushes mid-edit.
+  let activeSubTab: SubTabId = 'local';
   const editBuffers = new Map<string, string>();
-  // Add-row state per subtab.
   const addRow: Record<SubTabId, { open: boolean; name: string; value: string }> = {
-    default: { open: false, name: '', value: '' },
-    local:   { open: false, name: '', value: '' },
-    lumi:    { open: false, name: '', value: '' },
+    local: { open: false, name: '', value: '' },
+    lumi:  { open: false, name: '', value: '' },
   };
 
   function activateSubTab(id: SubTabId): void {
@@ -161,7 +144,7 @@ export function mountVariablesPanel(
     const ts = formatTime(snapshot.ts);
     status.textContent =
       `chat ${shortId(snapshot.chatId)} · seq ${snapshot.seq} · ` +
-      `default=${t.defaults} local=${t.local} lumi=${t.global + t.chat} · ` +
+      `local=${t.local} lumi=${t.global + t.chat} · ` +
       `updated ${ts}`;
     status.classList.remove('rv-status-error');
   }
@@ -176,89 +159,9 @@ export function mountVariablesPanel(
       return;
     }
     switch (activeSubTab) {
-      case 'default': body.appendChild(renderDefaultPanel()); break;
-      case 'local':   body.appendChild(renderLocalPanel());   break;
-      case 'lumi':    body.appendChild(renderLumiPanel());    break;
+      case 'local': body.appendChild(renderLocalPanel()); break;
+      case 'lumi':  body.appendChild(renderLumiPanel());  break;
     }
-  }
-
-  // ---------- Default subtab -------------------------------------------------
-
-  function renderDefaultPanel(): HTMLElement {
-    const wrap = document.createElement('section');
-    wrap.className = 'lr-var-section';
-
-    const note = document.createElement('p');
-    note.className = 'lr-var-note';
-    note.textContent =
-      'Initial values that seed each new chat. CBS reads via {{getvar::name}} ' +
-      'until overwritten by triggers or {{setvar}}. Overrides persist per-character ' +
-      'and propagate across all chats with this character.';
-    wrap.appendChild(note);
-
-    if (!snapshot!.characterId) {
-      const empty = document.createElement('div');
-      empty.className = 'rv-empty';
-      empty.textContent = 'No character associated with this chat.';
-      wrap.appendChild(empty);
-      return wrap;
-    }
-
-    const term = filterTerm.toLowerCase();
-    const cardSide = snapshot!.defaultsCardSide;
-    const merged = snapshot!.defaults;
-    // Union of names across cardSide + overrides.
-    const allNames = new Set<string>([...Object.keys(cardSide), ...Object.keys(merged)]);
-    const rows = [...allNames].sort((a, b) => a.localeCompare(b))
-      .filter((name) => {
-        if (!term) return true;
-        const v = merged[name] ?? '';
-        return name.toLowerCase().includes(term) || v.toLowerCase().includes(term);
-      });
-
-    const list = document.createElement('div');
-    list.className = 'lr-var-list';
-    if (rows.length === 0 && !addRow.default.open) {
-      const empty = document.createElement('div');
-      empty.className = 'rv-empty';
-      empty.textContent = term ? `No matches for "${filterTerm}".` : 'No default variables.';
-      list.appendChild(empty);
-    } else {
-      for (const name of rows) {
-        const value = merged[name] ?? '';
-        const original = cardSide[name];
-        const overridden = original === undefined || original !== value;
-        list.appendChild(renderEditableRow({
-          subtab: 'default',
-          name,
-          value,
-          isOverride: overridden,
-          originalValue: original,
-          onCommit: (next) => sendSetDefault(name, next),
-          onReset: overridden && original !== undefined
-            ? () => sendDeleteDefault(name)
-            : null,
-          // Defaults never delete , sending delete reverts to card side.
-          allowDelete: false,
-        }));
-      }
-    }
-
-    if (addRow.default.open) list.appendChild(renderAddRow('default'));
-    wrap.appendChild(list);
-
-    if (!addRow.default.open) {
-      const addBtn = document.createElement('button');
-      addBtn.type = 'button';
-      addBtn.className = 'lrm-btn lr-var-add-btn';
-      addBtn.textContent = '+ Add default variable';
-      addBtn.addEventListener('click', () => {
-        addRow.default = { open: true, name: '', value: '' };
-        render();
-      });
-      wrap.appendChild(addBtn);
-    }
-    return wrap;
   }
 
   // ---------- Local subtab ---------------------------------------------------
@@ -574,8 +477,7 @@ export function mountVariablesPanel(
     function commit(): void {
       const name = buf.name.trim();
       if (name.length === 0) { nameInput.focus(); return; }
-      if (subtab === 'default') sendSetDefault(name, buf.value);
-      else if (subtab === 'local') sendSetLocal(name, buf.value);
+      if (subtab === 'local') sendSetLocal(name, buf.value);
       addRow[subtab] = { open: false, name: '', value: '' };
       render();
     }
@@ -587,25 +489,6 @@ export function mountVariablesPanel(
 
   // ---------- Backend sends --------------------------------------------------
 
-  function sendSetDefault(name: string, value: string): void {
-    if (!snapshot?.characterId) return;
-    log.info(`variables-tab: set_default_variable char=${snapshot.characterId} name=${name} len=${value.length}`);
-    sendToBackend({
-      type: 'set_default_variable',
-      characterId: snapshot.characterId,
-      name,
-      value,
-    });
-  }
-  function sendDeleteDefault(name: string): void {
-    if (!snapshot?.characterId) return;
-    log.info(`variables-tab: delete_default_variable char=${snapshot.characterId} name=${name}`);
-    sendToBackend({
-      type: 'delete_default_variable',
-      characterId: snapshot.characterId,
-      name,
-    });
-  }
   function sendSetLocal(key: string, value: string): void {
     if (!activeChatId) return;
     log.info(`variables-tab: set_variable chat=${activeChatId} key=${key} len=${value.length}`);
@@ -691,7 +574,6 @@ export function mountVariablesPanel(
     log.info(`variables-tab.setActiveChatId: ${activeChatId ?? 'null'} -> ${chatId ?? 'null'}`);
     activeChatId = chatId;
     editBuffers.clear();
-    addRow.default = { open: false, name: '', value: '' };
     addRow.local = { open: false, name: '', value: '' };
     if (chatId) {
       if (snapshot && snapshot.chatId !== chatId) snapshot = null;
@@ -731,11 +613,10 @@ function formatTime(ts: number): string {
   return `${hh}:${mm}:${ss}`;
 }
 
-function countTotals(snap: Snapshot): { local: number; global: number; chat: number; defaults: number } {
+function countTotals(snap: Snapshot): { local: number; global: number; chat: number } {
   return {
     local: Object.keys(snap.scopes.local).length,
     global: Object.keys(snap.scopes.global).length,
     chat: Object.keys(snap.scopes.chat).length,
-    defaults: new Set([...Object.keys(snap.defaults), ...Object.keys(snap.defaultsCardSide)]).size,
   };
 }

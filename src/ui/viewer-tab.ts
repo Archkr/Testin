@@ -67,7 +67,7 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
   // Import → Lorebooks in Phase E. The 'defaults' subtab no longer renders
   // here , `_risu_decorators` lookups still go through the viewer-data API
   // for character introspection, but the editor is gone.
-  type ViewerSubTab = 'notes' | 'assets' | 'triggers' | 'lorebook' | 'regex' | 'background' | 'cjs';
+  type ViewerSubTab = 'notes' | 'assets' | 'triggers' | 'lorebook' | 'regex' | 'background' | 'cjs' | 'defaults';
   let activeSubTab: ViewerSubTab = 'notes';
   // Mirrors `set_active_chat.characterId`. Drives the Current button + auto-switch.
   let activeCharacterId: string | null = null;
@@ -94,6 +94,8 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
   let editingTriggerLua = '';
   let editingBackgroundHtml = false;
   let editingBackgroundHtmlBuffer = '';
+  // null = no unsaved changes (textarea derives from snapshot)
+  let defaultsTextBuffer: string | null = null;
 
   const intro = document.createElement('p');
   intro.className = 'lrv-intro';
@@ -276,6 +278,7 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
     editingTriggerLua = '';
     editingBackgroundHtml = false;
     editingBackgroundHtmlBuffer = '';
+    defaultsTextBuffer = null;
     renamingAssetName = null;
     assetSearchTerm = '';
     // Modules have no creator notes, jump straight to Assets.
@@ -373,7 +376,13 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
         render: () => renderLorebookSection(d.lorebook),
       });
     }
-    // Default vars editor moved to State → Variables → Default (Phase B).
+    if (isCharacter) {
+      tabs.push({
+        id: 'defaults',
+        label: 'Defaults',
+        render: () => renderDefaultsSection(d),
+      });
+    }
     tabs.push({
       id: 'triggers',
       label: 'Triggers',
@@ -543,10 +552,124 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
   }
 
 
-  // Default-variable editor moved to State → Variables → Default in Phase B.
-  // The wire shape (`set_default_variable`/`delete_default_variable`,
-  // `ViewerDefaultVariable` etc.) is still exported on the data; the editor UI
-  // for it just lives in a different tab now.
+  function renderDefaultsSection(d: ViewerData): HTMLElement {
+    const det = document.createElement('section');
+    det.className = 'lrv-section lrv-defaults-section';
+
+    if (d.source.kind !== 'character') {
+      const empty = document.createElement('div');
+      empty.className = 'lrv-empty';
+      empty.textContent = 'Modules do not carry default variables.';
+      det.appendChild(empty);
+      return det;
+    }
+    const characterId = d.source.characterId;
+    const snapshotText = d.defaultVariablesText;
+    const value = defaultsTextBuffer ?? snapshotText;
+    const dirty = defaultsTextBuffer !== null && defaultsTextBuffer !== snapshotText;
+
+    const ta = document.createElement('textarea');
+    ta.className = 'lrv-defaults-textarea';
+    ta.spellcheck = false;
+    ta.value = value;
+    ta.rows = Math.max(8, Math.min(30, value.split('\n').length + 2));
+    ta.placeholder = 'mood=happy\naffection=0';
+    ta.addEventListener('input', () => {
+      defaultsTextBuffer = ta.value;
+      const lines = ta.value.split('\n').length;
+      ta.rows = Math.max(8, Math.min(30, lines + 2));
+      paintStatus();
+      saveBtn.disabled = !dirtyNow();
+      revertBtn.disabled = !dirtyNow();
+    });
+    ta.addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+        e.preventDefault();
+        commitSave();
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        revert();
+      }
+    });
+    det.appendChild(ta);
+
+    const actions = document.createElement('div');
+    actions.className = 'lrv-defaults-actions';
+
+    const statusEl = document.createElement('span');
+    statusEl.className = 'lrv-defaults-status';
+    actions.appendChild(statusEl);
+
+    const saveBtn = document.createElement('button');
+    saveBtn.type = 'button';
+    saveBtn.className = 'lrv-asset-action lrv-asset-action-primary';
+    saveBtn.textContent = 'Save';
+    saveBtn.title = 'Persist as the master defaults string (Ctrl+Enter).';
+    saveBtn.disabled = !dirty;
+    saveBtn.addEventListener('click', commitSave);
+    actions.appendChild(saveBtn);
+
+    const revertBtn = document.createElement('button');
+    revertBtn.type = 'button';
+    revertBtn.className = 'lrv-asset-action';
+    revertBtn.textContent = 'Revert';
+    revertBtn.title = 'Discard unsaved edits (Esc).';
+    revertBtn.disabled = !dirty;
+    revertBtn.addEventListener('click', revert);
+    actions.appendChild(revertBtn);
+
+    if (d.defaultVariablesUserEdited) {
+      const resetBtn = document.createElement('button');
+      resetBtn.type = 'button';
+      resetBtn.className = 'lrv-asset-action lrv-asset-action-danger';
+      resetBtn.textContent = 'Reset to card defaults';
+      resetBtn.title = 'Discard all your edits, restore the card-side defaults.';
+      resetBtn.addEventListener('click', () => {
+        if (!window.confirm('Reset default variables to the card-side baseline? This discards every edit you have saved.')) return;
+        log.info(`viewer-panel: set_default_variables_text char=${characterId} reset`);
+        sendToBackend({ type: 'set_default_variables_text', characterId, text: null });
+        defaultsTextBuffer = null;
+      });
+      actions.appendChild(resetBtn);
+    }
+
+    det.appendChild(actions);
+    paintStatus();
+    queueMicrotask(() => {
+      const focused = document.activeElement === ta;
+      if (!focused && defaultsTextBuffer !== null) {
+        ta.focus();
+        ta.setSelectionRange(ta.value.length, ta.value.length);
+      }
+    });
+    return det;
+
+    function dirtyNow(): boolean {
+      return defaultsTextBuffer !== null && defaultsTextBuffer !== snapshotText;
+    }
+    function paintStatus(): void {
+      if (dirtyNow()) {
+        statusEl.textContent = 'Unsaved changes';
+        statusEl.classList.add('lrv-defaults-status-dirty');
+      } else if (d.defaultVariablesUserEdited) {
+        statusEl.textContent = 'Saved (user edit)';
+        statusEl.classList.remove('lrv-defaults-status-dirty');
+      } else {
+        statusEl.textContent = 'Card defaults';
+        statusEl.classList.remove('lrv-defaults-status-dirty');
+      }
+    }
+    function commitSave(): void {
+      const text = defaultsTextBuffer ?? '';
+      log.info(`viewer-panel: set_default_variables_text char=${characterId} len=${text.length}`);
+      sendToBackend({ type: 'set_default_variables_text', characterId, text });
+      defaultsTextBuffer = null;
+    }
+    function revert(): void {
+      defaultsTextBuffer = null;
+      render();
+    }
+  }
 
   function renderAssetsSection(assets: readonly ViewerAssetEntry[]): HTMLElement {
     const det = document.createElement('section');
@@ -1612,6 +1735,9 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
         lastError = null;
         if (assetUploadStatus !== null && assetUploadStatus.kind === 'info') {
           assetUploadStatus = null;
+        }
+        if (defaultsTextBuffer !== null && d.source.kind === 'character' && defaultsTextBuffer === d.defaultVariablesText) {
+          defaultsTextBuffer = null;
         }
         classifyViewerScope(d);
         render();

@@ -81,6 +81,9 @@ export interface LumirealmUserOverrides {
   readonly low_level_access_granted?: boolean;
   readonly consent_acknowledged_at?: number;
   readonly default_variables_overrides?: Readonly<Record<string, string>>;
+  /** Risu-parity master string for defaults, parsed via `parseKeyValue` at runtime.
+   *  Takes precedence over the card-side baseline when set. */
+  readonly default_variables_text?: string;
   readonly attached_module_ids?: readonly string[];
   readonly attached_module_world_books?: Readonly<Record<string, string>>;
   readonly attached_module_regex_script_ids?: Readonly<Record<string, readonly string[]>>;

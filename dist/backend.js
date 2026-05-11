@@ -25921,8 +25921,8 @@ function mergeAttachedModulesIntoPayload(basePayload, baseAssetIndex, modules) {
 function buildSyntheticStoredCard(characterId, data, risuai, attachedModules = []) {
   const lumiDefaults = data.payload.scriptstate_defaults;
   const cardDefaults = lumiDefaults && Object.keys(lumiDefaults).length > 0 ? lumiDefaults : parseScriptstateDefaults(typeof risuai.defaultVariables === "string" ? risuai.defaultVariables : null);
-  const overrides = data.user_overrides.default_variables_overrides ?? {};
-  const mergedDefaults = { ...cardDefaults, ...overrides };
+  const masterText = data.user_overrides.default_variables_text;
+  const mergedDefaults = typeof masterText === "string" ? parseScriptstateDefaults(masterText) : { ...cardDefaults, ...data.user_overrides.default_variables_overrides ?? {} };
   const lumiUtilityBot = data.payload.utility_bot;
   const cardUtilityBot = typeof lumiUtilityBot === "boolean" ? lumiUtilityBot : typeof risuai.utilityBot === "boolean" ? risuai.utilityBot : false;
   const utilityBot = data.user_overrides.utility_bot_override ?? cardUtilityBot;
@@ -27612,6 +27612,21 @@ function fmtRef(value, type) {
 
 // src/state/viewer-data.ts
 var imageUrl = (imageId) => imageUrlFromId(imageId);
+function serializeDefaultsToText(rec) {
+  const keys = Object.keys(rec).sort((a, b) => a.localeCompare(b));
+  return keys.map((k) => `${k}=${rec[k] ?? ""}`).join(`
+`);
+}
+function computeDefaultsText(cardDefaults, masterText, legacyOverrides) {
+  if (typeof masterText === "string") {
+    return { defaultVariablesText: masterText, defaultVariablesUserEdited: true };
+  }
+  if (legacyOverrides && Object.keys(legacyOverrides).length > 0) {
+    const merged = { ...cardDefaults, ...legacyOverrides };
+    return { defaultVariablesText: serializeDefaultsToText(merged), defaultVariablesUserEdited: true };
+  }
+  return { defaultVariablesText: serializeDefaultsToText(cardDefaults), defaultVariablesUserEdited: false };
+}
 function buildCharacterViewerData(input) {
   const triggers = [];
   const trArr = input.data.payload.triggers;
@@ -27635,31 +27650,9 @@ function buildCharacterViewerData(input) {
   const bgRaw = input.data.payload.background_html;
   const backgroundHtml = typeof bgRaw === "string" && bgRaw.length > 0 ? bgRaw : null;
   const cardDefaults = input.data.payload.scriptstate_defaults ?? {};
-  const overrides = input.data.user_overrides.default_variables_overrides ?? {};
-  const defaultVariables = [];
-  const seen = new Set;
-  for (const name of Object.keys(cardDefaults)) {
-    seen.add(name);
-    const cardValue = cardDefaults[name] ?? "";
-    const overrideValue = Object.prototype.hasOwnProperty.call(overrides, name) ? overrides[name] ?? "" : null;
-    defaultVariables.push({
-      name,
-      value: overrideValue ?? cardValue,
-      cardDefault: cardValue,
-      overridden: overrideValue !== null
-    });
-  }
-  for (const name of Object.keys(overrides)) {
-    if (seen.has(name))
-      continue;
-    defaultVariables.push({
-      name,
-      value: overrides[name] ?? "",
-      cardDefault: "",
-      overridden: true
-    });
-  }
-  defaultVariables.sort((a, b) => a.name.localeCompare(b.name));
+  const masterText = input.data.user_overrides.default_variables_text;
+  const legacyOverrides = input.data.user_overrides.default_variables_overrides;
+  const { defaultVariablesText, defaultVariablesUserEdited } = computeDefaultsText(cardDefaults, masterText, legacyOverrides);
   const lorebook = [];
   for (const wb of input.worldBooks ?? []) {
     if (wb.entries.length === 0)
@@ -27717,7 +27710,8 @@ function buildCharacterViewerData(input) {
     assets,
     cjs: null,
     backgroundHtml,
-    defaultVariables,
+    defaultVariablesText,
+    defaultVariablesUserEdited,
     ts: input.ts ?? Date.now(),
     fetchWarnings: input.fetchWarnings ?? [],
     ...input.data.source === undefined ? { lorebookNeedsReimport: true } : {},
@@ -27897,7 +27891,8 @@ function buildModuleViewerData(input) {
     assets,
     cjs: typeof m.cjs === "string" && m.cjs.length > 0 ? m.cjs : null,
     backgroundHtml: null,
-    defaultVariables: [],
+    defaultVariablesText: "",
+    defaultVariablesUserEdited: false,
     ts: input.ts ?? Date.now(),
     fetchWarnings: []
   };
@@ -29193,22 +29188,21 @@ function createViewerHandlers(deps) {
         ctx.send({ type: "error", message: `Viewer assembly failed: ${deps.errMsg(err)}` }, ctx.userId);
       }
     },
-    set_default_variable: async (msg, ctx) => {
+    set_default_variables_text: async (msg, ctx) => {
       if (deps.blockedByRepair(ctx.userId, msg.type))
         return;
+      const nextText = typeof msg.text === "string" ? msg.text : null;
       const updated = await deps.updateLumirealm(deps.charactersApi(), msg.characterId, ctx.userId, (cur) => {
-        const overrides = { ...cur.user_overrides.default_variables_overrides ?? {} };
-        const trimmedName = msg.name.trim();
-        if (trimmedName.length === 0)
-          return cur;
-        overrides[trimmedName] = String(msg.value);
-        return {
-          ...cur,
-          user_overrides: {
-            ...cur.user_overrides,
-            ...Object.keys(overrides).length > 0 ? { default_variables_overrides: overrides } : {}
-          }
+        const {
+          default_variables_text: _t,
+          default_variables_overrides: _o,
+          ...rest
+        } = cur.user_overrides;
+        const nextUO = {
+          ...rest,
+          ...nextText !== null ? { default_variables_text: nextText } : {}
         };
+        return { ...cur, user_overrides: nextUO };
       });
       if (!updated) {
         ctx.send({ type: "error", message: `${msg.type}: not a lumirealm character` }, ctx.userId);
@@ -29216,31 +29210,7 @@ function createViewerHandlers(deps) {
       }
       await pushViewerData({ source: { kind: "character", characterId: msg.characterId }, context: msg.type, userId: ctx.userId }, deps.viewerPushDeps);
       deps.invalidateActiveForCharacter(msg.characterId, ctx.userId);
-      deps.log.info(`${msg.type}: char=${msg.characterId} name=${msg.name} len=${String(msg.value).length}`);
-    },
-    delete_default_variable: async (msg, ctx) => {
-      if (deps.blockedByRepair(ctx.userId, msg.type))
-        return;
-      const updated = await deps.updateLumirealm(deps.charactersApi(), msg.characterId, ctx.userId, (cur) => {
-        const overrides = { ...cur.user_overrides.default_variables_overrides ?? {} };
-        if (!Object.prototype.hasOwnProperty.call(overrides, msg.name))
-          return cur;
-        delete overrides[msg.name];
-        return {
-          ...cur,
-          user_overrides: {
-            ...cur.user_overrides,
-            ...Object.keys(overrides).length > 0 ? { default_variables_overrides: overrides } : {}
-          }
-        };
-      });
-      if (!updated) {
-        ctx.send({ type: "error", message: `${msg.type}: not a lumirealm character` }, ctx.userId);
-        return;
-      }
-      await pushViewerData({ source: { kind: "character", characterId: msg.characterId }, context: msg.type, userId: ctx.userId }, deps.viewerPushDeps);
-      deps.invalidateActiveForCharacter(msg.characterId, ctx.userId);
-      deps.log.info(`${msg.type}: char=${msg.characterId} name=${msg.name} (override removed)`);
+      deps.log.info(`${msg.type}: char=${msg.characterId} ${nextText === null ? "cleared" : `len=${nextText.length}`}`);
     },
     set_background_html: async (msg, ctx) => {
       if (deps.blockedByRepair(ctx.userId, msg.type))

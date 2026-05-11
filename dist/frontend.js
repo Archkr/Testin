@@ -2486,6 +2486,9 @@ var styles_default = `.risu-compat-drawer {\r
   font-size: 10px;\r
   cursor: pointer;\r
   flex: 1 1 auto;\r
+  text-decoration: none;\r
+  text-align: center;\r
+  display: inline-block;\r
 }\r
 .lr-viewer-drawer .lrv-asset-action:hover {\r
   background: var(--lumiverse-fill, rgba(255, 255, 255, 0.08));\r
@@ -2580,6 +2583,58 @@ var styles_default = `.risu-compat-drawer {\r
   object-fit: cover;\r
   background: rgba(255, 255, 255, 0.04);\r
   border-radius: 3px;\r
+}\r
+.lr-viewer-drawer .lrv-asset-media-video {\r
+  object-fit: contain;\r
+  background: rgba(0, 0, 0, 0.45);\r
+}\r
+.lr-viewer-drawer .lrv-asset-media-audio {\r
+  height: 38px;\r
+  flex: 0 0 auto;\r
+  background: rgba(0, 0, 0, 0.45);\r
+}\r
+\r
+.lr-viewer-drawer .lrv-defaults-section {\r
+  padding: 10px 12px 12px 12px;\r
+}\r
+.lr-viewer-drawer .lrv-defaults-note {\r
+  margin: 0 0 8px 0;\r
+  font-size: 11px;\r
+  color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.65));\r
+}\r
+.lr-viewer-drawer .lrv-defaults-textarea {\r
+  appearance: none;\r
+  display: block;\r
+  width: 100%;\r
+  box-sizing: border-box;\r
+  background: var(--lumiverse-fill, rgba(255, 255, 255, 0.04));\r
+  border: 1px solid var(--lumiverse-border, rgba(255, 255, 255, 0.12));\r
+  border-radius: 4px;\r
+  color: var(--lumiverse-text, inherit);\r
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;\r
+  font-size: 12px;\r
+  line-height: 1.5;\r
+  padding: 8px 10px;\r
+  resize: vertical;\r
+}\r
+.lr-viewer-drawer .lrv-defaults-textarea:focus {\r
+  outline: none;\r
+  border-color: var(--lumiverse-primary, rgba(120, 160, 255, 0.7));\r
+}\r
+.lr-viewer-drawer .lrv-defaults-actions {\r
+  display: flex;\r
+  gap: 6px;\r
+  align-items: center;\r
+  margin-top: 8px;\r
+  flex-wrap: wrap;\r
+}\r
+.lr-viewer-drawer .lrv-defaults-status {\r
+  font-size: 11px;\r
+  color: var(--lumiverse-text-muted, rgba(255, 255, 255, 0.55));\r
+  margin-right: auto;\r
+}\r
+.lr-viewer-drawer .lrv-defaults-status-dirty {\r
+  color: var(--lumiverse-primary, rgba(120, 160, 255, 0.85));\r
 }\r
 .lr-viewer-drawer .lrv-asset-caption {\r
   display: flex;\r
@@ -4136,9 +4191,8 @@ function generateSessionId() {
 
 // src/ui/variables-tab.ts
 var SUB_TABS = [
-  { id: "default", label: "Default", title: "Character-level default variables. Persist across chats with this character." },
   { id: "local", label: "Local", title: "Chat-scoped variables. setvar / setChatVar / Lua setState write here." },
-  { id: "lumi", label: "Lumi", title: "Lumi-native global + chat scopes. Read-only — Risu cards don't use these." }
+  { id: "lumi", label: "Lumi", title: "Lumi-native global + chat scopes. Read-only, Risu cards do not use these." }
 ];
 function mountVariablesPanel(opts) {
   const { sendToBackend, log } = opts;
@@ -4196,10 +4250,9 @@ function mountVariablesPanel(opts) {
   let activeChatId = null;
   let snapshot = null;
   let filterTerm = "";
-  let activeSubTab = "default";
+  let activeSubTab = "local";
   const editBuffers = new Map;
   const addRow = {
-    default: { open: false, name: "", value: "" },
     local: { open: false, name: "", value: "" },
     lumi: { open: false, name: "", value: "" }
   };
@@ -4230,7 +4283,7 @@ function mountVariablesPanel(opts) {
     }
     const t = countTotals(snapshot);
     const ts = formatTime(snapshot.ts);
-    status.textContent = `chat ${shortId(snapshot.chatId)} · seq ${snapshot.seq} · ` + `default=${t.defaults} local=${t.local} lumi=${t.global + t.chat} · ` + `updated ${ts}`;
+    status.textContent = `chat ${shortId(snapshot.chatId)} · seq ${snapshot.seq} · ` + `local=${t.local} lumi=${t.global + t.chat} · ` + `updated ${ts}`;
     status.classList.remove("rv-status-error");
   }
   function renderBody() {
@@ -4243,9 +4296,6 @@ function mountVariablesPanel(opts) {
       return;
     }
     switch (activeSubTab) {
-      case "default":
-        body.appendChild(renderDefaultPanel());
-        break;
       case "local":
         body.appendChild(renderLocalPanel());
         break;
@@ -4253,70 +4303,6 @@ function mountVariablesPanel(opts) {
         body.appendChild(renderLumiPanel());
         break;
     }
-  }
-  function renderDefaultPanel() {
-    const wrap = document.createElement("section");
-    wrap.className = "lr-var-section";
-    const note = document.createElement("p");
-    note.className = "lr-var-note";
-    note.textContent = "Initial values that seed each new chat. CBS reads via {{getvar::name}} " + "until overwritten by triggers or {{setvar}}. Overrides persist per-character " + "and propagate across all chats with this character.";
-    wrap.appendChild(note);
-    if (!snapshot.characterId) {
-      const empty = document.createElement("div");
-      empty.className = "rv-empty";
-      empty.textContent = "No character associated with this chat.";
-      wrap.appendChild(empty);
-      return wrap;
-    }
-    const term = filterTerm.toLowerCase();
-    const cardSide = snapshot.defaultsCardSide;
-    const merged = snapshot.defaults;
-    const allNames = new Set([...Object.keys(cardSide), ...Object.keys(merged)]);
-    const rows = [...allNames].sort((a, b) => a.localeCompare(b)).filter((name) => {
-      if (!term)
-        return true;
-      const v = merged[name] ?? "";
-      return name.toLowerCase().includes(term) || v.toLowerCase().includes(term);
-    });
-    const list = document.createElement("div");
-    list.className = "lr-var-list";
-    if (rows.length === 0 && !addRow.default.open) {
-      const empty = document.createElement("div");
-      empty.className = "rv-empty";
-      empty.textContent = term ? `No matches for "${filterTerm}".` : "No default variables.";
-      list.appendChild(empty);
-    } else {
-      for (const name of rows) {
-        const value = merged[name] ?? "";
-        const original = cardSide[name];
-        const overridden = original === undefined || original !== value;
-        list.appendChild(renderEditableRow({
-          subtab: "default",
-          name,
-          value,
-          isOverride: overridden,
-          originalValue: original,
-          onCommit: (next) => sendSetDefault(name, next),
-          onReset: overridden && original !== undefined ? () => sendDeleteDefault(name) : null,
-          allowDelete: false
-        }));
-      }
-    }
-    if (addRow.default.open)
-      list.appendChild(renderAddRow("default"));
-    wrap.appendChild(list);
-    if (!addRow.default.open) {
-      const addBtn = document.createElement("button");
-      addBtn.type = "button";
-      addBtn.className = "lrm-btn lr-var-add-btn";
-      addBtn.textContent = "+ Add default variable";
-      addBtn.addEventListener("click", () => {
-        addRow.default = { open: true, name: "", value: "" };
-        render();
-      });
-      wrap.appendChild(addBtn);
-    }
-    return wrap;
   }
   function renderLocalPanel() {
     const wrap = document.createElement("section");
@@ -4614,9 +4600,7 @@ If the character has a default for this key, getChatVar will fall back to it. Ot
         nameInput.focus();
         return;
       }
-      if (subtab === "default")
-        sendSetDefault(name, buf.value);
-      else if (subtab === "local")
+      if (subtab === "local")
         sendSetLocal(name, buf.value);
       addRow[subtab] = { open: false, name: "", value: "" };
       render();
@@ -4625,27 +4609,6 @@ If the character has a default for this key, getChatVar will fall back to it. Ot
       addRow[subtab] = { open: false, name: "", value: "" };
       render();
     }
-  }
-  function sendSetDefault(name, value) {
-    if (!snapshot?.characterId)
-      return;
-    log.info(`variables-tab: set_default_variable char=${snapshot.characterId} name=${name} len=${value.length}`);
-    sendToBackend({
-      type: "set_default_variable",
-      characterId: snapshot.characterId,
-      name,
-      value
-    });
-  }
-  function sendDeleteDefault(name) {
-    if (!snapshot?.characterId)
-      return;
-    log.info(`variables-tab: delete_default_variable char=${snapshot.characterId} name=${name}`);
-    sendToBackend({
-      type: "delete_default_variable",
-      characterId: snapshot.characterId,
-      name
-    });
   }
   function sendSetLocal(key, value) {
     if (!activeChatId)
@@ -4729,7 +4692,6 @@ If the character has a default for this key, getChatVar will fall back to it. Ot
     log.info(`variables-tab.setActiveChatId: ${activeChatId ?? "null"} -> ${chatId ?? "null"}`);
     activeChatId = chatId;
     editBuffers.clear();
-    addRow.default = { open: false, name: "", value: "" };
     addRow.local = { open: false, name: "", value: "" };
     if (chatId) {
       if (snapshot && snapshot.chatId !== chatId)
@@ -4770,8 +4732,7 @@ function countTotals(snap) {
   return {
     local: Object.keys(snap.scopes.local).length,
     global: Object.keys(snap.scopes.global).length,
-    chat: Object.keys(snap.scopes.chat).length,
-    defaults: new Set([...Object.keys(snap.defaults), ...Object.keys(snap.defaultsCardSide)]).size
+    chat: Object.keys(snap.scopes.chat).length
   };
 }
 
@@ -8305,6 +8266,7 @@ function mountViewerPanel(opts) {
   let editingTriggerLua = "";
   let editingBackgroundHtml = false;
   let editingBackgroundHtmlBuffer = "";
+  let defaultsTextBuffer = null;
   const intro = document.createElement("p");
   intro.className = "lrv-intro";
   intro.textContent = "Inspect, HTML, triggers, and assets for a character or module.";
@@ -8479,6 +8441,7 @@ function mountViewerPanel(opts) {
     editingTriggerLua = "";
     editingBackgroundHtml = false;
     editingBackgroundHtmlBuffer = "";
+    defaultsTextBuffer = null;
     renamingAssetName = null;
     assetSearchTerm = "";
     activeSubTab = o.kind === "character" ? "notes" : "assets";
@@ -8556,6 +8519,13 @@ function mountViewerPanel(opts) {
         id: "lorebook",
         label: "Lore",
         render: () => renderLorebookSection(d.lorebook)
+      });
+    }
+    if (isCharacter) {
+      tabs.push({
+        id: "defaults",
+        label: "Defaults",
+        render: () => renderDefaultsSection(d)
       });
     }
     tabs.push({
@@ -8728,6 +8698,119 @@ function mountViewerPanel(opts) {
     editingBackgroundHtml = false;
     editingBackgroundHtmlBuffer = "";
   }
+  function renderDefaultsSection(d) {
+    const det = document.createElement("section");
+    det.className = "lrv-section lrv-defaults-section";
+    if (d.source.kind !== "character") {
+      const empty = document.createElement("div");
+      empty.className = "lrv-empty";
+      empty.textContent = "Modules do not carry default variables.";
+      det.appendChild(empty);
+      return det;
+    }
+    const characterId = d.source.characterId;
+    const snapshotText = d.defaultVariablesText;
+    const value = defaultsTextBuffer ?? snapshotText;
+    const dirty = defaultsTextBuffer !== null && defaultsTextBuffer !== snapshotText;
+    const ta = document.createElement("textarea");
+    ta.className = "lrv-defaults-textarea";
+    ta.spellcheck = false;
+    ta.value = value;
+    ta.rows = Math.max(8, Math.min(30, value.split(`
+`).length + 2));
+    ta.placeholder = `mood=happy
+affection=0`;
+    ta.addEventListener("input", () => {
+      defaultsTextBuffer = ta.value;
+      const lines = ta.value.split(`
+`).length;
+      ta.rows = Math.max(8, Math.min(30, lines + 2));
+      paintStatus();
+      saveBtn.disabled = !dirtyNow();
+      revertBtn.disabled = !dirtyNow();
+    });
+    ta.addEventListener("keydown", (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+        e.preventDefault();
+        commitSave();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        revert();
+      }
+    });
+    det.appendChild(ta);
+    const actions = document.createElement("div");
+    actions.className = "lrv-defaults-actions";
+    const statusEl = document.createElement("span");
+    statusEl.className = "lrv-defaults-status";
+    actions.appendChild(statusEl);
+    const saveBtn = document.createElement("button");
+    saveBtn.type = "button";
+    saveBtn.className = "lrv-asset-action lrv-asset-action-primary";
+    saveBtn.textContent = "Save";
+    saveBtn.title = "Persist as the master defaults string (Ctrl+Enter).";
+    saveBtn.disabled = !dirty;
+    saveBtn.addEventListener("click", commitSave);
+    actions.appendChild(saveBtn);
+    const revertBtn = document.createElement("button");
+    revertBtn.type = "button";
+    revertBtn.className = "lrv-asset-action";
+    revertBtn.textContent = "Revert";
+    revertBtn.title = "Discard unsaved edits (Esc).";
+    revertBtn.disabled = !dirty;
+    revertBtn.addEventListener("click", revert);
+    actions.appendChild(revertBtn);
+    if (d.defaultVariablesUserEdited) {
+      const resetBtn = document.createElement("button");
+      resetBtn.type = "button";
+      resetBtn.className = "lrv-asset-action lrv-asset-action-danger";
+      resetBtn.textContent = "Reset to card defaults";
+      resetBtn.title = "Discard all your edits, restore the card-side defaults.";
+      resetBtn.addEventListener("click", () => {
+        if (!window.confirm("Reset default variables to the card-side baseline? This discards every edit you have saved."))
+          return;
+        log.info(`viewer-panel: set_default_variables_text char=${characterId} reset`);
+        sendToBackend({ type: "set_default_variables_text", characterId, text: null });
+        defaultsTextBuffer = null;
+      });
+      actions.appendChild(resetBtn);
+    }
+    det.appendChild(actions);
+    paintStatus();
+    queueMicrotask(() => {
+      const focused = document.activeElement === ta;
+      if (!focused && defaultsTextBuffer !== null) {
+        ta.focus();
+        ta.setSelectionRange(ta.value.length, ta.value.length);
+      }
+    });
+    return det;
+    function dirtyNow() {
+      return defaultsTextBuffer !== null && defaultsTextBuffer !== snapshotText;
+    }
+    function paintStatus() {
+      if (dirtyNow()) {
+        statusEl.textContent = "Unsaved changes";
+        statusEl.classList.add("lrv-defaults-status-dirty");
+      } else if (d.defaultVariablesUserEdited) {
+        statusEl.textContent = "Saved (user edit)";
+        statusEl.classList.remove("lrv-defaults-status-dirty");
+      } else {
+        statusEl.textContent = "Card defaults";
+        statusEl.classList.remove("lrv-defaults-status-dirty");
+      }
+    }
+    function commitSave() {
+      const text = defaultsTextBuffer ?? "";
+      log.info(`viewer-panel: set_default_variables_text char=${characterId} len=${text.length}`);
+      sendToBackend({ type: "set_default_variables_text", characterId, text });
+      defaultsTextBuffer = null;
+    }
+    function revert() {
+      defaultsTextBuffer = null;
+      render();
+    }
+  }
   function renderAssetsSection(assets) {
     const det = document.createElement("section");
     const toolbar2 = document.createElement("div");
@@ -8814,17 +8897,35 @@ function mountViewerPanel(opts) {
     });
     return det;
   }
+  function assetMediaKind(ext) {
+    if (!ext)
+      return "image";
+    const e = ext.toLowerCase();
+    if (e === "mp4" || e === "webm" || e === "mov" || e === "m4v" || e === "ogv")
+      return "video";
+    if (e === "mp3" || e === "wav" || e === "ogg" || e === "oga" || e === "m4a" || e === "aac" || e === "flac" || e === "opus")
+      return "audio";
+    return "image";
+  }
   function renderAssetTile(a) {
     const tile = document.createElement("div");
     tile.className = "lrv-asset-tile";
-    const isVideo = a.ext === "mp4" || a.ext === "webm" || a.ext === "mov";
-    if (isVideo) {
+    const kind = assetMediaKind(a.ext);
+    if (kind === "video") {
       const vid = document.createElement("video");
       vid.src = a.url;
       vid.controls = true;
       vid.preload = "metadata";
-      vid.className = "lrv-asset-media";
+      vid.playsInline = true;
+      vid.className = "lrv-asset-media lrv-asset-media-video";
       tile.appendChild(vid);
+    } else if (kind === "audio") {
+      const aud = document.createElement("audio");
+      aud.src = a.url;
+      aud.controls = true;
+      aud.preload = "metadata";
+      aud.className = "lrv-asset-media lrv-asset-media-audio";
+      tile.appendChild(aud);
     } else {
       const img = document.createElement("img");
       img.src = a.url;
@@ -8888,6 +8989,14 @@ function mountViewerPanel(opts) {
       cap.appendChild(meta);
       const actions = document.createElement("div");
       actions.className = "lrv-asset-actions";
+      const openBtn = document.createElement("a");
+      openBtn.className = "lrv-asset-action lrv-asset-action-open";
+      openBtn.textContent = "Open";
+      openBtn.title = `Open "${a.name}" in a new tab (full size playback for video / audio).`;
+      openBtn.href = a.url;
+      openBtn.target = "_blank";
+      openBtn.rel = "noopener noreferrer";
+      actions.appendChild(openBtn);
       const renameBtn = document.createElement("button");
       renameBtn.type = "button";
       renameBtn.className = "lrv-asset-action";
@@ -9721,6 +9830,9 @@ function mountViewerPanel(opts) {
         lastError = null;
         if (assetUploadStatus !== null && assetUploadStatus.kind === "info") {
           assetUploadStatus = null;
+        }
+        if (defaultsTextBuffer !== null && d.source.kind === "character" && defaultsTextBuffer === d.defaultVariablesText) {
+          defaultsTextBuffer = null;
         }
         classifyViewerScope(d);
         render();
