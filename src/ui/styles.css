@@ -2485,6 +2485,9 @@
   font-size: 10px;
   cursor: pointer;
   flex: 1 1 auto;
+  text-decoration: none;
+  text-align: center;
+  display: inline-block;
 }
 .lr-viewer-drawer .lrv-asset-action:hover {
   background: var(--lumiverse-fill, rgba(255, 255, 255, 0.08));
@@ -2579,6 +2582,15 @@
   object-fit: cover;
   background: rgba(255, 255, 255, 0.04);
   border-radius: 3px;
+}
+.lr-viewer-drawer .lrv-asset-media-video {
+  object-fit: contain;
+  background: rgba(0, 0, 0, 0.45);
+}
+.lr-viewer-drawer .lrv-asset-media-audio {
+  height: 38px;
+  flex: 0 0 auto;
+  background: rgba(0, 0, 0, 0.45);
 }
 .lr-viewer-drawer .lrv-asset-caption {
   display: flex;

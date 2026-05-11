@@ -641,17 +641,33 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
     return det;
   }
 
+  function assetMediaKind(ext: string | undefined): 'video' | 'audio' | 'image' {
+    if (!ext) return 'image';
+    const e = ext.toLowerCase();
+    if (e === 'mp4' || e === 'webm' || e === 'mov' || e === 'm4v' || e === 'ogv') return 'video';
+    if (e === 'mp3' || e === 'wav' || e === 'ogg' || e === 'oga' || e === 'm4a' || e === 'aac' || e === 'flac' || e === 'opus') return 'audio';
+    return 'image';
+  }
+
   function renderAssetTile(a: ViewerAssetEntry): HTMLDivElement {
     const tile = document.createElement('div');
     tile.className = 'lrv-asset-tile';
-    const isVideo = a.ext === 'mp4' || a.ext === 'webm' || a.ext === 'mov';
-    if (isVideo) {
+    const kind = assetMediaKind(a.ext);
+    if (kind === 'video') {
       const vid = document.createElement('video');
       vid.src = a.url;
       vid.controls = true;
       vid.preload = 'metadata';
-      vid.className = 'lrv-asset-media';
+      vid.playsInline = true;
+      vid.className = 'lrv-asset-media lrv-asset-media-video';
       tile.appendChild(vid);
+    } else if (kind === 'audio') {
+      const aud = document.createElement('audio');
+      aud.src = a.url;
+      aud.controls = true;
+      aud.preload = 'metadata';
+      aud.className = 'lrv-asset-media lrv-asset-media-audio';
+      tile.appendChild(aud);
     } else {
       const img = document.createElement('img');
       img.src = a.url;
@@ -704,6 +720,14 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
       cap.appendChild(meta);
       const actions = document.createElement('div');
       actions.className = 'lrv-asset-actions';
+      const openBtn = document.createElement('a');
+      openBtn.className = 'lrv-asset-action lrv-asset-action-open';
+      openBtn.textContent = 'Open';
+      openBtn.title = `Open "${a.name}" in a new tab (full size playback for video / audio).`;
+      openBtn.href = a.url;
+      openBtn.target = '_blank';
+      openBtn.rel = 'noopener noreferrer';
+      actions.appendChild(openBtn);
       const renameBtn = document.createElement('button');
       renameBtn.type = 'button';
       renameBtn.className = 'lrv-asset-action';
