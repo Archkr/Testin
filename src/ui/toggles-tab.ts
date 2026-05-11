@@ -1,4 +1,5 @@
 import type {
+  AttributionWire,
   BackendToFrontend,
   FrontendToBackend,
   SidebarToggleWire,
@@ -6,7 +7,11 @@ import type {
 } from '../types/messages.js';
 import type { FrontendLog } from './drawer.js';
 import { getTranslateEnabled, subscribeTranslateEnabled } from './translate-toggle.js';
-import { translateModuleToggleText, setModuleScopeLang } from './translate-orchestrator.js';
+import {
+  translateModuleName,
+  translateModuleToggleText,
+  setModuleScopeLang,
+} from './translate-orchestrator.js';
 import { dominantScriptLang } from './browser-translator.js';
 
 // Renders customModuleToggle DSL for the active chat.
@@ -17,7 +22,7 @@ interface ToggleDefinitionsSnapshot {
   readonly chatId: string;
   readonly seq: number;
   readonly toggles: readonly SidebarToggleWire[];
-  readonly attribution: Readonly<Record<string, string>>;
+  readonly attribution: Readonly<Record<string, AttributionWire>>;
 }
 
 interface ValuesSnapshot {
@@ -114,8 +119,10 @@ export function mountTogglesPanel(opts: MountTogglesPanelOptions): TogglesTabHan
       if (groupAttr) {
         const attr = document.createElement('div');
         attr.className = 'lr-toggle-attribution';
-        attr.textContent = groupAttr;
-        attr.title = `From module: ${groupAttr}`;
+        const display = pickAttributionDisplay(groupAttr);
+        attr.textContent = display;
+        attr.title = `From module: ${display}`;
+        kickAttributionTranslate(groupAttr, attr);
         det.appendChild(attr);
       }
       const body = document.createElement('div');
@@ -286,7 +293,7 @@ export function mountTogglesPanel(opts: MountTogglesPanelOptions): TogglesTabHan
     return row;
   }
 
-  function pickGroupAttribution(children: readonly SidebarToggleWire[]): string | null {
+  function pickGroupAttribution(children: readonly SidebarToggleWire[]): AttributionWire | null {
     if (!defs) return null;
     for (const c of children) {
       const k = (c as { key?: string }).key;
@@ -295,6 +302,25 @@ export function mountTogglesPanel(opts: MountTogglesPanelOptions): TogglesTabHan
       if (a) return a;
     }
     return null;
+  }
+
+  function pickAttributionDisplay(a: AttributionWire): string {
+    if (!getTranslateEnabled()) return a.name;
+    return a.translatedName ?? a.name;
+  }
+
+  function kickAttributionTranslate(a: AttributionWire, el: HTMLElement): void {
+    if (!getTranslateEnabled()) return;
+    if (a.translatedName) return;
+    if (!a.name || a.name.length === 0) return;
+    const moduleId = a.moduleId;
+    const original = a.name;
+    void translateModuleName(moduleId, original).then((tx) => {
+      if (tx && tx !== original && el.isConnected && getTranslateEnabled()) {
+        el.textContent = tx;
+        el.title = `From module: ${tx}`;
+      }
+    });
   }
 
   function readToggle(key: string): string {

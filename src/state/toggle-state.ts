@@ -1,10 +1,10 @@
 // Per-chat toggle-definition snapshot store. Dedups pushes via signature.
 
-import type { SidebarToggleWire } from '../types/messages.js';
+import type { AttributionWire, SidebarToggleWire } from '../types/messages.js';
 
 export interface ToggleSnapshotEntry {
   readonly toggles: readonly SidebarToggleWire[];
-  readonly attribution: Readonly<Record<string, string>>;
+  readonly attribution: Readonly<Record<string, AttributionWire>>;
   readonly seq: number;
   readonly ts: number;
 }
@@ -21,7 +21,7 @@ export class ToggleStateStore {
   applySnapshot(
     chatId: string,
     toggles: readonly SidebarToggleWire[],
-    attribution: Readonly<Record<string, string>>,
+    attribution: Readonly<Record<string, AttributionWire>>,
   ): ToggleApplyResult {
     const sig = signature(toggles, attribution);
     const existing = this.#byChat.get(chatId);
@@ -29,9 +29,17 @@ export class ToggleStateStore {
       return { changed: false, entry: existing };
     }
     const seq = (existing?.seq ?? 0) + 1;
+    const clonedAttribution: Record<string, AttributionWire> = {};
+    for (const [k, v] of Object.entries(attribution)) {
+      clonedAttribution[k] = {
+        name: v.name,
+        moduleId: v.moduleId,
+        ...(v.translatedName !== undefined ? { translatedName: v.translatedName } : {}),
+      };
+    }
     const entry: ToggleSnapshotEntry = {
       toggles: toggles.map(cloneToggle),
-      attribution: { ...attribution },
+      attribution: clonedAttribution,
       seq,
       ts: Date.now(),
     };
@@ -103,11 +111,14 @@ function cloneToggle(t: SidebarToggleWire): SidebarToggleWire {
 
 function signature(
   toggles: readonly SidebarToggleWire[],
-  attribution: Readonly<Record<string, string>>,
+  attribution: Readonly<Record<string, AttributionWire>>,
 ): string {
   const attrKeys = Object.keys(attribution).sort();
   return JSON.stringify({
     t: toggles,
-    a: attrKeys.map((k) => [k, attribution[k] ?? '']),
+    a: attrKeys.map((k) => {
+      const v = attribution[k];
+      return v ? [k, v.name, v.translatedName ?? null, v.moduleId] : [k];
+    }),
   });
 }

@@ -644,15 +644,14 @@ export type BackendToFrontend =
     }
   // Pushed on chat open / card change / module attach-detach / re-import.
   // Structure only. Values flow through the variables channel (`toggle_<key>` in global scope).
-  // `attribution` maps key → contributing module display name.
   | {
       type: 'set_toggle_definitions';
       chatId: string;
       seq: number;
       /** Flat parsed toggles in DSL order, including group/groupEnd/divider/caption markers. */
       toggles: readonly SidebarToggleWire[];
-      /** key → "Module display name". Sourced from `module.name` per Risu's RisuModule shape. */
-      attribution: Readonly<Record<string, string>>;
+      /** key → contributing module attribution. `translatedName` present when envelope cache hit. */
+      attribution: Readonly<Record<string, AttributionWire>>;
       /** ms-since-epoch when assembled. */
       ts: number;
     }
@@ -778,6 +777,13 @@ export type LogLevelWire = 'silent' | 'error' | 'warn' | 'info' | 'debug' | 'tra
 
 /** Wire shape for one parsed toggle row. Mirrors `SidebarToggle` from
  *  `src/core/toggle-syntax.ts`, duplicated here to avoid a dep on `core/`. */
+/** Per-toggle-key attribution: which module contributed this toggle. */
+export interface AttributionWire {
+  readonly name: string;
+  readonly translatedName?: string;
+  readonly moduleId: string;
+}
+
 export type SidebarToggleWire =
   | {
       readonly type: 'group';

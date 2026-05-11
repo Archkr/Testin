@@ -1,7 +1,7 @@
 declare const spindle: import('lumiverse-spindle-types').SpindleAPI;
 
 import type { ActiveCard } from '../interpreter/dispatch.js';
-import type { BackendToFrontend, SidebarToggleWire } from '../types/messages.js';
+import type { AttributionWire, BackendToFrontend, SidebarToggleWire } from '../types/messages.js';
 import type { LumirealmCharacterData } from '../payload/types.js';
 import type { ModuleEnvelope } from './modules-store.js';
 import {
@@ -290,7 +290,7 @@ export function createVariablesTogglesService(deps: VariablesTogglesDeps): Varia
     userId: string,
   ): Promise<{
     wireRows: readonly SidebarToggleWire[];
-    attribution: Record<string, string>;
+    attribution: Record<string, AttributionWire>;
     keyCount: number;
   }> {
     const fetched = await readLumirealm(characterId, userId);
@@ -300,7 +300,7 @@ export function createVariablesTogglesService(deps: VariablesTogglesDeps): Varia
 
     const envelopes = await readAttachedModuleEnvelopes(userId, attachedIds);
 
-    const attribution: Record<string, string> = {};
+    const attribution: Record<string, AttributionWire> = {};
     const wireRows: SidebarToggleWire[] = [];
     let keyCount = 0;
 
@@ -311,12 +311,16 @@ export function createVariablesTogglesService(deps: VariablesTogglesDeps): Varia
       const localFlat: readonly SidebarToggle[] = parseToggleSyntax(dsl);
       if (localFlat.length === 0) continue;
 
+      const originalName = typeof m.name === 'string' && m.name.length > 0 ? m.name : env.id;
       const translatedName = env.translations?.[translateLang]?.name;
-      const originalName = typeof m.name === 'string' ? m.name : env.id;
-      const attributionName = translatedName && translatedName.length > 0 ? translatedName : originalName;
+      const entry: AttributionWire = {
+        name: originalName,
+        moduleId: env.id,
+        ...(translatedName && translatedName.length > 0 ? { translatedName } : {}),
+      };
       for (const k of extractToggleKeys(localFlat)) {
         if (!Object.prototype.hasOwnProperty.call(attribution, k)) {
-          attribution[k] = attributionName;
+          attribution[k] = entry;
         }
       }
       keyCount += extractToggleKeys(localFlat).length;
