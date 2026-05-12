@@ -7,7 +7,7 @@
 //   <extId>.lumiagent.describe   (sync — static SurfaceManifest)
 //   <extId>.lumiagent.execute    (handle — dispatches a request envelope)
 //
-// The caller publishes its request envelope at `<callerExtId>.lumiagent.external_request`
+// The caller publishes its request envelope at `<callerExtId>.agent_request_envelope`
 // before reading `execute`. This is the workaround for rpcPool being pull-only:
 // the handler reads the requester's pending-request slot synchronously inside the
 // execute call. Within an agent turn LumiAgent issues one tool at a time so there's
@@ -249,20 +249,19 @@ export function registerLumiagentBridge(
   spindle.rpcPool.sync('lumiagent.describe', MANIFEST);
 
   // Single dispatch endpoint. The caller publishes its request envelope at
-  // `<callerExtId>.lumiagent.external_request` before reading this endpoint;
+  // `<callerExtId>.agent_request_envelope` before reading this endpoint;
   // we fetch it via rpcPool.read using the requester's id.
   spindle.rpcPool.handle('lumiagent.execute', async (rctx) => {
     const requesterId = rctx.requesterExtensionId;
     if (!requesterId) throw new Error('requester extension id missing');
     if (!ALLOWED_CALLERS.has(requesterId)) {
-      // Don't echo back the rejected id in case the caller is probing — just
-      // refuse. Logged so operators can audit.
+      // Don't echo back the rejected id in case the caller is probing.
       log(`lumiagent-bridge: rejected call from unauthorised extension "${requesterId}"`);
       throw new Error('not authorised');
     }
     let req: ExternalRequest;
     try {
-      req = await spindle.rpcPool.read<ExternalRequest>(`${requesterId}.lumiagent.external_request`);
+      req = await spindle.rpcPool.read<ExternalRequest>(`${requesterId}.agent_request_envelope`);
     } catch (err) {
       throw new Error(`could not read pending request from ${requesterId}: ${(err as Error).message}`);
     }

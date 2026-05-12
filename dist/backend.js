@@ -39179,7 +39179,7 @@ function registerLumiagentBridge(spindle2, moduleStorage, log8 = () => {}) {
     }
     let req;
     try {
-      req = await spindle2.rpcPool.read(`${requesterId}.lumiagent.external_request`);
+      req = await spindle2.rpcPool.read(`${requesterId}.agent_request_envelope`);
     } catch (err) {
       throw new Error(`could not read pending request from ${requesterId}: ${err.message}`);
     }
