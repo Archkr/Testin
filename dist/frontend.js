@@ -8531,26 +8531,11 @@ function mountViewerPanel(opts) {
       label: "Triggers",
       render: () => renderTriggersSection(d.triggers)
     });
-    if (isCharacter) {
-      tabs.push({
-        id: "background",
-        label: " HTML",
-        render: () => renderBackgroundHtmlSection(d.backgroundHtml ?? "")
-      });
-    } else if (d.backgroundHtml) {
-      tabs.push({
-        id: "background",
-        label: " HTML",
-        render: () => renderBackgroundHtmlSection(d.backgroundHtml ?? "")
-      });
-    }
-    if (d.cjs) {
-      tabs.push({
-        id: "cjs",
-        label: "CJS",
-        render: () => renderCjsSection(d.cjs ?? "")
-      });
-    }
+    tabs.push({
+      id: "background",
+      label: " HTML",
+      render: () => renderBackgroundHtmlSection(d.backgroundHtml ?? "")
+    });
     return tabs;
   }
   function renderSubTabBar(tabs) {
@@ -8610,17 +8595,20 @@ function mountViewerPanel(opts) {
   function renderBackgroundHtmlSection(html) {
     const det = document.createElement("section");
     det.className = "lrv-section lrv-defaults-section";
-    if (!viewerData || viewerData.source.kind !== "character") {
+    if (!viewerData)
+      return det;
+    const src = viewerData.source;
+    if (src.kind !== "character" && src.kind !== "module") {
       const empty = document.createElement("div");
       empty.className = "lrv-empty";
-      empty.textContent = "Modules do not carry background HTML.";
+      empty.textContent = "No background HTML.";
       det.appendChild(empty);
       return det;
     }
-    const characterId = viewerData.source.characterId;
+    const isModule = src.kind === "module";
     const note = document.createElement("p");
     note.className = "lrv-defaults-note";
-    note.textContent = "Risu-style pre-translate background HTML. Paste Risu modder HTML here, " + "collision rename + iframe policy run on save.";
+    note.textContent = isModule ? "Module backgroundEmbedding. Edits propagate to every character this module is attached to." : "Risu-style pre-translate background HTML. Paste Risu modder HTML here, " + "collision rename + iframe policy run on save.";
     det.appendChild(note);
     const snapshotText = html;
     const value = bgHtmlTextBuffer ?? snapshotText;
@@ -8675,19 +8663,22 @@ function mountViewerPanel(opts) {
     revertBtn.disabled = !dirty;
     revertBtn.addEventListener("click", revert);
     actions.appendChild(revertBtn);
-    const resetBtn = document.createElement("button");
-    resetBtn.type = "button";
-    resetBtn.className = "lrv-asset-action lrv-asset-action-danger";
-    resetBtn.textContent = "Reset to card defaults";
-    resetBtn.title = "Discard user edits, fall back to the card-side baseline.";
-    resetBtn.addEventListener("click", () => {
-      if (!window.confirm("Reset background HTML to the card-side baseline? Your edits are discarded."))
-        return;
-      log.info(`viewer-panel: set_background_html charId=${characterId} reset`);
-      sendToBackend({ type: "set_background_html", characterId, html: null });
-      bgHtmlTextBuffer = null;
-    });
-    actions.appendChild(resetBtn);
+    if (!isModule) {
+      const characterId = src.characterId;
+      const resetBtn = document.createElement("button");
+      resetBtn.type = "button";
+      resetBtn.className = "lrv-asset-action lrv-asset-action-danger";
+      resetBtn.textContent = "Reset to card defaults";
+      resetBtn.title = "Discard user edits, fall back to the card-side baseline.";
+      resetBtn.addEventListener("click", () => {
+        if (!window.confirm("Reset background HTML to the card-side baseline? Your edits are discarded."))
+          return;
+        log.info(`viewer-panel: set_background_html charId=${characterId} reset`);
+        sendToBackend({ type: "set_background_html", characterId, html: null });
+        bgHtmlTextBuffer = null;
+      });
+      actions.appendChild(resetBtn);
+    }
     det.appendChild(actions);
     paintStatus();
     return det;
@@ -8706,8 +8697,15 @@ function mountViewerPanel(opts) {
     function commitSave() {
       const text = bgHtmlTextBuffer ?? "";
       const out = text.length > 0 ? text : null;
-      log.info(`viewer-panel: set_background_html charId=${characterId} len=${text.length}`);
-      sendToBackend({ type: "set_background_html", characterId, html: out });
+      if (isModule) {
+        const moduleId = src.moduleId;
+        log.info(`viewer-panel: set_module_background_embedding moduleId=${moduleId} len=${text.length}`);
+        sendToBackend({ type: "set_module_background_embedding", moduleId, html: out });
+      } else {
+        const characterId = src.characterId;
+        log.info(`viewer-panel: set_background_html charId=${characterId} len=${text.length}`);
+        sendToBackend({ type: "set_background_html", characterId, html: out });
+      }
       bgHtmlTextBuffer = null;
     }
     function revert() {
@@ -9735,23 +9733,6 @@ affection=0`;
       default:
         return `pos ${position}`;
     }
-  }
-  function renderCjsSection(cjs) {
-    const det = document.createElement("section");
-    det.className = "lrv-section";
-    const sum = document.createElement("div");
-    sum.className = "lrv-section-summary";
-    sum.textContent = `CJS module body · ${cjs.length} chars`;
-    det.appendChild(sum);
-    const note = document.createElement("div");
-    note.className = "lrv-warning";
-    note.textContent = "LumiRealm does not execute module CJS.";
-    det.appendChild(note);
-    const pre = document.createElement("pre");
-    pre.className = "lrv-pre";
-    pre.textContent = cjs;
-    det.appendChild(pre);
-    return det;
   }
   function render() {
     renderStatus();
@@ -12384,6 +12365,9 @@ function setupMessagePortal(ctx, flog2) {
   let diagAllSweeps = false;
   let diagPortalTrace = false;
   let traceSweepNum = 0;
+  function traceActive() {
+    return diagPortalTrace || logStore.shouldEmit("trace");
+  }
   const streamingChats = new Set;
   const TALL_THRESHOLD_PX = 50;
   const BALLOON_THROTTLE_MS = 250;
@@ -12477,8 +12461,49 @@ function setupMessagePortal(ctx, flog2) {
     const compact = sig.replace(/\s+/g, " ").slice(0, 600);
     return compact;
   }
+  function snapshotSheetsForWrapper(sourceShadow) {
+    const hidePanel = getHidePanelSheet();
+    const out = [];
+    for (const s of sourceShadow.adoptedStyleSheets) {
+      if (s !== hidePanel)
+        out.push(s);
+    }
+    return out;
+  }
+  function resyncWrapperAdoptedSheets() {
+    let resynced = 0;
+    for (const rec of lifted.values()) {
+      const src = rec.sourceShadow;
+      if (!src)
+        continue;
+      const wrapperShadow = rec.wrapper.shadowRoot;
+      if (!wrapperShadow)
+        continue;
+      const want = snapshotSheetsForWrapper(src);
+      const have = wrapperShadow.adoptedStyleSheets;
+      if (have.length === want.length) {
+        let same = true;
+        for (let i = 0;i < want.length; i++) {
+          if (have[i] !== want[i]) {
+            same = false;
+            break;
+          }
+        }
+        if (same)
+          continue;
+      }
+      try {
+        wrapperShadow.adoptedStyleSheets = want;
+        resynced++;
+      } catch (err) {
+        flog2.warn("message-portal: adoptedStyleSheets resync failed", err);
+      }
+    }
+    return resynced;
+  }
   function sweep(reason) {
     const t0 = performance.now();
+    const resynced = lifted.size > 0 ? resyncWrapperAdoptedSheets() : 0;
     let walked = 0;
     let groupsLifted = 0;
     let elementsLifted = 0;
@@ -12486,8 +12511,9 @@ function setupMessagePortal(ctx, flog2) {
     let stale = 0;
     const presentKeys = new Set;
     const visibleMsgIds = new Set;
-    const currentKeys = diagPortalTrace ? new Map : null;
-    const traceBubbles = diagPortalTrace ? [] : [];
+    const trace = traceActive();
+    const currentKeys = trace ? new Map : null;
+    const traceBubbles = trace ? [] : [];
     const containers = document.querySelectorAll("[data-message-id]");
     for (const containerEl of containers) {
       let visit = function(node) {
@@ -12571,11 +12597,8 @@ function setupMessagePortal(ctx, flog2) {
             wrapper.setAttribute("data-message-id", msgId);
           if (sourceShadow) {
             const wrapperShadow = wrapper.attachShadow({ mode: "open" });
-            const hidePanel = getHidePanelSheet();
             try {
-              wrapperShadow.adoptedStyleSheets = [
-                ...sourceShadow.adoptedStyleSheets
-              ].filter((s) => s !== hidePanel);
+              wrapperShadow.adoptedStyleSheets = snapshotSheetsForWrapper(sourceShadow);
             } catch (err) {
               flog2.warn("message-portal: adoptedStyleSheets copy failed", err);
             }
@@ -12594,6 +12617,7 @@ function setupMessagePortal(ctx, flog2) {
             wrapper,
             sources: liftSet,
             inShadow,
+            sourceShadow,
             lastSeenAt: performance.now()
           });
           const classes = [];
@@ -12653,13 +12677,12 @@ function setupMessagePortal(ctx, flog2) {
       stale
     };
     lastSweep = stats;
-    if (groupsLifted > 0 || hidden > 0 || stale > 0 || dt > 10 || diagAllSweeps) {
-      flog2.info(`message-portal: sweep reason=${reason} walked=${walked} bubbles=${visibleMsgIds.size} ` + `groups=${groupsLifted} elements=${elementsLifted} hidden=${hidden} stale=${stale} ` + `${dt.toFixed(1)}ms total_overlay=${lifted.size}`);
+    if (groupsLifted > 0 || stale > 0 || resynced > 0 || dt > 10 || diagAllSweeps) {
+      const resyncedTail = resynced > 0 ? ` resynced=${resynced}` : "";
+      flog2.info(`message-portal: sweep reason=${reason} walked=${walked} bubbles=${visibleMsgIds.size} ` + `groups=${groupsLifted} elements=${elementsLifted} hidden=${hidden} stale=${stale}${resyncedTail} ` + `${dt.toFixed(1)}ms total_overlay=${lifted.size}`);
     }
-    if (diagPortalTrace && currentKeys) {
+    if (trace && currentKeys) {
       traceSweepNum += 1;
-      const bubbleSummary = (traceBubbles ?? []).filter((b) => b.fixedCount > 0).map((b) => `${b.msgId.slice(0, 8)}:fix=${b.fixedCount}/grp=${b.groupCount}`).join(",") || "<no fixed>";
-      flog2.info(`[portal-trace #${traceSweepNum}] reason=${reason} bubbles_with_fixed=${bubbleSummary} ` + `prev_keys=${prevSweepSigs.size} curr_keys=${currentKeys.size}`);
       const added = [];
       const dropped = [];
       let kept = 0;
@@ -12673,7 +12696,11 @@ function setupMessagePortal(ctx, flog2) {
         if (!currentKeys.has(key))
           dropped.push([key, fullSig]);
       }
-      flog2.info(`[portal-trace #${traceSweepNum}] kept=${kept} added=${added.length} dropped=${dropped.length}`);
+      if (added.length > 0 || dropped.length > 0) {
+        const bubbleSummary = (traceBubbles ?? []).filter((b) => b.fixedCount > 0).map((b) => `${b.msgId.slice(0, 8)}:fix=${b.fixedCount}/grp=${b.groupCount}`).join(",") || "<no fixed>";
+        flog2.info(`[portal-trace #${traceSweepNum}] reason=${reason} bubbles_with_fixed=${bubbleSummary} ` + `prev_keys=${prevSweepSigs.size} curr_keys=${currentKeys.size}`);
+        flog2.info(`[portal-trace #${traceSweepNum}] kept=${kept} added=${added.length} dropped=${dropped.length}`);
+      }
       for (const [key, fullSig] of added.slice(0, 3)) {
         const msgIdShort = key.split(KEY_DELIMITER)[0]?.slice(0, 8) ?? "?";
         flog2.info(`[portal-trace #${traceSweepNum}]   +ADD msg=${msgIdShort} len=${fullSig.length} ` + `sigHead=${JSON.stringify(sigHead(fullSig))}`);

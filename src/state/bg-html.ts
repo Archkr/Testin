@@ -29,6 +29,13 @@ function extractStyleBlocksTopLevelFallback(template: string): string[] {
   return out;
 }
 
+// Source of truth for cross-rule CSS: returns enabled, character-scoped,
+// non-module rows from Lumi with their current replace_string.
+export type ListLiveCharacterCrossRuleRules = (
+  characterId: string,
+  userId: string,
+) => Promise<readonly { replace_string: string }[]>;
+
 export interface BgHtmlRefresherDeps {
   readonly resolveReadonly: (
     template: string,
@@ -39,6 +46,7 @@ export interface BgHtmlRefresherDeps {
   ) => Promise<string>;
   readonly lastSentBgHtmlByChat: Map<string, string>;
   readonly send: (msg: BackendToFrontend, userId: string | undefined) => void;
+  readonly listLiveCharacterCrossRuleRules: ListLiveCharacterCrossRuleRules;
   readonly log: {
     readonly info: (m: string) => void;
     readonly warn: (m: string) => void;
@@ -73,7 +81,8 @@ export function createBgHtmlRefresher(deps: BgHtmlRefresherDeps): BgHtmlRefreshe
     if (rules) {
       for (const r of rules) {
         const t = r.replace_string ?? '';
-        if (t.indexOf('<style') >= 0) candidates.push(t);
+        if (t.indexOf('<style') < 0) continue;
+        candidates.push(t);
       }
     }
     if (atActions) {
@@ -133,23 +142,27 @@ export function createBgHtmlRefresher(deps: BgHtmlRefresherDeps): BgHtmlRefreshe
     );
 
     const tResolve = Date.now();
+    if (userId === undefined) {
+      log.warn(`refreshBgHtml: userId not captured for chatId=${chatId}, skipping`);
+      return;
+    }
     let resolvedBg = '';
     let crossRuleStyles: readonly string[] = [];
     try {
-      const [bgOut, csOut] = await Promise.all([
+      const [bgOut, charRules] = await Promise.all([
         bgCombined.length > 0
           ? resolveReadonly(bgCombined, chatId, characterId, userId)
           : Promise.resolve(''),
-        extractCrossRuleStyleParts(
-          active.card.regex_scripts,
-          active.card.risuPayload.at_actions,
-          chatId,
-          characterId,
-          userId,
-        ),
+        deps.listLiveCharacterCrossRuleRules(characterId, userId),
       ]);
       resolvedBg = bgOut;
-      crossRuleStyles = csOut;
+      crossRuleStyles = await extractCrossRuleStyleParts(
+        charRules,
+        active.card.risuPayload.at_actions,
+        chatId,
+        characterId,
+        userId,
+      );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       log.error(`refreshBgHtml: resolve failed chatId=${chatId}: ${msg}`);
@@ -170,7 +183,8 @@ export function createBgHtmlRefresher(deps: BgHtmlRefresherDeps): BgHtmlRefreshe
     log.info(
       `refreshBgHtml: resolved chatId=${chatId} bg_in=${bgCombined.length} ` +
         `bg_out=${resolvedBg.length} crossRuleParts=${crossRuleStyles.length} ` +
-        `crossRule_total=${crossRuleStyles.reduce((a, p) => a + p.length, 0)} elapsed=${elapsed}ms`,
+        `crossRule_total=${crossRuleStyles.reduce((a, p) => a + p.length, 0)} ` +
+        `elapsed=${elapsed}ms`,
     );
     // Sentinel separator unlikely to appear in CSS, used to dedupe redundant per-chat sends.
     const sig = resolvedBg + '\x1f' + crossRuleStyles.join('\x1e');

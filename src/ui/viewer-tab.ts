@@ -386,26 +386,14 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
       label: 'Triggers',
       render: () => renderTriggersSection(d.triggers),
     });
-    if (isCharacter) {
-      tabs.push({
-        id: 'background',
-        label: ' HTML',
-        render: () => renderBackgroundHtmlSection(d.backgroundHtml ?? ''),
-      });
-    } else if (d.backgroundHtml) {
-      tabs.push({
-        id: 'background',
-        label: ' HTML',
-        render: () => renderBackgroundHtmlSection(d.backgroundHtml ?? ''),
-      });
-    }
-    if (d.cjs) {
-      tabs.push({
-        id: 'cjs',
-        label: 'CJS',
-        render: () => renderCjsSection(d.cjs ?? ''),
-      });
-    }
+    tabs.push({
+      id: 'background',
+      label: ' HTML',
+      render: () => renderBackgroundHtmlSection(d.backgroundHtml ?? ''),
+    });
+    // CJS tab intentionally omitted: neither Risu nor LumiRealm executes
+    // module.cjs. Field is preserved in storage for round-trip; re-add the
+    // tab if a runtime is ever wired up.
     return tabs;
   }
 
@@ -467,20 +455,23 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
     const det = document.createElement('section');
     det.className = 'lrv-section lrv-defaults-section';
 
-    if (!viewerData || viewerData.source.kind !== 'character') {
+    if (!viewerData) return det;
+    const src = viewerData.source;
+    if (src.kind !== 'character' && src.kind !== 'module') {
       const empty = document.createElement('div');
       empty.className = 'lrv-empty';
-      empty.textContent = 'Modules do not carry background HTML.';
+      empty.textContent = 'No background HTML.';
       det.appendChild(empty);
       return det;
     }
-    const characterId = viewerData.source.characterId;
+    const isModule = src.kind === 'module';
 
     const note = document.createElement('p');
     note.className = 'lrv-defaults-note';
-    note.textContent =
-      'Risu-style pre-translate background HTML. Paste Risu modder HTML here, ' +
-      'collision rename + iframe policy run on save.';
+    note.textContent = isModule
+      ? 'Module backgroundEmbedding. Edits propagate to every character this module is attached to.'
+      : 'Risu-style pre-translate background HTML. Paste Risu modder HTML here, ' +
+        'collision rename + iframe policy run on save.';
     det.appendChild(note);
 
     const snapshotText = html;
@@ -537,18 +528,22 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
     revertBtn.addEventListener('click', revert);
     actions.appendChild(revertBtn);
 
-    const resetBtn = document.createElement('button');
-    resetBtn.type = 'button';
-    resetBtn.className = 'lrv-asset-action lrv-asset-action-danger';
-    resetBtn.textContent = 'Reset to card defaults';
-    resetBtn.title = 'Discard user edits, fall back to the card-side baseline.';
-    resetBtn.addEventListener('click', () => {
-      if (!window.confirm('Reset background HTML to the card-side baseline? Your edits are discarded.')) return;
-      log.info(`viewer-panel: set_background_html charId=${characterId} reset`);
-      sendToBackend({ type: 'set_background_html', characterId, html: null });
-      bgHtmlTextBuffer = null;
-    });
-    actions.appendChild(resetBtn);
+    // Reset is character-only: modules have no card-side baseline to fall back to.
+    if (!isModule) {
+      const characterId = src.characterId;
+      const resetBtn = document.createElement('button');
+      resetBtn.type = 'button';
+      resetBtn.className = 'lrv-asset-action lrv-asset-action-danger';
+      resetBtn.textContent = 'Reset to card defaults';
+      resetBtn.title = 'Discard user edits, fall back to the card-side baseline.';
+      resetBtn.addEventListener('click', () => {
+        if (!window.confirm('Reset background HTML to the card-side baseline? Your edits are discarded.')) return;
+        log.info(`viewer-panel: set_background_html charId=${characterId} reset`);
+        sendToBackend({ type: 'set_background_html', characterId, html: null });
+        bgHtmlTextBuffer = null;
+      });
+      actions.appendChild(resetBtn);
+    }
 
     det.appendChild(actions);
     paintStatus();
@@ -569,8 +564,15 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
     function commitSave(): void {
       const text = bgHtmlTextBuffer ?? '';
       const out = text.length > 0 ? text : null;
-      log.info(`viewer-panel: set_background_html charId=${characterId} len=${text.length}`);
-      sendToBackend({ type: 'set_background_html', characterId, html: out });
+      if (isModule) {
+        const moduleId = (src as { moduleId: string }).moduleId;
+        log.info(`viewer-panel: set_module_background_embedding moduleId=${moduleId} len=${text.length}`);
+        sendToBackend({ type: 'set_module_background_embedding', moduleId, html: out });
+      } else {
+        const characterId = (src as { characterId: string }).characterId;
+        log.info(`viewer-panel: set_background_html charId=${characterId} len=${text.length}`);
+        sendToBackend({ type: 'set_background_html', characterId, html: out });
+      }
       bgHtmlTextBuffer = null;
     }
     function revert(): void {
@@ -1642,24 +1644,6 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
       case 6: return 'after ex';
       default: return `pos ${position}`;
     }
-  }
-
-  function renderCjsSection(cjs: string): HTMLElement {
-    const det = document.createElement('section');
-    det.className = 'lrv-section';
-    const sum = document.createElement('div');
-    sum.className = 'lrv-section-summary';
-    sum.textContent = `CJS module body · ${cjs.length} chars`;
-    det.appendChild(sum);
-    const note = document.createElement('div');
-    note.className = 'lrv-warning';
-    note.textContent = 'LumiRealm does not execute module CJS.';
-    det.appendChild(note);
-    const pre = document.createElement('pre');
-    pre.className = 'lrv-pre';
-    pre.textContent = cjs;
-    det.appendChild(pre);
-    return det;
   }
 
   function render(): void {

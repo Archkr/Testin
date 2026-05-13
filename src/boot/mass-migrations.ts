@@ -22,6 +22,9 @@ export interface MassMigrationsDeps {
   readonly currentCharacterSchemaVersion: number;
   readonly currentModuleSchemaVersion: number;
   readonly translatorMigrationChecked: Set<string>;
+  // Snapshot of unfulfilled REQUIRED_PERMISSIONS. Mass migration is skipped
+  // entirely when non-empty so partial-permission states never mass-fail rows.
+  readonly getMissingPermissions: () => readonly string[];
   readonly moduleStorage: () => ModuleStorageLike;
   readonly listModules: (userId: string) => Promise<readonly ModuleIndexEntry[]>;
   readonly readModuleEnvelope: (userId: string, moduleId: string) => Promise<ModuleEnvelope | null>;
@@ -78,6 +81,7 @@ export function createMassMigrationsRunner(deps: MassMigrationsDeps): MassMigrat
     currentCharacterSchemaVersion,
     currentModuleSchemaVersion,
     translatorMigrationChecked,
+    getMissingPermissions,
     moduleStorage,
     listModules,
     readModuleEnvelope,
@@ -90,6 +94,16 @@ export function createMassMigrationsRunner(deps: MassMigrationsDeps): MassMigrat
     log,
     errMsg,
   } = deps;
+
+  function blockingPermissionsMissing(label: string): boolean {
+    const missing = getMissingPermissions();
+    if (missing.length === 0) return false;
+    log.info(
+      `mass-migration(${label}): skip, missing permissions=[${missing.join(',')}] ` +
+        `(will retry on grant or next boot)`,
+    );
+    return true;
+  }
 
   const massModuleMigrationStartedThisBoot = new Set<string>();
   const massCharacterMigrationStartedThisBoot = new Set<string>();
@@ -159,6 +173,7 @@ export function createMassMigrationsRunner(deps: MassMigrationsDeps): MassMigrat
 
   async function runMassModuleMigrationIfNeeded(userId: string): Promise<void> {
     if (massModuleMigrationStartedThisBoot.has(userId)) return;
+    if (blockingPermissionsMissing('modules')) return;
     massModuleMigrationStartedThisBoot.add(userId);
     const state = await readMigrationState(spindle.userStorage, userId);
     if (state.last_swept_modules >= currentModuleSchemaVersion) {
@@ -247,6 +262,7 @@ export function createMassMigrationsRunner(deps: MassMigrationsDeps): MassMigrat
 
   async function runMassCharacterMigrationIfNeeded(userId: string): Promise<void> {
     if (massCharacterMigrationStartedThisBoot.has(userId)) return;
+    if (blockingPermissionsMissing('characters')) return;
     massCharacterMigrationStartedThisBoot.add(userId);
     const state = await readMigrationState(spindle.userStorage, userId);
     if (state.last_swept_characters >= currentCharacterSchemaVersion) {

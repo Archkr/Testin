@@ -117,12 +117,18 @@ export function getModalConfirmApi(): ModalConfirmApi | null {
   return m?.confirm ? { confirm: m.confirm.bind(m) } : null;
 }
 
-// Regex scripts list/delete. Optional.
+// Regex scripts list/delete/update. Optional. update is gated separately so the
+// list/delete-only legacy adapter shape keeps working on older Lumi builds.
 export interface RegexScriptsApi {
   readonly list: (
     opts: { userId?: string; limit?: number; offset?: number },
   ) => Promise<{ data: readonly unknown[]; total: number }>;
   readonly delete: (id: string, userId?: string) => Promise<boolean>;
+  readonly update?: (
+    id: string,
+    input: { replace_string?: string },
+    userId?: string,
+  ) => Promise<unknown>;
 }
 
 export function getRegexScriptsApi(): RegexScriptsApi | null {
@@ -130,10 +136,16 @@ export function getRegexScriptsApi(): RegexScriptsApi | null {
     regex_scripts?: {
       list?: RegexScriptsApi['list'];
       delete?: RegexScriptsApi['delete'];
+      update?: RegexScriptsApi['update'];
     };
   }).regex_scripts;
   if (!api?.list || !api?.delete) return null;
-  return { list: api.list.bind(api), delete: api.delete.bind(api) };
+  const out: RegexScriptsApi = {
+    list: api.list.bind(api),
+    delete: api.delete.bind(api),
+  };
+  if (api.update) (out as { update?: RegexScriptsApi['update'] }).update = api.update.bind(api);
+  return out;
 }
 
 // Connections list with extension-side typing.

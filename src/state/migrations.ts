@@ -14,6 +14,7 @@ import {
 } from './module-migrations.js';
 import { markLegacyReimportWarned } from './legacy-reimport-warnings.js';
 import { loadCatalog } from '../payload/import.js';
+import { getRegexScriptsApi } from '../adapters/spindle-extras.js';
 
 export interface MigrationsFactoryDeps {
   readonly extensionVersion: string;
@@ -75,6 +76,65 @@ export interface MigrationsRunner {
     moduleId: string,
     userId: string,
   ) => Promise<{ ok: boolean }>;
+}
+
+// Walk Lumi's regex_scripts pages, run transform on each row's replace_string,
+// patch via regex_scripts.update only when the result differs. predicate filters
+// which rows the walk acts on.
+async function applyRegexReplaceStringTransform(
+  predicate: (row: Record<string, unknown>) => boolean,
+  userId: string,
+  transform: (replace_string: string) => string,
+  log: { warn: (s: string) => void },
+  errMsg: (e: unknown) => string,
+): Promise<{ scanned: number; updated: number; failed: number } | null> {
+  const api = getRegexScriptsApi();
+  if (!api?.list || !api.update) return null;
+  const PAGE_SIZE = 200;
+  let scanned = 0;
+  let updated = 0;
+  let failed = 0;
+  let offset = 0;
+  while (true) {
+    const page = await api.list({ userId, limit: PAGE_SIZE, offset });
+    if (!Array.isArray(page.data) || page.data.length === 0) break;
+    for (const r of page.data) {
+      const row = r as Record<string, unknown>;
+      if (!predicate(row)) continue;
+      scanned += 1;
+      const id = typeof row['id'] === 'string' ? (row['id'] as string) : null;
+      const cur = typeof row['replace_string'] === 'string'
+        ? (row['replace_string'] as string)
+        : '';
+      if (!id) continue;
+      const next = transform(cur);
+      if (next === cur) continue;
+      try {
+        await api.update(id, { replace_string: next }, userId);
+        updated += 1;
+      } catch (err) {
+        failed += 1;
+        log.warn(`applyRegexReplaceStringTransform: update id=${id} failed: ${errMsg(err)}`);
+      }
+    }
+    offset += page.data.length;
+    if (typeof page.total === 'number' && offset >= page.total) break;
+  }
+  return { scanned, updated, failed };
+}
+
+function isCharacterScopedRow(characterId: string, row: Record<string, unknown>): boolean {
+  if (row['scope'] !== 'character') return false;
+  if (row['scope_id'] !== characterId) return false;
+  const meta = row['metadata'] as { _risu?: { module_id?: unknown } } | undefined;
+  // Exclude module-installed rows so module rules are never touched by character migrations.
+  if (typeof meta?._risu?.module_id === 'string' && meta._risu.module_id.length > 0) return false;
+  return true;
+}
+
+function isModuleRowFor(moduleId: string, row: Record<string, unknown>): boolean {
+  const meta = row['metadata'] as { _risu?: { module_id?: unknown } } | undefined;
+  return meta?._risu?.module_id === moduleId;
 }
 
 export function createMigrationsRunner(deps: MigrationsFactoryDeps): MigrationsRunner {
@@ -197,6 +257,15 @@ export function createMigrationsRunner(deps: MigrationsFactoryDeps): MigrationsR
       updateWorldBookEntryExtensions: async (entryId, extensions, uid) => {
         await spindle.world_books.entries.update(entryId, { extensions } as never, uid);
       },
+      applyCharacterRegexReplaceStringTransform: async (charId, uid, transform) => {
+        return applyRegexReplaceStringTransform(
+          (row) => isCharacterScopedRow(charId, row),
+          uid,
+          transform,
+          log,
+          errMsg,
+        );
+      },
     };
     const result = await migrateCharacterIfNeeded(
       { characterId, characterName, userId, envelope },
@@ -260,6 +329,15 @@ export function createMigrationsRunner(deps: MigrationsFactoryDeps): MigrationsR
           }
         }
         return count;
+      },
+      applyModuleRegexReplaceStringTransform: async (mid, transform) => {
+        return applyRegexReplaceStringTransform(
+          (row) => isModuleRowFor(mid, row),
+          userId,
+          transform,
+          log,
+          errMsg,
+        );
       },
       refreshArtifactsForAttached: async (mid) => {
         const charIds = await charactersAttachedTo(mid, userId);

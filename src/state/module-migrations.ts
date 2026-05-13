@@ -2,6 +2,7 @@
 // after each apply for resumability.
 
 import type { ModuleEnvelope } from './modules-store.js';
+import { unprefixCssInStyleBlocks } from '../bghtml/rewriter.js';
 
 export interface ModuleMigrationDeps {
   // syncWorldBook re-runs lorebook projection and rewrites the world_book in place.
@@ -10,6 +11,12 @@ export interface ModuleMigrationDeps {
   // refreshArtifactsForAttached: detach + reattach for every attached character,
   // so the new projection (regex names, flags, etc.) replaces the old rows.
   refreshArtifactsForAttached?: (moduleId: string) => Promise<number>;
+  // In-place patches per row, scoped to rows whose metadata._risu.module_id
+  // matches. Returns null when host lacks regex_scripts.update.
+  applyModuleRegexReplaceStringTransform?: (
+    moduleId: string,
+    transform: (replaceString: string) => string,
+  ) => Promise<{ scanned: number; updated: number; failed: number } | null>;
   writeEnvelope: (env: ModuleEnvelope) => Promise<void>;
   log: {
     info: (s: string) => void;
@@ -79,6 +86,39 @@ async function applyV5RefreshAttachedRegex(
   return { nextEnv: args.env, notes };
 }
 
+async function applyV6StripStylePrefixInPlace(
+  args: ModuleMigrationStepArgs,
+  deps: ModuleMigrationDeps,
+): Promise<ModuleMigrationStepResult> {
+  // Preserves user disable + edits by patching only replace_string on rows
+  // where the transform actually changes the content. Falls back to wholesale
+  // refresh on hosts that don't expose regex_scripts.update.
+  if (!deps.applyModuleRegexReplaceStringTransform) {
+    deps.log.warn(
+      `migrate-module(${args.env.id}) v6: regex_scripts.update unavailable, falling back to wholesale refresh (user disable/edit state will be lost)`,
+    );
+    return applyV5RefreshAttachedRegex(args, deps);
+  }
+  const result = await deps.applyModuleRegexReplaceStringTransform(
+    args.env.id,
+    unprefixCssInStyleBlocks,
+  );
+  if (result === null) {
+    deps.log.warn(
+      `migrate-module(${args.env.id}) v6: transform dep returned null, falling back to wholesale refresh`,
+    );
+    return applyV5RefreshAttachedRegex(args, deps);
+  }
+  return {
+    nextEnv: args.env,
+    notes: [
+      `scanned=${result.scanned}`,
+      `updated=${result.updated}`,
+      `failed=${result.failed}`,
+    ],
+  };
+}
+
 export const MODULE_MIGRATIONS: readonly ModuleMigrationStep[] = [
   {
     version: 5,
@@ -86,6 +126,13 @@ export const MODULE_MIGRATIONS: readonly ModuleMigrationStep[] = [
       'Refresh attached-character regex artifacts to pick up new projection shape (Risu-comment names, no module-name prefix, flag-meta strip, dividers).',
     touches: ['regex_scripts_attached_chars'],
     apply: applyV5RefreshAttachedRegex,
+  },
+  {
+    version: 6,
+    description:
+      'Strip x-risu- from CSS selectors inside <style> blocks of module-installed regex replace_string content. In-place per row, preserves user disable + edits.',
+    touches: ['regex_scripts_attached_chars'],
+    apply: applyV6StripStylePrefixInPlace,
   },
 ];
 

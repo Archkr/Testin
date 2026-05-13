@@ -14,6 +14,7 @@ export const REQUIRED_PERMISSIONS: readonly string[] = [
   'personas',
   'app_manipulation',
   'images',
+  'regex_scripts',
 ];
 
 export const PERMISSION_PURPOSE: Readonly<Record<string, string>> = {
@@ -30,6 +31,7 @@ export const PERMISSION_PURPOSE: Readonly<Record<string, string>> = {
   personas: 'read the active persona for {{user}} resolution',
   app_manipulation: 'inject the bg-html host and message overlay',
   images: 'upload and serve card-bundled assets and SVG rasters',
+  regex_scripts: 'patch character + module display regex rows during translator migrations and orphan cleanup',
 };
 
 interface PermLog {

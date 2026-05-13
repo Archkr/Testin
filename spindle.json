@@ -1,5 +1,5 @@
 {
-  "version": "0.4.0",
+  "version": "0.4.1",
   "name": "LumiRealm",
   "identifier": "lumirealm",
   "author": "amousepad",
@@ -19,7 +19,8 @@
     "world_books",
     "personas",
     "app_manipulation",
-    "images"
+    "images",
+    "regex_scripts"
   ],
   "entry_backend": "dist/backend.js",
   "entry_frontend": "dist/frontend.js",

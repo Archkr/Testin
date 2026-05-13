@@ -5,7 +5,7 @@ import type {
   ModuleLorebookEntry,
   PendingRegexScriptMsg,
 } from '../types/messages.js';
-import { unprefixHtmlClasses, normalizeIncompleteHtmlEntities } from '../bghtml/rewriter.js';
+import { unprefixHtmlClasses, normalizeIncompleteHtmlEntities, unprefixCssInStyleBlocks } from '../bghtml/rewriter.js';
 import { normaliseRisuFlag } from '../core/mappers/regex.js';
 
 export function projectModuleLorebookEntries(
@@ -118,6 +118,7 @@ export function projectModuleRegexEntries(
     const { placement, target, disabled } = riskCustomScriptTypeToLumi(ruleType);
     if (target === 'display' && replaceString.length > 0) {
       replaceString = unprefixHtmlClasses(replaceString);
+      replaceString = unprefixCssInStyleBlocks(replaceString);
       replaceString = normalizeIncompleteHtmlEntities(replaceString);
     }
     const ableFlagRaw = eo['ableFlag'];

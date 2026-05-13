@@ -26,6 +26,7 @@
 // explicit clearAll().
 
 import type { SpindleFrontendContext } from "lumiverse-spindle-types";
+import { logStore } from "../log/store.js";
 import {
   addHidePanelClasses,
   addHidePanelIds,
@@ -58,6 +59,10 @@ interface LiftedRecord {
    *  reactive sheet (class-based), not by mutating their inline style. */
   readonly sources: readonly HTMLElement[];
   readonly inShadow: boolean;
+  /** Source ShadowRoot when `inShadow === true`. Held so each sweep
+   *  can resync the wrapper's adopted sheets against post-clone
+   *  additions (the clone-time copy is a one-shot snapshot). */
+  readonly sourceShadow: ShadowRoot | null;
   /** Most recent sweep that observed this exact (msgId,sig). Updated on
    *  every hit; consulted by the cleanup grace period. */
   lastSeenAt: number;
@@ -220,6 +225,13 @@ export function setupMessagePortal(ctx: SpindleFrontendContext, flog: Flog): Mes
   let diagAllSweeps = false;
   let diagPortalTrace = false;
   let traceSweepNum = 0;
+
+  // Auto-engage portal-trace when the log threshold is Trace. The manual
+  // override (`__riCompat.setDiagPortalTrace(true)`) still works at any
+  // log level for one-off DevTools debugging.
+  function traceActive(): boolean {
+    return diagPortalTrace || logStore.shouldEmit("trace");
+  }
 
   // Set of chatIds currently streaming. Populated by `setStreamingActive`
   // from backend `generation_state` WS messages. While ANY chat in this
@@ -401,8 +413,51 @@ export function setupMessagePortal(ctx: SpindleFrontendContext, flog: Flog): Mes
     return compact;
   }
 
+  // Source shadow's adopted sheets minus the hide-panel singleton (would
+  // hide the clone too). Shared by clone-time and resync paths.
+  function snapshotSheetsForWrapper(sourceShadow: ShadowRoot): CSSStyleSheet[] {
+    const hidePanel = getHidePanelSheet();
+    const out: CSSStyleSheet[] = [];
+    for (const s of sourceShadow.adoptedStyleSheets) {
+      if (s !== hidePanel) out.push(s);
+    }
+    return out;
+  }
+
+  // Why: clone-time adoptedStyleSheets is a one-shot array snapshot,
+  // so cross-rule sheets adopted by island-styles AFTER the clone don't
+  // reach kept entries. Same-state check below is the perf gate.
+  function resyncWrapperAdoptedSheets(): number {
+    let resynced = 0;
+    for (const rec of lifted.values()) {
+      const src = rec.sourceShadow;
+      if (!src) continue;
+      const wrapperShadow = rec.wrapper.shadowRoot;
+      if (!wrapperShadow) continue;
+      const want = snapshotSheetsForWrapper(src);
+      const have = wrapperShadow.adoptedStyleSheets;
+      if (have.length === want.length) {
+        let same = true;
+        for (let i = 0; i < want.length; i++) {
+          if (have[i] !== want[i]) { same = false; break; }
+        }
+        if (same) continue;
+      }
+      try {
+        wrapperShadow.adoptedStyleSheets = want;
+        resynced++;
+      } catch (err) {
+        flog.warn("message-portal: adoptedStyleSheets resync failed", err);
+      }
+    }
+    return resynced;
+  }
+
   function sweep(reason: string): void {
     const t0 = performance.now();
+    // Catch up wrapper adopted-sheets every sweep. Reason-gating doesn't
+    // work because scheduleSweep coalesces reasons last-write-wins.
+    const resynced = lifted.size > 0 ? resyncWrapperAdoptedSheets() : 0;
     let walked = 0;
     let groupsLifted = 0;
     let elementsLifted = 0;
@@ -411,15 +466,14 @@ export function setupMessagePortal(ctx: SpindleFrontendContext, flog: Flog): Mes
 
     const presentKeys = new Set<string>();
     const visibleMsgIds = new Set<string>();
-    // Per-sweep trace state. Populated only when diagPortalTrace is on so
-    // the hot path stays cheap. The `currentKeys` map captures (key → fullSig)
-    // so we can diff against `prevSweepSigs` at the bottom of the function
-    // and compute the exact first-diff byte offset between consecutive
-    // versions of the same msgId's lift.
-    const currentKeys = diagPortalTrace ? new Map<string, string>() : null;
+    // Per-sweep trace state, allocated only when tracing is active so
+    // the hot path stays cheap. `currentKeys` captures (key, fullSig)
+    // for the diff against `prevSweepSigs` at sweep end.
+    const trace = traceActive();
+    const currentKeys = trace ? new Map<string, string>() : null;
     // Per-bubble fixed-element counters for the trace summary.
     const traceBubbles: Array<{ msgId: string; fixedCount: number; groupCount: number }>
-      = diagPortalTrace ? [] : [];
+      = trace ? [] : [];
 
     const containers = document.querySelectorAll("[data-message-id]");
     for (const containerEl of containers) {
@@ -506,15 +560,12 @@ export function setupMessagePortal(ctx: SpindleFrontendContext, flog: Flog): Mes
           if (msgId) wrapper.setAttribute("data-message-id", msgId);
 
           if (sourceShadow) {
-            // Group inside a shadow. Attach a fresh shadow on the wrapper
-            // and copy adoptedStyleSheets by reference, excluding the hide-panel
-            // sheet (singleton, would hide the clone too).
+            // adoptedStyleSheets is a one-shot snapshot, later sheet
+            // additions don't propagate. See resyncWrapperAdoptedSheets
+            // for the post-adoption catch-up.
             const wrapperShadow = wrapper.attachShadow({ mode: "open" });
-            const hidePanel = getHidePanelSheet();
             try {
-              wrapperShadow.adoptedStyleSheets = [
-                ...sourceShadow.adoptedStyleSheets,
-              ].filter((s) => s !== hidePanel);
+              wrapperShadow.adoptedStyleSheets = snapshotSheetsForWrapper(sourceShadow);
             } catch (err) {
               flog.warn("message-portal: adoptedStyleSheets copy failed", err);
             }
@@ -533,6 +584,7 @@ export function setupMessagePortal(ctx: SpindleFrontendContext, flog: Flog): Mes
           lifted.set(key, {
             msgId, signature: sig, wrapper,
             sources: liftSet, inShadow,
+            sourceShadow,
             lastSeenAt: performance.now(),
           });
 
@@ -599,32 +651,27 @@ export function setupMessagePortal(ctx: SpindleFrontendContext, flog: Flog): Mes
       groupsLifted, elementsLifted, hidden, stale,
     };
     lastSweep = stats;
-    if (groupsLifted > 0 || hidden > 0 || stale > 0 || dt > 10 || diagAllSweeps) {
+    // Emit only when state changed (lifts, drops, resyncs) or a sweep was
+    // slow. `hidden` is a steady-state count of kept entries, so its
+    // non-zero value isn't an event and would flood logs on every
+    // mutation while panels are in DOM.
+    if (groupsLifted > 0 || stale > 0 || resynced > 0 || dt > 10 || diagAllSweeps) {
+      const resyncedTail = resynced > 0 ? ` resynced=${resynced}` : "";
       flog.info(
         `message-portal: sweep reason=${reason} walked=${walked} bubbles=${visibleMsgIds.size} ` +
-          `groups=${groupsLifted} elements=${elementsLifted} hidden=${hidden} stale=${stale} ` +
+          `groups=${groupsLifted} elements=${elementsLifted} hidden=${hidden} stale=${stale}${resyncedTail} ` +
           `${dt.toFixed(1)}ms total_overlay=${lifted.size}`,
       );
     }
 
-    // Per-sweep deep trace , toggled via __riCompat.setDiagPortalTrace(true).
-    // Logs: bubble walk summary, key-set diff vs the prior sweep (added/
-    // dropped/kept) with sigHead samples + a full-sig diff line whenever
-    // ADD/DROP land on the same msgId. The full sig is hashed AFTER the
-    // sigHead so we can compute the exact first-diff byte even when both
-    // sigHeads look identical (drift past 600 chars).
-    if (diagPortalTrace && currentKeys) {
+    // Per-sweep deep trace, active at Trace log level OR via manual
+    // setDiagPortalTrace. Diffs key sets and logs first-diff byte for
+    // ADD/DROP pairs to expose drifts past sigHead's 600-char window.
+    if (trace && currentKeys) {
       traceSweepNum += 1;
-      const bubbleSummary = (traceBubbles ?? [])
-        .filter((b) => b.fixedCount > 0)
-        .map((b) => `${b.msgId.slice(0, 8)}:fix=${b.fixedCount}/grp=${b.groupCount}`)
-        .join(",") || "<no fixed>";
-      flog.info(
-        `[portal-trace #${traceSweepNum}] reason=${reason} bubbles_with_fixed=${bubbleSummary} ` +
-          `prev_keys=${prevSweepSigs.size} curr_keys=${currentKeys.size}`,
-      );
-      // Diff prevSweepSigs ↔ currentKeys. The map values are FULL sigs;
-      // we extract sigHeads only at log-emit time.
+      // Diff prevSweepSigs ↔ currentKeys first so the emit gate below
+      // sees the actual change set. Map values are FULL sigs, sigHeads
+      // are extracted at log-emit time.
       const added: Array<[string, string]> = [];
       const dropped: Array<[string, string]> = [];
       let kept = 0;
@@ -635,9 +682,21 @@ export function setupMessagePortal(ctx: SpindleFrontendContext, flog: Flog): Mes
       for (const [key, fullSig] of prevSweepSigs) {
         if (!currentKeys.has(key)) dropped.push([key, fullSig]);
       }
-      flog.info(
-        `[portal-trace #${traceSweepNum}] kept=${kept} added=${added.length} dropped=${dropped.length}`,
-      );
+      // Emit only when state actually changed. Virtuoso re-measures
+      // produce many same-set sweeps that would otherwise drown the trace.
+      if (added.length > 0 || dropped.length > 0) {
+        const bubbleSummary = (traceBubbles ?? [])
+          .filter((b) => b.fixedCount > 0)
+          .map((b) => `${b.msgId.slice(0, 8)}:fix=${b.fixedCount}/grp=${b.groupCount}`)
+          .join(",") || "<no fixed>";
+        flog.info(
+          `[portal-trace #${traceSweepNum}] reason=${reason} bubbles_with_fixed=${bubbleSummary} ` +
+            `prev_keys=${prevSweepSigs.size} curr_keys=${currentKeys.size}`,
+        );
+        flog.info(
+          `[portal-trace #${traceSweepNum}] kept=${kept} added=${added.length} dropped=${dropped.length}`,
+        );
+      }
       // Cap at 3 each to keep log volume bounded; that's enough to see
       // the drifting bytes in the panel HTML.
       for (const [key, fullSig] of added.slice(0, 3)) {

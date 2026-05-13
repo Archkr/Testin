@@ -765,6 +765,7 @@ const activeCardLoader = createActiveCardLoader({
   worldBookIdsByCharacter,
   translatorMigrationChecked,
   repairInFlightByUser,
+  getMissingPermissions,
   readLumirealm: (characterId, userId) => readLumirealm(charactersApi(), characterId, userId),
   preValidateRequires,
   buildVersionError: (missing) => new RisuCompatVersionError(missing, EXTENSION_VERSION),
@@ -800,9 +801,49 @@ const readonlyResolver = createReadonlyResolver({
 });
 const resolveReadonly = readonlyResolver.resolve;
 
+// Page size 200 matches Lumi's server-side clamp. Module-installed rows live
+// at character scope too, so we exclude them by metadata._risu.module_id.
+async function listLiveCharacterCrossRuleRules(
+  characterId: string,
+  userId: string,
+): Promise<readonly { replace_string: string }[]> {
+  const regexApi = getRegexScriptsApi();
+  if (!regexApi?.list) {
+    throw new Error('spindle.regex_scripts.list is not available on this host');
+  }
+  const PAGE_SIZE = 200;
+  const out: { replace_string: string }[] = [];
+  let offset = 0;
+  while (true) {
+    const page = await regexApi.list({ userId, limit: PAGE_SIZE, offset });
+    if (!Array.isArray(page.data) || page.data.length === 0) break;
+    for (const r of page.data) {
+      const row = r as {
+        scope?: unknown;
+        scope_id?: unknown;
+        disabled?: unknown;
+        replace_string?: unknown;
+        metadata?: { _risu?: { module_id?: unknown } };
+      };
+      if (row.scope !== 'character') continue;
+      if (row.scope_id !== characterId) continue;
+      if (row.disabled === true) continue;
+      const mid = row.metadata?._risu?.module_id;
+      if (typeof mid === 'string' && mid.length > 0) continue;
+      if (typeof row.replace_string === 'string') {
+        out.push({ replace_string: row.replace_string });
+      }
+    }
+    offset += page.data.length;
+    if (typeof page.total === 'number' && offset >= page.total) break;
+  }
+  return out;
+}
+
 const bgHtmlRefresher = createBgHtmlRefresher({
   resolveReadonly,
   lastSentBgHtmlByChat,
+  listLiveCharacterCrossRuleRules,
   send,
   log,
   errMsg,
@@ -984,7 +1025,16 @@ function moduleStorage(): import('./state/modules-store.js').UserStorageLike {
 // Expose modules to LumiAgent (and any other extension that implements the
 // `lumiagent.*` surface-provider protocol). One-line opt-in; see
 // `src/lumiagent-bridge.ts` for the full protocol.
-registerLumiagentBridge(spindle, moduleStorage, (msg) => spindle.log.info(msg));
+// Bridge fires after every successful write_field. Forward-bound: charactersAttachedTo + invalidateActiveForCharacter are wired below; the callback only runs at runtime once they exist.
+registerLumiagentBridge(
+  spindle,
+  moduleStorage,
+  (msg) => spindle.log.info(msg),
+  async (env, userId) => {
+    const attached = await charactersAttachedTo(env.id, userId);
+    for (const charId of attached) invalidateActiveForCharacter(charId, userId);
+  },
+);
 
 const moduleUploader = createModuleUploader({
   decodeRisum,
@@ -1181,6 +1231,7 @@ const massMigrations = createMassMigrationsRunner({
   currentCharacterSchemaVersion: CURRENT_CHARACTER_SCHEMA_VERSION,
   currentModuleSchemaVersion: CURRENT_MODULE_SCHEMA_VERSION,
   translatorMigrationChecked,
+  getMissingPermissions,
   moduleStorage,
   listModules: (userId) => listModuleStore(moduleStorage(), userId),
   readModuleEnvelope: (userId, moduleId) => readModuleEnvelope(moduleStorage(), userId, moduleId),
@@ -1198,6 +1249,29 @@ const massMigrations = createMassMigrationsRunner({
   toastFor,
   log,
   errMsg,
+});
+
+// Re-attempt mass migration for every captured user the moment all required
+// permissions are granted. Per-chat path retries naturally on next chat-open
+// because the gate skips without marking translatorMigrationChecked.
+subscribeToMissingChanges((missing) => {
+  if (missing.length > 0) return;
+  if (capturedUserIds.size === 0) return;
+  log.info(`permissions.changed: re-running mass migrations for ${capturedUserIds.size} captured user(s)`);
+  for (const userId of capturedUserIds) {
+    void (async () => {
+      try {
+        await massMigrations.runMassModuleMigrationIfNeeded(userId);
+      } catch (err) {
+        log.warn(`permissions.changed: mass module migration retry failed userId=${userId}: ${errMsg(err)}`);
+      }
+      try {
+        await massMigrations.runMassCharacterMigrationIfNeeded(userId);
+      } catch (err) {
+        log.warn(`permissions.changed: mass character migration retry failed userId=${userId}: ${errMsg(err)}`);
+      }
+    })();
+  }
 });
 
 const repairOrchestrator = createRepairOrchestrator({
@@ -1323,6 +1397,8 @@ const viewerHandlers = createViewerHandlers({
   viewerPushDeps,
   charactersAttachedTo,
   invalidateActiveForCharacter,
+  readModuleEnvelope: (userId, moduleId) => readModuleEnvelope(moduleStorage(), userId, moduleId),
+  writeModuleEnvelope: async (userId, env) => { await writeModuleEnvelope(moduleStorage(), userId, env); },
   send,
   log,
   errMsg,

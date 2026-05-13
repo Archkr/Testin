@@ -91,6 +91,17 @@ export function unprefixCssClassSelectors(css: string): string {
   }
 }
 
+// Atomic per <style> block, safe for use over fragmented HTML.
+const STYLE_BLOCK_TAGGED_RE = /(<style\b[^>]*>)([\s\S]*?)(<\/style\s*>)/gi;
+export function unprefixCssInStyleBlocks(html: string): string {
+  if (!html || html.indexOf("<style") < 0) return html;
+  return html.replace(
+    STYLE_BLOCK_TAGGED_RE,
+    (_full, open: string, css: string, close: string) =>
+      open + unprefixCssClassSelectors(css) + close,
+  );
+}
+
 const DEFAULT_OPTS: Required<CssRewriteOpts> = {
   scopePrefix: ".chattext ",
   rewriteUniversalToHost: true,

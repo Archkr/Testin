@@ -17,6 +17,9 @@ export interface ActiveCardLoaderDeps {
   readonly worldBookIdsByCharacter: Map<string, readonly string[]>;
   readonly translatorMigrationChecked: Set<string>;
   readonly repairInFlightByUser: Set<string>;
+  // Snapshot of unfulfilled REQUIRED_PERMISSIONS. Per-chat migration is
+  // deferred when non-empty so we don't burn through cards with PERMISSION_DENIED.
+  readonly getMissingPermissions: () => readonly string[];
   readonly readLumirealm: (characterId: string, userId: string) => Promise<ReadLumirealmResult | null>;
   readonly preValidateRequires: (req: LumirealmCharacterData['payload']['requires']) => {
     readonly ok: boolean;
@@ -107,6 +110,7 @@ export function createActiveCardLoader(deps: ActiveCardLoaderDeps): ActiveCardLo
     worldBookIdsByCharacter,
     translatorMigrationChecked,
     repairInFlightByUser,
+    getMissingPermissions,
     readLumirealm,
     preValidateRequires,
     buildVersionError,
@@ -140,6 +144,15 @@ export function createActiveCardLoader(deps: ActiveCardLoaderDeps): ActiveCardLo
     const stored = envelope.translator_schema_version ?? 1;
     if (stored >= currentCharacterSchemaVersion) {
       translatorMigrationChecked.add(characterId);
+      return;
+    }
+    // Defer without marking checked so the next chat-open retries once the
+    // ungranted permission lands. Avoids per-card PERMISSION_DENIED storms.
+    const missing = getMissingPermissions();
+    if (missing.length > 0) {
+      log.info(
+        `maybeMigrateCharacterTranslator: defer character=${characterId},missing permissions=[${missing.join(',')}]`,
+      );
       return;
     }
     translatorMigrationChecked.add(characterId);

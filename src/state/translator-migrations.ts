@@ -3,6 +3,7 @@
 
 import { translateFromStoredSource } from '../core/pipeline/translate.js';
 import { prepareBackgroundHtmlForRuntime } from '../core/mappers/background-html.js';
+import { unprefixCssInStyleBlocks } from '../bghtml/rewriter.js';
 import type { CatalogIndex } from '../core/cbs/catalog/loader.js';
 import type { LumiBundle } from '../core/pipeline/index.js';
 import type { SvgRasterTask } from '../core/svg-rasterize.js';
@@ -46,6 +47,14 @@ export interface MigrationDeps {
     extensions: Readonly<Record<string, unknown>>,
     userId: string,
   ) => Promise<void>;
+  // Walks Lumi's regex_scripts for character scope, applies transform per row's
+  // replace_string, updates only rows where the result differs. Returns null if
+  // the host lacks the update API (caller should fall back).
+  applyCharacterRegexReplaceStringTransform?: (
+    characterId: string,
+    userId: string,
+    transform: (replaceString: string) => string,
+  ) => Promise<{ scanned: number; updated: number; failed: number } | null>;
   log: {
     info: (s: string) => void;
     warn: (s: string) => void;
@@ -293,6 +302,40 @@ async function applyV6BackfillArrayIndex(
   };
 }
 
+async function applyV9StripStylePrefixInPlace(
+  args: CharacterMigrationStepArgs,
+  deps: MigrationDeps,
+): Promise<CharacterMigrationStepResult> {
+  // Preserves user disable + edits by patching only replace_string on rules
+  // where the transform actually changes the content. Falls back to wholesale
+  // reinstall on hosts that don't expose regex_scripts.update.
+  if (!deps.applyCharacterRegexReplaceStringTransform) {
+    deps.log.warn(
+      `migrate(${args.characterId}) v9: regex_scripts.update unavailable, falling back to wholesale reinstall (user disable/edit state will be lost)`,
+    );
+    return applyV7ReinstallRegex(args, deps);
+  }
+  const result = await deps.applyCharacterRegexReplaceStringTransform(
+    args.characterId,
+    args.userId,
+    unprefixCssInStyleBlocks,
+  );
+  if (result === null) {
+    deps.log.warn(
+      `migrate(${args.characterId}) v9: transform dep returned null, falling back to wholesale reinstall`,
+    );
+    return applyV7ReinstallRegex(args, deps);
+  }
+  return {
+    nextEnvelope: args.envelope,
+    notes: [
+      `scanned=${result.scanned}`,
+      `updated=${result.updated}`,
+      `failed=${result.failed}`,
+    ],
+  };
+}
+
 async function applyV8RetranslateUserBgHtml(
   args: CharacterMigrationStepArgs,
   deps: MigrationDeps,
@@ -357,6 +400,13 @@ export const CHARACTER_MIGRATIONS: readonly CharacterMigrationStep[] = [
       'Re-translate user-edited bg-html through the unified prepare pipeline (font hoist + SVG raster). Fixes any user edits saved with the prior lazy pass-through.',
     touches: ['payload.background_html', 'svg_raster'],
     apply: applyV8RetranslateUserBgHtml,
+  },
+  {
+    version: 9,
+    description:
+      'Strip x-risu- from CSS selectors inside <style> blocks of character regex replace_string content. In-place per row, preserves user disable + edits.',
+    touches: ['regex_scripts'],
+    apply: applyV9StripStylePrefixInPlace,
   },
 ];
 

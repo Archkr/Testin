@@ -335,6 +335,12 @@ export type FrontendToBackend =
       characterId: string;
       html: string | null;
     }
+  // Writes env.module.backgroundEmbedding and refreshes every character the module is attached to.
+  | {
+      type: 'set_module_background_embedding';
+      moduleId: string;
+      html: string | null;
+    }
   // FE executes cookie-auth REST calls to write/delete world_books + regex_scripts
   // (worker can't reach those routes without session cookie). `module_artifacts_installed`
   // carries new resource ids so backend can stash them on user_overrides for clean detach.

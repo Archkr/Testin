@@ -3,6 +3,7 @@ import type { LumirealmCharacterData } from '../payload/types.js';
 import type { SpindleCharactersApi } from '../state/lumirealm-character.js';
 import type { ViewerPushDeps } from '../state/viewer-push.js';
 import type { ViewerAssembly } from '../state/viewer-assembly.js';
+import type { ModuleEnvelope } from '../state/modules-store.js';
 import { pushViewerData } from '../state/viewer-push.js';
 import {
   extractCardSideBackgroundHtml,
@@ -26,6 +27,8 @@ export interface ViewerHandlerDeps {
   readonly viewerPushDeps: ViewerPushDeps;
   readonly charactersAttachedTo: (moduleId: string, userId: string) => Promise<readonly string[]>;
   readonly invalidateActiveForCharacter: (characterId: string, userId: string) => void;
+  readonly readModuleEnvelope: (userId: string, moduleId: string) => Promise<ModuleEnvelope | null>;
+  readonly writeModuleEnvelope: (userId: string, env: ModuleEnvelope) => Promise<void>;
   readonly send: (msg: BackendToFrontend, userId: string) => void;
   readonly log: { readonly info: (m: string) => void; readonly warn: (m: string) => void };
   readonly errMsg: (e: unknown) => string;
@@ -35,6 +38,7 @@ export function createViewerHandlers(deps: ViewerHandlerDeps): {
   readonly request_viewer_data: Handler<'request_viewer_data'>;
   readonly set_default_variables_text: Handler<'set_default_variables_text'>;
   readonly set_background_html: Handler<'set_background_html'>;
+  readonly set_module_background_embedding: Handler<'set_module_background_embedding'>;
   readonly set_trigger_lua: Handler<'set_trigger_lua'>;
 } {
   return {
@@ -156,6 +160,29 @@ export function createViewerHandlers(deps: ViewerHandlerDeps): {
       } else {
         deps.log.info(`set_background_html: char=${characterId} cleared`);
       }
+    },
+    set_module_background_embedding: async (msg, ctx) => {
+      if (deps.blockedByRepair(ctx.userId, msg.type)) return;
+      const moduleId = msg.moduleId;
+      const raw = typeof msg.html === 'string' ? msg.html : '';
+      const env = await deps.readModuleEnvelope(ctx.userId, moduleId);
+      if (!env) {
+        ctx.send({ type: 'error', message: 'set_module_background_embedding: module not found' }, ctx.userId);
+        return;
+      }
+      const nextModule = { ...env.module, backgroundEmbedding: raw };
+      await deps.writeModuleEnvelope(ctx.userId, { ...env, module: nextModule });
+      const attached = await deps.charactersAttachedTo(moduleId, ctx.userId);
+      for (const charId of attached) {
+        deps.invalidateActiveForCharacter(charId, ctx.userId);
+      }
+      await pushViewerData(
+        { source: { kind: 'module', moduleId }, context: 'set_module_background_embedding', userId: ctx.userId },
+        deps.viewerPushDeps,
+      );
+      deps.log.info(
+        `set_module_background_embedding: module=${moduleId} raw_len=${raw.length} attached=${attached.length}`,
+      );
     },
     set_trigger_lua: async (msg, ctx) => {
       if (deps.blockedByRepair(ctx.userId, 'set_trigger_lua')) return;

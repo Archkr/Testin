@@ -267,6 +267,7 @@ export function buildModuleViewerData(input: {
     regex?: readonly unknown[];
     trigger?: readonly unknown[];
     cjs?: unknown;
+    backgroundEmbedding?: unknown;
   };
   const moduleName = typeof m.name === 'string' && m.name.length > 0
     ? m.name
@@ -413,7 +414,9 @@ export function buildModuleViewerData(input: {
     triggers,
     assets,
     cjs: typeof m.cjs === 'string' && m.cjs.length > 0 ? m.cjs : null,
-    backgroundHtml: null, // modules don't have bg-html
+    backgroundHtml: typeof m.backgroundEmbedding === 'string' && m.backgroundEmbedding.length > 0
+      ? m.backgroundEmbedding
+      : null,
     defaultVariablesText: '', // modules don't carry scriptstate defaults
     defaultVariablesUserEdited: false,
     ts: input.ts ?? Date.now(),

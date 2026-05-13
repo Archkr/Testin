@@ -21551,6 +21551,10 @@ function applyIframePolicy(html) {
 }
 
 // src/bghtml/rewriter.ts
+var CLASS_PREFIX = "x-risu-";
+function shouldSkipCssClassName(name) {
+  return name.startsWith(CLASS_PREFIX);
+}
 function unprefixHtmlClassValue(value) {
   if (!value)
     return value;
@@ -21567,6 +21571,40 @@ function normalizeIncompleteHtmlEntities(text) {
   if (!text || text.length === 0)
     return text;
   return text.replace(HTML_ENTITY_NORMALIZE_RE, "&$1;");
+}
+function unprefixCssClassSelectors(css) {
+  if (!css || css.length === 0)
+    return css;
+  try {
+    return rewriteCss(css, {
+      rewriteClassNames: false,
+      unprefixClassNames: true,
+      rewriteUniversalToHost: false,
+      scopePrefix: "",
+      killDataImports: true
+    });
+  } catch {
+    return css;
+  }
+}
+var STYLE_BLOCK_TAGGED_RE = /(<style\b[^>]*>)([\s\S]*?)(<\/style\s*>)/gi;
+function unprefixCssInStyleBlocks(html) {
+  if (!html || html.indexOf("<style") < 0)
+    return html;
+  return html.replace(STYLE_BLOCK_TAGGED_RE, (_full, open, css, close) => open + unprefixCssClassSelectors(css) + close);
+}
+var DEFAULT_OPTS = {
+  scopePrefix: ".chattext ",
+  rewriteUniversalToHost: true,
+  killDataImports: true,
+  rewriteClassNames: true,
+  unprefixClassNames: false
+};
+function rewriteCss(css, opts = {}) {
+  const o = { ...DEFAULT_OPTS, ...opts };
+  const parser = new CssParser(css);
+  const nodes = parser.parseBlock(true);
+  return serializeNodes(nodes, o, false);
 }
 var NESTING_AT_RULES = new Set([
   "media",
@@ -21587,6 +21625,325 @@ var DECLARATION_AT_RULES = new Set([
   "-ms-viewport"
 ]);
 var KEYFRAMES_AT_RULES = new Set(["keyframes", "-webkit-keyframes", "-moz-keyframes", "-o-keyframes"]);
+
+class CssParser {
+  src;
+  pos = 0;
+  constructor(src) {
+    this.src = src;
+  }
+  parseBlock(topLevel) {
+    const out = [];
+    while (this.pos < this.src.length) {
+      const ch = this.src[this.pos];
+      if (ch === undefined)
+        break;
+      if (isWs(ch)) {
+        const start = this.pos;
+        while (this.pos < this.src.length && isWs(this.src[this.pos]))
+          this.pos++;
+        out.push({ kind: "raw", text: this.src.slice(start, this.pos) });
+        continue;
+      }
+      if (ch === "/" && this.src[this.pos + 1] === "*") {
+        out.push({ kind: "raw", text: this.readComment() });
+        continue;
+      }
+      if (!topLevel && ch === "}") {
+        this.pos++;
+        return out;
+      }
+      if (ch === "@") {
+        out.push(this.parseAtRule());
+        continue;
+      }
+      out.push(this.parseStyleRule());
+    }
+    return out;
+  }
+  readComment() {
+    const start = this.pos;
+    this.pos += 2;
+    while (this.pos < this.src.length) {
+      if (this.src[this.pos] === "*" && this.src[this.pos + 1] === "/") {
+        this.pos += 2;
+        return this.src.slice(start, this.pos);
+      }
+      this.pos++;
+    }
+    return this.src.slice(start, this.pos);
+  }
+  parseAtRule() {
+    this.pos++;
+    const nameStart = this.pos;
+    while (this.pos < this.src.length) {
+      const c = this.src[this.pos];
+      if (isWs(c) || c === "{" || c === ";" || c === "(")
+        break;
+      this.pos++;
+    }
+    const name = this.src.slice(nameStart, this.pos);
+    const preludeStart = this.pos;
+    this.skipUntilBlockOrSemi();
+    const prelude = this.src.slice(preludeStart, this.pos);
+    const next = this.src[this.pos];
+    if (next === ";") {
+      this.pos++;
+      return { kind: "at", name, prelude, block: null };
+    }
+    if (next === "{") {
+      this.pos++;
+      const lname = name.toLowerCase();
+      if (DECLARATION_AT_RULES.has(lname)) {
+        const bodyStart = this.pos;
+        this.skipMatchingBrace();
+        const bodyText = this.src.slice(bodyStart, this.pos);
+        if (this.src[this.pos] === "}")
+          this.pos++;
+        return {
+          kind: "at",
+          name,
+          prelude,
+          block: [{ kind: "raw", text: bodyText }]
+        };
+      }
+      const block = this.parseBlock(false);
+      return { kind: "at", name, prelude, block };
+    }
+    return { kind: "at", name, prelude, block: null };
+  }
+  parseStyleRule() {
+    const selStart = this.pos;
+    this.skipUntilBlockOrSemi();
+    const endCh = this.src[this.pos];
+    if (endCh !== "{") {
+      const text = this.src.slice(selStart, this.pos);
+      if (this.src[this.pos] === ";")
+        this.pos++;
+      return { kind: "style", selectorList: text, declarations: "" };
+    }
+    const selectorList = this.src.slice(selStart, this.pos);
+    this.pos++;
+    const bodyStart = this.pos;
+    this.skipMatchingBrace();
+    const body = this.src.slice(bodyStart, this.pos);
+    if (this.src[this.pos] === "}")
+      this.pos++;
+    return { kind: "style", selectorList, declarations: body };
+  }
+  skipUntilBlockOrSemi() {
+    let parens = 0;
+    while (this.pos < this.src.length) {
+      const c = this.src[this.pos];
+      if (c === '"' || c === "'") {
+        this.skipString(c);
+        continue;
+      }
+      if (c === "/" && this.src[this.pos + 1] === "*") {
+        this.readComment();
+        continue;
+      }
+      if (c === "(") {
+        parens++;
+        this.pos++;
+        continue;
+      }
+      if (c === ")") {
+        if (parens > 0)
+          parens--;
+        this.pos++;
+        continue;
+      }
+      if (parens === 0 && (c === "{" || c === ";"))
+        return;
+      this.pos++;
+    }
+  }
+  skipMatchingBrace() {
+    let depth = 1;
+    while (this.pos < this.src.length) {
+      const c = this.src[this.pos];
+      if (c === '"' || c === "'") {
+        this.skipString(c);
+        continue;
+      }
+      if (c === "/" && this.src[this.pos + 1] === "*") {
+        this.readComment();
+        continue;
+      }
+      if (c === "{") {
+        depth++;
+        this.pos++;
+        continue;
+      }
+      if (c === "}") {
+        depth--;
+        if (depth === 0)
+          return;
+        this.pos++;
+        continue;
+      }
+      this.pos++;
+    }
+  }
+  skipString(quote) {
+    this.pos++;
+    while (this.pos < this.src.length) {
+      const c = this.src[this.pos];
+      if (c === "\\") {
+        this.pos += 2;
+        continue;
+      }
+      if (c === quote) {
+        this.pos++;
+        return;
+      }
+      if (c === `
+`)
+        return;
+      this.pos++;
+    }
+  }
+}
+function isWs(c) {
+  return c === " " || c === "\t" || c === `
+` || c === "\r" || c === "\f";
+}
+function serializeNodes(nodes, opts, inKeyframes) {
+  let out = "";
+  for (const n of nodes) {
+    if (n.kind === "raw") {
+      out += n.text;
+    } else if (n.kind === "at") {
+      out += serializeAtRule(n, opts, inKeyframes);
+    } else {
+      out += serializeStyleRule(n, opts, inKeyframes);
+    }
+  }
+  return out;
+}
+function serializeAtRule(at, opts, parentIsKeyframes) {
+  const name = at.name.toLowerCase();
+  if (name === "import" && opts.killDataImports) {
+    const prelude = at.prelude;
+    if (/\burl\(\s*['"]?data:/i.test(prelude) || /^\s*['"]?data:/i.test(prelude)) {
+      return `@import url('data:,');`;
+    }
+  }
+  const preludeStr = at.prelude;
+  if (at.block === null) {
+    return `@${at.name}${preludeStr};`;
+  }
+  if (NESTING_AT_RULES.has(name)) {
+    const inner2 = serializeNodes(at.block, opts, parentIsKeyframes);
+    return `@${at.name}${preludeStr}{${inner2}}`;
+  }
+  if (KEYFRAMES_AT_RULES.has(name)) {
+    const inner2 = serializeNodes(at.block, opts, true);
+    return `@${at.name}${preludeStr}{${inner2}}`;
+  }
+  if (DECLARATION_AT_RULES.has(name)) {
+    const inner2 = serializeNodes(at.block, opts, parentIsKeyframes);
+    return `@${at.name}${preludeStr}{${inner2}}`;
+  }
+  const inner = serializeNodes(at.block, opts, parentIsKeyframes);
+  return `@${at.name}${preludeStr}{${inner}}`;
+}
+function serializeStyleRule(rule, opts, inKeyframes) {
+  if (inKeyframes) {
+    return `${rule.selectorList}{${rule.declarations}}`;
+  }
+  const rewritten = rewriteSelectorList(rule.selectorList, opts);
+  return `${rewritten}{${rule.declarations}}`;
+}
+function splitSelectorList(list) {
+  const parts = [];
+  let start = 0;
+  let parens = 0;
+  let brackets = 0;
+  let inStr = null;
+  for (let i = 0;i < list.length; i++) {
+    const c = list[i];
+    if (inStr) {
+      if (c === "\\") {
+        i++;
+        continue;
+      }
+      if (c === inStr)
+        inStr = null;
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      inStr = c;
+      continue;
+    }
+    if (c === "(") {
+      parens++;
+      continue;
+    }
+    if (c === ")") {
+      if (parens > 0)
+        parens--;
+      continue;
+    }
+    if (c === "[") {
+      brackets++;
+      continue;
+    }
+    if (c === "]") {
+      if (brackets > 0)
+        brackets--;
+      continue;
+    }
+    if (c === "," && parens === 0 && brackets === 0) {
+      parts.push(list.slice(start, i));
+      start = i + 1;
+    }
+  }
+  parts.push(list.slice(start));
+  return parts;
+}
+function rewriteSelector(selector, opts) {
+  const leadMatch = /^\s*/.exec(selector);
+  const tailMatch = /\s*$/.exec(selector);
+  const lead = leadMatch[0];
+  const tail = tailMatch[0];
+  let core = selector.slice(lead.length, selector.length - tail.length);
+  if (core.length === 0)
+    return selector;
+  if (opts.rewriteClassNames) {
+    core = core.replace(/(?<![\\])\.(-?[_a-zA-Z][\w-]*)/g, (_m, name) => {
+      if (shouldSkipCssClassName(name)) {
+        return `.${name}`;
+      }
+      return `.${CLASS_PREFIX}${name}`;
+    });
+  } else if (opts.unprefixClassNames) {
+    core = core.replace(/(?<![\\])\.x-risu-(-?[_a-zA-Z][\w-]*)/g, (_m, name) => `.${name}`);
+  }
+  if (opts.rewriteUniversalToHost) {
+    core = rewriteUniversalLead(core);
+  }
+  const startsAtHost = /^:host(\b|[^a-zA-Z_-])/.test(core);
+  if (opts.scopePrefix && !startsAtHost) {
+    core = opts.scopePrefix + core;
+  }
+  return lead + core + tail;
+}
+function rewriteUniversalLead(selector) {
+  const bareMatch = /^(body|html|:root|\*)(?=$|\s|[>+~,{])/.exec(selector);
+  if (bareMatch) {
+    return ":host" + selector.slice(bareMatch[1].length);
+  }
+  const compoundMatch = /^(body|html|:root|\*)(?=[.:\[#])/.exec(selector);
+  if (compoundMatch) {
+    return ":host" + selector.slice(compoundMatch[1].length);
+  }
+  return selector;
+}
+function rewriteSelectorList(list, opts) {
+  return splitSelectorList(list).map((s) => rewriteSelector(s, opts)).join(",");
+}
 
 // src/core/mappers/regex.ts
 var AT_ACTION_PREFIXES = [
@@ -21732,6 +22089,7 @@ function mapRegex(scripts, opts) {
     baseReplace = normalizeReplaceStringForSanitizer(baseReplace);
     if (effectivePhase.target === "display" && baseReplace.length > 0) {
       baseReplace = unprefixHtmlClasses(baseReplace);
+      baseReplace = unprefixCssInStyleBlocks(baseReplace);
       baseReplace = normalizeIncompleteHtmlEntities(baseReplace);
     }
     const baseHasMacros = baseReplace.indexOf("{{") >= 0 || findHasCbs;
@@ -25598,6 +25956,25 @@ async function applyV6BackfillArrayIndex(args, deps) {
     ]
   };
 }
+async function applyV9StripStylePrefixInPlace(args, deps) {
+  if (!deps.applyCharacterRegexReplaceStringTransform) {
+    deps.log.warn(`migrate(${args.characterId}) v9: regex_scripts.update unavailable, falling back to wholesale reinstall (user disable/edit state will be lost)`);
+    return applyV7ReinstallRegex(args, deps);
+  }
+  const result = await deps.applyCharacterRegexReplaceStringTransform(args.characterId, args.userId, unprefixCssInStyleBlocks);
+  if (result === null) {
+    deps.log.warn(`migrate(${args.characterId}) v9: transform dep returned null, falling back to wholesale reinstall`);
+    return applyV7ReinstallRegex(args, deps);
+  }
+  return {
+    nextEnvelope: args.envelope,
+    notes: [
+      `scanned=${result.scanned}`,
+      `updated=${result.updated}`,
+      `failed=${result.failed}`
+    ]
+  };
+}
 async function applyV8RetranslateUserBgHtml(args, deps) {
   const raw = args.envelope.payload.background_html_source;
   if (typeof raw !== "string" || raw.length === 0) {
@@ -25654,6 +26031,12 @@ var CHARACTER_MIGRATIONS = [
     description: "Re-translate user-edited bg-html through the unified prepare pipeline (font hoist + SVG raster). Fixes any user edits saved with the prior lazy pass-through.",
     touches: ["payload.background_html", "svg_raster"],
     apply: applyV8RetranslateUserBgHtml
+  },
+  {
+    version: 9,
+    description: "Strip x-risu- from CSS selectors inside <style> blocks of character regex replace_string content. In-place per row, preserves user disable + edits.",
+    touches: ["regex_scripts"],
+    apply: applyV9StripStylePrefixInPlace
   }
 ];
 var CURRENT_CHARACTER_SCHEMA_VERSION = CHARACTER_MIGRATIONS.length > 0 ? Math.max(...CHARACTER_MIGRATIONS.map((m) => m.version)) : 1;
@@ -25752,12 +26135,37 @@ async function applyV5RefreshAttachedRegex(args, deps) {
   }
   return { nextEnv: args.env, notes };
 }
+async function applyV6StripStylePrefixInPlace(args, deps) {
+  if (!deps.applyModuleRegexReplaceStringTransform) {
+    deps.log.warn(`migrate-module(${args.env.id}) v6: regex_scripts.update unavailable, falling back to wholesale refresh (user disable/edit state will be lost)`);
+    return applyV5RefreshAttachedRegex(args, deps);
+  }
+  const result = await deps.applyModuleRegexReplaceStringTransform(args.env.id, unprefixCssInStyleBlocks);
+  if (result === null) {
+    deps.log.warn(`migrate-module(${args.env.id}) v6: transform dep returned null, falling back to wholesale refresh`);
+    return applyV5RefreshAttachedRegex(args, deps);
+  }
+  return {
+    nextEnv: args.env,
+    notes: [
+      `scanned=${result.scanned}`,
+      `updated=${result.updated}`,
+      `failed=${result.failed}`
+    ]
+  };
+}
 var MODULE_MIGRATIONS = [
   {
     version: 5,
     description: "Refresh attached-character regex artifacts to pick up new projection shape (Risu-comment names, no module-name prefix, flag-meta strip, dividers).",
     touches: ["regex_scripts_attached_chars"],
     apply: applyV5RefreshAttachedRegex
+  },
+  {
+    version: 6,
+    description: "Strip x-risu- from CSS selectors inside <style> blocks of module-installed regex replace_string content. In-place per row, preserves user disable + edits.",
+    touches: ["regex_scripts_attached_chars"],
+    apply: applyV6StripStylePrefixInPlace
   }
 ];
 var CURRENT_MODULE_SCHEMA_VERSION = MODULE_MIGRATIONS.length > 0 ? Math.max(...MODULE_MIGRATIONS.map((m) => m.version)) : 4;
@@ -27473,7 +27881,8 @@ var REQUIRED_PERMISSIONS = [
   "world_books",
   "personas",
   "app_manipulation",
-  "images"
+  "images",
+  "regex_scripts"
 ];
 var PERMISSION_PURPOSE = {
   chat_mutation: "apply Risu setChat / addChat / editOutput writebacks",
@@ -27488,7 +27897,8 @@ var PERMISSION_PURPOSE = {
   world_books: "create and update Risu lorebooks on import",
   personas: "read the active persona for {{user}} resolution",
   app_manipulation: "inject the bg-html host and message overlay",
-  images: "upload and serve card-bundled assets and SVG rasters"
+  images: "upload and serve card-bundled assets and SVG rasters",
+  regex_scripts: "patch character + module display regex rows during translator migrations and orphan cleanup"
 };
 var granted = new Set;
 var loaded = false;
@@ -27967,7 +28377,7 @@ function buildModuleViewerData(input) {
     triggers,
     assets,
     cjs: typeof m.cjs === "string" && m.cjs.length > 0 ? m.cjs : null,
-    backgroundHtml: null,
+    backgroundHtml: typeof m.backgroundEmbedding === "string" && m.backgroundEmbedding.length > 0 ? m.backgroundEmbedding : null,
     defaultVariablesText: "",
     defaultVariablesUserEdited: false,
     ts: input.ts ?? Date.now(),
@@ -29353,6 +29763,25 @@ function createViewerHandlers(deps) {
       } else {
         deps.log.info(`set_background_html: char=${characterId} cleared`);
       }
+    },
+    set_module_background_embedding: async (msg, ctx) => {
+      if (deps.blockedByRepair(ctx.userId, msg.type))
+        return;
+      const moduleId = msg.moduleId;
+      const raw = typeof msg.html === "string" ? msg.html : "";
+      const env = await deps.readModuleEnvelope(ctx.userId, moduleId);
+      if (!env) {
+        ctx.send({ type: "error", message: "set_module_background_embedding: module not found" }, ctx.userId);
+        return;
+      }
+      const nextModule = { ...env.module, backgroundEmbedding: raw };
+      await deps.writeModuleEnvelope(ctx.userId, { ...env, module: nextModule });
+      const attached = await deps.charactersAttachedTo(moduleId, ctx.userId);
+      for (const charId of attached) {
+        deps.invalidateActiveForCharacter(charId, ctx.userId);
+      }
+      await pushViewerData({ source: { kind: "module", moduleId }, context: "set_module_background_embedding", userId: ctx.userId }, deps.viewerPushDeps);
+      deps.log.info(`set_module_background_embedding: module=${moduleId} raw_len=${raw.length} attached=${attached.length}`);
     },
     set_trigger_lua: async (msg, ctx) => {
       if (deps.blockedByRepair(ctx.userId, "set_trigger_lua"))
@@ -34557,7 +34986,13 @@ function getRegexScriptsApi() {
   const api = spindle.regex_scripts;
   if (!api?.list || !api?.delete)
     return null;
-  return { list: api.list.bind(api), delete: api.delete.bind(api) };
+  const out = {
+    list: api.list.bind(api),
+    delete: api.delete.bind(api)
+  };
+  if (api.update)
+    out.update = api.update.bind(api);
+  return out;
 }
 function getConnectionsListFn() {
   const fn = spindle.connections?.list;
@@ -35350,8 +35785,9 @@ function createBgHtmlRefresher(deps) {
     if (rules) {
       for (const r of rules) {
         const t = r.replace_string ?? "";
-        if (t.indexOf("<style") >= 0)
-          candidates.push(t);
+        if (t.indexOf("<style") < 0)
+          continue;
+        candidates.push(t);
       }
     }
     if (atActions) {
@@ -35403,15 +35839,19 @@ __RISU_TEMPLATE_SEP_a3f9b__
     const characterId = active.card.character_id;
     log8.debug(`refreshBgHtml: START chatId=${chatId} bgRaw_len=${bgRaw?.length ?? 0} ` + `moduleBg_len=${moduleBg.length} bgCombined_len=${bgCombined.length}`);
     const tResolve = Date.now();
+    if (userId === undefined) {
+      log8.warn(`refreshBgHtml: userId not captured for chatId=${chatId}, skipping`);
+      return;
+    }
     let resolvedBg = "";
     let crossRuleStyles = [];
     try {
-      const [bgOut, csOut] = await Promise.all([
+      const [bgOut, charRules] = await Promise.all([
         bgCombined.length > 0 ? resolveReadonly(bgCombined, chatId, characterId, userId) : Promise.resolve(""),
-        extractCrossRuleStyleParts(active.card.regex_scripts, active.card.risuPayload.at_actions, chatId, characterId, userId)
+        deps.listLiveCharacterCrossRuleRules(characterId, userId)
       ]);
       resolvedBg = bgOut;
-      crossRuleStyles = csOut;
+      crossRuleStyles = await extractCrossRuleStyleParts(charRules, active.card.risuPayload.at_actions, chatId, characterId, userId);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       log8.error(`refreshBgHtml: resolve failed chatId=${chatId}: ${msg}`);
@@ -35427,7 +35867,7 @@ __RISU_TEMPLATE_SEP_a3f9b__
       }
       return;
     }
-    log8.info(`refreshBgHtml: resolved chatId=${chatId} bg_in=${bgCombined.length} ` + `bg_out=${resolvedBg.length} crossRuleParts=${crossRuleStyles.length} ` + `crossRule_total=${crossRuleStyles.reduce((a, p) => a + p.length, 0)} elapsed=${elapsed}ms`);
+    log8.info(`refreshBgHtml: resolved chatId=${chatId} bg_in=${bgCombined.length} ` + `bg_out=${resolvedBg.length} crossRuleParts=${crossRuleStyles.length} ` + `crossRule_total=${crossRuleStyles.reduce((a, p) => a + p.length, 0)} ` + `elapsed=${elapsed}ms`);
     const sig = resolvedBg + "\x1F" + crossRuleStyles.join("\x1E");
     const prior = lastSentBgHtmlByChat.get(chatId);
     if (prior === sig) {
@@ -35983,6 +36423,59 @@ async function markLegacyReimportWarned(storage, userId, characterId) {
 }
 
 // src/state/migrations.ts
+async function applyRegexReplaceStringTransform(predicate, userId, transform, log8, errMsg2) {
+  const api = getRegexScriptsApi();
+  if (!api?.list || !api.update)
+    return null;
+  const PAGE_SIZE2 = 200;
+  let scanned = 0;
+  let updated = 0;
+  let failed = 0;
+  let offset = 0;
+  while (true) {
+    const page = await api.list({ userId, limit: PAGE_SIZE2, offset });
+    if (!Array.isArray(page.data) || page.data.length === 0)
+      break;
+    for (const r of page.data) {
+      const row = r;
+      if (!predicate(row))
+        continue;
+      scanned += 1;
+      const id = typeof row["id"] === "string" ? row["id"] : null;
+      const cur = typeof row["replace_string"] === "string" ? row["replace_string"] : "";
+      if (!id)
+        continue;
+      const next = transform(cur);
+      if (next === cur)
+        continue;
+      try {
+        await api.update(id, { replace_string: next }, userId);
+        updated += 1;
+      } catch (err) {
+        failed += 1;
+        log8.warn(`applyRegexReplaceStringTransform: update id=${id} failed: ${errMsg2(err)}`);
+      }
+    }
+    offset += page.data.length;
+    if (typeof page.total === "number" && offset >= page.total)
+      break;
+  }
+  return { scanned, updated, failed };
+}
+function isCharacterScopedRow(characterId, row) {
+  if (row["scope"] !== "character")
+    return false;
+  if (row["scope_id"] !== characterId)
+    return false;
+  const meta = row["metadata"];
+  if (typeof meta?._risu?.module_id === "string" && meta._risu.module_id.length > 0)
+    return false;
+  return true;
+}
+function isModuleRowFor(moduleId, row) {
+  const meta = row["metadata"];
+  return meta?._risu?.module_id === moduleId;
+}
 function createMigrationsRunner(deps) {
   const {
     extensionVersion,
@@ -36092,6 +36585,9 @@ function createMigrationsRunner(deps) {
       },
       updateWorldBookEntryExtensions: async (entryId, extensions, uid) => {
         await spindle.world_books.entries.update(entryId, { extensions }, uid);
+      },
+      applyCharacterRegexReplaceStringTransform: async (charId, uid, transform) => {
+        return applyRegexReplaceStringTransform((row) => isCharacterScopedRow(charId, row), uid, transform, log8, errMsg2);
       }
     };
     const result = await migrateCharacterIfNeeded({ characterId, characterName, userId, envelope }, migrationDeps);
@@ -36142,6 +36638,9 @@ function createMigrationsRunner(deps) {
           }
         }
         return count;
+      },
+      applyModuleRegexReplaceStringTransform: async (mid, transform) => {
+        return applyRegexReplaceStringTransform((row) => isModuleRowFor(mid, row), userId, transform, log8, errMsg2);
       },
       refreshArtifactsForAttached: async (mid) => {
         const charIds = await charactersAttachedTo(mid, userId);
@@ -36225,6 +36724,7 @@ function createMassMigrationsRunner(deps) {
     currentCharacterSchemaVersion,
     currentModuleSchemaVersion,
     translatorMigrationChecked,
+    getMissingPermissions: getMissingPermissions2,
     moduleStorage,
     listModules: listModules2,
     readModuleEnvelope,
@@ -36237,6 +36737,13 @@ function createMassMigrationsRunner(deps) {
     log: log8,
     errMsg: errMsg2
   } = deps;
+  function blockingPermissionsMissing(label) {
+    const missing = getMissingPermissions2();
+    if (missing.length === 0)
+      return false;
+    log8.info(`mass-migration(${label}): skip, missing permissions=[${missing.join(",")}] ` + `(will retry on grant or next boot)`);
+    return true;
+  }
   const massModuleMigrationStartedThisBoot = new Set;
   const massCharacterMigrationStartedThisBoot = new Set;
   const pendingArchivesByUser = new Map;
@@ -36300,6 +36807,8 @@ function createMassMigrationsRunner(deps) {
   async function runMassModuleMigrationIfNeeded(userId) {
     if (massModuleMigrationStartedThisBoot.has(userId))
       return;
+    if (blockingPermissionsMissing("modules"))
+      return;
     massModuleMigrationStartedThisBoot.add(userId);
     const state = await readMigrationState(spindle.userStorage, userId);
     if (state.last_swept_modules >= currentModuleSchemaVersion) {
@@ -36362,6 +36871,8 @@ function createMassMigrationsRunner(deps) {
   }
   async function runMassCharacterMigrationIfNeeded(userId) {
     if (massCharacterMigrationStartedThisBoot.has(userId))
+      return;
+    if (blockingPermissionsMissing("characters"))
       return;
     massCharacterMigrationStartedThisBoot.add(userId);
     const state = await readMigrationState(spindle.userStorage, userId);
@@ -36434,6 +36945,7 @@ function createActiveCardLoader(deps) {
     worldBookIdsByCharacter,
     translatorMigrationChecked,
     repairInFlightByUser,
+    getMissingPermissions: getMissingPermissions2,
     readLumirealm: readLumirealm2,
     preValidateRequires: preValidateRequires2,
     buildVersionError,
@@ -36462,6 +36974,11 @@ function createActiveCardLoader(deps) {
     const stored = envelope.translator_schema_version ?? 1;
     if (stored >= currentCharacterSchemaVersion) {
       translatorMigrationChecked.add(characterId);
+      return;
+    }
+    const missing = getMissingPermissions2();
+    if (missing.length > 0) {
+      log8.info(`maybeMigrateCharacterTranslator: defer character=${characterId},missing permissions=[${missing.join(",")}]`);
       return;
     }
     translatorMigrationChecked.add(characterId);
@@ -37586,6 +38103,7 @@ function projectModuleRegexEntries(moduleId, moduleName, characterId, raw, idGen
     const { placement, target, disabled } = riskCustomScriptTypeToLumi(ruleType);
     if (target === "display" && replaceString2.length > 0) {
       replaceString2 = unprefixHtmlClasses(replaceString2);
+      replaceString2 = unprefixCssInStyleBlocks(replaceString2);
       replaceString2 = normalizeIncompleteHtmlEntities(replaceString2);
     }
     const ableFlagRaw = eo["ableFlag"];
@@ -39024,12 +39542,13 @@ var MANIFEST = {
         { path: "filename", label: "Filename", type: "string", editable: false },
         { path: "module.name", label: "Name", type: "string", editable: true },
         { path: "module.description", label: "Description", type: "string", editable: true, large: true },
-        { path: "module.backgroundHTML", label: "Background HTML", description: "Module-level UI HTML/CSS rendered at chat time after macro substitution.", type: "string", editable: true, large: true },
-        { path: "module.triggers", label: "Triggers (V2 effects)", description: "V2 effect array. String-bearing leaves (button labels, dialog choices) are translatable; do not change opcode structure.", type: "array", editable: true },
-        { path: "module.lua_scripts", label: "Lua scripts", description: "Read-only territory unless the user explicitly asks. Touch string literals only.", type: "array", editable: true },
+        { path: "module.backgroundEmbedding", label: "Background HTML", description: "Module-level UI HTML/CSS rendered at chat time after macro substitution. Edits propagate to every attached character.", type: "string", editable: true, large: true },
+        { path: "module.namespace", label: "Namespace", description: "Stable identifier for module aliasing (re-uploaded modules can declare a prior namespace to inherit attachments).", type: "string", editable: false },
+        { path: "module.trigger", label: "Triggers (V2 effects + Lua)", description: "V2 effect array. Each trigger may carry a triggerlua effect at effect[0]. String-bearing leaves are translatable; do not change opcode structure.", type: "array", editable: true },
+        { path: "module.customModuleToggle", label: "Custom toggles DSL", description: "Newline-separated DSL defining user-facing toggles (group / select / text / checkbox / divider / caption). Values feed CBS toggle / tis / tisnot macros.", type: "string", editable: true, large: true },
         { path: "module.lorebook", label: "Lorebook (envelope copy)", description: "Pre-translation source. The INSTALLED copy is editable via edit_world_book_entry; only edit here when migration-safety matters.", type: "array", editable: true },
         { path: "module.regex", label: "Regex scripts (envelope copy)", description: "Pre-projection source. The INSTALLED copy is editable via edit_regex_script_field; only edit here when migration-safety matters.", type: "array", editable: true },
-        { path: "module.scriptstate_defaults", label: "Script state defaults", type: "object", editable: true },
+        { path: "module.lowLevelAccess", label: "Low-level access flag", description: "When true, module triggers may invoke LLMMain / axLLMMain / runLLM. Granted at upload time; cannot be flipped post-install.", type: "any", editable: false },
         { path: "translator_schema_version", label: "Translator schema version", type: "any", editable: false }
       ]
     }
@@ -39113,7 +39632,7 @@ async function getAttachedModuleIdsForCharacter(spindle2, userId, characterId) {
     return [];
   }
 }
-async function dispatchRequest(spindle2, moduleStorage, req) {
+async function dispatchRequest(spindle2, moduleStorage, req, onWritten, log8) {
   if (req.surfaceId !== "module_envelope") {
     throw new Error(`unknown surface: ${req.surfaceId}`);
   }
@@ -39162,12 +39681,19 @@ async function dispatchRequest(spindle2, moduleStorage, req) {
       throw new Error("cannot change module id via lumiagent.write_field");
     }
     await writeEnvelope(moduleStorage(), req.userId, next);
+    if (onWritten) {
+      try {
+        await onWritten(next, req.userId);
+      } catch (err) {
+        log8(`lumiagent-bridge: onModuleEnvelopeWritten threw for module=${next.id}: ${err.message}`);
+      }
+    }
     return { ok: true };
   }
   throw new Error(`unknown op: ${req.op}`);
 }
 var ALLOWED_CALLERS = new Set(["lumiagent"]);
-function registerLumiagentBridge(spindle2, moduleStorage, log8 = () => {}) {
+function registerLumiagentBridge(spindle2, moduleStorage, log8 = () => {}, onModuleEnvelopeWritten) {
   spindle2.rpcPool.sync("lumiagent.describe", MANIFEST);
   spindle2.rpcPool.handle("lumiagent.execute", async (rctx) => {
     const requesterId = rctx.requesterExtensionId;
@@ -39187,7 +39713,7 @@ function registerLumiagentBridge(spindle2, moduleStorage, log8 = () => {}) {
       throw new Error("malformed request");
     if (!req.userId)
       throw new Error("request missing userId");
-    return dispatchRequest(spindle2, moduleStorage, req);
+    return dispatchRequest(spindle2, moduleStorage, req, onModuleEnvelopeWritten, log8);
   });
   log8("lumiagent surface bridge ready (modules)");
 }
@@ -39639,6 +40165,7 @@ var activeCardLoader = createActiveCardLoader({
   worldBookIdsByCharacter,
   translatorMigrationChecked,
   repairInFlightByUser,
+  getMissingPermissions,
   readLumirealm: (characterId, userId) => readLumirealm(charactersApi(), characterId, userId),
   preValidateRequires,
   buildVersionError: (missing) => new RisuCompatVersionError(missing, EXTENSION_VERSION),
@@ -39668,9 +40195,43 @@ var readonlyResolver = createReadonlyResolver({
   errMsg
 });
 var resolveReadonly = readonlyResolver.resolve;
+async function listLiveCharacterCrossRuleRules(characterId, userId) {
+  const regexApi = getRegexScriptsApi();
+  if (!regexApi?.list) {
+    throw new Error("spindle.regex_scripts.list is not available on this host");
+  }
+  const PAGE_SIZE2 = 200;
+  const out = [];
+  let offset = 0;
+  while (true) {
+    const page = await regexApi.list({ userId, limit: PAGE_SIZE2, offset });
+    if (!Array.isArray(page.data) || page.data.length === 0)
+      break;
+    for (const r of page.data) {
+      const row = r;
+      if (row.scope !== "character")
+        continue;
+      if (row.scope_id !== characterId)
+        continue;
+      if (row.disabled === true)
+        continue;
+      const mid = row.metadata?._risu?.module_id;
+      if (typeof mid === "string" && mid.length > 0)
+        continue;
+      if (typeof row.replace_string === "string") {
+        out.push({ replace_string: row.replace_string });
+      }
+    }
+    offset += page.data.length;
+    if (typeof page.total === "number" && offset >= page.total)
+      break;
+  }
+  return out;
+}
 var bgHtmlRefresher = createBgHtmlRefresher({
   resolveReadonly,
   lastSentBgHtmlByChat,
+  listLiveCharacterCrossRuleRules,
   send,
   log: log8,
   errMsg
@@ -39825,7 +40386,11 @@ var moduleUploadSessions = new Map;
 function moduleStorage() {
   return spindle.userStorage;
 }
-registerLumiagentBridge(spindle, moduleStorage, (msg) => spindle.log.info(msg));
+registerLumiagentBridge(spindle, moduleStorage, (msg) => spindle.log.info(msg), async (env, userId) => {
+  const attached = await charactersAttachedTo(env.id, userId);
+  for (const charId of attached)
+    invalidateActiveForCharacter(charId, userId);
+});
 var moduleUploader = createModuleUploader({
   decodeRisum,
   parseSchema: (data) => risuModuleSchema.safeParse(data),
@@ -39994,6 +40559,7 @@ var massMigrations = createMassMigrationsRunner({
   currentCharacterSchemaVersion: CURRENT_CHARACTER_SCHEMA_VERSION,
   currentModuleSchemaVersion: CURRENT_MODULE_SCHEMA_VERSION,
   translatorMigrationChecked,
+  getMissingPermissions,
   moduleStorage,
   listModules: (userId) => listModules(moduleStorage(), userId),
   readModuleEnvelope: (userId, moduleId) => readEnvelope(moduleStorage(), userId, moduleId),
@@ -40011,6 +40577,27 @@ var massMigrations = createMassMigrationsRunner({
   toastFor,
   log: log8,
   errMsg
+});
+subscribeToMissingChanges((missing) => {
+  if (missing.length > 0)
+    return;
+  if (capturedUserIds.size === 0)
+    return;
+  log8.info(`permissions.changed: re-running mass migrations for ${capturedUserIds.size} captured user(s)`);
+  for (const userId of capturedUserIds) {
+    (async () => {
+      try {
+        await massMigrations.runMassModuleMigrationIfNeeded(userId);
+      } catch (err) {
+        log8.warn(`permissions.changed: mass module migration retry failed userId=${userId}: ${errMsg(err)}`);
+      }
+      try {
+        await massMigrations.runMassCharacterMigrationIfNeeded(userId);
+      } catch (err) {
+        log8.warn(`permissions.changed: mass character migration retry failed userId=${userId}: ${errMsg(err)}`);
+      }
+    })();
+  }
 });
 var repairOrchestrator = createRepairOrchestrator({
   listLumirealmCharacters: async (userId) => {
@@ -40123,6 +40710,10 @@ var viewerHandlers = createViewerHandlers({
   viewerPushDeps,
   charactersAttachedTo,
   invalidateActiveForCharacter,
+  readModuleEnvelope: (userId, moduleId) => readEnvelope(moduleStorage(), userId, moduleId),
+  writeModuleEnvelope: async (userId, env) => {
+    await writeEnvelope(moduleStorage(), userId, env);
+  },
   send,
   log: log8,
   errMsg

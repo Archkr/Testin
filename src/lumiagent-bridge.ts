@@ -57,12 +57,13 @@ const MANIFEST: SurfaceManifest = {
         { path: 'filename', label: 'Filename', type: 'string', editable: false },
         { path: 'module.name', label: 'Name', type: 'string', editable: true },
         { path: 'module.description', label: 'Description', type: 'string', editable: true, large: true },
-        { path: 'module.backgroundHTML', label: 'Background HTML', description: 'Module-level UI HTML/CSS rendered at chat time after macro substitution.', type: 'string', editable: true, large: true },
-        { path: 'module.triggers', label: 'Triggers (V2 effects)', description: 'V2 effect array. String-bearing leaves (button labels, dialog choices) are translatable; do not change opcode structure.', type: 'array', editable: true },
-        { path: 'module.lua_scripts', label: 'Lua scripts', description: 'Read-only territory unless the user explicitly asks. Touch string literals only.', type: 'array', editable: true },
+        { path: 'module.backgroundEmbedding', label: 'Background HTML', description: 'Module-level UI HTML/CSS rendered at chat time after macro substitution. Edits propagate to every attached character.', type: 'string', editable: true, large: true },
+        { path: 'module.namespace', label: 'Namespace', description: 'Stable identifier for module aliasing (re-uploaded modules can declare a prior namespace to inherit attachments).', type: 'string', editable: false },
+        { path: 'module.trigger', label: 'Triggers (V2 effects + Lua)', description: 'V2 effect array. Each trigger may carry a triggerlua effect at effect[0]. String-bearing leaves are translatable; do not change opcode structure.', type: 'array', editable: true },
+        { path: 'module.customModuleToggle', label: 'Custom toggles DSL', description: 'Newline-separated DSL defining user-facing toggles (group / select / text / checkbox / divider / caption). Values feed CBS toggle / tis / tisnot macros.', type: 'string', editable: true, large: true },
         { path: 'module.lorebook', label: 'Lorebook (envelope copy)', description: 'Pre-translation source. The INSTALLED copy is editable via edit_world_book_entry; only edit here when migration-safety matters.', type: 'array', editable: true },
         { path: 'module.regex', label: 'Regex scripts (envelope copy)', description: 'Pre-projection source. The INSTALLED copy is editable via edit_regex_script_field; only edit here when migration-safety matters.', type: 'array', editable: true },
-        { path: 'module.scriptstate_defaults', label: 'Script state defaults', type: 'object', editable: true },
+        { path: 'module.lowLevelAccess', label: 'Low-level access flag', description: 'When true, module triggers may invoke LLMMain / axLLMMain / runLLM. Granted at upload time; cannot be flipped post-install.', type: 'any', editable: false },
         { path: 'translator_schema_version', label: 'Translator schema version', type: 'any', editable: false },
       ],
     },
@@ -174,10 +175,16 @@ interface WriteFieldRequest extends ExternalRequestBase {
 
 type ExternalRequest = ListItemsRequest | ReadItemRequest | WriteFieldRequest;
 
+// Fires after a successful write_field. Callers use this to invalidate caches
+// and refresh attached characters' active chats so envelope edits land live.
+export type OnModuleEnvelopeWritten = (env: ModuleEnvelope, userId: string) => Promise<void> | void;
+
 async function dispatchRequest(
   spindle: SpindleAPI,
   moduleStorage: () => UserStorageLike,
   req: ExternalRequest,
+  onWritten: OnModuleEnvelopeWritten | undefined,
+  log: (msg: string) => void,
 ): Promise<unknown> {
   if (req.surfaceId !== 'module_envelope') {
     throw new Error(`unknown surface: ${req.surfaceId}`);
@@ -224,6 +231,13 @@ async function dispatchRequest(
       throw new Error('cannot change module id via lumiagent.write_field');
     }
     await writeEnvelope(moduleStorage(), req.userId, next);
+    if (onWritten) {
+      try {
+        await onWritten(next, req.userId);
+      } catch (err) {
+        log(`lumiagent-bridge: onModuleEnvelopeWritten threw for module=${next.id}: ${(err as Error).message}`);
+      }
+    }
     return { ok: true };
   }
   throw new Error(`unknown op: ${(req as { op?: string }).op}`);
@@ -242,6 +256,7 @@ export function registerLumiagentBridge(
   spindle: SpindleAPI,
   moduleStorage: () => UserStorageLike,
   log: (msg: string) => void = () => {},
+  onModuleEnvelopeWritten?: OnModuleEnvelopeWritten,
 ): void {
   // Static manifest — readers fetch this on session start.
   // describe is intentionally NOT gated: any extension may discover that we
@@ -267,7 +282,7 @@ export function registerLumiagentBridge(
     }
     if (!req || typeof req !== 'object') throw new Error('malformed request');
     if (!req.userId) throw new Error('request missing userId');
-    return dispatchRequest(spindle, moduleStorage, req);
+    return dispatchRequest(spindle, moduleStorage, req, onModuleEnvelopeWritten, log);
   });
 
   log('lumiagent surface bridge ready (modules)');
