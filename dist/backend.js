@@ -39528,29 +39528,30 @@ function checkHostVersion(hostVersion, minimum) {
     message: `LumiRealm requires Lumiverse ${minimum} or newer, but this host is running ${hostVersion}. ` + `Some features may fail or behave unexpectedly. Update Lumiverse for the intended experience.`
   };
 }
-// src/lumiagent-bridge.ts
+// src/lumiagent-phoneline.ts
+var EXCLUDE_FROM_SEARCH = [
+  "lumirealm.source",
+  "lumirealm.regex_scripts",
+  "lumirealm.payload.background_html",
+  "lumirealm.payload.lua_scripts",
+  "lumirealm.payload.first_mes",
+  "lumirealm.payload.description",
+  "lumirealm.payload.personality",
+  "lumirealm.payload.scenario",
+  "lumirealm.payload.system_prompt",
+  "lumirealm.payload.post_history_instructions",
+  "lumirealm.payload.mes_example",
+  "lumirealm.user_overrides"
+];
 var MANIFEST = {
   extension: { id: "lumirealm", name: "LumiRealm", version: "0.1.0" },
+  excludeFromSearch: [...EXCLUDE_FROM_SEARCH],
   surfaces: [
     {
       id: "module_envelope",
       label: "Risu modules",
-      item_kind: "module envelope",
-      description: "Pre-translate Risu module envelopes. Each module carries its own triggers, lua scripts, background HTML, regex projection, and asset indexes. " + "The lorebook + regex_scripts of an ATTACHED module are also installed as Lumi-level entities (character world books / regex scripts) and editable through the normal LumiAgent tools \u2014 this surface gives you access to the source-of-truth envelope, which survives translator schema migrations.",
-      scope: { kind: "per_character" },
-      fields: [
-        { path: "filename", label: "Filename", type: "string", editable: false },
-        { path: "module.name", label: "Name", type: "string", editable: true },
-        { path: "module.description", label: "Description", type: "string", editable: true, large: true },
-        { path: "module.backgroundEmbedding", label: "Background HTML", description: "Module-level UI HTML/CSS rendered at chat time after macro substitution. Edits propagate to every attached character.", type: "string", editable: true, large: true },
-        { path: "module.namespace", label: "Namespace", description: "Stable identifier for module aliasing (re-uploaded modules can declare a prior namespace to inherit attachments).", type: "string", editable: false },
-        { path: "module.trigger", label: "Triggers (V2 effects + Lua)", description: "V2 effect array. Each trigger may carry a triggerlua effect at effect[0]. String-bearing leaves are translatable; do not change opcode structure.", type: "array", editable: true },
-        { path: "module.customModuleToggle", label: "Custom toggles DSL", description: "Newline-separated DSL defining user-facing toggles (group / select / text / checkbox / divider / caption). Values feed CBS toggle / tis / tisnot macros.", type: "string", editable: true, large: true },
-        { path: "module.lorebook", label: "Lorebook (envelope copy)", description: "Pre-translation source. The INSTALLED copy is editable via edit_world_book_entry; only edit here when migration-safety matters.", type: "array", editable: true },
-        { path: "module.regex", label: "Regex scripts (envelope copy)", description: "Pre-projection source. The INSTALLED copy is editable via edit_regex_script_field; only edit here when migration-safety matters.", type: "array", editable: true },
-        { path: "module.lowLevelAccess", label: "Low-level access flag", description: "When true, module triggers may invoke LLMMain / axLLMMain / runLLM. Granted at upload time; cannot be flipped post-install.", type: "any", editable: false },
-        { path: "translator_schema_version", label: "Translator schema version", type: "any", editable: false }
-      ]
+      scope: "per_character",
+      description: "Pre-translate Risu module envelopes. Each module carries its own triggers, lua scripts, background HTML, regex projection, and asset indexes. " + "The lorebook + regex_scripts of an ATTACHED module are also installed as Lumi-level entities (character world books / regex scripts) and editable through the normal LumiAgent tools, this surface gives you access to the source-of-truth envelope, which survives translator schema migrations."
     }
   ]
 };
@@ -39632,7 +39633,287 @@ async function getAttachedModuleIdsForCharacter(spindle2, userId, characterId) {
     return [];
   }
 }
-async function dispatchRequest(spindle2, moduleStorage, req, onWritten, log8) {
+var CANONICAL_MIRROR_FIELDS = [
+  "first_mes",
+  "description",
+  "personality",
+  "scenario",
+  "system_prompt",
+  "post_history_instructions",
+  "mes_example"
+];
+var COUPLING_REMINDER = "REMEMBER: card content is deeply coupled across surfaces. A change here may propagate to UI (bg-html, status panels, portals), Lore (world book entries that key on names or phrases), Prose (greetings, mes_example, persona-facing fields), and Regex (find_regex patterns that anchor on shape, replace_string content that injects HTML or text). After ANY edit, scan for collisions with: regex find_regex patterns, world book key arrays, alternate_greetings parallel forms, payload.additional_assets references, portal_candidates, and any in-bg CSS classes referenced by regex display rules.";
+function checkWritePath(extPath) {
+  if (extPath !== "lumirealm" && !extPath.startsWith("lumirealm.") && !extPath.startsWith("lumirealm[")) {
+    return { ok: true };
+  }
+  if (extPath === "lumirealm.source" || extPath.startsWith("lumirealm.source.") || extPath.startsWith("lumirealm.source[")) {
+    return {
+      ok: false,
+      message: `lumirealm.source.* is a FROZEN .charx import snapshot. It is the input to the translator pipeline, never the authoring surface. The translator regenerates payload.* and the top-level regex_scripts from it on every schema bump; writes here are pointless and the wrong layer to reach for.
+
+` + `Use the AUTHORING surface that matches your content kind:
+` + `- HTML / status panel CSS \u2192 edit on char/extensions/lumirealm.payload.background_html_source
+` + `- Trigger Lua / JS \u2192 edit on char/extensions/lumirealm.payload.triggers[i].effect[k].code where effect.type is 'triggerlua' or 'triggercode'
+` + `- Character-scoped regex \u2192 edit / rewrite on rx/<scriptId>/find_regex or rx/<scriptId>/replace_string; metadata via update_regex_script
+` + `- Lorebook \u2192 edit / rewrite on wb/<entryId>/content or /comment; metadata via update_world_book_entry
+` + `- Canonical character fields (first_mes, description, etc.) \u2192 update_character({patch}) for multi-field, or edit / rewrite on char/<field>
+
+` + COUPLING_REMINDER
+    };
+  }
+  if (extPath === "lumirealm.regex_scripts" || extPath.startsWith("lumirealm.regex_scripts.") || extPath.startsWith("lumirealm.regex_scripts[")) {
+    return {
+      ok: false,
+      message: `lumirealm.regex_scripts is a translator-projection CACHE; it is not what fires at runtime. The LIVE regex scripts that actually run live at the top-level regex_scripts surface. Use list({path:"rx"}) to enumerate, read / edit on rx/<scriptId>/find_regex or /replace_string for content, update_regex_script for metadata. Edits to this cache get clobbered on the next translator schema bump.
+
+` + COUPLING_REMINDER
+    };
+  }
+  if (extPath === "lumirealm.payload.background_html") {
+    return {
+      ok: false,
+      message: `lumirealm.payload.background_html is the TRANSLATED runtime output; LumiRealm regenerates it from lumirealm.payload.background_html_source on every save and on every translator schema bump. Edits here are clobbered.
+
+` + `Edit char/extensions/lumirealm.payload.background_html_source instead (use edit / rewrite / set on that path). If background_html_source does not yet exist on this card, write to it anyway, LumiRealm seeds it from the card-side baseline on first edit.
+
+` + "Bg-html / CSS content is the most cross-coupled surface on the card. " + COUPLING_REMINDER
+    };
+  }
+  if (extPath === "lumirealm.payload.lua_scripts" || extPath.startsWith("lumirealm.payload.lua_scripts.") || extPath.startsWith("lumirealm.payload.lua_scripts[")) {
+    return {
+      ok: false,
+      message: `lumirealm.payload.lua_scripts is a .charx import artifact (Risu module libraries). LumiRealm's Viewer does not let the user edit it; it is not an authoring surface.
+
+` + `User-authored Lua lives on a specific TRIGGER's effect array: char/extensions/lumirealm.payload.triggers[i].effect[k].code where effect.type === 'triggerlua' (or 'triggercode' for JS). Find the trigger that owns the function you want to change and edit its effect.code.
+
+` + "If the same function appears in BOTH lua_scripts and a triggerlua effect, those are TWO COPIES of conceptually-the-same code; the trigger copy is the one that runs in trigger context. Edits to lua_scripts alone will not change trigger behaviour. " + COUPLING_REMINDER
+    };
+  }
+  for (const f of CANONICAL_MIRROR_FIELDS) {
+    if (extPath === `lumirealm.payload.${f}`) {
+      return {
+        ok: false,
+        message: `lumirealm.payload.${f} is a translator-output mirror of the canonical character field. The LIVE field that the LLM actually sees in the prompt is character.${f} at the top level.
+
+` + `Use update_character({ patch: { ${f}: <new text> } }) for wholesale replacement, or edit({ path: "char/${f}", find, replace }) for find/replace.
+
+` + (f === "first_mes" ? `For greetings: first_mes is greeting #1 at path char/first_mes; alternate_greetings[0..N-2] are greetings #2..#N at char/alternate_greetings/<idx>. Use rewrite({path, new_content}) for whole-greeting overwrites.
+
+` : "") + COUPLING_REMINDER
+      };
+    }
+  }
+  if (extPath === "lumirealm.user_overrides" || extPath.startsWith("lumirealm.user_overrides.") || extPath.startsWith("lumirealm.user_overrides[")) {
+    return {
+      ok: false,
+      message: "lumirealm.user_overrides.* is per-user UI configuration (default-variable overrides, attached module IDs, portal decisions, low-level-access consent). The user manages these through the LumiRealm UI; never edit them in response to a translation, refactor, or content request."
+    };
+  }
+  return { ok: true };
+}
+var LUMIREALM_DUAL_KEYS = ["first_mes", "description", "personality", "scenario", "system_prompt", "post_history_instructions", "mes_example"];
+function detectContext(c) {
+  const ext = c.extensions ?? {};
+  const lumi = ext["lumirealm"];
+  if (!lumi || typeof lumi !== "object")
+    return null;
+  const payload = lumi["payload"] ?? null;
+  const dualKeys = [];
+  let hasBgHtml = false;
+  let hasBgHtmlSource = false;
+  let hasTriggers = false;
+  let hasLuaScripts = false;
+  let hasScriptstateDefaults = false;
+  if (payload && typeof payload === "object") {
+    for (const k of LUMIREALM_DUAL_KEYS) {
+      if (typeof payload[k] === "string" && payload[k].length > 0)
+        dualKeys.push(k);
+    }
+    hasBgHtml = typeof payload["background_html"] === "string" && payload["background_html"].length > 0;
+    hasBgHtmlSource = typeof payload["background_html_source"] === "string" && payload["background_html_source"].length > 0;
+    hasTriggers = Array.isArray(payload["triggers"]) && payload["triggers"].length > 0;
+    hasLuaScripts = Array.isArray(payload["lua_scripts"]) && payload["lua_scripts"].length > 0;
+    const ssd = payload["scriptstate_defaults"];
+    hasScriptstateDefaults = ssd !== null && typeof ssd === "object" && Object.keys(ssd).length > 0;
+  }
+  const overrides = lumi["user_overrides"] ?? null;
+  const attachedModuleCount = overrides && Array.isArray(overrides["attached_module_ids"]) ? overrides["attached_module_ids"].length : 0;
+  const tsv = lumi["translator_schema_version"];
+  const translatorSchemaVersion = typeof tsv === "number" ? tsv : null;
+  const storedRegex = lumi["regex_scripts"];
+  const storedRegexScriptCount = Array.isArray(storedRegex) ? storedRegex.length : 0;
+  return {
+    payloadDualKeys: dualKeys,
+    hasBgHtml,
+    hasBgHtmlSource,
+    hasTriggers,
+    hasLuaScripts,
+    hasScriptstateDefaults,
+    attachedModuleCount,
+    translatorSchemaVersion,
+    storedRegexScriptCount,
+    hasUserOverrides: overrides !== null && typeof overrides === "object" && Object.keys(overrides).length > 0
+  };
+}
+var LUMIREALM_DUAL_KEYS_LIST = "first_mes, description, personality, scenario, system_prompt, post_history_instructions, mes_example";
+var STATIC_SECTION = `# LumiRealm card \u2014 write to the authoring layer, not the projection
+
+This character was imported from Risu. LumiRealm runs a translator pipeline: a frozen \`source.*\` snapshot \u2192 a \`payload.*\` runtime layer \u2192 top-level canonical character fields and \`regex_scripts.*\`. Multiple layers carry related content; only ONE per content kind is the authoring surface. Every other layer is regenerated and clobbers your edit on the next translator schema bump.
+
+## Authoring surface, by content kind
+
+| Content | Edit here (authoring) | Do NOT edit (derived / cached / frozen) |
+|---|---|---|
+| Bg-HTML / status panel HTML+CSS | \`edit\` / \`rewrite\` / \`set\` on \`char/extensions/lumirealm.payload.background_html_source\` | \`lumirealm.payload.background_html\`, \`lumirealm.source.card.data.extensions.risuai.backgroundHTML\` |
+| Trigger Lua / JS | \`edit\` on \`char/extensions/lumirealm.payload.triggers[i].effect[k].code\` where \`effect.type == 'triggerlua'\` or \`'triggercode'\` (use \`read\` / \`inspect\` on the trigger first to locate the right index) | \`lumirealm.payload.lua_scripts[*]\` (.charx library, not user-authored; LumiRealm's Viewer does not edit it), \`lumirealm.source.*\` |
+| Character-scoped regex (incl. CSS injected via \`replace_string\`) | top-level regex scripts via \`edit\` / \`rewrite\` on \`rx/<scriptId>/find_regex\` or \`rx/<scriptId>/replace_string\`; metadata fields via \`update_regex_script\` | \`lumirealm.regex_scripts\`, \`lumirealm.source.card.data.extensions.risuai.customScripts\`, \`lumirealm.source.module.regex\` |
+| Module-scoped regex / lorebook / triggers / lua (when attached) | module envelope via \`edit_external\` / \`update_external\` / \`grep_external\` on \`surface_id='module_envelope'\` (e.g. field \`module.regex[i].out\`) | the installed top-level mirrors when the question is migration-safety, but for runtime-only edits the live mirrors are also fine |
+| Lorebook entries | top-level world books via \`edit\` / \`rewrite\` on \`wb/<entryId>/content\` (or \`/comment\`); metadata fields (key arrays, decorators, disabled, etc.) via \`update_world_book_entry\` | any \`_book\` array under \`lumirealm.source.*\` |
+| Canonical character fields (${LUMIREALM_DUAL_KEYS_LIST}, alternate_greetings) | top-level character via \`update_character({patch})\` for multi-field, or \`edit\` / \`rewrite\` on \`char/<field>\` / \`char/alternate_greetings/<idx>\` | \`lumirealm.payload.<same>\`, \`lumirealm.source.card.data.<same>\` |
+| \`lumirealm.payload.scriptstate_defaults\` | \`set\` on \`char/extensions/lumirealm.payload.scriptstate_defaults\` (user overrides live at \`lumirealm.user_overrides.default_variables_overrides\` and are off-limits) | \u2014 |
+| Per-user UI configuration | (none, \`lumirealm.user_overrides.*\` is managed by the LumiRealm UI, never the agent) | \`lumirealm.user_overrides.*\` |
+
+Writes to a refused path are blocked with a hard error pointing you at the correct authoring surface. If you reach for \`lumirealm.payload.background_html\` or \`lumirealm.regex_scripts[i]\` or anything under \`lumirealm.source.*\`, you are on the wrong layer.
+
+## Cross-surface coupling \u2014 the part that always bites
+
+Card content is **deeply interconnected**. UI \u2194 Lore \u2194 Prose \u2194 Regex all share strings, names, CSS classes, and conventions, and editing one surface can break or silently de-sync another. After ANY edit (even a one-line replace), check for propagation across:
+
+- **UI (bg-html, status panels, portals)** \u2014 CSS class names referenced from regex \`replace_string\`, asset URLs in \`payload.additional_assets\`, portal targets in \`payload.portal_candidates\`, \`risu-trigger\` / \`risu-btn\` attributes that match trigger comments.
+- **Lore (world book entries)** \u2014 \`key\` arrays match on character names / phrases / status labels that appear in greetings, persona, bg-html status panels. Renaming an entity in prose without updating the keys silently disables the entry. Decorator tokens (\`@@position\`, \`@@depth\`, \`@@role\`) on entries also gate activation.
+- **Prose (first_mes, alternate_greetings, description, mes_example)** \u2014 alternate greetings often share a name / tone / opening pattern; translating one and not the others leaves the chat picker inconsistent. Greetings are also referenced by regex \`find_regex\` patterns that depend on shape (asterisks, brackets, quoted speech, language markers).
+- **Regex (find_regex AND replace_string)** \u2014 find_regex anchors to content shape; replace_string can inject HTML, CSS, button markup, even Lua-bridge calls. A prose rename or HTML class rename without updating coupled regex breaks display rules. A regex translation that touches \`find_regex\` instead of \`replace_string\` breaks matching entirely.
+- **Lua / triggers** \u2014 function names in \`lua_scripts\` get called from triggers' \`effect[].code\`; renaming a function in one without the other breaks callers. Lua reads/writes chat variables that templates and macros expect by name; renaming a variable propagates to \`payload.scriptstate_defaults\` keys, regex \`replace_string\` references, and \`{{getvar::NAME}}\` macro usages in prose / lorebook / bg-html.
+
+Workflow rule: **before declaring an edit done, grep the card for every other place the touched token appears.** \`grep\` walks character fields + world books + regex scripts + extensions in one pass; \`grep_external\` covers module envelopes. For translation work, \`survey_cjk({scopes:["character","world_books","regex_scripts","extensions"]})\` gives you the cross-surface map up front. \`apply_glossary\` performs a coordinated multi-surface replace in one call, prefer it over hand-rolled chained \`edit\` for any >5 replacements on the same token.`;
+function buildSection(c) {
+  const tail = [];
+  if (c.hasBgHtmlSource) {
+    tail.push("This card has `payload.background_html_source` populated, that's the right authoring target.");
+  } else if (c.hasBgHtml) {
+    tail.push("This card has `payload.background_html` but no `_source` yet. Edits to `payload.background_html_source` will be seeded automatically on first write, LumiRealm handles that.");
+  }
+  if (c.hasTriggers) {
+    tail.push("`payload.triggers` exists. Per-trigger Lua/JS lives on each trigger's `effect[]` as a `triggerlua` or `triggercode` effect; `read` the trigger first, then `edit` on the exact `char/extensions/lumirealm.payload.triggers[i].effect[k].code` path.");
+  }
+  if (c.hasLuaScripts) {
+    tail.push("`payload.lua_scripts` exists, but it is a .charx import artifact (Risu module libraries) and is read-only on the agent side. If you need to change function bodies the user authored, the authoring location is a trigger's `triggerlua` effect. If a function name in `lua_scripts` is called from a trigger, you cannot rename it here, change the call site instead.");
+  }
+  if (c.hasScriptstateDefaults) {
+    tail.push('`payload.scriptstate_defaults` is a flat string->string map for chat-state seeds. `read` it, mutate it locally, write it back with `set({path: "char/extensions/lumirealm.payload.scriptstate_defaults", value: <object>})`. Coupled to: `{{getvar::KEY}}` macros, Lua `getState/setState` calls, regex `replace_string` references.');
+  }
+  if (c.payloadDualKeys.length > 0) {
+    tail.push(`Canonical character fields with payload mirrors on this card: ${c.payloadDualKeys.join(", ")}. Edit the canonical (top-level) side; the payload mirror is a translator output and is refused.`);
+  }
+  if (c.attachedModuleCount > 0) {
+    tail.push("");
+    tail.push("## Attached modules");
+    tail.push("");
+    tail.push(`${c.attachedModuleCount} module(s) attached. Module-scoped content (lorebook, regex, triggers, lua, bg-html, scriptstate defaults) lives in separate envelopes; the lorebook + regex are also installed as top-level mirrors editable via the normal path-based tools. For migration-safe edits, use the envelope: \`list_external\` / \`read_external\` / \`grep_external\` / \`edit_external\` / \`update_external\` with \`surface_id='module_envelope'\`. When the user mentions content you cannot find on this character's surfaces, check the attached modules before saying it is missing.`);
+  }
+  if (c.translatorSchemaVersion !== null) {
+    tail.push("");
+    tail.push(`Stored translator schema version: ${c.translatorSchemaVersion}.`);
+  }
+  return tail.length > 0 ? `${STATIC_SECTION}
+
+${tail.join(`
+`)}` : STATIC_SECTION;
+}
+async function buildSystemPromptFragment(spindle2, userId, characterId) {
+  let c;
+  try {
+    c = await spindle2.characters.get(characterId, userId);
+  } catch {
+    return null;
+  }
+  if (!c)
+    return null;
+  const ctx = detectContext(c);
+  if (!ctx)
+    return null;
+  return buildSection(ctx);
+}
+function* walkEnvelopeStringLeaves(value, prefix) {
+  if (typeof value === "string") {
+    if (value.length > 0)
+      yield { path: prefix, text: value };
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (let i = 0;i < value.length; i++) {
+      yield* walkEnvelopeStringLeaves(value[i], prefix.length === 0 ? `[${i}]` : `${prefix}[${i}]`);
+    }
+    return;
+  }
+  if (value && typeof value === "object") {
+    for (const [k, v] of Object.entries(value)) {
+      yield* walkEnvelopeStringLeaves(v, prefix.length === 0 ? k : `${prefix}.${k}`);
+    }
+  }
+}
+function pathMatchesPrefix(path, prefix) {
+  return path === prefix || path.startsWith(`${prefix}.`) || path.startsWith(`${prefix}[`);
+}
+async function doGrepItems(spindle2, moduleStorage, req) {
+  if (req.surfaceId !== "module_envelope") {
+    throw new Error(`unknown surface: ${req.surfaceId}`);
+  }
+  let re;
+  try {
+    re = new RegExp(req.pattern, req.ignoreCase ? "i" : "");
+  } catch (err) {
+    throw new Error(`invalid pattern: ${err.message}`);
+  }
+  let allowed = null;
+  if (req.characterId) {
+    const attached = await getAttachedModuleIdsForCharacter(spindle2, req.userId, req.characterId);
+    allowed = new Set(attached);
+  }
+  const summaries = await listModules(moduleStorage(), req.userId);
+  const filtered = allowed === null ? [...summaries] : summaries.filter((s) => allowed.has(s.id));
+  const head = req.head ?? 200;
+  const hits = [];
+  let truncated = false;
+  outer:
+    for (const s of filtered) {
+      if (hits.length >= head) {
+        truncated = true;
+        break;
+      }
+      const env = await readEnvelope(moduleStorage(), req.userId, s.id);
+      if (!env)
+        continue;
+      const label = s.name || s.filename;
+      for (const leaf of walkEnvelopeStringLeaves(env, "")) {
+        if (req.fieldPrefix && !pathMatchesPrefix(leaf.path, req.fieldPrefix))
+          continue;
+        const lines = leaf.text.split(`
+`);
+        for (let i = 0;i < lines.length; i++) {
+          const line3 = lines[i];
+          const m = re.exec(line3);
+          if (!m)
+            continue;
+          hits.push({
+            itemId: s.id,
+            itemLabel: label,
+            fieldPath: leaf.path,
+            line: i + 1,
+            match: m[0],
+            preview: line3.length > 200 ? `${line3.slice(0, 200)}...` : line3
+          });
+          if (hits.length >= head) {
+            truncated = true;
+            break outer;
+          }
+        }
+      }
+    }
+  return { hits, truncated };
+}
+async function dispatchModuleSurface(spindle2, moduleStorage, req, onWritten, log8) {
   if (req.surfaceId !== "module_envelope") {
     throw new Error(`unknown surface: ${req.surfaceId}`);
   }
@@ -39653,69 +39934,79 @@ async function dispatchRequest(spindle2, moduleStorage, req, onWritten, log8) {
         regex_count: s.regex_count,
         trigger_count: s.trigger_count,
         asset_count: s.asset_count,
-        low_level_access: s.low_level_access,
-        has_cjs: s.has_cjs
+        low_level_access: s.low_level_access
       }
     }));
     return { items, total: items.length };
   }
   if (req.op === "read_item") {
-    const env = await readEnvelope(moduleStorage(), req.userId, req.itemId);
-    if (!env)
+    const env2 = await readEnvelope(moduleStorage(), req.userId, req.itemId);
+    if (!env2)
       throw new Error(`module ${req.itemId} not found`);
     if (!req.field)
-      return { value: env };
-    const segs = parsePath(req.field);
-    return { value: getAtPath(env, segs) };
+      return { value: env2 };
+    const segs2 = parsePath(req.field);
+    return { value: getAtPath(env2, segs2) };
   }
-  if (req.op === "write_field") {
-    const env = await readEnvelope(moduleStorage(), req.userId, req.itemId);
-    if (!env)
-      throw new Error(`module ${req.itemId} not found`);
-    const segs = parsePath(req.field);
-    const next = setAtPath(env, segs, req.value);
-    if (next.schema_version !== env.schema_version) {
-      throw new Error("cannot change schema_version via lumiagent.write_field");
-    }
-    if (next.id !== env.id) {
-      throw new Error("cannot change module id via lumiagent.write_field");
-    }
-    await writeEnvelope(moduleStorage(), req.userId, next);
-    if (onWritten) {
-      try {
-        await onWritten(next, req.userId);
-      } catch (err) {
-        log8(`lumiagent-bridge: onModuleEnvelopeWritten threw for module=${next.id}: ${err.message}`);
-      }
-    }
-    return { ok: true };
+  const env = await readEnvelope(moduleStorage(), req.userId, req.itemId);
+  if (!env)
+    throw new Error(`module ${req.itemId} not found`);
+  const segs = parsePath(req.field);
+  const next = setAtPath(env, segs, req.value);
+  if (next.schema_version !== env.schema_version) {
+    return { ok: false, error: "cannot change schema_version via write_field" };
   }
-  throw new Error(`unknown op: ${req.op}`);
+  if (next.id !== env.id) {
+    return { ok: false, error: "cannot change module id via write_field" };
+  }
+  await writeEnvelope(moduleStorage(), req.userId, next);
+  if (onWritten) {
+    try {
+      await onWritten(next, req.userId);
+    } catch (err) {
+      log8(`lumiagent-phoneline: onModuleEnvelopeWritten threw for module=${next.id}: ${err.message}`);
+    }
+  }
+  return { ok: true };
 }
 var ALLOWED_CALLERS = new Set(["lumiagent"]);
-function registerLumiagentBridge(spindle2, moduleStorage, log8 = () => {}, onModuleEnvelopeWritten) {
-  spindle2.rpcPool.sync("lumiagent.describe", MANIFEST);
-  spindle2.rpcPool.handle("lumiagent.execute", async (rctx) => {
+function registerLumiagentPhoneline(spindle2, moduleStorage, log8 = () => {}, onModuleEnvelopeWritten) {
+  spindle2.rpcPool.handle("lumirealm.phoneline", async (rctx) => {
     const requesterId = rctx.requesterExtensionId;
     if (!requesterId)
       throw new Error("requester extension id missing");
     if (!ALLOWED_CALLERS.has(requesterId)) {
-      log8(`lumiagent-bridge: rejected call from unauthorised extension "${requesterId}"`);
+      log8(`lumiagent-phoneline: rejected call from unauthorised extension "${requesterId}"`);
       throw new Error("not authorised");
     }
     let req;
     try {
-      req = await spindle2.rpcPool.read(`${requesterId}.agent_request_envelope`);
+      req = await spindle2.rpcPool.read(`${requesterId}.phoneline_request`);
     } catch (err) {
       throw new Error(`could not read pending request from ${requesterId}: ${err.message}`);
     }
     if (!req || typeof req !== "object")
       throw new Error("malformed request");
+    if (req.op === "describe")
+      return MANIFEST;
     if (!req.userId)
       throw new Error("request missing userId");
-    return dispatchRequest(spindle2, moduleStorage, req, onModuleEnvelopeWritten, log8);
+    if (req.op === "system_prompt") {
+      const text = await buildSystemPromptFragment(spindle2, req.userId, req.characterId);
+      return { text };
+    }
+    if (req.op === "check_write") {
+      return checkWritePath(req.extPath);
+    }
+    if (req.op === "list_items" || req.op === "read_item" || req.op === "write_field") {
+      return dispatchModuleSurface(spindle2, moduleStorage, req, onModuleEnvelopeWritten, log8);
+    }
+    if (req.op === "grep_items") {
+      return doGrepItems(spindle2, moduleStorage, req);
+    }
+    throw new Error(`unknown op: ${req.op}`);
   });
-  log8("lumiagent surface bridge ready (modules)");
+  log8("lumiagent phone line ready (manifest, system_prompt, check_write, module_envelope)");
 }
 
 // src/backend.ts
@@ -40386,7 +40677,7 @@ var moduleUploadSessions = new Map;
 function moduleStorage() {
   return spindle.userStorage;
 }
-registerLumiagentBridge(spindle, moduleStorage, (msg) => spindle.log.info(msg), async (env, userId) => {
+registerLumiagentPhoneline(spindle, moduleStorage, (msg) => spindle.log.info(msg), async (env, userId) => {
   const attached = await charactersAttachedTo(env.id, userId);
   for (const charId of attached)
     invalidateActiveForCharacter(charId, userId);

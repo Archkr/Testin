@@ -75,7 +75,7 @@ import {
   subscribeToMissingChanges,
   PERMISSION_PURPOSE,
 } from './state/permissions.js';
-import type { ViewerPushDeps } from './state/viewer-push.js';
+import { pushViewerData, type ViewerPushDeps } from './state/viewer-push.js';
 import { createViewerAssembly } from './state/viewer-assembly.js';
 import { createLorebookImporter } from './state/lorebook-import.js';
 import { createModuleUploader } from './state/module-upload.js';
@@ -167,7 +167,7 @@ import {
   readEnvelope as readModuleEnvelope,
   writeEnvelope as writeModuleEnvelope,
 } from './state/modules-store.js';
-import { registerLumiagentBridge } from './lumiagent-bridge.js';
+import { registerLumiagentPhoneline } from './lumiagent-phoneline.js';
 
 const EXTENSION_VERSION = '0.1.0';
 
@@ -1022,17 +1022,47 @@ function moduleStorage(): import('./state/modules-store.js').UserStorageLike {
   return spindle.userStorage as unknown as import('./state/modules-store.js').UserStorageLike;
 }
 
-// Expose modules to LumiAgent (and any other extension that implements the
-// `lumiagent.*` surface-provider protocol). One-line opt-in; see
-// `src/lumiagent-bridge.ts` for the full protocol.
-// Bridge fires after every successful write_field. Forward-bound: charactersAttachedTo + invalidateActiveForCharacter are wired below; the callback only runs at runtime once they exist.
-registerLumiagentBridge(
+// Expose LumiRealm to LumiAgent via the phone-line protocol. One handler at
+// `lumirealm.phoneline` answers describe, system_prompt, check_write, and
+// the module_envelope surface ops. Forward-bound: charactersAttachedTo and
+// invalidateActiveForCharacter are declared below; the callback only runs
+// at runtime once they exist.
+registerLumiagentPhoneline(
   spindle,
   moduleStorage,
   (msg) => spindle.log.info(msg),
   async (env, userId) => {
     const attached = await charactersAttachedTo(env.id, userId);
     for (const charId of attached) invalidateActiveForCharacter(charId, userId);
+  },
+  {
+    mutateAssetIndex: (msg, userId) => mutateAssetIndex(msg as never, userId),
+    attachModuleToCharacter: (cid, mid, uid) => attachModuleToCharacter(cid, mid, uid),
+    detachModuleFromCharacter: (cid, mid, uid) => detachModuleFromCharacter(cid, mid, uid),
+    writeToggleValue: (cid, key, val, uid) => writeToggleValue(cid, key, val, uid),
+    writeLocalVariable: (cid, key, val, uid) => writeLocalVariable(cid, key, val, uid),
+    setDefaultVariablesText: async (characterId, text, userId) => {
+      const updated = await updateLumirealm(charactersApi(), characterId, userId, (cur) => {
+        const {
+          default_variables_text: _t,
+          default_variables_overrides: _o,
+          ...rest
+        } = cur.user_overrides;
+        void _t; void _o;
+        const nextUO = {
+          ...rest,
+          ...(text !== null ? { default_variables_text: text } : {}),
+        };
+        return { ...cur, user_overrides: nextUO };
+      });
+      if (!updated) return { ok: false, reason: 'not a lumirealm character' };
+      await pushViewerData(
+        { source: { kind: 'character', characterId }, context: 'set_default_variables_text', userId },
+        viewerPushDeps,
+      );
+      invalidateActiveForCharacter(characterId, userId);
+      return { ok: true };
+    },
   },
 );
 
