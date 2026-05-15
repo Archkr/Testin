@@ -258,6 +258,7 @@ function toViewerTrigger(
 
 export function buildModuleViewerData(input: {
   envelope: ModuleEnvelope;
+  worldBook?: FetchedWorldBook;
   ts?: number;
 }): ViewerData {
   const env = input.envelope;
@@ -273,10 +274,41 @@ export function buildModuleViewerData(input: {
     ? m.name
     : env.id;
 
-  // Project raw module entries through the same mapper used at install time
-  // so source-hashes match the persisted translation cache (envelope.translations[lang].lorebook).
-  const projectedHashByIndex = new Map<number, string>();
-  if (Array.isArray(m.lorebook)) {
+  const lang = 'en';
+  const moduleLore = env.translations?.[lang]?.lorebook;
+  const lorebookEntries: ViewerLorebookEntry[] = [];
+
+  if (input.worldBook && input.worldBook.entries.length > 0) {
+    // Primary path: read live entries from the installed wb. User and agent
+    // edits show up here. Translation cache still keys on _risu_source_hash
+    // which install + sync stamp onto entry.extensions.
+    for (const e of input.worldBook.entries) {
+      const ext = (e.extensions ?? {}) as Record<string, unknown>;
+      const sourceHashRaw = ext['_risu_source_hash'];
+      const sourceHash = typeof sourceHashRaw === 'string' ? sourceHashRaw : undefined;
+      const translatedComment = sourceHash !== undefined && moduleLore
+        ? moduleLore[sourceHash]?.comment
+        : undefined;
+      const arrIdxRaw = ext['_risu_array_index'];
+      const arrayIndex = typeof arrIdxRaw === 'number' ? arrIdxRaw : null;
+      lorebookEntries.push({
+        id: e.id,
+        key: e.key,
+        content: e.content,
+        ...(e.comment !== undefined ? { comment: e.comment } : {}),
+        ...(e.disabled !== undefined ? { disabled: e.disabled } : {}),
+        ...(e.constant !== undefined ? { constant: e.constant } : {}),
+        arrayIndex,
+        ...(sourceHash !== undefined ? { sourceHash, fromRisu: true } : {}),
+        ...(translatedComment !== undefined ? { translatedComment } : {}),
+      });
+    }
+    sortLorebookEntries(lorebookEntries);
+  } else if (Array.isArray(m.lorebook)) {
+    // Fallback: wb is missing (legacy module with no installed_world_book_id,
+    // or the wb was deleted out from under us). Project from the envelope
+    // through the same mapper install uses so source-hashes still match.
+    const projectedHashByIndex = new Map<number, string>();
     const valid: import('../core/schemas/lorebook.js').LoreBook[] = [];
     const validIndexes: number[] = [];
     for (let i = 0; i < m.lorebook.length; i++) {
@@ -297,11 +329,6 @@ export function buildModuleViewerData(input: {
         }
       }
     }
-  }
-  const lang = 'en';
-  const moduleLore = env.translations?.[lang]?.lorebook;
-  const lorebookEntries: ViewerLorebookEntry[] = [];
-  if (Array.isArray(m.lorebook)) {
     for (let i = 0; i < m.lorebook.length; i++) {
       const e = m.lorebook[i];
       if (!e || typeof e !== 'object') continue;
@@ -335,7 +362,7 @@ export function buildModuleViewerData(input: {
         ...(translatedModuleName !== undefined && translatedModuleName !== moduleName
           ? { translatedGroupName: translatedModuleName }
           : {}),
-        groupId: 'module',
+        groupId: input.worldBook?.id ?? 'module',
         moduleId: env.id,
         entries: lorebookEntries,
       }]

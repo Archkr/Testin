@@ -117,6 +117,9 @@ export function buildLumirealmData(
       emotion_images: payload.emotion_images,
       // Restored after refactor regression; see core/payload/types.ts LumirealmCharacterData.payload.
       background_html: payload.background_html,
+      ...(typeof payload.background_html_source === "string"
+        ? { background_html_source: payload.background_html_source }
+        : {}),
       utility_bot: payload.utility_bot,
       scriptstate_defaults: payload.scriptstate_defaults,
       requires: payload.requires,

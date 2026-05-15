@@ -21,6 +21,8 @@ export interface RisuPayload {
   readonly lua_scripts: readonly string[];
   readonly at_actions: readonly unknown[];
   readonly background_html: string | null;
+  // Seeded from background_html at import; user/agent authoring surface.
+  readonly background_html_source?: string;
   readonly module_background_embedding?: string;
   readonly virtualscript: string | null;
   readonly utility_bot: boolean;

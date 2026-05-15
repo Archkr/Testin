@@ -14,6 +14,7 @@ interface AssemblyModuleEnvelope {
     readonly name?: string;
     readonly lorebook?: Readonly<Record<string, { readonly comment?: string }>>;
   }>>;
+  readonly installed_world_book_id?: string;
 }
 
 interface AssemblyCharacterDTO {
@@ -109,6 +110,44 @@ export function createViewerAssembly(deps: ViewerAssemblyDeps): ViewerAssembly {
     return out;
   }
 
+  async function fetchOneWorldBook(wbId: string, userId: string): Promise<FetchedWorldBook> {
+    const meta = await deps.fetchWorldBookMeta(wbId, userId);
+    const name = typeof meta?.name === 'string' && meta.name.length > 0 ? meta.name : wbId;
+    const entries: FetchedWorldBookEntry[] = [];
+    let offset = 0;
+    while (true) {
+      const page = await deps.listWorldBookEntries(wbId, { limit: 200, offset, userId });
+      for (const e of page.data) {
+        const ee = e as unknown as Record<string, unknown>;
+        const id = typeof ee['id'] === 'string' ? ee['id'] : null;
+        if (id === null) continue;
+        const keyRaw = ee['key'];
+        const key = Array.isArray(keyRaw)
+          ? keyRaw.filter((x): x is string => typeof x === 'string')
+          : typeof keyRaw === 'string' ? [keyRaw] : [];
+        const ext = ee['extensions'] && typeof ee['extensions'] === 'object' && !Array.isArray(ee['extensions'])
+          ? ee['extensions'] as Record<string, unknown>
+          : null;
+        entries.push({
+          id,
+          key,
+          content: typeof ee['content'] === 'string' ? ee['content'] : '',
+          ...(typeof ee['comment'] === 'string' ? { comment: ee['comment'] } : {}),
+          ...(typeof ee['disabled'] === 'boolean' ? { disabled: ee['disabled'] } : {}),
+          ...(typeof ee['constant'] === 'boolean' ? { constant: ee['constant'] } : {}),
+          ...(typeof ee['order_value'] === 'number' ? { orderValue: ee['order_value'] } : {}),
+          ...(typeof ee['priority'] === 'number' ? { priority: ee['priority'] } : {}),
+          ...(typeof ee['position'] === 'number' ? { position: ee['position'] } : {}),
+          ...(typeof ee['depth'] === 'number' ? { depth: ee['depth'] } : {}),
+          extensions: ext,
+        });
+      }
+      if (page.data.length < 200) break;
+      offset += 200;
+    }
+    return { id: wbId, name, entries };
+  }
+
   async function fetchWorldBooks(
     characterId: string,
     userId: string,
@@ -128,41 +167,7 @@ export function createViewerAssembly(deps: ViewerAssemblyDeps): ViewerAssembly {
     const out: FetchedWorldBook[] = [];
     for (const wbId of wbIds) {
       try {
-        const meta = await deps.fetchWorldBookMeta(wbId, userId);
-        const name = typeof meta?.name === 'string' && meta.name.length > 0 ? meta.name : wbId;
-        const entries: FetchedWorldBookEntry[] = [];
-        let offset = 0;
-        while (true) {
-          const page = await deps.listWorldBookEntries(wbId, { limit: 200, offset, userId });
-          for (const e of page.data) {
-            const ee = e as unknown as Record<string, unknown>;
-            const id = typeof ee['id'] === 'string' ? ee['id'] : null;
-            if (id === null) continue;
-            const keyRaw = ee['key'];
-            const key = Array.isArray(keyRaw)
-              ? keyRaw.filter((x): x is string => typeof x === 'string')
-              : typeof keyRaw === 'string' ? [keyRaw] : [];
-            const ext = ee['extensions'] && typeof ee['extensions'] === 'object' && !Array.isArray(ee['extensions'])
-              ? ee['extensions'] as Record<string, unknown>
-              : null;
-            entries.push({
-              id,
-              key,
-              content: typeof ee['content'] === 'string' ? ee['content'] : '',
-              ...(typeof ee['comment'] === 'string' ? { comment: ee['comment'] } : {}),
-              ...(typeof ee['disabled'] === 'boolean' ? { disabled: ee['disabled'] } : {}),
-              ...(typeof ee['constant'] === 'boolean' ? { constant: ee['constant'] } : {}),
-              ...(typeof ee['order_value'] === 'number' ? { orderValue: ee['order_value'] } : {}),
-              ...(typeof ee['priority'] === 'number' ? { priority: ee['priority'] } : {}),
-              ...(typeof ee['position'] === 'number' ? { position: ee['position'] } : {}),
-              ...(typeof ee['depth'] === 'number' ? { depth: ee['depth'] } : {}),
-              extensions: ext,
-            });
-          }
-          if (page.data.length < 200) break;
-          offset += 200;
-        }
-        out.push({ id: wbId, name, entries });
+        out.push(await fetchOneWorldBook(wbId, userId));
       } catch (err) {
         warnings.push(`world_book ${wbId}: ${deps.errMsg(err)}`);
       }
@@ -203,7 +208,15 @@ export function createViewerAssembly(deps: ViewerAssemblyDeps): ViewerAssembly {
   async function assembleModule(moduleId: string, userId: string): Promise<ViewerData | null> {
     const env = await deps.readModule(moduleId, userId);
     if (!env) return null;
-    return buildModuleViewerData({ envelope: env as never });
+    let worldBook: FetchedWorldBook | undefined;
+    const wbId = env.installed_world_book_id;
+    if (typeof wbId === 'string' && wbId.length > 0) {
+      try { worldBook = await fetchOneWorldBook(wbId, userId); }
+      catch (err) {
+        deps.log.warn(`assembleModule: fetch wb=${wbId} failed for module=${moduleId}: ${deps.errMsg(err)}`);
+      }
+    }
+    return buildModuleViewerData({ envelope: env as never, ...(worldBook ? { worldBook } : {}) });
   }
 
   return { assembleCharacter, assembleModule };

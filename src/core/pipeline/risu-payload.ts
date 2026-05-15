@@ -173,11 +173,19 @@ export function extractRisuaiExtra(
 }
 
 export function buildRisuPayload(input: BuildRisuPayloadInput): RisuPayload {
+  // Seed background_html_source at import so the agent's authoring surface is
+  // never missing. Without this, _source is undefined until the user clicks
+  // save in Viewer -> HTML, and agent path-edits to _source silently land on a
+  // non-existent leaf.
+  const bgHtml = input.extracted.backgroundHTML;
   const payload: RisuPayload = {
     triggers: input.triggers,
     lua_scripts: extractLuaScripts(input.triggers),
     at_actions: input.atActions,
-    background_html: input.extracted.backgroundHTML,
+    background_html: bgHtml,
+    ...(typeof bgHtml === "string" && bgHtml.length > 0
+      ? { background_html_source: bgHtml }
+      : {}),
     virtualscript: input.extracted.virtualScript,
     utility_bot: input.extracted.utilityBot,
     scriptstate_defaults: parseScriptstateDefaults(

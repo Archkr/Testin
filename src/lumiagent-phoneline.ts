@@ -206,7 +206,7 @@ function checkWritePath(extPath: string): { ok: boolean; message?: string } {
       ok: false,
       message:
         'lumirealm.payload.background_html is the TRANSLATED runtime output; LumiRealm regenerates it from lumirealm.payload.background_html_source on every save and on every translator schema bump. Edits here are clobbered.\n\n' +
-        'Edit char/extensions/lumirealm.payload.background_html_source instead (use edit / rewrite / set on that path). If background_html_source does not yet exist on this card, write to it anyway, LumiRealm seeds it from the card-side baseline on first edit.\n\n' +
+        'Edit char/extensions/lumirealm.payload.background_html_source instead (use edit / rewrite / set on that path). LumiRealm seeds it from the card-side baseline at import, so the path always resolves on a card that has bg-html.\n\n' +
         'Bg-html / CSS content is the most cross-coupled surface on the card. ' + COUPLING_REMINDER,
     };
   }
@@ -278,6 +278,74 @@ function checkWritePath(extPath: string): { ok: boolean; message?: string } {
     };
   }
 
+  return { ok: true };
+}
+
+// ─── op: check_read ─────────────────────────────────────────────────────
+//
+// Refuses reads to layers that are stale-by-definition mirrors or pure
+// projections of a live surface elsewhere. The principle: if you wouldn't let
+// the agent write here (because it's a cache / projection / mirror), don't
+// let them read here either, because the bytes they'd see are stale relative
+// to the live data. Exceptions are paths whose READ has different semantics
+// than write (asset_index/emotion_index where names live in KEYS, user_overrides
+// for UI-state diagnostics) -- those stay readable.
+
+function checkReadPath(extPath: string): { ok: boolean; message?: string } {
+  if (extPath !== 'lumirealm' && !extPath.startsWith('lumirealm.') && !extPath.startsWith('lumirealm[')) {
+    return { ok: true };
+  }
+  if (extPath === 'lumirealm.source' || extPath.startsWith('lumirealm.source.') || extPath.startsWith('lumirealm.source[')) {
+    return {
+      ok: false,
+      message:
+        'lumirealm.source.* is a FROZEN .charx import snapshot, opaque to the agent. LumiRealm regenerates payload.* and the top-level regex_scripts from it on every schema bump; reading it gives stale bytes that the agent should never use.\n\n' +
+        'Use the LIVE surface that matches your content kind:\n' +
+        '- HTML / status panel CSS -> char/extensions/lumirealm.payload.background_html_source\n' +
+        "- Trigger Lua / JS -> char/extensions/lumirealm.payload.triggers[i].effect[k].code where effect.type is 'triggerlua' or 'triggercode'\n" +
+        '- Character-scoped regex -> rx/<scriptId>/find_regex or rx/<scriptId>/replace_string\n' +
+        '- Lorebook -> wb/<entryId>/content or /comment\n' +
+        '- Canonical character fields (first_mes, description, etc.) -> char/<field>',
+    };
+  }
+  if (extPath === 'lumirealm.payload.background_html') {
+    return {
+      ok: false,
+      message:
+        'lumirealm.payload.background_html is the TRANSLATED runtime output of the bg-html pipeline; the agent never wants to read it directly. Read char/extensions/lumirealm.payload.background_html_source instead, that is the authoring surface and LumiRealm seeds it from the card-side baseline at import.',
+    };
+  }
+  if (
+    extPath === 'lumirealm.regex_scripts' ||
+    extPath.startsWith('lumirealm.regex_scripts.') ||
+    extPath.startsWith('lumirealm.regex_scripts[')
+  ) {
+    return {
+      ok: false,
+      message:
+        'lumirealm.regex_scripts is a translator-projection CACHE, not the live regex. The runtime fires the top-level regex_scripts surface. Use list({path:"rx"}) to enumerate, read/edit on rx/<scriptId>/find_regex or /replace_string, update_regex_script for metadata.',
+    };
+  }
+  if (
+    extPath === 'lumirealm.payload.lua_scripts' ||
+    extPath.startsWith('lumirealm.payload.lua_scripts.') ||
+    extPath.startsWith('lumirealm.payload.lua_scripts[')
+  ) {
+    return {
+      ok: false,
+      message:
+        'lumirealm.payload.lua_scripts is a translator-derived per-trigger projection (joined triggerlua effect code, parallel-indexed with payload.triggers). Source-of-truth is char/extensions/lumirealm.payload.triggers[i].effect[k].code where effect.type is triggerlua or triggercode. Read the trigger directly.',
+    };
+  }
+  for (const f of CANONICAL_MIRROR_FIELDS) {
+    if (extPath === `lumirealm.payload.${f}`) {
+      return {
+        ok: false,
+        message:
+          `lumirealm.payload.${f} is a translator-output mirror of the canonical character field. Read char/${f} instead, that's the live value the LLM actually sees in the prompt. The mirror exists for translator state; reading it gives stale bytes once the canonical has been edited.`,
+      };
+    }
+  }
   return { ok: true };
 }
 
@@ -412,9 +480,9 @@ const STATIC_SECTION = `# LumiRealm card — authoring map
 
 This character was imported from Risu. Layered storage:
 
-\`source.*\` (frozen .charx snapshot) → \`payload.*\` (translator runtime layer) → canonical character fields + top-level \`regex_scripts.*\` (the live surfaces).
+\`source.*\` (frozen .charx snapshot) -> \`payload.*\` (translator runtime layer) -> canonical character fields + top-level \`regex_scripts.*\` (the live surfaces).
 
-Multiple layers carry related content; only ONE per content kind is the AUTHORING surface. Every other layer is a translator-regenerated mirror that gets clobbered on the next schema bump and on every save. The walker filters out the derived / cached / frozen layers automatically (you won't see them in \`survey_cjk\`, \`grep\`, or \`audit_card_coverage\`), so every path that DOES appear in tool output is an authoring surface you can read and edit, and is either user-visible directly (UI, prompt text) or coupled to something the user sees.
+Multiple layers carry related content; only ONE per content kind is the AUTHORING surface. Every other layer is a translator-regenerated mirror that gets clobbered on the next schema bump and on every save. The frozen \`lumirealm.source.*\` snapshot and the \`payload.background_html\` rasterized mirror are OPAQUE: reads and writes both return an error redirecting you to the live surface. Other translator-derived projections (\`payload.lua_scripts\`, the canonical-mirror payload fields like \`payload.first_mes\`) stay readable for diagnostics but refused on write. The walker also filters them all out of \`survey_cjk\`, \`grep\`, and \`audit_card_coverage\` so they don't waste sample budget.
 
 ## User-visible authoring surfaces
 
@@ -427,7 +495,7 @@ Every row here can be edited. Translation work, UI rewrites, and content edits a
 | Regex replace_string | \`rx/<scriptId>/replace_string\` | HTML / CSS / text injected into the rendered message DOM — status panels, settings UI, buttons, popups, scene backgrounds | THIS is where most card UI HTML lives on Risu-imported cards. Look here first for UI labels. |
 | Regex find_regex | \`rx/<scriptId>/find_regex\` | Not user-visible, but anchors the rule: matches against LLM output / message text | Don't translate the pattern. Touch only if the LLM's output shape genuinely changed. |
 | Lorebook content / comment | \`wb/<entryId>/content\` and \`wb/<entryId>/comment\` | Lore text injected into the LLM prompt when keys hit | \`update_world_book_entry\` for metadata (key arrays, decorators, disabled, priority). |
-| Bg-HTML source | \`char/extensions/lumirealm.payload.background_html_source\` | Persistent overlay rendered behind every message in the chat — ambient animations, fixed status panels, scene art | **THE authoring surface for bg-html.** Always \`inspect\` and \`read\` this path on translation / UI / styling tasks, EVEN IF a survey shows zero CJK there. The post-translator \`payload.background_html\` mirror is refused on write and may show empty CJK while the source still has English labels or structural content worth knowing about. If \`_source\` doesn't exist yet, just write to it — LumiRealm seeds it from \`background_html\` on first edit. |
+| Bg-HTML source | \`char/extensions/lumirealm.payload.background_html_source\` | Persistent overlay rendered behind every message in the chat: ambient animations, fixed status panels, scene art | **THE authoring surface for bg-html.** Always \`inspect\` and \`read\` this path on translation / UI / styling tasks. LumiRealm seeds it from the card-side baseline at import so it always resolves on cards that have bg-html. The post-translator \`payload.background_html\` mirror is hidden from the agent's view (refused on read and write); always use \`_source\`. |
 | Trigger button labels | \`char/extensions/lumirealm.payload.triggers[i].comment\` | The \`risu-trigger="<comment>"\` attribute on HTML buttons inside regex \`replace_string\`. Clicking the button fires this trigger. The comment string itself surfaces in the UI as the button's identifier and often as its visible label too. | Renaming requires updating every \`risu-trigger="..."\` reference in regex \`replace_string\` AND in bg-html. Use \`grep\` to find all callers before renaming. |
 | Trigger Lua / JS code | \`char/extensions/lumirealm.payload.triggers[i].effect[k].code\` where \`effect.type == 'triggerlua'\` or \`'triggercode'\` | Behaviour code that runs at trigger time. String literals inside it (button-fed dialog text, popup messages, choice labels) surface to the user via \`alertNormal\` / \`alertSelect\` / DOM rewrites. | For translation: edit only string LITERALS inside \`"..."\` / \`'...'\` / \`[[...]]\`; never touch surrounding control flow, function/variable names, table keys, or operators. Read the trigger with \`read({path: '...triggers[i]'})\` first to locate the right effect index. |
 | Trigger setvar / addvar / setdefaultvar value | \`char/extensions/lumirealm.payload.triggers[i].effect[k].value\` where \`effect.type\` is \`setvar\` / \`addvar\` / \`setdefaultvar\` / \`v2SetVar\` / \`settempvar\` / \`v2DeclareLocalVar\` | **User-visible UI label.** Surfaces via \`{{getvar::<target>}}\` macros embedded in regex \`replace_string\` HTML, lorebook content, bg-html, and prose. Example: an effect with \`target="season", value="봄"\` fills the \`{{getvar::season}}\` slot everywhere it appears. | Translate the \`.value\` string. Leave \`.target\` (variable name), \`.type\` (opcode kind), \`.indent\` (V2 control-flow depth) alone. |
@@ -436,7 +504,8 @@ Every row here can be edited. Translation work, UI rewrites, and content edits a
 | Trigger runLLM prompt | \`char/extensions/lumirealm.payload.triggers[i].effect[k].value\` where \`effect.type\` is \`runLLM\` / \`v2RunLLM\` | The sub-prompt sent to the aux / submodel LLM; affects what the user sees indirectly through its output. | Translatable. |
 | scriptstate_defaults | \`char/extensions/lumirealm.payload.scriptstate_defaults\` | A flat string→string map of initial chat-var values. Same surfacing path as \`setvar.value\` — these seed \`{{getvar::*}}\` slots before any trigger fires. Visible in State → Variables → Default (card-side column). | \`read\` it, mutate locally, \`set({path, value: <object>})\`. Edits the value EVERY user of this card sees. Per-user overrides live at \`user_overrides.default_variables_*\` and require a UI op the agent doesn't have (see UI-only section below). |
 | Module customModuleToggle DSL | \`edit_external\` / \`update_external\` on \`surface_id='module_envelope'\` field \`module.customModuleToggle\` | A string DSL that defines the checkboxes / selects / text inputs / groups shown in State → Toggles when this module is attached. Toggle keys flow into \`{{getvar::toggle_KEY}}\` / Risu \`{{#when::toggle::KEY}}\` macros. | DSL syntax is Risu's \`parseToggleSyntax\` (see ported docs in LumiRealm \`core/toggle-syntax.ts\`). Each line is a directive: \`>group Name\`, \`<\`, \`---\`, \`#caption\`, \`?key|Label\`, \`?key|Label|options,comma,separated\`, \`%key|Label|default\` for text. Translate the labels / captions; never touch the leading directive char or the key name (renaming the key breaks every macro consumer). |
-| Module envelope (other) | \`list_external\` / \`read_external\` / \`grep_external\` / \`edit_external\` / \`update_external\` with \`surface_id='module_envelope'\` | Module-scoped lorebook (\`module.lorebook[i].content\` / \`.comment\` / \`.key\`), regex (\`module.regex[i].in\` / \`.out\` / \`.comment\`), triggers (\`module.trigger[i].comment\` / \`.effect[k].(value|display|code)\`), bg-html (\`module.backgroundEmbedding\`). Module lorebook + regex are ALSO installed as top-level mirrors (editable via \`wb/\` / \`rx/\` paths) — but for migration-safe edits, use the envelope. | Field paths shown above. |
+| Module lorebook | \`wb/<id>/content\` and \`wb/<id>/comment\` for the world book named \`Module: <module name>\` | Lore injected into the LLM prompt for every character that has the module attached. The module viewer also reads from this wb directly. | Use the path-based tools (\`read\`, \`edit\`, \`rewrite\`, \`update_world_book_entry\`) on the installed wb. \`list({path: 'wb'})\` shows every world book including the module-installed ones. Edits are shared across every character that has the module attached (one wb per module). \`module.lorebook[i]\` on the envelope is the frozen import bundle and is refused on write. |
+| Module envelope (other) | \`list_external\` / \`read_external\` / \`grep_external\` / \`edit_external\` / \`update_external\` with \`surface_id='module_envelope'\` | Module-scoped regex (\`module.regex[i].in\` / \`.out\` / \`.comment\`), triggers (\`module.trigger[i].comment\` / \`.effect[k].(value|display|code)\`), bg-html (\`module.backgroundEmbedding\`). Module regex is ALSO installed as top-level mirrors (editable via \`rx/\` paths) — but for migration-safe edits, use the envelope. | Field paths shown above. |
 | Asset name registry (read-only via path) | \`list({path: 'char/extensions/lumirealm.payload.asset_index'})\` then \`read({path: 'char/extensions/lumirealm.payload.asset_index.<name>.ext'})\` (or \`.imageIds[0]\`); same for \`emotion_index\` | The keys of these objects are the asset NAMES referenced by \`{{img::name}}\` / \`{{emotion::name}}\` / \`<img="name">\` macros in regex \`replace_string\` and bg-html. Names are user-visible (they show up in the Viewer → Assets grid). \`survey_cjk\` won't find CJK in asset names because they live in object KEYS, not leaves — explicitly \`list\` this path on translation / UI tasks. | READ only. Asset add / rename / delete go through dedicated WS ops the agent doesn't currently wrap, see UI-only section. |
 
 If a path is NOT in this table and NOT a top-level \`char/\` / \`rx/\` / \`wb/\` surface, it's either internal (opcode types, indent depth, ids, schema versions, raw asset arrays) or a derived mirror — leave it alone or write to the redirect target the refusal message gives you.
@@ -473,10 +542,8 @@ Workflow rule: **before declaring an edit done, \`grep\` the card for every othe
 
 function buildSection(c: LumiRealmContext): string {
   const tail: string[] = [];
-  if (c.hasBgHtmlSource) {
-    tail.push("This card has `payload.background_html_source` populated, that is the authoring target. Always `inspect` and `read` it on translation / UI tasks even if `survey_cjk` shows no hits there, English labels and structural content may still be worth knowing about.");
-  } else if (c.hasBgHtml) {
-    tail.push('This card has `payload.background_html` but no `_source` yet. Write to `payload.background_html_source` anyway, LumiRealm seeds the source from `background_html` on the first edit. Inspect `background_html` first so you know the starting content even though it is refused on write.');
+  if (c.hasBgHtmlSource || c.hasBgHtml) {
+    tail.push("This card has bg-html. Authoring surface: `payload.background_html_source`. Always `inspect` and `read` it on translation / UI tasks even if `survey_cjk` shows no hits there, English labels and structural content may still be worth knowing about.");
   }
   if (c.hasTriggers && c.triggerSurfaces) {
     const ts = c.triggerSurfaces;
@@ -539,6 +606,7 @@ interface PhoneLineRequestBase {
 interface DescribeRequest { op: 'describe' }
 interface SystemPromptRequest extends PhoneLineRequestBase { op: 'system_prompt'; characterId: string }
 interface CheckWriteRequest extends PhoneLineRequestBase { op: 'check_write'; characterId: string; extPath: string }
+interface CheckReadRequest extends PhoneLineRequestBase { op: 'check_read'; characterId: string; extPath: string }
 interface ListItemsRequest extends PhoneLineRequestBase { op: 'list_items'; surfaceId: string; characterId?: string }
 interface ReadItemRequest extends PhoneLineRequestBase { op: 'read_item'; surfaceId: string; itemId: string; field?: string }
 interface WriteFieldRequest extends PhoneLineRequestBase { op: 'write_field'; surfaceId: string; itemId: string; field: string; value: unknown }
@@ -602,6 +670,7 @@ type PhoneLineRequest =
   | DescribeRequest
   | SystemPromptRequest
   | CheckWriteRequest
+  | CheckReadRequest
   | ListItemsRequest
   | ReadItemRequest
   | WriteFieldRequest
@@ -708,6 +777,7 @@ async function doGrepItems(
     if (!env) continue;
     const label = s.name || s.filename;
     for (const leaf of walkEnvelopeStringLeaves(env, '')) {
+      if (isLorebookPath(leaf.path)) continue;
       if (req.fieldPrefix && !pathMatchesPrefix(leaf.path, req.fieldPrefix)) continue;
       const lines = leaf.text.split('\n');
       for (let i = 0; i < lines.length; i++) {
@@ -728,6 +798,17 @@ async function doGrepItems(
   }
   return { hits, truncated };
 }
+
+function isLorebookPath(field: string): boolean {
+  return field === 'module.lorebook'
+    || field.startsWith('module.lorebook.')
+    || field.startsWith('module.lorebook[');
+}
+
+const MODULE_LOREBOOK_REDIRECT =
+  "module.lorebook[] is the frozen import bundle from the .risum upload. The LIVE lorebook for an installed module is its world_book (one wb per module, shared across every character it's attached to). " +
+  "Edits to env.module.lorebook[] don't reach the runtime or the viewer, and get archived + wiped on the next module schema migration. " +
+  "Use the path-based tools instead: list({path: 'wb'}) to find the module's wb (`Module: <name>`), then read/edit on wb/<id>/content or wb/<id>/comment. update_world_book_entry for metadata.";
 
 async function dispatchModuleSurface(
   spindle: SpindleAPI,
@@ -764,9 +845,28 @@ async function dispatchModuleSurface(
   if (req.op === 'read_item') {
     const env = await readEnvelope(moduleStorage(), req.userId, req.itemId);
     if (!env) throw new Error(`module ${req.itemId} not found`);
-    if (!req.field) return { value: env };
+    if (req.field !== undefined && isLorebookPath(req.field)) {
+      throw new Error(`[REFUSED_BY_EXTENSION] ${MODULE_LOREBOOK_REDIRECT}`);
+    }
+    if (!req.field) {
+      // Whole-envelope read: strip module.lorebook so it stays opaque whether
+      // the agent reads the whole envelope or a specific field.
+      const m = env.module as Record<string, unknown> & { lorebook?: unknown };
+      if (m && typeof m === 'object' && 'lorebook' in m) {
+        const { lorebook: _omit, ...restModule } = m;
+        void _omit;
+        return {
+          value: { ...env, module: restModule },
+          meta: { lorebook_redirect: MODULE_LOREBOOK_REDIRECT },
+        };
+      }
+      return { value: env };
+    }
     const segs = parsePath(req.field);
     return { value: getAtPath(env, segs) };
+  }
+  if (isLorebookPath(req.field)) {
+    return { ok: false, error: `[REFUSED_BY_EXTENSION] ${MODULE_LOREBOOK_REDIRECT}` };
   }
   const env = await readEnvelope(moduleStorage(), req.userId, req.itemId);
   if (!env) throw new Error(`module ${req.itemId} not found`);
@@ -877,6 +977,9 @@ export function registerLumiagentPhoneline(
     if (req.op === 'check_write') {
       return checkWritePath(req.extPath);
     }
+    if (req.op === 'check_read') {
+      return checkReadPath(req.extPath);
+    }
     if (req.op === 'list_items' || req.op === 'read_item' || req.op === 'write_field') {
       return dispatchModuleSurface(spindle, moduleStorage, req, onModuleEnvelopeWritten, log);
     }
@@ -896,5 +999,5 @@ export function registerLumiagentPhoneline(
     throw new Error(`unknown op: ${(req as { op?: string }).op}`);
   });
 
-  log('lumiagent phone line ready (manifest, system_prompt, check_write, module_envelope, mutations)');
+  log('lumiagent phone line ready (manifest, system_prompt, check_write, check_read, module_envelope, mutations)');
 }

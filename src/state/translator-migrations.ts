@@ -336,6 +336,27 @@ async function applyV9StripStylePrefixInPlace(
   };
 }
 
+async function applyV10SeedBgHtmlSource(
+  args: CharacterMigrationStepArgs,
+  _deps: MigrationDeps,
+): Promise<CharacterMigrationStepResult> {
+  const existing = args.envelope.payload.background_html_source;
+  if (typeof existing === "string") {
+    return { nextEnvelope: args.envelope, notes: ["already seeded, skipped"] };
+  }
+  const bg = args.envelope.payload.background_html;
+  if (typeof bg !== "string" || bg.length === 0) {
+    return { nextEnvelope: args.envelope, notes: ["no background_html to seed from"] };
+  }
+  return {
+    nextEnvelope: {
+      ...args.envelope,
+      payload: { ...args.envelope.payload, background_html_source: bg },
+    },
+    notes: [`seeded background_html_source (len=${bg.length}) from background_html`],
+  };
+}
+
 async function applyV8RetranslateUserBgHtml(
   args: CharacterMigrationStepArgs,
   deps: MigrationDeps,
@@ -407,6 +428,13 @@ export const CHARACTER_MIGRATIONS: readonly CharacterMigrationStep[] = [
       'Strip x-risu- from CSS selectors inside <style> blocks of character regex replace_string content. In-place per row, preserves user disable + edits.',
     touches: ['regex_scripts'],
     apply: applyV9StripStylePrefixInPlace,
+  },
+  {
+    version: 10,
+    description:
+      "Seed payload.background_html_source from payload.background_html on existing envelopes. The agent's authoring surface is now always present, not lazily created on first edit.",
+    touches: ['payload.background_html'],
+    apply: applyV10SeedBgHtmlSource,
   },
 ];
 
