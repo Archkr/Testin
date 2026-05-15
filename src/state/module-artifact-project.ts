@@ -6,7 +6,7 @@ import type {
   PendingRegexScriptMsg,
 } from '../types/messages.js';
 import { unprefixHtmlClasses, normalizeIncompleteHtmlEntities, unprefixCssInStyleBlocks } from '../bghtml/rewriter.js';
-import { normaliseRisuFlag } from '../core/mappers/regex.js';
+import { normaliseRisuFlag, pickSubstituteMacroMode } from '../core/mappers/regex.js';
 
 export function projectModuleLorebookEntries(
   moduleId: string,
@@ -145,9 +145,7 @@ export function projectModuleRegexEntries(
       max_depth: target === 'prompt' && ruleType === 'editinput' ? 0 : null,
       trim_strings: [],
       run_on_edit: false,
-      substitute_macros: replaceString.indexOf('{{') >= 0
-        ? (/\$(?:\d+|&|`|'|<[^>]+>)/.test(replaceString) ? 'after' : 'escaped')
-        : 'none',
+      substitute_macros: pickSubstituteMacroMode(replaceString, findHasCbs),
       disabled,
       sort_order: 1000 + sortBase,
       description: `From .risum module: ${moduleName}`,

@@ -3,6 +3,7 @@
 
 import type { ModuleEnvelope } from './modules-store.js';
 import { unprefixCssInStyleBlocks } from '../bghtml/rewriter.js';
+import { replaceStringHasPerMessageMacro } from '../core/mappers/regex.js';
 
 export interface ModuleMigrationDeps {
   // syncWorldBook re-runs lorebook projection and rewrites the world_book in place.
@@ -183,6 +184,43 @@ async function applyV7FixPhaseMapPlacement(
   };
 }
 
+async function applyV8FixEscapedPerMessageGate(
+  args: ModuleMigrationStepArgs,
+  deps: ModuleMigrationDeps,
+): Promise<ModuleMigrationStepResult> {
+  // Module-installed rows the projector previously set to 'escaped' but whose
+  // replace_string carries a per-message {{chat_index}} gate render flakily
+  // ('escaped' pre-resolves chat-wide). Re-route only those to 'after', in
+  // place, so user disable + edits survive.
+  if (!deps.applyModuleRegexRowPatch) {
+    deps.log.warn(
+      `migrate-module(${args.env.id}) v8: row-patch unavailable, falling back to wholesale refresh (user disable/edit state will be lost)`,
+    );
+    return applyV5RefreshAttachedRegex(args, deps);
+  }
+  const result = await deps.applyModuleRegexRowPatch(args.env.id, (row) => {
+    if (row['substitute_macros'] !== 'escaped') return null;
+    const rs = row['replace_string'];
+    if (typeof rs !== 'string') return null;
+    if (!replaceStringHasPerMessageMacro(rs)) return null;
+    return { substitute_macros: 'after' };
+  });
+  if (result === null) {
+    deps.log.warn(
+      `migrate-module(${args.env.id}) v8: row-patch returned null, falling back to wholesale refresh`,
+    );
+    return applyV5RefreshAttachedRegex(args, deps);
+  }
+  return {
+    nextEnv: args.env,
+    notes: [
+      `scanned=${result.scanned}`,
+      `updated=${result.updated}`,
+      `failed=${result.failed}`,
+    ],
+  };
+}
+
 export const MODULE_MIGRATIONS: readonly ModuleMigrationStep[] = [
   {
     version: 5,
@@ -204,6 +242,13 @@ export const MODULE_MIGRATIONS: readonly ModuleMigrationStep[] = [
       'Patch placement on Risu editprocess rows (drop world_info), disable Risu edittrans rows, add user_input placement to editdisplay rows.',
     touches: ['regex_scripts_attached_chars'],
     apply: applyV7FixPhaseMapPlacement,
+  },
+  {
+    version: 8,
+    description:
+      "Re-route module 'escaped' regex rows whose replace_string has a per-message {{chat_index}} gate to 'after'. In-place per row, preserves user disable + edits.",
+    touches: ['regex_scripts_attached_chars'],
+    apply: applyV8FixEscapedPerMessageGate,
   },
 ];
 

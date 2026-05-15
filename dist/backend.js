@@ -22092,9 +22092,7 @@ function mapRegex(scripts, opts) {
       baseReplace = unprefixCssInStyleBlocks(baseReplace);
       baseReplace = normalizeIncompleteHtmlEntities(baseReplace);
     }
-    const baseHasMacros = baseReplace.indexOf("{{") >= 0 || findHasCbs;
-    const hasCaptureRefs = /\$(?:\d+|&|`|'|<[^>]+>)/.test(baseReplace);
-    const baseSubstitute = baseHasMacros ? hasCaptureRefs ? "after" : "escaped" : "none";
+    const baseSubstitute = pickSubstituteMacroMode(baseReplace, findHasCbs);
     const baseName = nonEmpty(s.comment, `risu_${effectivePhase.target}_${i}`);
     const baseDescription = s.comment ?? "";
     const baseMetadata = {
@@ -22278,6 +22276,19 @@ function normaliseRisuFlag(rawFlag, ableFlag) {
       flag = "u";
   }
   return { flag, actions, ...order !== undefined ? { order } : {} };
+}
+var PER_MESSAGE_MACRO_RE = /\{\{\s*chat[_-]?index\b/i;
+function pickSubstituteMacroMode(replaceString, findHasCbs) {
+  if (replaceString.indexOf("{{") < 0 && !findHasCbs)
+    return "none";
+  if (/\$(?:\d+|&|`|'|<[^>]+>)/.test(replaceString))
+    return "after";
+  if (PER_MESSAGE_MACRO_RE.test(replaceString))
+    return "after";
+  return "escaped";
+}
+function replaceStringHasPerMessageMacro(replaceString) {
+  return PER_MESSAGE_MACRO_RE.test(replaceString);
 }
 function splitCommaTrim(s) {
   const out = [];
@@ -26085,6 +26096,34 @@ async function applyV12RecoverMissingRegex(args, deps) {
     notes: [`rows present (scanned=${probe.scanned}), reinstall skipped`]
   };
 }
+async function applyV13FixEscapedPerMessageGate(args, deps) {
+  if (!deps.applyCharacterRegexRowPatch) {
+    deps.log.warn(`migrate(${args.characterId}) v13: regex_scripts row-patch unavailable, falling back to wholesale reinstall (user disable/edit state will be lost)`);
+    return applyV7ReinstallRegex(args, deps);
+  }
+  const result = await deps.applyCharacterRegexRowPatch(args.characterId, args.userId, (row) => {
+    if (row["substitute_macros"] !== "escaped")
+      return null;
+    const rs = row["replace_string"];
+    if (typeof rs !== "string")
+      return null;
+    if (!replaceStringHasPerMessageMacro(rs))
+      return null;
+    return { substitute_macros: "after" };
+  });
+  if (result === null) {
+    deps.log.warn(`migrate(${args.characterId}) v13: row-patch dep returned null, falling back to wholesale reinstall`);
+    return applyV7ReinstallRegex(args, deps);
+  }
+  return {
+    nextEnvelope: args.envelope,
+    notes: [
+      `scanned=${result.scanned}`,
+      `updated=${result.updated}`,
+      `failed=${result.failed}`
+    ]
+  };
+}
 var CHARACTER_MIGRATIONS = [
   {
     version: 5,
@@ -26138,6 +26177,12 @@ var CHARACTER_MIGRATIONS = [
     description: "Idempotent recovery: reinstall regex_scripts only when the live character rowset is empty (fire-and-forget install never landed). No-op when rows already present.",
     touches: ["regex_scripts"],
     apply: applyV12RecoverMissingRegex
+  },
+  {
+    version: 13,
+    description: "Re-route 'escaped' regex rows whose replace_string has a per-message {{chat_index}} gate to 'after' (escaped pre-resolves chat-wide so the gate renders flakily). In-place per row, preserves user disable + edits.",
+    touches: ["regex_scripts"],
+    apply: applyV13FixEscapedPerMessageGate
   }
 ];
 var CURRENT_CHARACTER_SCHEMA_VERSION = CHARACTER_MIGRATIONS.length > 0 ? Math.max(...CHARACTER_MIGRATIONS.map((m) => m.version)) : 1;
@@ -26309,6 +26354,34 @@ async function applyV7FixPhaseMapPlacement(args, deps) {
     ]
   };
 }
+async function applyV8FixEscapedPerMessageGate(args, deps) {
+  if (!deps.applyModuleRegexRowPatch) {
+    deps.log.warn(`migrate-module(${args.env.id}) v8: row-patch unavailable, falling back to wholesale refresh (user disable/edit state will be lost)`);
+    return applyV5RefreshAttachedRegex(args, deps);
+  }
+  const result = await deps.applyModuleRegexRowPatch(args.env.id, (row) => {
+    if (row["substitute_macros"] !== "escaped")
+      return null;
+    const rs = row["replace_string"];
+    if (typeof rs !== "string")
+      return null;
+    if (!replaceStringHasPerMessageMacro(rs))
+      return null;
+    return { substitute_macros: "after" };
+  });
+  if (result === null) {
+    deps.log.warn(`migrate-module(${args.env.id}) v8: row-patch returned null, falling back to wholesale refresh`);
+    return applyV5RefreshAttachedRegex(args, deps);
+  }
+  return {
+    nextEnv: args.env,
+    notes: [
+      `scanned=${result.scanned}`,
+      `updated=${result.updated}`,
+      `failed=${result.failed}`
+    ]
+  };
+}
 var MODULE_MIGRATIONS = [
   {
     version: 5,
@@ -26327,6 +26400,12 @@ var MODULE_MIGRATIONS = [
     description: "Patch placement on Risu editprocess rows (drop world_info), disable Risu edittrans rows, add user_input placement to editdisplay rows.",
     touches: ["regex_scripts_attached_chars"],
     apply: applyV7FixPhaseMapPlacement
+  },
+  {
+    version: 8,
+    description: "Re-route module 'escaped' regex rows whose replace_string has a per-message {{chat_index}} gate to 'after'. In-place per row, preserves user disable + edits.",
+    touches: ["regex_scripts_attached_chars"],
+    apply: applyV8FixEscapedPerMessageGate
   }
 ];
 var CURRENT_MODULE_SCHEMA_VERSION = MODULE_MIGRATIONS.length > 0 ? Math.max(...MODULE_MIGRATIONS.map((m) => m.version)) : 4;
@@ -38548,7 +38627,7 @@ function projectModuleRegexEntries(moduleId, moduleName, characterId, raw, idGen
       max_depth: target === "prompt" && ruleType === "editinput" ? 0 : null,
       trim_strings: [],
       run_on_edit: false,
-      substitute_macros: replaceString2.indexOf("{{") >= 0 ? /\$(?:\d+|&|`|'|<[^>]+>)/.test(replaceString2) ? "after" : "escaped" : "none",
+      substitute_macros: pickSubstituteMacroMode(replaceString2, findHasCbs),
       disabled,
       sort_order: 1000 + sortBase,
       description: `From .risum module: ${moduleName}`,

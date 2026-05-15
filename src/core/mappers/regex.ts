@@ -223,11 +223,10 @@ export function mapRegex(
       baseReplace = normalizeIncompleteHtmlEntities(baseReplace);
     }
 
-    const baseHasMacros = baseReplace.indexOf("{{") >= 0 || findHasCbs;
-    const hasCaptureRefs = /\$(?:\d+|&|`|'|<[^>]+>)/.test(baseReplace);
-    const baseSubstitute: LumiRegexMacroMode = baseHasMacros
-      ? (hasCaptureRefs ? "after" : "escaped")
-      : "none";
+    const baseSubstitute: LumiRegexMacroMode = pickSubstituteMacroMode(
+      baseReplace,
+      findHasCbs,
+    );
     const baseName = nonEmpty(s.comment, `risu_${effectivePhase.target}_${i}`);
     const baseDescription = s.comment ?? "";
     const baseMetadata: Record<string, unknown> = {
@@ -455,6 +454,31 @@ export function normaliseRisuFlag(rawFlag: string | undefined, ableFlag: boolean
   }
 
   return { flag, actions, ...(order !== undefined ? { order } : {}) };
+}
+
+// Only `chat_index` is threaded per-message by Lumi's display-regex
+// (useDisplayRegex `dynamicMacros`); the other chat-position macros are
+// chat-wide in every mode, so this is the sole escaped-vs-after divergence.
+const PER_MESSAGE_MACRO_RE = /\{\{\s*chat[_-]?index\b/i;
+
+// 'escaped' pre-resolves replace_string once chat-wide with no per-message
+// context, so a {{chat_index}} gate resolves wrong and the rule renders
+// flakily. Force 'after' (one per-message evaluate, Risu processScriptFull
+// parity) when captures or a per-message macro are present.
+export function pickSubstituteMacroMode(
+  replaceString: string,
+  findHasCbs: boolean,
+): LumiRegexMacroMode {
+  if (replaceString.indexOf("{{") < 0 && !findHasCbs) return "none";
+  if (/\$(?:\d+|&|`|'|<[^>]+>)/.test(replaceString)) return "after";
+  if (PER_MESSAGE_MACRO_RE.test(replaceString)) return "after";
+  return "escaped";
+}
+
+// Reused by the v13 translator migration to detect existing 'escaped' rows
+// that the picker would now route to 'after'.
+export function replaceStringHasPerMessageMacro(replaceString: string): boolean {
+  return PER_MESSAGE_MACRO_RE.test(replaceString);
 }
 
 

@@ -4,6 +4,7 @@
 import { translateFromStoredSource } from '../core/pipeline/translate.js';
 import { prepareBackgroundHtmlForRuntime } from '../core/mappers/background-html.js';
 import { unprefixCssInStyleBlocks } from '../bghtml/rewriter.js';
+import { replaceStringHasPerMessageMacro } from '../core/mappers/regex.js';
 import type { CatalogIndex } from '../core/cbs/catalog/loader.js';
 import type { LumiBundle } from '../core/pipeline/index.js';
 import type { SvgRasterTask } from '../core/svg-rasterize.js';
@@ -484,6 +485,47 @@ async function applyV12RecoverMissingRegex(
   };
 }
 
+async function applyV13FixEscapedPerMessageGate(
+  args: CharacterMigrationStepArgs,
+  deps: MigrationDeps,
+): Promise<CharacterMigrationStepResult> {
+  // Rows the picker previously set to 'escaped' but whose replace_string
+  // carries a per-message {{chat_index}} gate render flakily ('escaped'
+  // pre-resolves chat-wide). Re-route only those to 'after', in place, so
+  // user disable + edits survive.
+  if (!deps.applyCharacterRegexRowPatch) {
+    deps.log.warn(
+      `migrate(${args.characterId}) v13: regex_scripts row-patch unavailable, falling back to wholesale reinstall (user disable/edit state will be lost)`,
+    );
+    return applyV7ReinstallRegex(args, deps);
+  }
+  const result = await deps.applyCharacterRegexRowPatch(
+    args.characterId,
+    args.userId,
+    (row) => {
+      if (row['substitute_macros'] !== 'escaped') return null;
+      const rs = row['replace_string'];
+      if (typeof rs !== 'string') return null;
+      if (!replaceStringHasPerMessageMacro(rs)) return null;
+      return { substitute_macros: 'after' };
+    },
+  );
+  if (result === null) {
+    deps.log.warn(
+      `migrate(${args.characterId}) v13: row-patch dep returned null, falling back to wholesale reinstall`,
+    );
+    return applyV7ReinstallRegex(args, deps);
+  }
+  return {
+    nextEnvelope: args.envelope,
+    notes: [
+      `scanned=${result.scanned}`,
+      `updated=${result.updated}`,
+      `failed=${result.failed}`,
+    ],
+  };
+}
+
 export const CHARACTER_MIGRATIONS: readonly CharacterMigrationStep[] = [
   {
     version: 5,
@@ -545,6 +587,13 @@ export const CHARACTER_MIGRATIONS: readonly CharacterMigrationStep[] = [
       'Idempotent recovery: reinstall regex_scripts only when the live character rowset is empty (fire-and-forget install never landed). No-op when rows already present.',
     touches: ['regex_scripts'],
     apply: applyV12RecoverMissingRegex,
+  },
+  {
+    version: 13,
+    description:
+      "Re-route 'escaped' regex rows whose replace_string has a per-message {{chat_index}} gate to 'after' (escaped pre-resolves chat-wide so the gate renders flakily). In-place per row, preserves user disable + edits.",
+    touches: ['regex_scripts'],
+    apply: applyV13FixEscapedPerMessageGate,
   },
 ];
 
