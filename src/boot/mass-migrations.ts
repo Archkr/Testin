@@ -198,7 +198,7 @@ export function createMassMigrationsRunner(deps: MassMigrationsDeps): MassMigrat
       return;
     }
     const opId = `mass-migration-modules-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-    const opTitle = 'Updating module lorebooks';
+    const opTitle = 'Updating modules';
     emitOperationProgress(
       userId,
       opId,
