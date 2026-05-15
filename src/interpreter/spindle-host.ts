@@ -113,12 +113,19 @@ export function makeSpindleHost(ctx: SpindleHostCtx): HostApi {
   }
 
   const anySpindle = spindle as unknown as {
-    worldInfo?: {
+    // Real Spindle surface is `world_books` (snake_case DTOs); the host-facing
+    // `worldInfo` adapter below maps it to the camelCase HostWorldInfoEntry that
+    // runtime consumers expect. Was previously read as a non-existent
+    // `spindle.worldInfo`, so the Lua lorebook path silently no-op'd.
+    world_books?: {
       entries: {
-        list: (bookId: string, opts?: { limit?: number }, uid?: string) => Promise<{ data: readonly HostWorldInfoEntry[] }>;
-        create: (bookId: string, entry: Partial<HostWorldInfoEntry>, uid?: string) => Promise<HostWorldInfoEntry>;
-        update: (id: string, patch: Partial<HostWorldInfoEntry>, uid?: string) => Promise<HostWorldInfoEntry>;
-        delete: (id: string, uid?: string) => Promise<void>;
+        list: (
+          worldBookId: string,
+          opts?: { limit?: number; offset?: number; userId?: string },
+        ) => Promise<{ data: readonly Record<string, unknown>[]; total: number }>;
+        create: (worldBookId: string, input: Record<string, unknown>, uid?: string) => Promise<Record<string, unknown>>;
+        update: (entryId: string, patch: Record<string, unknown>, uid?: string) => Promise<Record<string, unknown>>;
+        delete: (entryId: string, uid?: string) => Promise<void>;
       };
     };
     personas?: {
@@ -140,13 +147,40 @@ export function makeSpindleHost(ctx: SpindleHostCtx): HostApi {
     sendToFrontend?: (msg: unknown, targetUserId?: string) => void;
   };
 
-  const worldInfo = anySpindle.worldInfo
+  const dtoToHostEntry = (r: Record<string, unknown>): HostWorldInfoEntry => {
+    const e: Record<string, unknown> = { ...r, id: typeof r.id === 'string' ? r.id : '' };
+    if (typeof r.world_book_id === 'string') e.worldBookId = r.world_book_id;
+    if (Array.isArray(r.key)) e.key = r.key as readonly string[];
+    else if (typeof r.key === 'string') e.key = r.key;
+    if (typeof r.content === 'string') e.content = r.content;
+    if (typeof r.comment === 'string') e.comment = r.comment;
+    if (typeof r.order_value === 'number') e.orderValue = r.order_value;
+    if (typeof r.disabled === 'boolean') e.disabled = r.disabled;
+    if (typeof r.constant === 'boolean') e.constant = r.constant;
+    return e as HostWorldInfoEntry;
+  };
+  const hostPatchToDto = (p: Partial<HostWorldInfoEntry>): Record<string, unknown> => {
+    const out: Record<string, unknown> = {};
+    if (p.key !== undefined) out.key = Array.isArray(p.key) ? p.key : [p.key];
+    if (p.content !== undefined) out.content = p.content;
+    if (p.comment !== undefined) out.comment = p.comment;
+    if (p.orderValue !== undefined) out.order_value = p.orderValue;
+    if (p.disabled !== undefined) out.disabled = p.disabled;
+    if (p.constant !== undefined) out.constant = p.constant;
+    return out;
+  };
+  const worldInfo = anySpindle.world_books
     ? {
         entries: {
-          list: (bookId: string, opts?: { limit?: number }) => anySpindle.worldInfo!.entries.list(bookId, opts, uid),
-          create: (bookId: string, entry: Partial<HostWorldInfoEntry>) => anySpindle.worldInfo!.entries.create(bookId, entry, uid),
-          update: (id: string, patch: Partial<HostWorldInfoEntry>) => anySpindle.worldInfo!.entries.update(id, patch, uid),
-          delete: (id: string) => anySpindle.worldInfo!.entries.delete(id, uid),
+          list: async (bookId: string, opts?: { limit?: number }): Promise<{ data: readonly HostWorldInfoEntry[] }> => {
+            const res = await anySpindle.world_books!.entries.list(bookId, { ...opts, ...(uid ? { userId: uid } : {}) });
+            return { data: (res?.data ?? []).map(dtoToHostEntry) };
+          },
+          create: async (bookId: string, entry: Partial<HostWorldInfoEntry>): Promise<HostWorldInfoEntry> =>
+            dtoToHostEntry(await anySpindle.world_books!.entries.create(bookId, hostPatchToDto(entry), uid)),
+          update: async (id: string, patch: Partial<HostWorldInfoEntry>): Promise<HostWorldInfoEntry> =>
+            dtoToHostEntry(await anySpindle.world_books!.entries.update(id, hostPatchToDto(patch), uid)),
+          delete: (id: string) => anySpindle.world_books!.entries.delete(id, uid),
         },
       }
     : undefined;

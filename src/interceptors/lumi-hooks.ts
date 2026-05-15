@@ -23,6 +23,7 @@ import { rememberOurWrite } from '../state/recent-writes.js';
 import { expectChatChange } from '../state/own-chat-change.js';
 import { invalidateRecentFlush } from '../state/recent-flush-cache.js';
 import { getActiveAssetIndexes } from '../interpreter/asset-cache.js';
+import { getActiveLorebook } from '../state/lorebook-cache.js';
 import { getScreenDims } from '../interpreter/screen-dims-cache.js';
 import { getCachedMessages } from '../interpreter/messages-cache.js';
 import {
@@ -225,6 +226,10 @@ export function createLumiInterceptors(deps: CreateLumiInterceptorsDeps): LumiIn
         : undefined;
       const dynRole = typeof dynamicMacros?.role === 'string' ? dynamicMacros.role : undefined;
       const cachedMessages = getCachedMessages(chatId);
+      const activeLore = getActiveLorebook(chatId);
+      if (ctx.template.includes('lorebook') || ctx.template.includes('risu_each')) {
+        log.trace(`macroInterceptor #${callId}: lorebook entries=${activeLore.length} for chat=${chatId} (tmpl mentions lorebook/each)`);
+      }
 
       let resolved: string;
       try {
@@ -271,6 +276,7 @@ export function createLumiInterceptors(deps: CreateLumiInterceptorsDeps): LumiIn
             : {}),
           ...(screenDims ? { screenWidth: screenDims.width, screenHeight: screenDims.height } : {}),
           legacyMediaFindings: deps.getCachedSettingsSync(ctx.userId).legacyMediaFindings,
+          lorebook: activeLore,
           ...(deps.modulesByNamespaceFromCard(active.card) ? { modulesByNamespace: deps.modulesByNamespaceFromCard(active.card)! } : {}),
           ...(readDecoratorBuffers(chatId)?.positionPt
             ? { positionPt: readDecoratorBuffers(chatId)!.positionPt }

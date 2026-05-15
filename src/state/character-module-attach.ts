@@ -11,6 +11,7 @@ import {
 } from './lumirealm-character.js';
 import { clearActiveAssetIndexes } from '../interpreter/asset-cache.js';
 import { clearActiveCharacterImage } from '../interpreter/image-cache.js';
+import { clearActiveLorebookForCharacter } from './lorebook-cache.js';
 
 export interface CharacterModuleAttachDeps {
   readonly readLumirealm: (
@@ -122,6 +123,7 @@ export function createCharacterModuleAttach(deps: CharacterModuleAttachDeps): Ch
       }
     }
     compiledByCharacter.delete(characterId);
+    clearActiveLorebookForCharacter(characterId);
     log.info(`invalidateActiveForCharacter: char=${characterId} evictedChats=${evicted}`);
     for (const chatId of evictedChats) {
       void (async () => {

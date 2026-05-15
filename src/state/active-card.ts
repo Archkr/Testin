@@ -53,6 +53,19 @@ export interface ActiveCardLoaderDeps {
     map: Readonly<Record<string, readonly string[]>>,
   ) => void;
   readonly clearActiveModulesByNamespace: (chatId: string) => void;
+  readonly setActiveLorebook: (
+    chatId: string,
+    characterId: string,
+    entries: readonly import('../core/cbs/runtime/context.js').LorebookEntry[],
+  ) => void;
+  readonly fetchLorebookForCharacter: (
+    worldBookIds: readonly string[],
+    userId: string,
+  ) => Promise<readonly import('../core/cbs/runtime/context.js').LorebookEntry[]>;
+  readonly hasActiveLorebookForCharacter: (characterId: string) => boolean;
+  readonly getActiveLorebookByCharacter: (
+    characterId: string,
+  ) => readonly import('../core/cbs/runtime/context.js').LorebookEntry[];
   readonly setActiveCharacterImage: (chatId: string, url: string | null) => void;
   readonly imageUrlFromId: (id: string | null | undefined) => string | null;
   readonly backfillImageJournalIfMissing: (
@@ -121,6 +134,10 @@ export function createActiveCardLoader(deps: ActiveCardLoaderDeps): ActiveCardLo
     setActiveScriptstateDefaults,
     setActiveModulesByNamespace,
     clearActiveModulesByNamespace,
+    setActiveLorebook,
+    fetchLorebookForCharacter,
+    hasActiveLorebookForCharacter,
+    getActiveLorebookByCharacter,
     setActiveCharacterImage,
     imageUrlFromId,
     backfillImageJournalIfMissing,
@@ -176,6 +193,27 @@ export function createActiveCardLoader(deps: ActiveCardLoaderDeps): ActiveCardLo
       if (cached.ownerUserId !== userId) {
         log.warn(`ensureActiveCardForChat: cache-hit owner mismatch chatId=${chatId} cachedOwner=${cached.ownerUserId} requester=${userId},refusing`);
         return null;
+      }
+      // Lorebook cache is keyed by character, but the chat→character index is
+      // set per chat. On a warm worker the active card hits cache here without
+      // the miss-path populate ever running, so {{lorebook}} would stay empty.
+      // Populate once per character (Map.has guard keeps subsequent hits cheap)
+      // and always (re)index this chatId.
+      const hitCharId = cached.card.character_id;
+      if (!hasActiveLorebookForCharacter(hitCharId)) {
+        try {
+          const wbIds = worldBookIdsByCharacter.get(hitCharId) ?? [];
+          const lore = await fetchLorebookForCharacter(wbIds, userId);
+          setActiveLorebook(chatId, hitCharId, lore);
+          log.debug(`ensureActiveCardForChat: lorebook set (hit-fetch) chat=${chatId} char=${hitCharId} books=${wbIds.length} entries=${lore.length}`);
+        } catch (err) {
+          log.warn(`ensureActiveCardForChat: lorebook fetch (cache-hit) failed char=${hitCharId}: ${errMsg(err)}`);
+          setActiveLorebook(chatId, hitCharId, []);
+        }
+      } else {
+        const reuse = getActiveLorebookByCharacter(hitCharId);
+        setActiveLorebook(chatId, hitCharId, reuse);
+        log.debug(`ensureActiveCardForChat: lorebook set (hit-reuse) chat=${chatId} char=${hitCharId} entries=${reuse.length}`);
       }
       log.debug(`ensureActiveCardForChat: cache hit chatId=${chatId} characterId=${cached.card.character_id}`);
       return cached;
@@ -266,6 +304,17 @@ export function createActiveCardLoader(deps: ActiveCardLoaderDeps): ActiveCardLo
     );
     const characterOwnedWbIds = allWbIds.filter((id) => !moduleWbIdSet.has(id));
     worldBookIdsByCharacter.set(characterId, characterOwnedWbIds);
+    // Risu's {{lorebook}} = characterLore + chatLore + moduleLore: feed all
+    // attached books. Awaited so the cache is warm before the macroInterceptor
+    // (which awaits ensureActiveCardForChat) resolves {{lorebook}}.
+    try {
+      const loreEntries = await fetchLorebookForCharacter(allWbIds, userId);
+      setActiveLorebook(chatId, characterId, loreEntries);
+      log.debug(`ensureActiveCardForChat: lorebook set (miss) chat=${chatId} char=${characterId} books=${allWbIds.length} entries=${loreEntries.length}`);
+    } catch (err) {
+      log.warn(`ensureActiveCardForChat: lorebook fetch failed char=${characterId}: ${errMsg(err)}`);
+      setActiveLorebook(chatId, characterId, []);
+    }
     void backfillImageJournalIfMissing(characterId, fetched.character.image_id ?? null, card, userId);
     setActiveAssetIndexes(chatId, {
       assets: card.asset_index,

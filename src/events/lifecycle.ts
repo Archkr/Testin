@@ -40,6 +40,7 @@ export interface LifecycleEventHandlerDeps {
   readonly clearActiveAssetIndexes: (chatId: string) => void;
   readonly clearActiveCharacterImage: (chatId: string) => void;
   readonly clearActiveScriptstateDefaults: (chatId: string) => void;
+  readonly clearActiveLorebook: (chatId: string) => void;
   readonly clearVarOverlay: (chatId: string) => void;
 
   // Refresh / dispatch
@@ -135,6 +136,10 @@ export interface LifecycleEventHandlers {
   readonly CHARACTER_DELETED: EventHandler;
   readonly CHARACTER_CREATED: EventHandler;
   readonly CHARACTER_EDITED: EventHandler;
+  readonly WORLD_BOOK_CHANGED: EventHandler;
+  readonly WORLD_BOOK_DELETED: EventHandler;
+  readonly WORLD_BOOK_ENTRY_CHANGED: EventHandler;
+  readonly WORLD_BOOK_ENTRY_DELETED: EventHandler;
 }
 
 // Allow-list for paths warranting refresh on external CHAT_CHANGED, non-var writes are skipped. ADD a prefix here if a handler ever reads a new chat.metadata.X path or refresh silently breaks under burst writes.
@@ -248,6 +253,26 @@ export function createLifecycleEventHandlers(deps: LifecycleEventHandlerDeps): L
     }
     generationsInFlight.set(chatId, prev - 1);
     return false;
+  }
+
+  // World-book entry edits via Lumi's UI emit no character/chat event, so
+  // cached {{lorebook}} would go stale. Edits are rare, so coarse per-user
+  // invalidation (drop derived caches + reactivate, which repopulates the
+  // lorebook cache via ensureActiveCardForChat) is sufficient and dodges the
+  // worldBookId→character mapping gap for module-shared books.
+  function onWorldBookMutation(userId: string | undefined): void {
+    deps.captureUserId(userId, 'WORLD_BOOK');
+    if (userId === undefined) return;
+    const affected = new Set<string>();
+    for (const [chatId, active] of [...deps.activeCardByChat]) {
+      if (active.ownerUserId !== userId) continue;
+      affected.add(active.card.character_id);
+      deps.invalidateRenderMcpForChat(chatId);
+      deps.invalidateMacroInterceptorForChat(chatId);
+      deps.invalidateListenEditPreload(chatId);
+    }
+    for (const cid of affected) deps.invalidateActiveForCharacter(cid, userId);
+    deps.log.info(`event WORLD_BOOK mutation user=${userId} chars=${affected.size}`);
   }
 
   return {
@@ -477,6 +502,7 @@ export function createLifecycleEventHandlers(deps: LifecycleEventHandlerDeps): L
       deps.clearActiveAssetIndexes(chatId);
       deps.clearActiveCharacterImage(chatId);
       deps.clearActiveScriptstateDefaults(chatId);
+      deps.clearActiveLorebook(chatId);
       deps.clearVarOverlay(chatId);
       deps.variableState.clearChat(chatId);
       deps.toggleState.clearChat(chatId);
@@ -624,5 +650,10 @@ export function createLifecycleEventHandlers(deps: LifecycleEventHandlerDeps): L
         deps.log.warn(`CHARACTER_EDITED: pushCards failed: ${deps.errMsg(err)}`);
       }
     },
+
+    WORLD_BOOK_CHANGED: async (_raw, userId) => { onWorldBookMutation(userId); },
+    WORLD_BOOK_DELETED: async (_raw, userId) => { onWorldBookMutation(userId); },
+    WORLD_BOOK_ENTRY_CHANGED: async (_raw, userId) => { onWorldBookMutation(userId); },
+    WORLD_BOOK_ENTRY_DELETED: async (_raw, userId) => { onWorldBookMutation(userId); },
   };
 }

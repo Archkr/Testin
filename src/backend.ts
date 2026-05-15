@@ -60,6 +60,13 @@ import {
   clearActiveScriptstateDefaults,
 } from './interpreter/defaults-cache.js';
 import {
+  setActiveLorebook,
+  clearActiveLorebook,
+  hasActiveLorebookForCharacter,
+  getActiveLorebookByCharacter,
+} from './state/lorebook-cache.js';
+import { fetchLorebookForCharacter } from './state/lorebook-fetch.js';
+import {
   setActiveModulesByNamespace,
   clearActiveModulesByNamespace,
 } from './interpreter/modules-by-namespace-cache.js';
@@ -229,7 +236,7 @@ const log = {
   },
 };
 
-log.info(`backend boot: version=${EXTENSION_VERSION}`);
+log.info(`backend boot: version=${EXTENSION_VERSION} features=[lorebook-cache,worldbook-events]`);
 
 // Lumi may not enforce manifest minimum_lumiverse_version, so we re-check at
 // runtime and nag via get_cards handshake (mirrors Hone's pattern).
@@ -837,6 +844,10 @@ const activeCardLoader = createActiveCardLoader({
   setActiveScriptstateDefaults,
   setActiveModulesByNamespace,
   clearActiveModulesByNamespace,
+  setActiveLorebook,
+  fetchLorebookForCharacter: (worldBookIds, userId) => fetchLorebookForCharacter(worldBookIds, userId),
+  hasActiveLorebookForCharacter,
+  getActiveLorebookByCharacter,
   setActiveCharacterImage: (chatId, url) => setActiveCharacterImage(chatId, url ?? ''),
   imageUrlFromId,
   backfillImageJournalIfMissing: (charId, avatarId, card, userId) =>
@@ -1026,6 +1037,7 @@ const lifecycleHandlers = createLifecycleEventHandlers({
   clearActiveAssetIndexes,
   clearActiveCharacterImage,
   clearActiveScriptstateDefaults,
+  clearActiveLorebook,
   clearVarOverlay,
   refreshBgHtml,
   refreshVariables,
@@ -1065,6 +1077,10 @@ spindle.on('CHAT_DELETED', userScoped(lifecycleHandlers.CHAT_DELETED));
 spindle.on('CHARACTER_DELETED', userScoped(lifecycleHandlers.CHARACTER_DELETED));
 spindle.on('CHARACTER_CREATED', userScoped(lifecycleHandlers.CHARACTER_CREATED));
 spindle.on('CHARACTER_EDITED', userScoped(lifecycleHandlers.CHARACTER_EDITED));
+spindle.on('WORLD_BOOK_CHANGED', userScoped(lifecycleHandlers.WORLD_BOOK_CHANGED));
+spindle.on('WORLD_BOOK_DELETED', userScoped(lifecycleHandlers.WORLD_BOOK_DELETED));
+spindle.on('WORLD_BOOK_ENTRY_CHANGED', userScoped(lifecycleHandlers.WORLD_BOOK_ENTRY_CHANGED));
+spindle.on('WORLD_BOOK_ENTRY_DELETED', userScoped(lifecycleHandlers.WORLD_BOOK_ENTRY_DELETED));
 
 interface ModuleUploadSession {
   readonly fileName: string;

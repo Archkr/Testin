@@ -16,6 +16,7 @@ import catalogJson from '../core/cbs/catalog/risu-macros.json';
 import { CatalogIndex, parseCatalog } from '../core/cbs/index.js';
 import { getActiveAssetIndexes } from './asset-cache.js';
 import { getActiveScriptstateDefaults, getCharacterIdForChat } from './defaults-cache.js';
+import { getActiveLorebook } from '../state/lorebook-cache.js';
 import { getActiveModulesByNamespace } from './modules-by-namespace-cache.js';
 import { getDecoratorBuffers } from './decorator-buffers.js';
 import { getActiveCharacterImage, getActivePersonaImage } from './image-cache.js';
@@ -325,7 +326,7 @@ export function buildRuntimeContext(mctx: MacroInvokeCtx): RisuRuntimeContext {
     image: getActiveCharacterImage(cachedChatId),
   };
 
-  const lorebook: readonly LorebookEntry[] = [];
+  const lorebook: readonly LorebookEntry[] = getActiveLorebook(chatId);
 
   // Dry-fire: writes no-op; reads still find functions from prior committing pass.
   const functions: FunctionRegistry = committing

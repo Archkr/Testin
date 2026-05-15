@@ -26915,23 +26915,53 @@ function getCharacterIdForChat(chatId) {
   return chatToCharacter.get(chatId) ?? null;
 }
 
-// src/interpreter/modules-by-namespace-cache.ts
+// src/state/lorebook-cache.ts
 var byCharacter2 = new Map;
 var chatToCharacter2 = new Map;
-function setActiveModulesByNamespace(chatId, characterId, modulesByNamespace) {
-  byCharacter2.set(characterId, modulesByNamespace);
+function setActiveLorebook(chatId, characterId, entries) {
+  byCharacter2.set(characterId, entries);
   chatToCharacter2.set(chatId, characterId);
 }
-function clearActiveModulesByNamespace(chatId) {
+function getActiveLorebook(chatId) {
+  if (!chatId)
+    return [];
+  const characterId = chatToCharacter2.get(chatId);
+  if (!characterId)
+    return [];
+  return byCharacter2.get(characterId) ?? [];
+}
+function getActiveLorebookByCharacter(characterId) {
+  if (!characterId)
+    return [];
+  return byCharacter2.get(characterId) ?? [];
+}
+function hasActiveLorebookForCharacter(characterId) {
+  return byCharacter2.has(characterId);
+}
+function clearActiveLorebook(chatId) {
   chatToCharacter2.delete(chatId);
+}
+function clearActiveLorebookForCharacter(characterId) {
+  byCharacter2.delete(characterId);
+}
+
+// src/interpreter/modules-by-namespace-cache.ts
+var byCharacter3 = new Map;
+var chatToCharacter3 = new Map;
+function setActiveModulesByNamespace(chatId, characterId, modulesByNamespace) {
+  byCharacter3.set(characterId, modulesByNamespace);
+  chatToCharacter3.set(chatId, characterId);
+}
+function clearActiveModulesByNamespace(chatId) {
+  chatToCharacter3.delete(chatId);
 }
 function getActiveModulesByNamespace(chatId) {
   if (!chatId)
     return null;
-  const characterId = chatToCharacter2.get(chatId);
+  const characterId = chatToCharacter3.get(chatId);
   if (!characterId)
     return null;
-  return byCharacter2.get(characterId) ?? null;
+  return byCharacter3.get(characterId) ?? null;
 }
 
 // src/interpreter/decorator-buffers.ts
@@ -27228,7 +27258,7 @@ function buildRuntimeContext(mctx) {
     chaId: cachedCharacterId,
     image: getActiveCharacterImage(cachedChatId)
   };
-  const lorebook = [];
+  const lorebook = getActiveLorebook(chatId);
   const functions = committing ? sessionFunctions : {
     define: () => {},
     get: (name) => sessionFunctions.get(name),
@@ -27441,6 +27471,41 @@ function buildAliasMap() {
 }
 function normaliseMacroName(name) {
   return name.toLowerCase().replace(/^[#:]+/, "").replace(/[\s_-]+/g, "");
+}
+
+// src/state/lorebook-fetch.ts
+function lumiEntryToRisuLore(e) {
+  const keyStr = (e.key ?? []).join(",");
+  const secondStr = (e.keysecondary ?? []).join(",");
+  return {
+    key: keyStr,
+    secondkey: secondStr,
+    secondKey: secondStr,
+    content: e.content ?? "",
+    comment: e.comment ?? "",
+    insertorder: e.order_value ?? 0,
+    alwaysActive: e.constant === true,
+    selective: e.selective === true,
+    mode: e.constant ? "constant" : "normal"
+  };
+}
+async function fetchLorebookForCharacter(worldBookIds, userId) {
+  if (worldBookIds.length === 0)
+    return [];
+  const out = [];
+  for (const bid of worldBookIds) {
+    let offset = 0;
+    for (;; ) {
+      const page = await spindle.world_books.entries.list(bid, { limit: 200, offset, userId });
+      const rows = page?.data ?? [];
+      for (const row of rows)
+        out.push(lumiEntryToRisuLore(row));
+      if (rows.length < 200)
+        break;
+      offset += rows.length;
+    }
+  }
+  return out;
 }
 
 // src/interpreter/evaluator/context.ts
@@ -27666,7 +27731,7 @@ function buildEvaluatorContext(input) {
     chaId: input.characterId ?? "",
     image: card.image ?? ""
   };
-  const lorebook = [];
+  const lorebook = input.lorebook ?? [];
   const functions = commit ? sessionFunctions2 : {
     define: () => {},
     get: (name) => sessionFunctions2.get(name),
@@ -30788,6 +30853,23 @@ function createLifecycleEventHandlers(deps) {
     generationsInFlight.set(chatId, prev - 1);
     return false;
   }
+  function onWorldBookMutation(userId) {
+    deps.captureUserId(userId, "WORLD_BOOK");
+    if (userId === undefined)
+      return;
+    const affected = new Set;
+    for (const [chatId, active] of [...deps.activeCardByChat]) {
+      if (active.ownerUserId !== userId)
+        continue;
+      affected.add(active.card.character_id);
+      deps.invalidateRenderMcpForChat(chatId);
+      deps.invalidateMacroInterceptorForChat(chatId);
+      deps.invalidateListenEditPreload(chatId);
+    }
+    for (const cid of affected)
+      deps.invalidateActiveForCharacter(cid, userId);
+    deps.log.info(`event WORLD_BOOK mutation user=${userId} chars=${affected.size}`);
+  }
   return {
     SETTINGS_UPDATED: async (raw, userId) => {
       deps.captureUserId(userId, "SETTINGS_UPDATED");
@@ -31019,6 +31101,7 @@ function createLifecycleEventHandlers(deps) {
       deps.clearActiveAssetIndexes(chatId);
       deps.clearActiveCharacterImage(chatId);
       deps.clearActiveScriptstateDefaults(chatId);
+      deps.clearActiveLorebook(chatId);
       deps.clearVarOverlay(chatId);
       deps.variableState.clearChat(chatId);
       deps.toggleState.clearChat(chatId);
@@ -31124,6 +31207,18 @@ function createLifecycleEventHandlers(deps) {
       } catch (err) {
         deps.log.warn(`CHARACTER_EDITED: pushCards failed: ${deps.errMsg(err)}`);
       }
+    },
+    WORLD_BOOK_CHANGED: async (_raw, userId) => {
+      onWorldBookMutation(userId);
+    },
+    WORLD_BOOK_DELETED: async (_raw, userId) => {
+      onWorldBookMutation(userId);
+    },
+    WORLD_BOOK_ENTRY_CHANGED: async (_raw, userId) => {
+      onWorldBookMutation(userId);
+    },
+    WORLD_BOOK_ENTRY_DELETED: async (_raw, userId) => {
+      onWorldBookMutation(userId);
     }
   };
 }
@@ -31150,6 +31245,7 @@ function runPipeline(input) {
     ...input.currentMessageRoleOverride !== undefined ? { currentMessageRoleOverride: input.currentMessageRoleOverride } : {},
     ...input.legacyMediaFindings !== undefined ? { legacyMediaFindings: input.legacyMediaFindings } : {},
     ...input.modulesByNamespace ? { modulesByNamespace: input.modulesByNamespace } : {},
+    ...input.lorebook ? { lorebook: input.lorebook } : {},
     ...input.positionPt ? { positionPt: input.positionPt } : {},
     ...input.cbsContext ? { cbsContext: true } : {},
     commit
@@ -33897,12 +33993,51 @@ function makeSpindleHost(ctx) {
     await spindle.characters.update(id, p, uid);
   }
   const anySpindle = spindle;
-  const worldInfo = anySpindle.worldInfo ? {
+  const dtoToHostEntry = (r) => {
+    const e = { ...r, id: typeof r.id === "string" ? r.id : "" };
+    if (typeof r.world_book_id === "string")
+      e.worldBookId = r.world_book_id;
+    if (Array.isArray(r.key))
+      e.key = r.key;
+    else if (typeof r.key === "string")
+      e.key = r.key;
+    if (typeof r.content === "string")
+      e.content = r.content;
+    if (typeof r.comment === "string")
+      e.comment = r.comment;
+    if (typeof r.order_value === "number")
+      e.orderValue = r.order_value;
+    if (typeof r.disabled === "boolean")
+      e.disabled = r.disabled;
+    if (typeof r.constant === "boolean")
+      e.constant = r.constant;
+    return e;
+  };
+  const hostPatchToDto = (p) => {
+    const out = {};
+    if (p.key !== undefined)
+      out.key = Array.isArray(p.key) ? p.key : [p.key];
+    if (p.content !== undefined)
+      out.content = p.content;
+    if (p.comment !== undefined)
+      out.comment = p.comment;
+    if (p.orderValue !== undefined)
+      out.order_value = p.orderValue;
+    if (p.disabled !== undefined)
+      out.disabled = p.disabled;
+    if (p.constant !== undefined)
+      out.constant = p.constant;
+    return out;
+  };
+  const worldInfo = anySpindle.world_books ? {
     entries: {
-      list: (bookId, opts) => anySpindle.worldInfo.entries.list(bookId, opts, uid),
-      create: (bookId, entry) => anySpindle.worldInfo.entries.create(bookId, entry, uid),
-      update: (id, patch) => anySpindle.worldInfo.entries.update(id, patch, uid),
-      delete: (id) => anySpindle.worldInfo.entries.delete(id, uid)
+      list: async (bookId, opts) => {
+        const res = await anySpindle.world_books.entries.list(bookId, { ...opts, ...uid ? { userId: uid } : {} });
+        return { data: (res?.data ?? []).map(dtoToHostEntry) };
+      },
+      create: async (bookId, entry) => dtoToHostEntry(await anySpindle.world_books.entries.create(bookId, hostPatchToDto(entry), uid)),
+      update: async (id, patch) => dtoToHostEntry(await anySpindle.world_books.entries.update(id, hostPatchToDto(patch), uid)),
+      delete: (id) => anySpindle.world_books.entries.delete(id, uid)
     }
   } : undefined;
   const personas = anySpindle.personas ? {
@@ -35270,6 +35405,10 @@ function createLumiInterceptors(deps) {
       const dynChatIndexNum = typeof dynChatIndex === "string" && /^-?\d+$/.test(dynChatIndex) ? parseInt(dynChatIndex, 10) - 1 : undefined;
       const dynRole = typeof dynamicMacros?.role === "string" ? dynamicMacros.role : undefined;
       const cachedMessages = getCachedMessages(chatId);
+      const activeLore = getActiveLorebook(chatId);
+      if (ctx.template.includes("lorebook") || ctx.template.includes("risu_each")) {
+        log8.trace(`macroInterceptor #${callId}: lorebook entries=${activeLore.length} for chat=${chatId} (tmpl mentions lorebook/each)`);
+      }
       let resolved;
       try {
         resolved = runPipeline({
@@ -35313,6 +35452,7 @@ function createLumiInterceptors(deps) {
           ...scriptstateDefaults && Object.keys(scriptstateDefaults).length > 0 ? { scriptstateDefaults } : {},
           ...screenDims ? { screenWidth: screenDims.width, screenHeight: screenDims.height } : {},
           legacyMediaFindings: deps.getCachedSettingsSync(ctx.userId).legacyMediaFindings,
+          lorebook: activeLore,
           ...deps.modulesByNamespaceFromCard(active.card) ? { modulesByNamespace: deps.modulesByNamespaceFromCard(active.card) } : {},
           ...getDecoratorBuffers(chatId)?.positionPt ? { positionPt: getDecoratorBuffers(chatId).positionPt } : {}
         });
@@ -37176,6 +37316,10 @@ function createActiveCardLoader(deps) {
     setActiveScriptstateDefaults: setActiveScriptstateDefaults2,
     setActiveModulesByNamespace: setActiveModulesByNamespace2,
     clearActiveModulesByNamespace: clearActiveModulesByNamespace2,
+    setActiveLorebook: setActiveLorebook2,
+    fetchLorebookForCharacter: fetchLorebookForCharacter2,
+    hasActiveLorebookForCharacter: hasActiveLorebookForCharacter2,
+    getActiveLorebookByCharacter: getActiveLorebookByCharacter2,
     setActiveCharacterImage: setActiveCharacterImage2,
     imageUrlFromId: imageUrlFromId2,
     backfillImageJournalIfMissing,
@@ -37217,6 +37361,22 @@ function createActiveCardLoader(deps) {
       if (cached.ownerUserId !== userId) {
         log8.warn(`ensureActiveCardForChat: cache-hit owner mismatch chatId=${chatId} cachedOwner=${cached.ownerUserId} requester=${userId},refusing`);
         return null;
+      }
+      const hitCharId = cached.card.character_id;
+      if (!hasActiveLorebookForCharacter2(hitCharId)) {
+        try {
+          const wbIds = worldBookIdsByCharacter.get(hitCharId) ?? [];
+          const lore = await fetchLorebookForCharacter2(wbIds, userId);
+          setActiveLorebook2(chatId, hitCharId, lore);
+          log8.debug(`ensureActiveCardForChat: lorebook set (hit-fetch) chat=${chatId} char=${hitCharId} books=${wbIds.length} entries=${lore.length}`);
+        } catch (err) {
+          log8.warn(`ensureActiveCardForChat: lorebook fetch (cache-hit) failed char=${hitCharId}: ${errMsg2(err)}`);
+          setActiveLorebook2(chatId, hitCharId, []);
+        }
+      } else {
+        const reuse = getActiveLorebookByCharacter2(hitCharId);
+        setActiveLorebook2(chatId, hitCharId, reuse);
+        log8.debug(`ensureActiveCardForChat: lorebook set (hit-reuse) chat=${chatId} char=${hitCharId} entries=${reuse.length}`);
       }
       log8.debug(`ensureActiveCardForChat: cache hit chatId=${chatId} characterId=${cached.card.character_id}`);
       return cached;
@@ -37280,6 +37440,14 @@ function createActiveCardLoader(deps) {
     const moduleWbIdSet = new Set(Object.values(fetched.data.user_overrides.attached_module_world_books ?? {}).filter((id) => typeof id === "string" && id.length > 0));
     const characterOwnedWbIds = allWbIds.filter((id) => !moduleWbIdSet.has(id));
     worldBookIdsByCharacter.set(characterId, characterOwnedWbIds);
+    try {
+      const loreEntries = await fetchLorebookForCharacter2(allWbIds, userId);
+      setActiveLorebook2(chatId, characterId, loreEntries);
+      log8.debug(`ensureActiveCardForChat: lorebook set (miss) chat=${chatId} char=${characterId} books=${allWbIds.length} entries=${loreEntries.length}`);
+    } catch (err) {
+      log8.warn(`ensureActiveCardForChat: lorebook fetch failed char=${characterId}: ${errMsg2(err)}`);
+      setActiveLorebook2(chatId, characterId, []);
+    }
     backfillImageJournalIfMissing(characterId, fetched.character.image_id ?? null, card, userId);
     setActiveAssetIndexes2(chatId, {
       assets: card.asset_index,
@@ -38976,6 +39144,7 @@ function createCharacterModuleAttach(deps) {
       }
     }
     compiledByCharacter.delete(characterId);
+    clearActiveLorebookForCharacter(characterId);
     log8.info(`invalidateActiveForCharacter: char=${characterId} evictedChats=${evicted}`);
     for (const chatId of evictedChats) {
       (async () => {
@@ -40576,7 +40745,7 @@ var log8 = {
     logStore.push("info", "backend", msg, logUid());
   }
 };
-log8.info(`backend boot: version=${EXTENSION_VERSION}`);
+log8.info(`backend boot: version=${EXTENSION_VERSION} features=[lorebook-cache,worldbook-events]`);
 var hostVersionCheck = null;
 (async () => {
   let backend = null;
@@ -41038,6 +41207,10 @@ var activeCardLoader = createActiveCardLoader({
   setActiveScriptstateDefaults,
   setActiveModulesByNamespace,
   clearActiveModulesByNamespace,
+  setActiveLorebook,
+  fetchLorebookForCharacter: (worldBookIds, userId) => fetchLorebookForCharacter(worldBookIds, userId),
+  hasActiveLorebookForCharacter,
+  getActiveLorebookByCharacter,
   setActiveCharacterImage: (chatId, url) => setActiveCharacterImage(chatId, url ?? ""),
   imageUrlFromId,
   backfillImageJournalIfMissing: (charId, avatarId, card, userId) => backfillImageJournalIfMissing(charId, avatarId, card, userId),
@@ -41206,6 +41379,7 @@ var lifecycleHandlers = createLifecycleEventHandlers({
   clearActiveAssetIndexes,
   clearActiveCharacterImage,
   clearActiveScriptstateDefaults,
+  clearActiveLorebook,
   clearVarOverlay,
   refreshBgHtml,
   refreshVariables,
@@ -41244,6 +41418,10 @@ spindle.on("CHAT_DELETED", userScoped(lifecycleHandlers.CHAT_DELETED));
 spindle.on("CHARACTER_DELETED", userScoped(lifecycleHandlers.CHARACTER_DELETED));
 spindle.on("CHARACTER_CREATED", userScoped(lifecycleHandlers.CHARACTER_CREATED));
 spindle.on("CHARACTER_EDITED", userScoped(lifecycleHandlers.CHARACTER_EDITED));
+spindle.on("WORLD_BOOK_CHANGED", userScoped(lifecycleHandlers.WORLD_BOOK_CHANGED));
+spindle.on("WORLD_BOOK_DELETED", userScoped(lifecycleHandlers.WORLD_BOOK_DELETED));
+spindle.on("WORLD_BOOK_ENTRY_CHANGED", userScoped(lifecycleHandlers.WORLD_BOOK_ENTRY_CHANGED));
+spindle.on("WORLD_BOOK_ENTRY_DELETED", userScoped(lifecycleHandlers.WORLD_BOOK_ENTRY_DELETED));
 var moduleUploadSessions = new Map;
 function moduleStorage() {
   return spindle.userStorage;

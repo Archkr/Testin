@@ -43,6 +43,7 @@ export function runPipeline(input: RunPipelineInput): string {
       ? { legacyMediaFindings: input.legacyMediaFindings }
       : {}),
     ...(input.modulesByNamespace ? { modulesByNamespace: input.modulesByNamespace } : {}),
+    ...(input.lorebook ? { lorebook: input.lorebook } : {}),
     ...(input.positionPt ? { positionPt: input.positionPt } : {}),
     ...(input.cbsContext ? { cbsContext: true } : {}),
     commit,

@@ -131,6 +131,7 @@ export interface BuildEvaluatorCtxInput {
   readonly commit: boolean;
   readonly legacyMediaFindings?: boolean;
   readonly modulesByNamespace?: Readonly<Record<string, readonly string[]>>;
+  readonly lorebook?: readonly LorebookEntry[];
   /** Per-chat `{{position::NAME}}` substitution map. See RisuRuntimeContext.positionPt. */
   readonly positionPt?: Readonly<Record<string, string>>;
   /** Risu cbs() call context. See RisuRuntimeContext.cbsContext. */
@@ -304,7 +305,7 @@ export function buildEvaluatorContext(input: BuildEvaluatorCtxInput): EvaluatorC
     image: card.image ?? "",
   };
 
-  const lorebook: readonly LorebookEntry[] = [];
+  const lorebook: readonly LorebookEntry[] = input.lorebook ?? [];
 
   const functions: FunctionRegistry = commit
     ? sessionFunctions
