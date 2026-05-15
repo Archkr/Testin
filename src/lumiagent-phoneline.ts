@@ -944,12 +944,55 @@ async function dispatchMutation(
   return { ok: false, error: 'unknown mutation op' };
 }
 
+export interface BridgeStatusBroadcast {
+  readonly offline: boolean;
+  readonly missingPermissions: readonly string[];
+  readonly forCaller?: string;
+}
+
+// Per-caller failure state, populated on inheritance-check failures at
+// envelope-read time and cleared on the next successful read from that
+// caller. Survives between calls so the banner reflects the last outcome.
+const lastDialFailure = new Map<string, readonly string[]>();
+
+function parseInheritanceError(message: string): readonly string[] | null {
+  // Host throws: 'Shared RPC endpoint "X" requires requester "R" to inherit
+  // owner "O" permissions: a, b, c'. We wrap that in 'could not read pending
+  // request from <id>: <innerMessage>' on rethrow but the substring we match
+  // on is preserved either way.
+  const m = /requires requester "[^"]+" to inherit owner "[^"]+" permissions: ([^]+?)$/.exec(message);
+  if (!m) return null;
+  const perms = m[1]!.split(/,\s*/).map((s) => s.trim()).filter((s) => s.length > 0);
+  return perms.length > 0 ? perms : null;
+}
+
+function buildBridgeBroadcast(): BridgeStatusBroadcast {
+  if (lastDialFailure.size === 0) {
+    return { offline: false, missingPermissions: [] };
+  }
+  // Aggregate across callers. If multiple bridges are failing, surface the
+  // union of missing perms and tag whichever caller failed most recently
+  // (the Map preserves insertion order, last set() wins).
+  const perms = new Set<string>();
+  let forCaller: string | undefined;
+  for (const [caller, missing] of lastDialFailure) {
+    forCaller = caller;
+    for (const p of missing) perms.add(p);
+  }
+  return {
+    offline: true,
+    missingPermissions: [...perms].sort(),
+    ...(forCaller ? { forCaller } : {}),
+  };
+}
+
 export function registerLumiagentPhoneline(
   spindle: SpindleAPI,
   moduleStorage: () => UserStorageLike,
   log: (msg: string) => void = () => {},
   onModuleEnvelopeWritten?: OnModuleEnvelopeWritten,
   mutations: MutationDeps = {},
+  notifyBridgeStatus: (payload: BridgeStatusBroadcast) => void = () => {},
 ): void {
   spindle.rpcPool.handle('lumirealm.phoneline', async (rctx) => {
     const requesterId = rctx.requesterExtensionId;
@@ -962,7 +1005,24 @@ export function registerLumiagentPhoneline(
     try {
       req = await spindle.rpcPool.read<PhoneLineRequest>(`${requesterId}.phoneline_request`);
     } catch (err) {
-      throw new Error(`could not read pending request from ${requesterId}: ${(err as Error).message}`);
+      const message = (err as Error).message;
+      // Confused-deputy defence in the host throws this shape when LumiRealm
+      // does not declare every permission the caller does. Record the failure
+      // for the banner and rethrow so the caller's dial fails as before.
+      const missing = parseInheritanceError(message);
+      if (missing) {
+        lastDialFailure.set(requesterId, missing);
+        log(`lumiagent-phoneline: bridge offline, LumiRealm missing perms the "${requesterId}" caller declares: [${missing.join(',')}]`);
+        try { notifyBridgeStatus(buildBridgeBroadcast()); } catch { /* */ }
+      }
+      throw new Error(`could not read pending request from ${requesterId}: ${message}`);
+    }
+    // Envelope read succeeded. Only push when this caller's prior dial had
+    // failed, so successful calls on a healthy bridge don't fan out a no-op
+    // notification per call.
+    if (lastDialFailure.delete(requesterId)) {
+      log(`lumiagent-phoneline: bridge restored for "${requesterId}"`);
+      try { notifyBridgeStatus(buildBridgeBroadcast()); } catch { /* */ }
     }
     if (!req || typeof req !== 'object') throw new Error('malformed request');
 

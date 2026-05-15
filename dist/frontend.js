@@ -15442,6 +15442,152 @@ function setupPermissionsModal(opts) {
   };
 }
 
+// src/ui/bridge-status-banner.ts
+var EXT_LABELS = {
+  lumiagent: "LumiAgent",
+  lumirealm: "LumiRealm"
+};
+function labelFor(id) {
+  if (!id)
+    return "extension";
+  return EXT_LABELS[id] ?? id;
+}
+function setupBridgeStatusBanner(opts) {
+  const { log } = opts;
+  let host = null;
+  let lastKey = null;
+  const dismissedKeys = new Set;
+  function clearBanner() {
+    if (host) {
+      try {
+        host.remove();
+      } catch {}
+      host = null;
+    }
+  }
+  function makePermChip(text) {
+    const chip = document.createElement("span");
+    chip.className = "lr-bridge-perm";
+    chip.textContent = text;
+    Object.assign(chip.style, {
+      display: "inline-block",
+      padding: "1px 6px",
+      margin: "0 1px",
+      background: "var(--lumiverse-surface-alt, rgba(147, 112, 219, 0.18))",
+      color: "var(--lumiverse-primary, #9370db)",
+      borderRadius: "3px",
+      fontFamily: "var(--lumiverse-mono, ui-monospace, SFMono-Regular, Menlo, monospace)",
+      fontSize: "0.9em",
+      fontWeight: "600"
+    });
+    return chip;
+  }
+  function renderBody(body, missing, missingSide, otherSide) {
+    body.textContent = "";
+    body.appendChild(document.createTextNode(`${missingSide} is missing the `));
+    if (missing.length === 1) {
+      body.appendChild(document.createTextNode("permission "));
+      body.appendChild(makePermChip(missing[0]));
+    } else {
+      body.appendChild(document.createTextNode("permissions "));
+      missing.forEach((p, i) => {
+        if (i > 0)
+          body.appendChild(document.createTextNode(", "));
+        body.appendChild(makePermChip(p));
+      });
+    }
+    body.appendChild(document.createTextNode(`, required for ${otherSide} communication. The agent integration will not work until this is granted in Lumiverse's extension panel.`));
+  }
+  function show(missing, forCaller) {
+    const missingSide = "LumiRealm";
+    const otherSide = labelFor(forCaller);
+    const key = `${otherSide}::${[...missing].sort().join(",")}`;
+    if (lastKey === key && host)
+      return;
+    lastKey = key;
+    if (dismissedKeys.has(key)) {
+      clearBanner();
+      return;
+    }
+    clearBanner();
+    try {
+      host = document.createElement("div");
+      host.className = "lr-bridge-banner";
+      Object.assign(host.style, {
+        position: "fixed",
+        right: "16px",
+        bottom: "16px",
+        maxWidth: "420px",
+        background: "var(--lumiverse-bg-elevated, #1a1a1a)",
+        color: "var(--lumiverse-text, #e5e5e5)",
+        border: "1px solid var(--lumiverse-border, #333)",
+        borderRadius: "6px",
+        padding: "12px 14px",
+        boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
+        fontSize: "13px",
+        lineHeight: "1.4",
+        zIndex: "9999"
+      });
+      const title = document.createElement("div");
+      title.textContent = `${otherSide} bridge offline`;
+      Object.assign(title.style, {
+        fontWeight: "600",
+        marginBottom: "6px",
+        color: "var(--lumiverse-warning, #f0a04b)"
+      });
+      host.appendChild(title);
+      const body = document.createElement("div");
+      renderBody(body, missing, missingSide, otherSide);
+      Object.assign(body.style, { marginBottom: "10px" });
+      host.appendChild(body);
+      const actions = document.createElement("div");
+      Object.assign(actions.style, {
+        display: "flex",
+        justifyContent: "flex-end",
+        gap: "8px"
+      });
+      const dismiss = document.createElement("button");
+      dismiss.type = "button";
+      dismiss.textContent = "Dismiss";
+      Object.assign(dismiss.style, {
+        background: "transparent",
+        color: "var(--lumiverse-text-secondary, #aaa)",
+        border: "1px solid var(--lumiverse-border, #333)",
+        borderRadius: "4px",
+        padding: "4px 10px",
+        cursor: "pointer",
+        fontSize: "12px"
+      });
+      dismiss.addEventListener("click", () => {
+        dismissedKeys.add(key);
+        clearBanner();
+      });
+      actions.appendChild(dismiss);
+      host.appendChild(actions);
+      document.body.appendChild(host);
+    } catch (err) {
+      log.warn("bridge-status-banner: render failed", err);
+      clearBanner();
+    }
+  }
+  return {
+    handleBackendMessage(msg) {
+      if (msg.type !== "notify_bridge_status")
+        return;
+      if (!msg.offline || msg.missingPermissions.length === 0) {
+        lastKey = null;
+        dismissedKeys.clear();
+        clearBanner();
+        return;
+      }
+      show(msg.missingPermissions, msg.forCaller ?? null);
+    },
+    destroy() {
+      clearBanner();
+    }
+  };
+}
+
 // src/log/frontend-capture.ts
 var CONSOLE_METHODS = ["log", "info", "warn", "error", "debug"];
 var consoleShimInstalled = false;
@@ -15917,6 +16063,8 @@ function setup(ctx) {
   cleanups.push(() => hostVersionModal.destroy());
   const permissionsModal = setupPermissionsModal({ ctx, sendToBackend, log: flog2 });
   cleanups.push(() => permissionsModal.destroy());
+  const bridgeBanner = setupBridgeStatusBanner({ ctx, log: flog2 });
+  cleanups.push(() => bridgeBanner.destroy());
   let realm = null;
   try {
     if (!sidebar)
@@ -16183,6 +16331,10 @@ function setup(ctx) {
     }
     if (msg.type === "notify_missing_permissions") {
       permissionsModal.handleBackendMessage(msg);
+      return;
+    }
+    if (msg.type === "notify_bridge_status") {
+      bridgeBanner.handleBackendMessage(msg);
       return;
     }
     if (isRealmBackendMessage(msg)) {

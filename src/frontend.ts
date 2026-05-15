@@ -20,6 +20,7 @@ import { setupPickModal } from './ui/pick-modal.js';
 import { setupLegacyReimportModal } from './ui/legacy-reimport-modal.js';
 import { setupHostVersionModal } from './ui/host-version-modal.js';
 import { setupPermissionsModal } from './ui/permissions-modal.js';
+import { setupBridgeStatusBanner } from './ui/bridge-status-banner.js';
 import { logStore, isLogThreshold, DEFAULT_LOG_LEVEL, type LogThreshold } from './log/store.js';
 import {
   installConsoleCapture,
@@ -361,6 +362,9 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   const permissionsModal = setupPermissionsModal({ ctx, sendToBackend, log: flog });
   cleanups.push(() => permissionsModal.destroy());
 
+  const bridgeBanner = setupBridgeStatusBanner({ ctx, log: flog });
+  cleanups.push(() => bridgeBanner.destroy());
+
   let realm: ReturnType<typeof setupRealmModal> | null = null;
   try {
     if (!sidebar) throw new Error('realm: sidebar required');
@@ -657,6 +661,10 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     }
     if (msg.type === 'notify_missing_permissions') {
       permissionsModal.handleBackendMessage(msg);
+      return;
+    }
+    if (msg.type === 'notify_bridge_status') {
+      bridgeBanner.handleBackendMessage(msg);
       return;
     }
     if (isRealmBackendMessage(msg)) {

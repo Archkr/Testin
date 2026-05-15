@@ -27943,7 +27943,15 @@ async function initPermissions(log2) {
     for (const p of list)
       granted.add(p);
     loaded = true;
-    log2.info(`permissions.init: granted=[${[...granted].join(",")}]`);
+    const initialMissing = computeMissing();
+    log2.info(`permissions.init: granted=[${[...granted].join(",")}] missing=[${initialMissing.join(",")}]`);
+    for (const fn of missingChangeListeners) {
+      try {
+        fn(initialMissing);
+      } catch (err) {
+        log2.warn(`permissions.init: listener threw: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
   } catch (err) {
     log2.warn(`permissions.init: getGranted failed: ${err instanceof Error ? err.message : String(err)}`);
     return;
@@ -37896,11 +37904,17 @@ function makeCaptureUserId(deps) {
     log: log8,
     errMsg: errMsg2
   } = deps;
+  const { notifyMissingPermsForUser } = deps;
   return (userId, where) => {
     if (!userId || capturedUserIds.has(userId))
       return;
     capturedUserIds.add(userId);
     log8.info(`captureUserId: bootstrap from ${where} userId=${userId}`);
+    try {
+      notifyMissingPermsForUser(userId);
+    } catch (err) {
+      log8.warn(`captureUserId: notifyMissingPermsForUser failed for user=${userId}: ${errMsg2(err)}`);
+    }
     getSettingsForUser(userId).catch((err) => {
       log8.warn(`captureUserId: settings preload failed for user=${userId}: ${errMsg2(err)}`);
     });
@@ -40277,7 +40291,32 @@ async function dispatchMutation(req, mutations) {
   }
   return { ok: false, error: "unknown mutation op" };
 }
-function registerLumiagentPhoneline(spindle2, moduleStorage, log8 = () => {}, onModuleEnvelopeWritten, mutations = {}) {
+var lastDialFailure = new Map;
+function parseInheritanceError(message) {
+  const m = /requires requester "[^"]+" to inherit owner "[^"]+" permissions: ([^]+?)$/.exec(message);
+  if (!m)
+    return null;
+  const perms = m[1].split(/,\s*/).map((s) => s.trim()).filter((s) => s.length > 0);
+  return perms.length > 0 ? perms : null;
+}
+function buildBridgeBroadcast() {
+  if (lastDialFailure.size === 0) {
+    return { offline: false, missingPermissions: [] };
+  }
+  const perms = new Set;
+  let forCaller;
+  for (const [caller, missing] of lastDialFailure) {
+    forCaller = caller;
+    for (const p of missing)
+      perms.add(p);
+  }
+  return {
+    offline: true,
+    missingPermissions: [...perms].sort(),
+    ...forCaller ? { forCaller } : {}
+  };
+}
+function registerLumiagentPhoneline(spindle2, moduleStorage, log8 = () => {}, onModuleEnvelopeWritten, mutations = {}, notifyBridgeStatus = () => {}) {
   spindle2.rpcPool.handle("lumirealm.phoneline", async (rctx) => {
     const requesterId = rctx.requesterExtensionId;
     if (!requesterId)
@@ -40290,7 +40329,22 @@ function registerLumiagentPhoneline(spindle2, moduleStorage, log8 = () => {}, on
     try {
       req = await spindle2.rpcPool.read(`${requesterId}.phoneline_request`);
     } catch (err) {
-      throw new Error(`could not read pending request from ${requesterId}: ${err.message}`);
+      const message = err.message;
+      const missing = parseInheritanceError(message);
+      if (missing) {
+        lastDialFailure.set(requesterId, missing);
+        log8(`lumiagent-phoneline: bridge offline, LumiRealm missing perms the "${requesterId}" caller declares: [${missing.join(",")}]`);
+        try {
+          notifyBridgeStatus(buildBridgeBroadcast());
+        } catch {}
+      }
+      throw new Error(`could not read pending request from ${requesterId}: ${message}`);
+    }
+    if (lastDialFailure.delete(requesterId)) {
+      log8(`lumiagent-phoneline: bridge restored for "${requesterId}"`);
+      try {
+        notifyBridgeStatus(buildBridgeBroadcast());
+      } catch {}
     }
     if (!req || typeof req !== "object")
       throw new Error("malformed request");
@@ -40409,6 +40463,44 @@ subscribeToMissingChanges((missing) => {
   } else {
     log8.info(`permissions.changed: all required perms granted, broadcast empty set to ${capturedUserIds.size} user(s) to auto-dismiss`);
   }
+});
+function broadcastBridgeStatus(payload) {
+  for (const userId of capturedUserIds) {
+    try {
+      spindle.sendToFrontend({ type: "notify_bridge_status", ...payload }, userId);
+    } catch (err) {
+      log8.warn(`bridge_status: sendToFrontend failed userId=${userId}: ${errMsg(err)}`);
+    }
+  }
+}
+async function probeLumiagentBridge() {
+  try {
+    await spindle.rpcPool.read("lumiagent.phoneline_probe");
+    return null;
+  } catch (err) {
+    const message = err.message;
+    const m = /requires requester "[^"]+" to inherit owner "[^"]+" permissions: ([^]+?)$/.exec(message);
+    if (!m)
+      return null;
+    const perms = m[1].split(/,\s*/).map((s) => s.trim()).filter((s) => s.length > 0);
+    return perms.length > 0 ? perms : null;
+  }
+}
+subscribeToMissingChanges(() => {
+  (async () => {
+    const missing = await probeLumiagentBridge();
+    if (missing && missing.length > 0) {
+      log8.warn(`permissions.changed: lumiagent bridge probe failed, LumiRealm missing=[${missing.join(",")}]`);
+      broadcastBridgeStatus({
+        offline: true,
+        missingPermissions: missing,
+        forCaller: "lumiagent"
+      });
+    } else {
+      log8.info(`permissions.changed: lumiagent bridge probe ok (or endpoint absent), clearing any banner`);
+      broadcastBridgeStatus({ offline: false, missingPermissions: [] });
+    }
+  })();
 });
 {
   const proc = globalThis.process;
@@ -40590,6 +40682,17 @@ var captureUserId = makeCaptureUserId({
   promptOrphanReviewIfAny,
   runMassModuleMigrationIfNeeded: (uid) => massMigrations.runMassModuleMigrationIfNeeded(uid),
   runMassCharacterMigrationIfNeeded: (uid) => massMigrations.runMassCharacterMigrationIfNeeded(uid),
+  notifyMissingPermsForUser: (userId) => {
+    const missing = getMissingPermissions();
+    const purposes = {};
+    for (const p of missing)
+      purposes[p] = PERMISSION_PURPOSE[p] ?? p;
+    try {
+      spindle.sendToFrontend({ type: "notify_missing_permissions", missing, purposes }, userId);
+    } catch (err) {
+      log8.warn(`captureUserId.notify: sendToFrontend failed userId=${userId}: ${errMsg(err)}`);
+    }
+  },
   log: log8,
   errMsg
 });
@@ -41019,7 +41122,7 @@ registerLumiagentPhoneline(spindle, moduleStorage, (msg) => spindle.log.info(msg
     invalidateActiveForCharacter(characterId, userId);
     return { ok: true };
   }
-});
+}, broadcastBridgeStatus);
 var moduleUploader = createModuleUploader({
   decodeRisum,
   parseSchema: (data) => risuModuleSchema.safeParse(data),

@@ -4,6 +4,10 @@ export interface CaptureUserIdDeps {
   readonly promptOrphanReviewIfAny: (userId: string) => Promise<void>;
   readonly runMassModuleMigrationIfNeeded: (userId: string) => Promise<void>;
   readonly runMassCharacterMigrationIfNeeded: (userId: string) => Promise<void>;
+  // Sends the initial missing-permissions notification to the newly captured
+  // user. Without this, a user who connects after permissions finish loading
+  // never sees the modal until perms change at runtime.
+  readonly notifyMissingPermsForUser: (userId: string) => void;
   readonly log: { readonly info: (m: string) => void; readonly warn: (m: string) => void };
   readonly errMsg: (e: unknown) => string;
 }
@@ -22,10 +26,14 @@ export function makeCaptureUserId(deps: CaptureUserIdDeps): (userId: string | un
     errMsg,
   } = deps;
 
+  const { notifyMissingPermsForUser } = deps;
   return (userId, where) => {
     if (!userId || capturedUserIds.has(userId)) return;
     capturedUserIds.add(userId);
     log.info(`captureUserId: bootstrap from ${where} userId=${userId}`);
+    try { notifyMissingPermsForUser(userId); } catch (err) {
+      log.warn(`captureUserId: notifyMissingPermsForUser failed for user=${userId}: ${errMsg(err)}`);
+    }
     void getSettingsForUser(userId).catch((err) => {
       log.warn(`captureUserId: settings preload failed for user=${userId}: ${errMsg(err)}`);
     });

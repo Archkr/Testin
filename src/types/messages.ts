@@ -463,6 +463,15 @@ export type BackendToFrontend =
       missing: readonly string[];
       purposes: Readonly<Record<string, string>>;
     }
+  // Inbound phoneline dial failed the host inheritance check. Driven by
+  // observed dial outcomes, not declared-perm state. FE shows a dismissible
+  // banner. `forCaller` names the calling extension whose bridge is failing.
+  | {
+      type: 'notify_bridge_status';
+      offline: boolean;
+      missingPermissions: readonly string[];
+      forCaller?: string;
+    }
   // `risuPayload.background_html` resolved per state tick. FE pipes through Risu-compat
   // rewriter (HTML class prefix + CSS `.chattext` scope + `:host` universals) and paints
   // into a Shadow-DOM host.

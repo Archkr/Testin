@@ -278,6 +278,57 @@ subscribeToMissingChanges((missing) => {
   }
 });
 
+function broadcastBridgeStatus(payload: {
+  offline: boolean;
+  missingPermissions: readonly string[];
+  forCaller?: string;
+}): void {
+  for (const userId of capturedUserIds) {
+    try {
+      spindle.sendToFrontend({ type: 'notify_bridge_status', ...payload }, userId);
+    } catch (err) {
+      log.warn(`bridge_status: sendToFrontend failed userId=${userId}: ${errMsg(err)}`);
+    }
+  }
+}
+
+// Probes lumiagent.phoneline_probe and returns the parsed missing-perms list
+// when the host inheritance check rejects. Returns null on success or when
+// the endpoint is not registered (LumiAgent absent), so the caller does not
+// fire a banner in those cases.
+async function probeLumiagentBridge(): Promise<readonly string[] | null> {
+  try {
+    await spindle.rpcPool.read('lumiagent.phoneline_probe');
+    return null;
+  } catch (err) {
+    const message = (err as Error).message;
+    const m = /requires requester "[^"]+" to inherit owner "[^"]+" permissions: ([^]+?)$/.exec(message);
+    if (!m) return null;
+    const perms = m[1]!.split(/,\s*/).map((s) => s.trim()).filter((s) => s.length > 0);
+    return perms.length > 0 ? perms : null;
+  }
+}
+
+// On any permission change in this extension, probe the LumiAgent bridge to
+// surface a banner immediately rather than waiting for LumiAgent to dial in.
+// Symmetric to LumiAgent's own re-dial-on-perm-change behaviour.
+subscribeToMissingChanges(() => {
+  void (async () => {
+    const missing = await probeLumiagentBridge();
+    if (missing && missing.length > 0) {
+      log.warn(`permissions.changed: lumiagent bridge probe failed, LumiRealm missing=[${missing.join(',')}]`);
+      broadcastBridgeStatus({
+        offline: true,
+        missingPermissions: missing,
+        forCaller: 'lumiagent',
+      });
+    } else {
+      log.info(`permissions.changed: lumiagent bridge probe ok (or endpoint absent), clearing any banner`);
+      broadcastBridgeStatus({ offline: false, missingPermissions: [] });
+    }
+  })();
+});
+
 // Without this guard any rejection from a card's Lua bridge call kills the worker.
 {
   const proc: { on?: (ev: string, cb: (...a: unknown[]) => void) => void } | undefined =
@@ -491,6 +542,16 @@ const captureUserId = makeCaptureUserId({
   // Trampolines: massMigrations is declared further down, this closure resolves it at call time.
   runMassModuleMigrationIfNeeded: (uid) => massMigrations.runMassModuleMigrationIfNeeded(uid),
   runMassCharacterMigrationIfNeeded: (uid) => massMigrations.runMassCharacterMigrationIfNeeded(uid),
+  notifyMissingPermsForUser: (userId) => {
+    const missing = getMissingPermissions();
+    const purposes: Record<string, string> = {};
+    for (const p of missing) purposes[p] = PERMISSION_PURPOSE[p] ?? p;
+    try {
+      spindle.sendToFrontend({ type: 'notify_missing_permissions', missing, purposes }, userId);
+    } catch (err) {
+      log.warn(`captureUserId.notify: sendToFrontend failed userId=${userId}: ${errMsg(err)}`);
+    }
+  },
   log,
   errMsg,
 });
@@ -1064,6 +1125,7 @@ registerLumiagentPhoneline(
       return { ok: true };
     },
   },
+  broadcastBridgeStatus,
 );
 
 const moduleUploader = createModuleUploader({
