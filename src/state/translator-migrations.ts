@@ -450,6 +450,40 @@ async function applyV8RetranslateUserBgHtml(
   };
 }
 
+async function applyV12RecoverMissingRegex(
+  args: CharacterMigrationStepArgs,
+  deps: MigrationDeps,
+): Promise<CharacterMigrationStepResult> {
+  // Migration's install_regex_scripts is a fire-and-forget send. When it never
+  // lands (FE not mounted during a boot/capture mass sweep) the version is
+  // still stamped CURRENT, so the card sits with zero Risu rows and is never
+  // retried. This step is idempotent: it reinstalls ONLY when the live rowset
+  // is empty, so cards that migrated correctly are a pure no-op (no write, no
+  // install, user disable/edit state untouched).
+  if (!deps.applyCharacterRegexReplaceStringTransform) {
+    return applyV7ReinstallRegex(args, deps);
+  }
+  const probe = await deps.applyCharacterRegexReplaceStringTransform(
+    args.characterId,
+    args.userId,
+    (s) => s,
+  );
+  if (probe === null) {
+    return applyV7ReinstallRegex(args, deps);
+  }
+  if (probe.scanned === 0) {
+    deps.log.warn(
+      `migrate(${args.characterId}) v12: 0 Risu regex rows present, reinstalling from translator output`,
+    );
+    const res = await applyV7ReinstallRegex(args, deps);
+    return { nextEnvelope: res.nextEnvelope, notes: ['empty-rowset recovery', ...res.notes] };
+  }
+  return {
+    nextEnvelope: args.envelope,
+    notes: [`rows present (scanned=${probe.scanned}), reinstall skipped`],
+  };
+}
+
 export const CHARACTER_MIGRATIONS: readonly CharacterMigrationStep[] = [
   {
     version: 5,
@@ -504,6 +538,13 @@ export const CHARACTER_MIGRATIONS: readonly CharacterMigrationStep[] = [
       'Patch placement on Risu editprocess rows to drop world_info (chat-history-only parity); disable Risu edittrans rows (no Lumi translation pipeline).',
     touches: ['regex_scripts'],
     apply: applyV11FixPhaseMapPlacement,
+  },
+  {
+    version: 12,
+    description:
+      'Idempotent recovery: reinstall regex_scripts only when the live character rowset is empty (fire-and-forget install never landed). No-op when rows already present.',
+    touches: ['regex_scripts'],
+    apply: applyV12RecoverMissingRegex,
   },
 ];
 
