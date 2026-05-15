@@ -175,6 +175,67 @@ export function setupMessagePortal(ctx: SpindleFrontendContext, flog: Flog): Mes
   }
   const overlayRoot = overlayHandle.root;
 
+  // Body-level overlay, placement unchanged, no React-tree contact. Clip
+  // its painted output to chat-minus-drawer via clip-path: clip-path clips
+  // the whole subtree including position:fixed clones (overflow does not)
+  // and creates no containing block, so clone coordinates are unchanged.
+  // pointer-events none keeps empty area click-through, wrappers re-enable.
+  Object.assign(overlayRoot.style, {
+    position: "fixed",
+    inset: "0",
+    pointerEvents: "none",
+    margin: "0",
+    padding: "0",
+  });
+  // Drawer rail carries data-spindle-mount=sidebar. Its nearest fixed
+  // ancestor is the drawer wrapper, found structurally since class names
+  // are hashed.
+  const DRAWER_ANCHOR_SELECTOR = '[data-spindle-mount="sidebar"]';
+  function syncClip(): void {
+    const chatView = document.querySelector('[data-component="ChatView"]');
+    if (!chatView) {
+      // No chat pane: no clip (worst case equals current baseline).
+      overlayRoot.style.clipPath = "";
+      return;
+    }
+    const c = chatView.getBoundingClientRect();
+    let left = Math.max(0, c.left);
+    let right = Math.min(window.innerWidth, c.right);
+    const top = Math.max(0, c.top);
+    const bottom = Math.min(window.innerHeight, c.bottom);
+
+    const anchor = document.querySelector(DRAWER_ANCHOR_SELECTOR);
+    let el: HTMLElement | null = anchor as HTMLElement | null;
+    let wrapper: HTMLElement | null = null;
+    while (el && el !== document.body) {
+      if (window.getComputedStyle(el).position === "fixed") { wrapper = el; break; }
+      el = el.parentElement;
+    }
+    if (wrapper) {
+      const d = wrapper.getBoundingClientRect();
+      const dl = Math.max(0, d.left);
+      const dr = Math.min(window.innerWidth, d.right);
+      // Only subtract when the drawer strip actually overlaps the chat band.
+      if (dr > dl && d.bottom > top && d.top < bottom) {
+        const chatMid = (c.left + c.right) / 2;
+        if (dl <= chatMid) left = Math.max(left, dr); // left-docked
+        else right = Math.min(right, dl);             // right-docked
+      }
+    }
+
+    if (right <= left || bottom <= top) {
+      // Degenerate region (e.g. drawer fully covers chat): hide the clones.
+      overlayRoot.style.clipPath = "inset(50% 50% 50% 50%)";
+      return;
+    }
+    const t = Math.round(top);
+    const r = Math.round(window.innerWidth - right);
+    const b = Math.round(window.innerHeight - bottom);
+    const l = Math.round(left);
+    overlayRoot.style.clipPath = `inset(${t}px ${r}px ${b}px ${l}px)`;
+  }
+  syncClip();
+
   const lifted = new Map<string, LiftedRecord>();
 
   // Source-hiding moved to hide-panel-css.ts. The lifter publishes class
@@ -455,6 +516,9 @@ export function setupMessagePortal(ctx: SpindleFrontendContext, flog: Flog): Mes
 
   function sweep(reason: string): void {
     const t0 = performance.now();
+    // Re-clip to chat-minus-drawer. Runs inside the existing sweep, no
+    // extra observer or timer.
+    syncClip();
     // Catch up wrapper adopted-sheets every sweep. Reason-gating doesn't
     // work because scheduleSweep coalesces reasons last-write-wins.
     const resynced = lifted.size > 0 ? resyncWrapperAdoptedSheets() : 0;
@@ -557,6 +621,9 @@ export function setupMessagePortal(ctx: SpindleFrontendContext, flog: Flog): Mes
 
           const wrapper = document.createElement("div");
           wrapper.className = PORTAL_WRAPPER_CLASS;
+          // Overlay root is pointer-events none, re-enable on the wrapper so
+          // lifted widgets stay clickable.
+          wrapper.style.pointerEvents = "auto";
           if (msgId) wrapper.setAttribute("data-message-id", msgId);
 
           if (sourceShadow) {

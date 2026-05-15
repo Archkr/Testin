@@ -12312,47 +12312,82 @@ var KEY_DELIMITER = "\x1F";
 var SWEEP_THROTTLE_MS = 50;
 var CLEANUP_GRACE_MS = 100;
 function setupMessagePortal(ctx, flog2) {
-  const overlayRoot = document.createElement("div");
-  overlayRoot.className = "lumi-message-portal-root";
-  document.body.appendChild(overlayRoot);
-  const overlayHandle = {
-    destroy: () => {
+  let overlayHandle;
+  try {
+    const handle = ctx.ui.mountApp({ position: "end", className: "lumi-message-portal-root" });
+    overlayHandle = {
+      root: handle.root,
+      destroy: () => {
+        try {
+          handle.destroy();
+        } catch {}
+      }
+    };
+    flog2.info("message-portal: mountApp acquired overlay root");
+  } catch (err) {
+    flog2.warn("message-portal: mountApp failed; using document.body fallback", err);
+    const root = document.createElement("div");
+    root.className = "lumi-message-portal-root";
+    document.body.appendChild(root);
+    overlayHandle = { root, destroy: () => {
       try {
-        overlayRoot.remove();
+        root.remove();
       } catch {}
-    }
-  };
-  const OVERLAY_Z = "100";
+    } };
+  }
+  const overlayRoot = overlayHandle.root;
   Object.assign(overlayRoot.style, {
     position: "fixed",
     inset: "0",
-    zIndex: OVERLAY_Z,
     pointerEvents: "none",
     margin: "0",
     padding: "0"
   });
-  let appShell = null;
-  function ensureHomed() {
-    if (appShell && overlayRoot.parentElement === appShell)
+  const DRAWER_ANCHOR_SELECTOR = '[data-spindle-mount="sidebar"]';
+  function syncClip() {
+    const chatView = document.querySelector('[data-component="ChatView"]');
+    if (!chatView) {
+      overlayRoot.style.clipPath = "";
       return;
-    if (!appShell) {
-      const anchor = document.querySelector('[data-component="ChatView"]');
-      let el = anchor;
-      while (el && el !== document.body) {
-        if (window.getComputedStyle(el).isolation === "isolate") {
-          appShell = el;
-          break;
-        }
-        el = el.parentElement;
+    }
+    const c = chatView.getBoundingClientRect();
+    let left = Math.max(0, c.left);
+    let right = Math.min(window.innerWidth, c.right);
+    const top = Math.max(0, c.top);
+    const bottom = Math.min(window.innerHeight, c.bottom);
+    const anchor = document.querySelector(DRAWER_ANCHOR_SELECTOR);
+    let el = anchor;
+    let wrapper = null;
+    while (el && el !== document.body) {
+      if (window.getComputedStyle(el).position === "fixed") {
+        wrapper = el;
+        break;
+      }
+      el = el.parentElement;
+    }
+    if (wrapper) {
+      const d = wrapper.getBoundingClientRect();
+      const dl = Math.max(0, d.left);
+      const dr = Math.min(window.innerWidth, d.right);
+      if (dr > dl && d.bottom > top && d.top < bottom) {
+        const chatMid = (c.left + c.right) / 2;
+        if (dl <= chatMid)
+          left = Math.max(left, dr);
+        else
+          right = Math.min(right, dl);
       }
     }
-    if (appShell && overlayRoot.parentElement !== appShell) {
-      try {
-        appShell.appendChild(overlayRoot);
-      } catch {}
+    if (right <= left || bottom <= top) {
+      overlayRoot.style.clipPath = "inset(50% 50% 50% 50%)";
+      return;
     }
+    const t = Math.round(top);
+    const r = Math.round(window.innerWidth - right);
+    const b = Math.round(window.innerHeight - bottom);
+    const l = Math.round(left);
+    overlayRoot.style.clipPath = `inset(${t}px ${r}px ${b}px ${l}px)`;
   }
-  ensureHomed();
+  syncClip();
   const lifted = new Map;
   let throttleTimer = null;
   let pendingReason = null;
@@ -12516,7 +12551,7 @@ function setupMessagePortal(ctx, flog2) {
   }
   function sweep(reason) {
     const t0 = performance.now();
-    ensureHomed();
+    syncClip();
     const resynced = lifted.size > 0 ? resyncWrapperAdoptedSheets() : 0;
     let walked = 0;
     let groupsLifted = 0;
