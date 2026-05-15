@@ -17,6 +17,10 @@ export interface ModuleMigrationDeps {
     moduleId: string,
     transform: (replaceString: string) => string,
   ) => Promise<{ scanned: number; updated: number; failed: number } | null>;
+  applyModuleRegexRowPatch?: (
+    moduleId: string,
+    patch: (row: Readonly<Record<string, unknown>>) => Record<string, unknown> | null,
+  ) => Promise<{ scanned: number; updated: number; failed: number } | null>;
   writeEnvelope: (env: ModuleEnvelope) => Promise<void>;
   log: {
     info: (s: string) => void;
@@ -119,6 +123,66 @@ async function applyV6StripStylePrefixInPlace(
   };
 }
 
+async function applyV7FixPhaseMapPlacement(
+  args: ModuleMigrationStepArgs,
+  deps: ModuleMigrationDeps,
+): Promise<ModuleMigrationStepResult> {
+  // editprocess: drop world_info (Risu chat-history-only scope). edittrans:
+  // disable (no Lumi translation pipeline). editdisplay: add user_input
+  // placement (the pre-fix module mapping was ai_output-only, but Risu runs
+  // editdisplay on every rendered message regardless of role).
+  if (!deps.applyModuleRegexRowPatch) {
+    deps.log.warn(
+      `migrate-module(${args.env.id}) v7: row-patch unavailable, falling back to wholesale refresh (user disable/edit state will be lost)`,
+    );
+    return applyV5RefreshAttachedRegex(args, deps);
+  }
+  const result = await deps.applyModuleRegexRowPatch(args.env.id, (row) => {
+    const meta = row['metadata'] as { _risu?: { source_type?: unknown } } | undefined;
+    const phase = meta?._risu?.source_type;
+    if (typeof phase !== 'string') return null;
+    if (phase === 'editprocess') {
+      const placement = row['placement'];
+      if (!Array.isArray(placement)) return null;
+      if (!placement.includes('world_info')) return null;
+      const next = (placement as string[]).filter((p) => p !== 'world_info');
+      return { placement: next };
+    }
+    if (phase === 'edittrans') {
+      const alreadyDisabled = row['disabled'] === true || row['disabled'] === 1;
+      const alreadyDisplay = row['target'] === 'display';
+      if (alreadyDisabled && alreadyDisplay) return null;
+      return {
+        disabled: true,
+        target: 'display',
+        placement: ['ai_output', 'user_input'],
+      };
+    }
+    if (phase === 'editdisplay' || phase === 'disabled') {
+      const placement = row['placement'];
+      if (!Array.isArray(placement)) return null;
+      if (placement.includes('user_input')) return null;
+      const next = [...(placement as string[]), 'user_input'];
+      return { placement: next };
+    }
+    return null;
+  });
+  if (result === null) {
+    deps.log.warn(
+      `migrate-module(${args.env.id}) v7: row-patch returned null, falling back to wholesale refresh`,
+    );
+    return applyV5RefreshAttachedRegex(args, deps);
+  }
+  return {
+    nextEnv: args.env,
+    notes: [
+      `scanned=${result.scanned}`,
+      `updated=${result.updated}`,
+      `failed=${result.failed}`,
+    ],
+  };
+}
+
 export const MODULE_MIGRATIONS: readonly ModuleMigrationStep[] = [
   {
     version: 5,
@@ -133,6 +197,13 @@ export const MODULE_MIGRATIONS: readonly ModuleMigrationStep[] = [
       'Strip x-risu- from CSS selectors inside <style> blocks of module-installed regex replace_string content. In-place per row, preserves user disable + edits.',
     touches: ['regex_scripts_attached_chars'],
     apply: applyV6StripStylePrefixInPlace,
+  },
+  {
+    version: 7,
+    description:
+      'Patch placement on Risu editprocess rows (drop world_info), disable Risu edittrans rows, add user_input placement to editdisplay rows.',
+    touches: ['regex_scripts_attached_chars'],
+    apply: applyV7FixPhaseMapPlacement,
   },
 ];
 

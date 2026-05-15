@@ -123,6 +123,46 @@ async function applyRegexReplaceStringTransform(
   return { scanned, updated, failed };
 }
 
+// Generic multi-field row patch. Returns null when host lacks the update API.
+async function applyRegexRowPatch(
+  predicate: (row: Record<string, unknown>) => boolean,
+  userId: string,
+  patch: (row: Readonly<Record<string, unknown>>) => Record<string, unknown> | null,
+  log: { warn: (s: string) => void },
+  errMsg: (e: unknown) => string,
+): Promise<{ scanned: number; updated: number; failed: number } | null> {
+  const api = getRegexScriptsApi();
+  if (!api?.list || !api.update) return null;
+  const PAGE_SIZE = 200;
+  let scanned = 0;
+  let updated = 0;
+  let failed = 0;
+  let offset = 0;
+  while (true) {
+    const page = await api.list({ userId, limit: PAGE_SIZE, offset });
+    if (!Array.isArray(page.data) || page.data.length === 0) break;
+    for (const r of page.data) {
+      const row = r as Record<string, unknown>;
+      if (!predicate(row)) continue;
+      scanned += 1;
+      const id = typeof row['id'] === 'string' ? (row['id'] as string) : null;
+      if (!id) continue;
+      const fields = patch(row);
+      if (fields === null) continue;
+      try {
+        await api.update(id, fields as never, userId);
+        updated += 1;
+      } catch (err) {
+        failed += 1;
+        log.warn(`applyRegexRowPatch: update id=${id} failed: ${errMsg(err)}`);
+      }
+    }
+    offset += page.data.length;
+    if (typeof page.total === 'number' && offset >= page.total) break;
+  }
+  return { scanned, updated, failed };
+}
+
 function isCharacterScopedRow(characterId: string, row: Record<string, unknown>): boolean {
   if (row['scope'] !== 'character') return false;
   if (row['scope_id'] !== characterId) return false;
@@ -266,6 +306,15 @@ export function createMigrationsRunner(deps: MigrationsFactoryDeps): MigrationsR
           errMsg,
         );
       },
+      applyCharacterRegexRowPatch: async (charId, uid, patch) => {
+        return applyRegexRowPatch(
+          (row) => isCharacterScopedRow(charId, row),
+          uid,
+          patch,
+          log,
+          errMsg,
+        );
+      },
     };
     const result = await migrateCharacterIfNeeded(
       { characterId, characterName, userId, envelope },
@@ -335,6 +384,15 @@ export function createMigrationsRunner(deps: MigrationsFactoryDeps): MigrationsR
           (row) => isModuleRowFor(mid, row),
           userId,
           transform,
+          log,
+          errMsg,
+        );
+      },
+      applyModuleRegexRowPatch: async (mid, patch) => {
+        return applyRegexRowPatch(
+          (row) => isModuleRowFor(mid, row),
+          userId,
+          patch,
           log,
           errMsg,
         );

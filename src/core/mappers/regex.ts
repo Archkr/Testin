@@ -381,11 +381,16 @@ interface PhaseMapEntry {
 }
 
 const RISU_PHASE_MAP: Readonly<Record<string, PhaseMapEntry>> = {
+  // Risu runs on user-input regex at send-time; Lumi has no message-create
+  // hook so we approximate by patching the trailing user message at assembly.
   editinput: { placement: ["user_input"], target: "prompt", disabled: false, maxDepth: 0 },
-  editprocess: { placement: ["user_input", "ai_output", "world_info"], target: "prompt", disabled: false },
+  // Risu chat-history loop only. NOT world_info / desc / jailbreak / authornote.
+  editprocess: { placement: ["user_input", "ai_output"], target: "prompt", disabled: false },
   editoutput: { placement: ["ai_output"], target: "response", disabled: false },
+  // Risu runs on every rendered message regardless of role.
   editdisplay: { placement: ["ai_output", "user_input"], target: "display", disabled: false },
-  edittrans: { placement: ["ai_output"], target: "response", disabled: false },
+  // Risu runs after translation. Lumi has no equivalent pipeline so stash disabled.
+  edittrans: { placement: ["ai_output", "user_input"], target: "display", disabled: true },
   disabled: { placement: ["ai_output", "user_input"], target: "display", disabled: true },
 };
 

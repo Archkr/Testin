@@ -22218,10 +22218,10 @@ $2`,
 }
 var RISU_PHASE_MAP = {
   editinput: { placement: ["user_input"], target: "prompt", disabled: false, maxDepth: 0 },
-  editprocess: { placement: ["user_input", "ai_output", "world_info"], target: "prompt", disabled: false },
+  editprocess: { placement: ["user_input", "ai_output"], target: "prompt", disabled: false },
   editoutput: { placement: ["ai_output"], target: "response", disabled: false },
   editdisplay: { placement: ["ai_output", "user_input"], target: "display", disabled: false },
-  edittrans: { placement: ["ai_output"], target: "response", disabled: false },
+  edittrans: { placement: ["ai_output", "user_input"], target: "display", disabled: true },
   disabled: { placement: ["ai_output", "user_input"], target: "display", disabled: true }
 };
 var UNKNOWN_PHASE_FALLBACK = {
@@ -25978,6 +25978,51 @@ async function applyV9StripStylePrefixInPlace(args, deps) {
     ]
   };
 }
+async function applyV11FixPhaseMapPlacement(args, deps) {
+  if (!deps.applyCharacterRegexRowPatch) {
+    deps.log.warn(`migrate(${args.characterId}) v11: regex_scripts row-patch unavailable, falling back to wholesale reinstall (user disable/edit state will be lost)`);
+    return applyV7ReinstallRegex(args, deps);
+  }
+  const result = await deps.applyCharacterRegexRowPatch(args.characterId, args.userId, (row) => {
+    const meta = row["metadata"];
+    const phase = meta?._risu?.phase;
+    if (typeof phase !== "string")
+      return null;
+    if (phase === "editprocess") {
+      const placement = row["placement"];
+      if (!Array.isArray(placement))
+        return null;
+      if (!placement.includes("world_info"))
+        return null;
+      const next = placement.filter((p) => p !== "world_info");
+      return { placement: next };
+    }
+    if (phase === "edittrans") {
+      const alreadyDisabled = row["disabled"] === true || row["disabled"] === 1;
+      const alreadyDisplay = row["target"] === "display";
+      if (alreadyDisabled && alreadyDisplay)
+        return null;
+      return {
+        disabled: true,
+        target: "display",
+        placement: ["ai_output", "user_input"]
+      };
+    }
+    return null;
+  });
+  if (result === null) {
+    deps.log.warn(`migrate(${args.characterId}) v11: row-patch dep returned null, falling back to wholesale reinstall`);
+    return applyV7ReinstallRegex(args, deps);
+  }
+  return {
+    nextEnvelope: args.envelope,
+    notes: [
+      `scanned=${result.scanned}`,
+      `updated=${result.updated}`,
+      `failed=${result.failed}`
+    ]
+  };
+}
 async function applyV10SeedBgHtmlSource(args, _deps) {
   const existing = args.envelope.payload.background_html_source;
   if (typeof existing === "string") {
@@ -26063,6 +26108,12 @@ var CHARACTER_MIGRATIONS = [
     description: "Seed payload.background_html_source from payload.background_html on existing envelopes. The agent's authoring surface is now always present, not lazily created on first edit.",
     touches: ["payload.background_html"],
     apply: applyV10SeedBgHtmlSource
+  },
+  {
+    version: 11,
+    description: "Patch placement on Risu editprocess rows to drop world_info (chat-history-only parity); disable Risu edittrans rows (no Lumi translation pipeline).",
+    touches: ["regex_scripts"],
+    apply: applyV11FixPhaseMapPlacement
   }
 ];
 var CURRENT_CHARACTER_SCHEMA_VERSION = CHARACTER_MIGRATIONS.length > 0 ? Math.max(...CHARACTER_MIGRATIONS.map((m) => m.version)) : 1;
@@ -26180,6 +26231,60 @@ async function applyV6StripStylePrefixInPlace(args, deps) {
     ]
   };
 }
+async function applyV7FixPhaseMapPlacement(args, deps) {
+  if (!deps.applyModuleRegexRowPatch) {
+    deps.log.warn(`migrate-module(${args.env.id}) v7: row-patch unavailable, falling back to wholesale refresh (user disable/edit state will be lost)`);
+    return applyV5RefreshAttachedRegex(args, deps);
+  }
+  const result = await deps.applyModuleRegexRowPatch(args.env.id, (row) => {
+    const meta = row["metadata"];
+    const phase = meta?._risu?.source_type;
+    if (typeof phase !== "string")
+      return null;
+    if (phase === "editprocess") {
+      const placement = row["placement"];
+      if (!Array.isArray(placement))
+        return null;
+      if (!placement.includes("world_info"))
+        return null;
+      const next = placement.filter((p) => p !== "world_info");
+      return { placement: next };
+    }
+    if (phase === "edittrans") {
+      const alreadyDisabled = row["disabled"] === true || row["disabled"] === 1;
+      const alreadyDisplay = row["target"] === "display";
+      if (alreadyDisabled && alreadyDisplay)
+        return null;
+      return {
+        disabled: true,
+        target: "display",
+        placement: ["ai_output", "user_input"]
+      };
+    }
+    if (phase === "editdisplay" || phase === "disabled") {
+      const placement = row["placement"];
+      if (!Array.isArray(placement))
+        return null;
+      if (placement.includes("user_input"))
+        return null;
+      const next = [...placement, "user_input"];
+      return { placement: next };
+    }
+    return null;
+  });
+  if (result === null) {
+    deps.log.warn(`migrate-module(${args.env.id}) v7: row-patch returned null, falling back to wholesale refresh`);
+    return applyV5RefreshAttachedRegex(args, deps);
+  }
+  return {
+    nextEnv: args.env,
+    notes: [
+      `scanned=${result.scanned}`,
+      `updated=${result.updated}`,
+      `failed=${result.failed}`
+    ]
+  };
+}
 var MODULE_MIGRATIONS = [
   {
     version: 5,
@@ -26192,6 +26297,12 @@ var MODULE_MIGRATIONS = [
     description: "Strip x-risu- from CSS selectors inside <style> blocks of module-installed regex replace_string content. In-place per row, preserves user disable + edits.",
     touches: ["regex_scripts_attached_chars"],
     apply: applyV6StripStylePrefixInPlace
+  },
+  {
+    version: 7,
+    description: "Patch placement on Risu editprocess rows (drop world_info), disable Risu edittrans rows, add user_input placement to editdisplay rows.",
+    touches: ["regex_scripts_attached_chars"],
+    apply: applyV7FixPhaseMapPlacement
   }
 ];
 var CURRENT_MODULE_SCHEMA_VERSION = MODULE_MIGRATIONS.length > 0 ? Math.max(...MODULE_MIGRATIONS.map((m) => m.version)) : 4;
@@ -36527,6 +36638,44 @@ async function applyRegexReplaceStringTransform(predicate, userId, transform, lo
   }
   return { scanned, updated, failed };
 }
+async function applyRegexRowPatch(predicate, userId, patch, log8, errMsg2) {
+  const api = getRegexScriptsApi();
+  if (!api?.list || !api.update)
+    return null;
+  const PAGE_SIZE2 = 200;
+  let scanned = 0;
+  let updated = 0;
+  let failed = 0;
+  let offset = 0;
+  while (true) {
+    const page = await api.list({ userId, limit: PAGE_SIZE2, offset });
+    if (!Array.isArray(page.data) || page.data.length === 0)
+      break;
+    for (const r of page.data) {
+      const row = r;
+      if (!predicate(row))
+        continue;
+      scanned += 1;
+      const id = typeof row["id"] === "string" ? row["id"] : null;
+      if (!id)
+        continue;
+      const fields = patch(row);
+      if (fields === null)
+        continue;
+      try {
+        await api.update(id, fields, userId);
+        updated += 1;
+      } catch (err) {
+        failed += 1;
+        log8.warn(`applyRegexRowPatch: update id=${id} failed: ${errMsg2(err)}`);
+      }
+    }
+    offset += page.data.length;
+    if (typeof page.total === "number" && offset >= page.total)
+      break;
+  }
+  return { scanned, updated, failed };
+}
 function isCharacterScopedRow(characterId, row) {
   if (row["scope"] !== "character")
     return false;
@@ -36653,6 +36802,9 @@ function createMigrationsRunner(deps) {
       },
       applyCharacterRegexReplaceStringTransform: async (charId, uid, transform) => {
         return applyRegexReplaceStringTransform((row) => isCharacterScopedRow(charId, row), uid, transform, log8, errMsg2);
+      },
+      applyCharacterRegexRowPatch: async (charId, uid, patch) => {
+        return applyRegexRowPatch((row) => isCharacterScopedRow(charId, row), uid, patch, log8, errMsg2);
       }
     };
     const result = await migrateCharacterIfNeeded({ characterId, characterName, userId, envelope }, migrationDeps);
@@ -36706,6 +36858,9 @@ function createMigrationsRunner(deps) {
       },
       applyModuleRegexReplaceStringTransform: async (mid, transform) => {
         return applyRegexReplaceStringTransform((row) => isModuleRowFor(mid, row), userId, transform, log8, errMsg2);
+      },
+      applyModuleRegexRowPatch: async (mid, patch) => {
+        return applyRegexRowPatch((row) => isModuleRowFor(mid, row), userId, patch, log8, errMsg2);
       },
       refreshArtifactsForAttached: async (mid) => {
         const charIds = await charactersAttachedTo(mid, userId);
@@ -38223,19 +38378,19 @@ function riskCustomScriptTypeToLumi(t) {
       return { placement: ["user_input"], target: "prompt", disabled: false };
     case "editprocess":
       return {
-        placement: ["user_input", "ai_output", "world_info"],
+        placement: ["user_input", "ai_output"],
         target: "prompt",
         disabled: false
       };
     case "editoutput":
       return { placement: ["ai_output"], target: "response", disabled: false };
     case "edittrans":
-      return { placement: ["ai_output"], target: "response", disabled: false };
+      return { placement: ["ai_output", "user_input"], target: "display", disabled: true };
     case "disabled":
-      return { placement: ["ai_output"], target: "display", disabled: true };
+      return { placement: ["ai_output", "user_input"], target: "display", disabled: true };
     case "editdisplay":
     default:
-      return { placement: ["ai_output"], target: "display", disabled: false };
+      return { placement: ["ai_output", "user_input"], target: "display", disabled: false };
   }
 }
 

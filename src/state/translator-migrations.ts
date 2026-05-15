@@ -55,6 +55,13 @@ export interface MigrationDeps {
     userId: string,
     transform: (replaceString: string) => string,
   ) => Promise<{ scanned: number; updated: number; failed: number } | null>;
+  // Multi-field patch over character-scoped Risu rows. `patch` returns the
+  // partial fields to update, or null to skip the row.
+  applyCharacterRegexRowPatch?: (
+    characterId: string,
+    userId: string,
+    patch: (row: Readonly<Record<string, unknown>>) => Record<string, unknown> | null,
+  ) => Promise<{ scanned: number; updated: number; failed: number } | null>;
   log: {
     info: (s: string) => void;
     warn: (s: string) => void;
@@ -336,6 +343,61 @@ async function applyV9StripStylePrefixInPlace(
   };
 }
 
+async function applyV11FixPhaseMapPlacement(
+  args: CharacterMigrationStepArgs,
+  deps: MigrationDeps,
+): Promise<CharacterMigrationStepResult> {
+  // editprocess: drop world_info (Risu chat-history-only scope). edittrans:
+  // disable (no Lumi translation pipeline).
+  if (!deps.applyCharacterRegexRowPatch) {
+    deps.log.warn(
+      `migrate(${args.characterId}) v11: regex_scripts row-patch unavailable, falling back to wholesale reinstall (user disable/edit state will be lost)`,
+    );
+    return applyV7ReinstallRegex(args, deps);
+  }
+  const result = await deps.applyCharacterRegexRowPatch(
+    args.characterId,
+    args.userId,
+    (row) => {
+      const meta = row['metadata'] as { _risu?: { phase?: unknown } } | undefined;
+      const phase = meta?._risu?.phase;
+      if (typeof phase !== 'string') return null;
+      if (phase === 'editprocess') {
+        const placement = row['placement'];
+        if (!Array.isArray(placement)) return null;
+        if (!placement.includes('world_info')) return null;
+        const next = (placement as string[]).filter((p) => p !== 'world_info');
+        return { placement: next };
+      }
+      if (phase === 'edittrans') {
+        const alreadyDisabled = row['disabled'] === true || row['disabled'] === 1;
+        const alreadyDisplay = row['target'] === 'display';
+        if (alreadyDisabled && alreadyDisplay) return null;
+        return {
+          disabled: true,
+          target: 'display',
+          placement: ['ai_output', 'user_input'],
+        };
+      }
+      return null;
+    },
+  );
+  if (result === null) {
+    deps.log.warn(
+      `migrate(${args.characterId}) v11: row-patch dep returned null, falling back to wholesale reinstall`,
+    );
+    return applyV7ReinstallRegex(args, deps);
+  }
+  return {
+    nextEnvelope: args.envelope,
+    notes: [
+      `scanned=${result.scanned}`,
+      `updated=${result.updated}`,
+      `failed=${result.failed}`,
+    ],
+  };
+}
+
 async function applyV10SeedBgHtmlSource(
   args: CharacterMigrationStepArgs,
   _deps: MigrationDeps,
@@ -435,6 +497,13 @@ export const CHARACTER_MIGRATIONS: readonly CharacterMigrationStep[] = [
       "Seed payload.background_html_source from payload.background_html on existing envelopes. The agent's authoring surface is now always present, not lazily created on first edit.",
     touches: ['payload.background_html'],
     apply: applyV10SeedBgHtmlSource,
+  },
+  {
+    version: 11,
+    description:
+      'Patch placement on Risu editprocess rows to drop world_info (chat-history-only parity); disable Risu edittrans rows (no Lumi translation pipeline).',
+    touches: ['regex_scripts'],
+    apply: applyV11FixPhaseMapPlacement,
   },
 ];
 

@@ -164,6 +164,8 @@ export function projectModuleRegexEntries(
   return out;
 }
 
+// Mirrors RISU_PHASE_MAP from the character regex mapper. editinput max_depth=0
+// is enforced at the call site, not here.
 export function riskCustomScriptTypeToLumi(t: string): {
   placement: readonly string[];
   target: 'prompt' | 'response' | 'display';
@@ -173,19 +175,22 @@ export function riskCustomScriptTypeToLumi(t: string): {
     case 'editinput':
       return { placement: ['user_input'], target: 'prompt', disabled: false };
     case 'editprocess':
+      // Chat history loop only, never world_info.
       return {
-        placement: ['user_input', 'ai_output', 'world_info'],
+        placement: ['user_input', 'ai_output'],
         target: 'prompt',
         disabled: false,
       };
     case 'editoutput':
       return { placement: ['ai_output'], target: 'response', disabled: false };
     case 'edittrans':
-      return { placement: ['ai_output'], target: 'response', disabled: false };
+      // Lumi has no translation pipeline that fans through regex_scripts.
+      return { placement: ['ai_output', 'user_input'], target: 'display', disabled: true };
     case 'disabled':
-      return { placement: ['ai_output'], target: 'display', disabled: true };
+      return { placement: ['ai_output', 'user_input'], target: 'display', disabled: true };
     case 'editdisplay':
     default:
-      return { placement: ['ai_output'], target: 'display', disabled: false };
+      // Risu runs editdisplay on every rendered message regardless of role.
+      return { placement: ['ai_output', 'user_input'], target: 'display', disabled: false };
   }
 }
