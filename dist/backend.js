@@ -26067,6 +26067,24 @@ async function applyV8RetranslateUserBgHtml(args, deps) {
     ]
   };
 }
+async function applyV12RecoverMissingRegex(args, deps) {
+  if (!deps.applyCharacterRegexReplaceStringTransform) {
+    return applyV7ReinstallRegex(args, deps);
+  }
+  const probe = await deps.applyCharacterRegexReplaceStringTransform(args.characterId, args.userId, (s) => s);
+  if (probe === null) {
+    return applyV7ReinstallRegex(args, deps);
+  }
+  if (probe.scanned === 0) {
+    deps.log.warn(`migrate(${args.characterId}) v12: 0 Risu regex rows present, reinstalling from translator output`);
+    const res = await applyV7ReinstallRegex(args, deps);
+    return { nextEnvelope: res.nextEnvelope, notes: ["empty-rowset recovery", ...res.notes] };
+  }
+  return {
+    nextEnvelope: args.envelope,
+    notes: [`rows present (scanned=${probe.scanned}), reinstall skipped`]
+  };
+}
 var CHARACTER_MIGRATIONS = [
   {
     version: 5,
@@ -26114,6 +26132,12 @@ var CHARACTER_MIGRATIONS = [
     description: "Patch placement on Risu editprocess rows to drop world_info (chat-history-only parity); disable Risu edittrans rows (no Lumi translation pipeline).",
     touches: ["regex_scripts"],
     apply: applyV11FixPhaseMapPlacement
+  },
+  {
+    version: 12,
+    description: "Idempotent recovery: reinstall regex_scripts only when the live character rowset is empty (fire-and-forget install never landed). No-op when rows already present.",
+    touches: ["regex_scripts"],
+    apply: applyV12RecoverMissingRegex
   }
 ];
 var CURRENT_CHARACTER_SCHEMA_VERSION = CHARACTER_MIGRATIONS.length > 0 ? Math.max(...CHARACTER_MIGRATIONS.map((m) => m.version)) : 1;

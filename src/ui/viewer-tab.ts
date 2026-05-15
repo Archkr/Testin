@@ -466,14 +466,6 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
     }
     const isModule = src.kind === 'module';
 
-    const note = document.createElement('p');
-    note.className = 'lrv-defaults-note';
-    note.textContent = isModule
-      ? 'Module backgroundEmbedding. Edits propagate to every character this module is attached to.'
-      : 'Risu-style pre-translate background HTML. Paste Risu modder HTML here, ' +
-        'collision rename + iframe policy run on save.';
-    det.appendChild(note);
-
     const snapshotText = html;
     const value = bgHtmlTextBuffer ?? snapshotText;
     const dirty = bgHtmlTextBuffer !== null && bgHtmlTextBuffer !== snapshotText;

@@ -8606,10 +8606,6 @@ function mountViewerPanel(opts) {
       return det;
     }
     const isModule = src.kind === "module";
-    const note = document.createElement("p");
-    note.className = "lrv-defaults-note";
-    note.textContent = isModule ? "Module backgroundEmbedding. Edits propagate to every character this module is attached to." : "Risu-style pre-translate background HTML. Paste Risu modder HTML here, " + "collision rename + iframe policy run on save.";
-    det.appendChild(note);
     const snapshotText = html;
     const value = bgHtmlTextBuffer ?? snapshotText;
     const dirty = bgHtmlTextBuffer !== null && bgHtmlTextBuffer !== snapshotText;
@@ -12316,30 +12312,47 @@ var KEY_DELIMITER = "\x1F";
 var SWEEP_THROTTLE_MS = 50;
 var CLEANUP_GRACE_MS = 100;
 function setupMessagePortal(ctx, flog2) {
-  let overlayHandle;
-  try {
-    const handle = ctx.ui.mountApp({ position: "end", className: "lumi-message-portal-root" });
-    overlayHandle = {
-      root: handle.root,
-      destroy: () => {
-        try {
-          handle.destroy();
-        } catch {}
-      }
-    };
-    flog2.info("message-portal: mountApp acquired overlay root");
-  } catch (err) {
-    flog2.warn("message-portal: mountApp failed; using document.body fallback", err);
-    const root = document.createElement("div");
-    root.className = "lumi-message-portal-root";
-    document.body.appendChild(root);
-    overlayHandle = { root, destroy: () => {
+  const overlayRoot = document.createElement("div");
+  overlayRoot.className = "lumi-message-portal-root";
+  document.body.appendChild(overlayRoot);
+  const overlayHandle = {
+    destroy: () => {
       try {
-        root.remove();
+        overlayRoot.remove();
       } catch {}
-    } };
+    }
+  };
+  const OVERLAY_Z = "100";
+  Object.assign(overlayRoot.style, {
+    position: "fixed",
+    inset: "0",
+    zIndex: OVERLAY_Z,
+    pointerEvents: "none",
+    margin: "0",
+    padding: "0"
+  });
+  let appShell = null;
+  function ensureHomed() {
+    if (appShell && overlayRoot.parentElement === appShell)
+      return;
+    if (!appShell) {
+      const anchor = document.querySelector('[data-component="ChatView"]');
+      let el = anchor;
+      while (el && el !== document.body) {
+        if (window.getComputedStyle(el).isolation === "isolate") {
+          appShell = el;
+          break;
+        }
+        el = el.parentElement;
+      }
+    }
+    if (appShell && overlayRoot.parentElement !== appShell) {
+      try {
+        appShell.appendChild(overlayRoot);
+      } catch {}
+    }
   }
-  const overlayRoot = overlayHandle.root;
+  ensureHomed();
   const lifted = new Map;
   let throttleTimer = null;
   let pendingReason = null;
@@ -12503,6 +12516,7 @@ function setupMessagePortal(ctx, flog2) {
   }
   function sweep(reason) {
     const t0 = performance.now();
+    ensureHomed();
     const resynced = lifted.size > 0 ? resyncWrapperAdoptedSheets() : 0;
     let walked = 0;
     let groupsLifted = 0;
@@ -12593,6 +12607,7 @@ function setupMessagePortal(ctx, flog2) {
           const sourceShadow = inShadow ? parent.getRootNode() : null;
           const wrapper = document.createElement("div");
           wrapper.className = PORTAL_WRAPPER_CLASS;
+          wrapper.style.pointerEvents = "auto";
           if (msgId)
             wrapper.setAttribute("data-message-id", msgId);
           if (sourceShadow) {
