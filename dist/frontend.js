@@ -12347,6 +12347,7 @@ function setupMessagePortal(ctx, flog2) {
   const SETTLE_GUARD_MS = 700;
   let observedDrawer = null;
   let settleGuard = null;
+  const drawerHideMql = window.matchMedia("(max-width: 600px)");
   function transformTxAbs(tf) {
     if (!tf || tf === "none")
       return 0;
@@ -12355,8 +12356,12 @@ function setupMessagePortal(ctx, flog2) {
     return Number.isFinite(tx) ? Math.abs(tx) : 0;
   }
   function setOverlayHidden(hidden) {
-    overlayRoot.style.visibility = hidden ? "hidden" : "";
+    overlayRoot.style.visibility = hidden && drawerHideMql.matches ? "hidden" : "";
   }
+  const onDrawerHideMqlChange = () => {
+    setOverlayHidden(drawerSettledOpen());
+  };
+  drawerHideMql.addEventListener("change", onDrawerHideMqlChange);
   function drawerSettledOpen() {
     return !!observedDrawer && transformTxAbs(window.getComputedStyle(observedDrawer).transform) < 4;
   }
@@ -13000,6 +13005,9 @@ function setupMessagePortal(ctx, flog2) {
       } catch {}
       try {
         bindDrawer(observedDrawer, false);
+      } catch {}
+      try {
+        drawerHideMql.removeEventListener("change", onDrawerHideMqlChange);
       } catch {}
       clearSettleGuard();
       for (const so of shadowObservers.values()) {

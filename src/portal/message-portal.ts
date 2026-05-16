@@ -201,6 +201,16 @@ export function setupMessagePortal(ctx: SpindleFrontendContext, flog: Flog): Mes
   const SETTLE_GUARD_MS = 700; // >> the ~350ms slide; cleared by transitionend
   let observedDrawer: HTMLElement | null = null;
   let settleGuard: number | null = null;
+  // Drawer-occlusion hide is mobile-only. On mobile Lumiverse the
+  // ViewportDrawer is full viewport width (ViewportDrawer.module.css
+  // @media max-width:600px sets --drawer-panel-w and .drawer width to
+  // 100vw), so an open drawer covers the whole chat and hiding the
+  // entire overlay is correct. On desktop the drawer is a narrow
+  // edge strip, so a wholesale hide wrongly drops portaled widgets
+  // that never overlap it. Until a per-wrapper occlusion model lands,
+  // desktop keeps the overlay visible. 600px mirrors the upstream
+  // breakpoint exactly.
+  const drawerHideMql = window.matchMedia("(max-width: 600px)");
 
   // translateX magnitude of a computed transform; 0 == open, panel-width ==
   // closed. matrix() index 4 / matrix3d() index 12 is tx.
@@ -211,8 +221,14 @@ export function setupMessagePortal(ctx: SpindleFrontendContext, flog: Flog): Mes
     return Number.isFinite(tx) ? Math.abs(tx as number) : 0;
   }
   function setOverlayHidden(hidden: boolean): void {
-    overlayRoot.style.visibility = hidden ? "hidden" : "";
+    overlayRoot.style.visibility = (hidden && drawerHideMql.matches) ? "hidden" : "";
   }
+  // Crossing the breakpoint (resize / rotation) fires no drawer
+  // transition, so re-apply the current settled state under the new
+  // width. Desktop -> always resolves to visible; mobile -> reflects
+  // whether the drawer is open.
+  const onDrawerHideMqlChange = (): void => { setOverlayHidden(drawerSettledOpen()); };
+  drawerHideMql.addEventListener("change", onDrawerHideMqlChange);
   // Only meaningful once the slide has settled. <4px tolerates sub-pixel
   // residue at translateX(0).
   function drawerSettledOpen(): boolean {
@@ -1070,6 +1086,7 @@ export function setupMessagePortal(ctx: SpindleFrontendContext, flog: Flog): Mes
       try { mo.disconnect(); } catch { /* */ }
       try { minHeightMo.disconnect(); } catch { /* */ }
       try { bindDrawer(observedDrawer, false); } catch { /* */ }
+      try { drawerHideMql.removeEventListener("change", onDrawerHideMqlChange); } catch { /* */ }
       clearSettleGuard();
       for (const so of shadowObservers.values()) {
         try { so.disconnect(); } catch { /* */ }
