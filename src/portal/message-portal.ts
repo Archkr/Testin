@@ -187,54 +187,80 @@ export function setupMessagePortal(ctx: SpindleFrontendContext, flog: Flog): Mes
     margin: "0",
     padding: "0",
   });
-  // Drawer rail carries data-spindle-mount=sidebar. Its nearest fixed
-  // ancestor is the drawer wrapper, found structurally since class names
-  // are hashed.
+  // Hide the overlay while the drawer covers the chat; reveal it once the
+  // drawer has slid fully closed. The drawer is a `transform` CSS transition
+  // on a fixed-position wrapper (Lumi's ViewportDrawer). That transition is
+  // the one canonical signal, input-agnostic (pointer, keyboard, programmatic
+  // all create it) and free of hashed class names:
+  //   transitionrun  → a slide just began    → hide now
+  //   transitionend  → the slide settled     → reveal iff it ended closed
+  // "ended closed" is read from the wrapper's settled translateX (open is
+  // ~0, closed is the panel width). One guard timeout is the sole safety net
+  // so a missed transitionend can't strand the overlay hidden.
   const DRAWER_ANCHOR_SELECTOR = '[data-spindle-mount="sidebar"]';
-  function syncClip(): void {
-    const chatView = document.querySelector('[data-component="ChatView"]');
-    if (!chatView) {
-      // No chat pane: no clip (worst case equals current baseline).
-      overlayRoot.style.clipPath = "";
-      return;
-    }
-    const c = chatView.getBoundingClientRect();
-    let left = Math.max(0, c.left);
-    let right = Math.min(window.innerWidth, c.right);
-    const top = Math.max(0, c.top);
-    const bottom = Math.min(window.innerHeight, c.bottom);
+  const SETTLE_GUARD_MS = 700; // >> the ~350ms slide; cleared by transitionend
+  let observedDrawer: HTMLElement | null = null;
+  let settleGuard: number | null = null;
 
-    const anchor = document.querySelector(DRAWER_ANCHOR_SELECTOR);
-    let el: HTMLElement | null = anchor as HTMLElement | null;
+  // translateX magnitude of a computed transform; 0 == open, panel-width ==
+  // closed. matrix() index 4 / matrix3d() index 12 is tx.
+  function transformTxAbs(tf: string): number {
+    if (!tf || tf === "none") return 0;
+    const nums = tf.slice(tf.indexOf("(") + 1, tf.lastIndexOf(")")).split(",").map((s) => parseFloat(s));
+    const tx = tf.startsWith("matrix3d(") ? nums[12] : nums[4];
+    return Number.isFinite(tx) ? Math.abs(tx as number) : 0;
+  }
+  function setOverlayHidden(hidden: boolean): void {
+    overlayRoot.style.visibility = hidden ? "hidden" : "";
+  }
+  // Only meaningful once the slide has settled. <4px tolerates sub-pixel
+  // residue at translateX(0).
+  function drawerSettledOpen(): boolean {
+    return !!observedDrawer
+      && transformTxAbs(window.getComputedStyle(observedDrawer).transform) < 4;
+  }
+  function clearSettleGuard(): void {
+    if (settleGuard !== null) { clearTimeout(settleGuard); settleGuard = null; }
+  }
+  function onSettle(): void {
+    clearSettleGuard();
+    setOverlayHidden(drawerSettledOpen());
+  }
+  const onSlideStart = (e: Event): void => {
+    if ((e as TransitionEvent).propertyName !== "transform") return;
+    setOverlayHidden(true);
+    clearSettleGuard();
+    settleGuard = window.setTimeout(onSettle, SETTLE_GUARD_MS);
+  };
+  const onSlideEnd = (e: Event): void => {
+    if ((e as TransitionEvent).propertyName === "transform") onSettle();
+  };
+  function bindDrawer(el: HTMLElement | null, on: boolean): void {
+    if (!el) return;
+    const fn = (on ? el.addEventListener : el.removeEventListener).bind(el);
+    fn("transitionrun", onSlideStart);
+    fn("transitioncancel", onSlideStart); // rapid re-toggle: treat as a new slide
+    fn("transitionend", onSlideEnd);
+  }
+  // The drawer rail (`data-spindle-mount="sidebar"`) is nested under the
+  // fixed-position transition wrapper; class names are hashed so we locate
+  // it structurally. The wrapper can remount, so rediscovery runs from setup
+  // and from every sweep (no-op while the identity is unchanged).
+  function syncDrawerBinding(): void {
+    let el = document.querySelector(DRAWER_ANCHOR_SELECTOR) as HTMLElement | null;
     let wrapper: HTMLElement | null = null;
     while (el && el !== document.body) {
       if (window.getComputedStyle(el).position === "fixed") { wrapper = el; break; }
       el = el.parentElement;
     }
-    if (wrapper) {
-      const d = wrapper.getBoundingClientRect();
-      const dl = Math.max(0, d.left);
-      const dr = Math.min(window.innerWidth, d.right);
-      // Only subtract when the drawer strip actually overlaps the chat band.
-      if (dr > dl && d.bottom > top && d.top < bottom) {
-        const chatMid = (c.left + c.right) / 2;
-        if (dl <= chatMid) left = Math.max(left, dr); // left-docked
-        else right = Math.min(right, dl);             // right-docked
-      }
-    }
-
-    if (right <= left || bottom <= top) {
-      // Degenerate region (e.g. drawer fully covers chat): hide the clones.
-      overlayRoot.style.clipPath = "inset(50% 50% 50% 50%)";
-      return;
-    }
-    const t = Math.round(top);
-    const r = Math.round(window.innerWidth - right);
-    const b = Math.round(window.innerHeight - bottom);
-    const l = Math.round(left);
-    overlayRoot.style.clipPath = `inset(${t}px ${r}px ${b}px ${l}px)`;
+    if (wrapper === observedDrawer) return;
+    bindDrawer(observedDrawer, false);
+    clearSettleGuard();
+    observedDrawer = wrapper;
+    bindDrawer(wrapper, true);
+    setOverlayHidden(drawerSettledOpen()); // reflect current state at (re)bind
   }
-  syncClip();
+  syncDrawerBinding();
 
   const lifted = new Map<string, LiftedRecord>();
 
@@ -516,9 +542,10 @@ export function setupMessagePortal(ctx: SpindleFrontendContext, flog: Flog): Mes
 
   function sweep(reason: string): void {
     const t0 = performance.now();
-    // Re-clip to chat-minus-drawer. Runs inside the existing sweep, no
-    // extra observer or timer.
-    syncClip();
+    // Rediscover the drawer wrapper in case it remounted. No-op when the
+    // wrapper identity is unchanged; does not touch overlay visibility
+    // mid-animation (only on a true rebind).
+    syncDrawerBinding();
     // Catch up wrapper adopted-sheets every sweep. Reason-gating doesn't
     // work because scheduleSweep coalesces reasons last-write-wins.
     const resynced = lifted.size > 0 ? resyncWrapperAdoptedSheets() : 0;
@@ -1042,6 +1069,8 @@ export function setupMessagePortal(ctx: SpindleFrontendContext, flog: Flog): Mes
     destroy: () => {
       try { mo.disconnect(); } catch { /* */ }
       try { minHeightMo.disconnect(); } catch { /* */ }
+      try { bindDrawer(observedDrawer, false); } catch { /* */ }
+      clearSettleGuard();
       for (const so of shadowObservers.values()) {
         try { so.disconnect(); } catch { /* */ }
       }

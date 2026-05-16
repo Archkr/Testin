@@ -37297,7 +37297,7 @@ function createMassMigrationsRunner(deps) {
       return;
     }
     const opId = `mass-migration-modules-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-    const opTitle = "Updating module lorebooks";
+    const opTitle = "Updating modules";
     emitOperationProgress(userId, opId, "started", opTitle, `Updating ${candidates.length} module${candidates.length === 1 ? "" : "s"}\u2026`, 0);
     log8.info(`mass-migration(modules): user=${userId} starting count=${candidates.length} opId=${opId}`);
     let processed = 0;

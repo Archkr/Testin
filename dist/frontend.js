@@ -12344,19 +12344,53 @@ function setupMessagePortal(ctx, flog2) {
     padding: "0"
   });
   const DRAWER_ANCHOR_SELECTOR = '[data-spindle-mount="sidebar"]';
-  function syncClip() {
-    const chatView = document.querySelector('[data-component="ChatView"]');
-    if (!chatView) {
-      overlayRoot.style.clipPath = "";
-      return;
+  const SETTLE_GUARD_MS = 700;
+  let observedDrawer = null;
+  let settleGuard = null;
+  function transformTxAbs(tf) {
+    if (!tf || tf === "none")
+      return 0;
+    const nums = tf.slice(tf.indexOf("(") + 1, tf.lastIndexOf(")")).split(",").map((s) => parseFloat(s));
+    const tx = tf.startsWith("matrix3d(") ? nums[12] : nums[4];
+    return Number.isFinite(tx) ? Math.abs(tx) : 0;
+  }
+  function setOverlayHidden(hidden) {
+    overlayRoot.style.visibility = hidden ? "hidden" : "";
+  }
+  function drawerSettledOpen() {
+    return !!observedDrawer && transformTxAbs(window.getComputedStyle(observedDrawer).transform) < 4;
+  }
+  function clearSettleGuard() {
+    if (settleGuard !== null) {
+      clearTimeout(settleGuard);
+      settleGuard = null;
     }
-    const c = chatView.getBoundingClientRect();
-    let left = Math.max(0, c.left);
-    let right = Math.min(window.innerWidth, c.right);
-    const top = Math.max(0, c.top);
-    const bottom = Math.min(window.innerHeight, c.bottom);
-    const anchor = document.querySelector(DRAWER_ANCHOR_SELECTOR);
-    let el = anchor;
+  }
+  function onSettle() {
+    clearSettleGuard();
+    setOverlayHidden(drawerSettledOpen());
+  }
+  const onSlideStart = (e) => {
+    if (e.propertyName !== "transform")
+      return;
+    setOverlayHidden(true);
+    clearSettleGuard();
+    settleGuard = window.setTimeout(onSettle, SETTLE_GUARD_MS);
+  };
+  const onSlideEnd = (e) => {
+    if (e.propertyName === "transform")
+      onSettle();
+  };
+  function bindDrawer(el, on) {
+    if (!el)
+      return;
+    const fn = (on ? el.addEventListener : el.removeEventListener).bind(el);
+    fn("transitionrun", onSlideStart);
+    fn("transitioncancel", onSlideStart);
+    fn("transitionend", onSlideEnd);
+  }
+  function syncDrawerBinding() {
+    let el = document.querySelector(DRAWER_ANCHOR_SELECTOR);
     let wrapper = null;
     while (el && el !== document.body) {
       if (window.getComputedStyle(el).position === "fixed") {
@@ -12365,29 +12399,15 @@ function setupMessagePortal(ctx, flog2) {
       }
       el = el.parentElement;
     }
-    if (wrapper) {
-      const d = wrapper.getBoundingClientRect();
-      const dl = Math.max(0, d.left);
-      const dr = Math.min(window.innerWidth, d.right);
-      if (dr > dl && d.bottom > top && d.top < bottom) {
-        const chatMid = (c.left + c.right) / 2;
-        if (dl <= chatMid)
-          left = Math.max(left, dr);
-        else
-          right = Math.min(right, dl);
-      }
-    }
-    if (right <= left || bottom <= top) {
-      overlayRoot.style.clipPath = "inset(50% 50% 50% 50%)";
+    if (wrapper === observedDrawer)
       return;
-    }
-    const t = Math.round(top);
-    const r = Math.round(window.innerWidth - right);
-    const b = Math.round(window.innerHeight - bottom);
-    const l = Math.round(left);
-    overlayRoot.style.clipPath = `inset(${t}px ${r}px ${b}px ${l}px)`;
+    bindDrawer(observedDrawer, false);
+    clearSettleGuard();
+    observedDrawer = wrapper;
+    bindDrawer(wrapper, true);
+    setOverlayHidden(drawerSettledOpen());
   }
-  syncClip();
+  syncDrawerBinding();
   const lifted = new Map;
   let throttleTimer = null;
   let pendingReason = null;
@@ -12551,7 +12571,7 @@ function setupMessagePortal(ctx, flog2) {
   }
   function sweep(reason) {
     const t0 = performance.now();
-    syncClip();
+    syncDrawerBinding();
     const resynced = lifted.size > 0 ? resyncWrapperAdoptedSheets() : 0;
     let walked = 0;
     let groupsLifted = 0;
@@ -12978,6 +12998,10 @@ function setupMessagePortal(ctx, flog2) {
       try {
         minHeightMo.disconnect();
       } catch {}
+      try {
+        bindDrawer(observedDrawer, false);
+      } catch {}
+      clearSettleGuard();
       for (const so of shadowObservers.values()) {
         try {
           so.disconnect();
