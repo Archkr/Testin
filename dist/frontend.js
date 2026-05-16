@@ -12314,7 +12314,7 @@ var CLEANUP_GRACE_MS = 100;
 function setupMessagePortal(ctx, flog2) {
   let overlayHandle;
   try {
-    const handle = ctx.ui.mountApp({ position: "end", className: "lumi-message-portal-root" });
+    const handle = ctx.ui.mountApp({ position: "app-overlay", className: "lumi-message-portal-root" });
     overlayHandle = {
       root: handle.root,
       destroy: () => {
@@ -12355,8 +12355,8 @@ function setupMessagePortal(ctx, flog2) {
     const tx = tf.startsWith("matrix3d(") ? nums[12] : nums[4];
     return Number.isFinite(tx) ? Math.abs(tx) : 0;
   }
-  function setOverlayHidden(hidden) {
-    overlayRoot.style.visibility = hidden && drawerHideMql.matches ? "hidden" : "";
+  function setOverlayHidden(_hidden) {
+    overlayRoot.style.visibility = "";
   }
   const onDrawerHideMqlChange = () => {
     setOverlayHidden(drawerSettledOpen());

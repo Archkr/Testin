@@ -18,6 +18,13 @@ function stringify(v: unknown): string {
   return typeof v === "string" ? v : JSON.stringify(v);
 }
 
+// Risu's trimLines: trimStart every line, join, trim. blockEndMatcher applies
+// trimLines(p1.trim()) to the each body in non-keep mode, so per-iteration
+// leading/trailing whitespace never accumulates across a large array.
+function trimLines(s: string): string {
+  return s.split("\n").map((v) => v.trimStart()).join("\n").trim();
+}
+
 // parser.svelte.ts.
 export const eachHandler: MacroHandler = (_ctx, args) => {
   if (args.length < 2) return "";
@@ -51,9 +58,13 @@ export const eachHandler: MacroHandler = (_ctx, args) => {
 
   const array = parseArray(arrayExpr);
   const needle = "{{slot::" + sub + "}}";
+  // Risu's blockEndMatcher trims the body before repeating in non-keep mode.
+  // Skipping this lets the body's surrounding whitespace repeat once per
+  // element, producing kilobyte whitespace runs on large arrays like assetlist.
+  const repeatBody = mode === "keep" ? body : trimLines(body.trim());
   let out = "";
   for (let i = 0; i < array.length; i++) {
-    out += body.replaceAll(needle, stringify(array[i]));
+    out += repeatBody.replaceAll(needle, stringify(array[i]));
   }
   return mode === "keep" ? out : out.trim();
 };

@@ -8996,6 +8996,11 @@ function parseArray(s) {
 function stringify(v) {
   return typeof v === "string" ? v : JSON.stringify(v);
 }
+function trimLines2(s) {
+  return s.split(`
+`).map((v) => v.trimStart()).join(`
+`).trim();
+}
 function splitOnce(s, sep) {
   const idx = s.indexOf(sep);
   if (idx === -1)
@@ -9034,9 +9039,10 @@ var eachHandler = (_ctx, args) => {
   }
   const array = parseArray(arrayExpr);
   const needle = "{{slot::" + sub + "}}";
+  const repeatBody = mode === "keep" ? body : trimLines2(body.trim());
   let out = "";
   for (let i = 0;i < array.length; i++) {
-    out += body.replaceAll(needle, stringify(array[i]));
+    out += repeatBody.replaceAll(needle, stringify(array[i]));
   }
   return mode === "keep" ? out : out.trim();
 }, funcHandler = (ctx, args) => {
@@ -10454,7 +10460,7 @@ function isTruthy2(s) {
   const t = s.trim();
   return t === "true" || t === "1";
 }
-function trimLines2(p1) {
+function trimLines3(p1) {
   return p1.split(`
 `).map((v) => v.trimStart()).join(`
 `).trim();
@@ -10654,11 +10660,11 @@ function blockEndMatcher(p1, type) {
     case "function":
       return p1Trimmed;
     case "parse":
-      return trimLines2(p1Trimmed);
+      return trimLines3(p1Trimmed);
     case "each":
       if (type.mode === "keep")
         return p1;
-      return trimLines2(p1Trimmed);
+      return trimLines3(p1Trimmed);
     case "ifpure":
       return p1;
     case "newif":
