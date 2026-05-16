@@ -160,7 +160,7 @@ export interface BalloonTallEntry {
 export function setupMessagePortal(ctx: SpindleFrontendContext, flog: Flog): MessagePortal {
   let overlayHandle: { root: HTMLElement; destroy: () => void };
   try {
-    const handle = ctx.ui.mountApp({ position: "end", className: "lumi-message-portal-root" });
+    const handle = ctx.ui.mountApp({ position: "app-overlay" as unknown as "end", className: "lumi-message-portal-root" });
     overlayHandle = {
       root: handle.root,
       destroy: () => { try { handle.destroy(); } catch { /* */ } },
@@ -220,8 +220,9 @@ export function setupMessagePortal(ctx: SpindleFrontendContext, flog: Flog): Mes
     const tx = tf.startsWith("matrix3d(") ? nums[12] : nums[4];
     return Number.isFinite(tx) ? Math.abs(tx as number) : 0;
   }
-  function setOverlayHidden(hidden: boolean): void {
-    overlayRoot.style.visibility = (hidden && drawerHideMql.matches) ? "hidden" : "";
+  function setOverlayHidden(_hidden: boolean): void {
+    void drawerHideMql;
+    overlayRoot.style.visibility = "";
   }
   // Crossing the breakpoint (resize / rotation) fires no drawer
   // transition, so re-apply the current settled state under the new
