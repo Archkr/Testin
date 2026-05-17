@@ -90,7 +90,10 @@ export function extractAndReplaceSvgs(
   let templatedSkipped = 0;
   let dangerousSkipped = 0;
 
-  const rewritten = html.replace(SVG_BLOCK_RE, (svg) => {
+  const rewritten = html.replace(SVG_BLOCK_RE, (svg, offset: number) => {
+    // SVG inside a CSS url("data:image/svg+xml,...") is a background, not HTML.
+    // The browser renders the data-uri natively, matching Risu, so leave it.
+    if (isInsideCssUrl(html, offset)) return svg;
     const classification = classifySvg(svg);
     if (classification === "templated") {
       if (DANGEROUS_RE.test(svg)) dangerousSkipped += 1;
@@ -99,14 +102,41 @@ export function extractAndReplaceSvgs(
     }
     const markerN = indexer.add(svg, classification);
     const { width, height } = indexer.getTasks()[markerN]!;
-    return buildPlaceholder(markerN, width, height);
+    return buildPlaceholder(markerN, width, height, extractCarriedAttrs(svg));
   });
 
   return { rewritten, templatedSkipped, dangerousSkipped };
 }
 
-function buildPlaceholder(markerN: number, width: number, height: number): string {
-  return `<img data-lumirealm-svg-pending="${markerN}" alt="" width="${width}" height="${height}">`;
+// Risu renders the SVG inline with its class/style/id so card CSS targeting them
+// applies. The placeholder img must carry the same hooks or the rasterized image
+// renders unpositioned (full-size opaque instead of a positioned watermark).
+const SVG_OPEN_TAG_RE = /<svg\b[^>]*>/i;
+const CARRIED_ATTR_RE = /\b(class|style|id)\s*=\s*("[^"]*"|'[^']*')/gi;
+
+function extractCarriedAttrs(svg: string): string {
+  const open = SVG_OPEN_TAG_RE.exec(svg);
+  if (!open) return "";
+  let out = "";
+  let m: RegExpExecArray | null;
+  CARRIED_ATTR_RE.lastIndex = 0;
+  while ((m = CARRIED_ATTR_RE.exec(open[0])) !== null) {
+    out += ` ${m[1]!.toLowerCase()}=${m[2]!}`;
+  }
+  return out;
+}
+
+function isInsideCssUrl(full: string, offset: number): boolean {
+  const urlIdx = full.lastIndexOf("url(", offset);
+  if (urlIdx < 0) return false;
+  // An unmatched `url(` (no `)` between it and the svg) means we're inside it.
+  if (full.lastIndexOf(")", offset) > urlIdx) return false;
+  const dataIdx = full.indexOf("data:image/svg+xml", urlIdx);
+  return dataIdx >= 0 && dataIdx < offset;
+}
+
+function buildPlaceholder(markerN: number, width: number, height: number, carried: string): string {
+  return `<img data-lumirealm-svg-pending="${markerN}"${carried} alt="" width="${width}" height="${height}">`;
 }
 
 export const SVG_PENDING_ATTR = "data-lumirealm-svg-pending";

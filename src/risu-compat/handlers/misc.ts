@@ -74,8 +74,9 @@ register("hiddenkey", () => "",
 // Risu: cbs (displaying=false) and prompt-assembly (commit=true) both return ''. Only the display path renders the div.
 register("risu_comment", (ctx, a) => {
   if (ctx.commit || ctx.cbsContext) return "";
-  // Class pre-prefixed to match Risu's `.x-risu-risu-comment` rule.
-  return `<div class="x-risu-risu-comment">${a[0] ?? ""}</div>`;
+  // Both class forms so card-authored CSS (unprefixed by LumiRealm) and the shipped
+  // risu-environment.css baseline (.x-risu-risu-comment) both match, matching Risu.
+  return `<div class="risu-comment x-risu-risu-comment">${a[0] ?? ""}</div>`;
 }, "Comment macro. Empty at prompt time and in cbs; displays as <div class=\"risu-comment\">…</div> at render time.");
 
 // `//` inline comment.
@@ -104,13 +105,21 @@ register("risu", (_c, a) => {
   return `<img src="/logo2.png" style="height:${size}px;width:${size}px" />`;
 }, "Embeds the RisuAI logo image.");
 
-// Pre-prefixed `x-risu-button-default` to match Risu's compiled stylesheet.
-// Macro output skips the class-rewrite parser pass, so emit post-rewrite directly.
-const BUTTON_LABEL_ESCAPES: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;" };
+// Unprefixed `button-default` matches card-authored CSS (LumiRealm unprefixes card
+// HTML+CSS), `x-risu-button-default` matches the shipped risu-environment.css baseline.
+// Risu prefixes HTML and card CSS together, so emitting both keeps card overrides and
+// the baseline applying, matching Risu's cascade.
+// Risu emits the label raw, so card-authored HTML entity glyphs must survive (only
+// escape a bare ampersand that does not start a valid entity). Angle brackets stay
+// escaped for Lumi-sanitizer safety, matching the Cheongwon nav-arrow case.
+const BARE_AMP_RE = /&(?!#x[0-9a-fA-F]+;|#[0-9]+;|[a-zA-Z][a-zA-Z0-9]*;)/g;
+function escapeButtonLabel(s: string): string {
+  return s.replace(BARE_AMP_RE, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
 register("button", (_c, a) => {
-  const label = (a[0] ?? "").replace(/[&<>]/g, (c) => BUTTON_LABEL_ESCAPES[c]!);
+  const label = escapeButtonLabel(a[0] ?? "");
   const trigger = (a[1] ?? "").replace(/"/g, "&quot;");
-  return `<button class="x-risu-button-default" risu-trigger="${trigger}">${label}</button>`;
+  return `<button class="button-default x-risu-button-default" risu-trigger="${trigger}">${label}</button>`;
 }, "HTML button that fires the named risu-trigger when clicked.");
 
 // Frontend-reported viewport size. 0 before first report.

@@ -141,7 +141,9 @@ register("image", (ctx, args) => {
   if (!name) return "";
   const hit = findAsset(ctx, ctx.character.additionalAssets, name, ctx.legacyMediaFindings);
   if (!hit) return "";
-  return `<div class="x-risu-risu-inlay-image"><img src="${hit.src}" alt="${hit.src}" style="${ASSET_WIDTH_STYLE}"/></div>\n`;
+  // Both class forms: unprefixed matches card-authored CSS (LumiRealm unprefixes card
+  // HTML+CSS), prefixed matches the shipped risu-environment.css baseline. Risu parity.
+  return `<div class="risu-inlay-image x-risu-risu-inlay-image"><img src="${hit.src}" alt="${hit.src}" style="${ASSET_WIDTH_STYLE}"/></div>\n`;
 }, "Inlay image wrapper. parser.svelte.ts.");
 
 register("emotion", (ctx, args) => {
@@ -225,14 +227,14 @@ register("inlayed", (ctx, args) => {
   if (ctx.cbsContext) return literal("inlayed", args);
   const id = String(args[0] ?? "");
   if (!id) return "";
-  return `<div class="x-risu-risu-inlay-image"><img src="/api/v1/images/${id}"/></div>\n\n`;
+  return `<div class="risu-inlay-image x-risu-risu-inlay-image"><img src="/api/v1/images/${id}"/></div>\n\n`;
 }, "Wrapped inlay image. Risu parser.svelte.ts + 688.");
 
 register("inlayeddata", (ctx, args) => {
   if (ctx.cbsContext) return literal("inlayeddata", args);
   const id = String(args[0] ?? "");
   if (!id) return "";
-  return `<div class="x-risu-risu-inlay-image"><img src="/api/v1/images/${id}"/></div>\n\n`;
+  return `<div class="risu-inlay-image x-risu-risu-inlay-image"><img src="/api/v1/images/${id}"/></div>\n\n`;
 }, "Wrapped inlay image (data variant). Risu parser.svelte.ts + 688.");
 
 // parser.svelte.ts. Returns stable `/api/v1/images/<id>` URLs.

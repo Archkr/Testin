@@ -37,11 +37,23 @@ interface CacheEntry {
   readonly contentHash: number;
   readonly contentLen: number;
   readonly result: RenderResult;
+  // Hash/len of the transformed output. Lumi re-invokes the render origin with
+  // the prior pass's OUTPUT (display-preprocess result fed into the regex-apply
+  // prepass), so a re-feed must be a passthrough (Risu runs editDisplay once).
+  readonly outHash: number;
+  readonly outLen: number;
   readonly ts: number;
 }
 
 const cache = new Map<string, CacheEntry>();
 const inFlight = new Map<string, { contentHash: number; contentLen: number; promise: Promise<RenderResult> }>();
+
+// Per-message hashes of prior editDisplay OUTPUTs, so Lumi's regex-apply
+// re-feed of a preprocessed body stays a passthrough even after a var-only
+// invalidation wiped the result cache. Cleared only on real content change.
+const knownOutputs = new Map<string, { hashes: Set<number>; ts: number }>();
+const KNOWN_OUTPUTS_MAX = 800;
+
 let hitCount = 0;
 let missCount = 0;
 let inFlightHitCount = 0;
@@ -84,27 +96,40 @@ export function lookupRenderMcp(
   msgId: string,
   content: string,
 ): RenderResult | null {
-  const entry = cache.get(key(chatId, msgId));
+  const k = key(chatId, msgId);
+  const liveHash = fnv1a(content);
+  // Re-feed guard, resilient to var/dispatch invalidation: if this content is
+  // a prior editDisplay output for the message, re-running would double-apply.
+  const ko = knownOutputs.get(k);
+  if (ko && ko.hashes.has(liveHash)) {
+    hitCount += 1;
+    return { kind: 'noop' };
+  }
+  const entry = cache.get(k);
   if (!entry) {
     missCount += 1;
     return null;
   }
   const now = Date.now();
   if (now - entry.ts > TTL_MS) {
-    cache.delete(key(chatId, msgId));
+    cache.delete(k);
     missCount += 1;
     return null;
   }
-  if (entry.contentLen !== content.length) {
-    missCount += 1;
-    return null;
+  if (entry.contentLen === content.length && entry.contentHash === liveHash) {
+    hitCount += 1;
+    return entry.result;
   }
-  if (entry.contentHash !== fnv1a(content)) {
-    missCount += 1;
-    return null;
+  if (
+    entry.result.kind === 'transformed' &&
+    entry.outLen === content.length &&
+    entry.outHash === liveHash
+  ) {
+    hitCount += 1;
+    return { kind: 'noop' };
   }
-  hitCount += 1;
-  return entry.result;
+  missCount += 1;
+  return null;
 }
 
 export function cacheRenderMcp(
@@ -115,12 +140,39 @@ export function cacheRenderMcp(
 ): void {
   const now = Date.now();
   evictIfNeeded(now);
-  cache.set(key(chatId, msgId), {
+  const outContent = result.kind === 'transformed' ? result.content : content;
+  const k = key(chatId, msgId);
+  cache.set(k, {
     contentHash: fnv1a(content),
     contentLen: content.length,
     result,
+    outHash: fnv1a(outContent),
+    outLen: outContent.length,
     ts: now,
   });
+  if (result.kind === 'transformed') {
+    if (knownOutputs.size >= KNOWN_OUTPUTS_MAX) {
+      let oldestKey: string | null = null;
+      let oldestTs = Infinity;
+      for (const [kk, v] of knownOutputs) {
+        if (v.ts < oldestTs) { oldestTs = v.ts; oldestKey = kk; }
+      }
+      if (oldestKey) knownOutputs.delete(oldestKey);
+    }
+    const ko = knownOutputs.get(k);
+    const h = fnv1a(result.content);
+    if (ko) {
+      ko.hashes.add(h);
+      ko.ts = now;
+      // Bound per-message growth across var-driven re-renders.
+      if (ko.hashes.size > 16) {
+        const first = ko.hashes.values().next().value;
+        if (first !== undefined) ko.hashes.delete(first);
+      }
+    } else {
+      knownOutputs.set(k, { hashes: new Set([h]), ts: now });
+    }
+  }
 }
 
 /** Concurrent identical-input render-MCP requests should share one scan instead of all firing. Returns the in-flight promise on hit; caller awaits it. Returns null if no matching in-flight request, in which case caller should `markRenderMcpInFlight` before doing the work. */
@@ -170,11 +222,15 @@ export function invalidateRenderMcpForMessage(chatId: string, msgId: string): vo
   const k = key(chatId, msgId);
   if (cache.delete(k)) log.debug(`invalidate chat=${chatId} msg=${msgId}`);
   inFlight.delete(k);
+  // The message's content actually changed (edit/swipe/delete), so prior
+  // editDisplay outputs no longer describe it. Safe to forget the re-feed set.
+  knownOutputs.delete(k);
 }
 
 export function resetRenderMcpCache(): void {
   cache.clear();
   inFlight.clear();
+  knownOutputs.clear();
   hitCount = 0;
   missCount = 0;
   inFlightHitCount = 0;

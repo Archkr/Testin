@@ -11,6 +11,14 @@ export const triggerBindingSchema = z.enum([
 ]);
 export type TriggerBinding = z.infer<typeof triggerBindingSchema>;
 
+// Risu never enum-validates trigger.type and real cards ship type:"lua", so coerce
+// unknowns to "manual" instead of dropping the trigger (triggerlua bypasses type via
+// effect[0].type, non-code triggers fire by comment-match regardless of type).
+const triggerTypeSchema = z.unknown().transform((v) => {
+  const r = triggerBindingSchema.safeParse(v);
+  return r.success ? r.data : ("manual" as TriggerBinding);
+});
+
 export const triggerConditionSchema = z
   .object({ type: z.string() })
   .passthrough();
@@ -28,7 +36,7 @@ const looseComment = z.union([z.string(), z.number(), z.null(), z.undefined()])
 export const triggerscriptSchema = z
   .object({
     comment: looseComment,
-    type: triggerBindingSchema,
+    type: triggerTypeSchema,
     conditions: z.array(triggerConditionSchema).nullish().transform((v) => v ?? []),
     effect: z.array(triggerEffectSchema).nullish().transform((v) => v ?? []),
     lowLevelAccess: z

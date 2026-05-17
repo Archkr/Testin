@@ -4826,7 +4826,9 @@ function extractAndReplaceSvgs(html, indexer) {
   }
   let templatedSkipped = 0;
   let dangerousSkipped = 0;
-  const rewritten = html.replace(SVG_BLOCK_RE, (svg) => {
+  const rewritten = html.replace(SVG_BLOCK_RE, (svg, offset) => {
+    if (isInsideCssUrl(html, offset))
+      return svg;
     const classification = classifySvg(svg);
     if (classification === "templated") {
       if (DANGEROUS_RE.test(svg))
@@ -4837,12 +4839,33 @@ function extractAndReplaceSvgs(html, indexer) {
     }
     const markerN = indexer.add(svg, classification);
     const { width, height } = indexer.getTasks()[markerN];
-    return buildPlaceholder(markerN, width, height);
+    return buildPlaceholder(markerN, width, height, extractCarriedAttrs(svg));
   });
   return { rewritten, templatedSkipped, dangerousSkipped };
 }
-function buildPlaceholder(markerN, width, height) {
-  return `<img data-lumirealm-svg-pending="${markerN}" alt="" width="${width}" height="${height}">`;
+function extractCarriedAttrs(svg) {
+  const open = SVG_OPEN_TAG_RE.exec(svg);
+  if (!open)
+    return "";
+  let out = "";
+  let m;
+  CARRIED_ATTR_RE.lastIndex = 0;
+  while ((m = CARRIED_ATTR_RE.exec(open[0])) !== null) {
+    out += ` ${m[1].toLowerCase()}=${m[2]}`;
+  }
+  return out;
+}
+function isInsideCssUrl(full, offset) {
+  const urlIdx = full.lastIndexOf("url(", offset);
+  if (urlIdx < 0)
+    return false;
+  if (full.lastIndexOf(")", offset) > urlIdx)
+    return false;
+  const dataIdx = full.indexOf("data:image/svg+xml", urlIdx);
+  return dataIdx >= 0 && dataIdx < offset;
+}
+function buildPlaceholder(markerN, width, height, carried) {
+  return `<img data-lumirealm-svg-pending="${markerN}"${carried} alt="" width="${width}" height="${height}">`;
 }
 function inferDimensions(svg) {
   let width = null;
@@ -4906,13 +4929,15 @@ function substituteSvgMarkers(html, markerToImageId) {
     return withoutPendingAttr.replace(/^<img\b/i, `<img src="/api/v1/images/${imageId}"`);
   });
 }
-var SVG_BLOCK_RE, TEMPLATED_RE, ANIMATED_RE, THEME_REACTIVE_RE, DANGEROUS_RE, SVG_PENDING_ATTR = "data-lumirealm-svg-pending", WIDTH_ATTR_RE, HEIGHT_ATTR_RE, VIEWBOX_RE, PLACEHOLDER_RE;
+var SVG_BLOCK_RE, TEMPLATED_RE, ANIMATED_RE, THEME_REACTIVE_RE, DANGEROUS_RE, SVG_OPEN_TAG_RE, CARRIED_ATTR_RE, SVG_PENDING_ATTR = "data-lumirealm-svg-pending", WIDTH_ATTR_RE, HEIGHT_ATTR_RE, VIEWBOX_RE, PLACEHOLDER_RE;
 var init_svg_rasterize = __esm(() => {
   SVG_BLOCK_RE = /<svg[\s>][\s\S]*?<\/svg\s*>/gi;
   TEMPLATED_RE = /\$\d|\{\{/;
   ANIMATED_RE = /<animate(?:Transform|Motion|)\b|<set\b|animation\s*:/i;
   THEME_REACTIVE_RE = /\bcurrentColor\b|var\s*\(\s*--/i;
   DANGEROUS_RE = /<image\s[^>]*\bhref\b|<use\s[^>]*\bhref\b|@import\s+url|<foreignObject\b|<script\b|on[a-z]+\s*=/i;
+  SVG_OPEN_TAG_RE = /<svg\b[^>]*>/i;
+  CARRIED_ATTR_RE = /\b(class|style|id)\s*=\s*("[^"]*"|'[^']*')/gi;
   WIDTH_ATTR_RE = /\bwidth\s*=\s*["']?([\d.]+)/i;
   HEIGHT_ATTR_RE = /\bheight\s*=\s*["']?([\d.]+)/i;
   VIEWBOX_RE = /\bviewBox\s*=\s*["']?\s*([\d.-]+)\s+([\d.-]+)\s+([\d.]+)\s+([\d.]+)/i;
@@ -9848,7 +9873,10 @@ var init_variables = __esm(() => {
 function register8(name, handler, description) {
   registry.register({ name, handler, description, category: "Risu / Misc", scoped: false });
 }
-var BUTTON_LABEL_ESCAPES;
+function escapeButtonLabel(s) {
+  return s.replace(BARE_AMP_RE, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+var BARE_AMP_RE;
 var init_misc = __esm(() => {
   init_registry();
   init_risu_helpers();
@@ -9909,7 +9937,7 @@ var init_misc = __esm(() => {
   register8("risu_comment", (ctx, a) => {
     if (ctx.commit || ctx.cbsContext)
       return "";
-    return `<div class="x-risu-risu-comment">${a[0] ?? ""}</div>`;
+    return `<div class="risu-comment x-risu-risu-comment">${a[0] ?? ""}</div>`;
   }, 'Comment macro. Empty at prompt time and in cbs; displays as <div class="risu-comment">\u2026</div> at render time.');
   registry.register({
     name: "//",
@@ -9930,11 +9958,11 @@ var init_misc = __esm(() => {
     const size = a[0] || "45";
     return `<img src="/logo2.png" style="height:${size}px;width:${size}px" />`;
   }, "Embeds the RisuAI logo image.");
-  BUTTON_LABEL_ESCAPES = { "&": "&amp;", "<": "&lt;", ">": "&gt;" };
+  BARE_AMP_RE = /&(?!#x[0-9a-fA-F]+;|#[0-9]+;|[a-zA-Z][a-zA-Z0-9]*;)/g;
   register8("button", (_c, a) => {
-    const label = (a[0] ?? "").replace(/[&<>]/g, (c) => BUTTON_LABEL_ESCAPES[c]);
+    const label = escapeButtonLabel(a[0] ?? "");
     const trigger = (a[1] ?? "").replace(/"/g, "&quot;");
-    return `<button class="x-risu-button-default" risu-trigger="${trigger}">${label}</button>`;
+    return `<button class="button-default x-risu-button-default" risu-trigger="${trigger}">${label}</button>`;
   }, "HTML button that fires the named risu-trigger when clicked.");
   register8("screenwidth", (ctx) => String(ctx.screenWidth ?? 0), "Viewport width in pixels. Read from the frontend-reported value; 0 before the first report.");
   register8("screenheight", (ctx) => String(ctx.screenHeight ?? 0), "Viewport height in pixels. Read from the frontend-reported value; 0 before the first report.");
@@ -10309,7 +10337,7 @@ var init_assets = __esm(() => {
     const hit = findAsset(ctx, ctx.character.additionalAssets, name, ctx.legacyMediaFindings);
     if (!hit)
       return "";
-    return `<div class="x-risu-risu-inlay-image"><img src="${hit.src}" alt="${hit.src}" style="${ASSET_WIDTH_STYLE}"/></div>
+    return `<div class="risu-inlay-image x-risu-risu-inlay-image"><img src="${hit.src}" alt="${hit.src}" style="${ASSET_WIDTH_STYLE}"/></div>
 `;
   }, "Inlay image wrapper. parser.svelte.ts.");
   register12("emotion", (ctx, args) => {
@@ -10409,7 +10437,7 @@ var init_assets = __esm(() => {
     const id = String(args[0] ?? "");
     if (!id)
       return "";
-    return `<div class="x-risu-risu-inlay-image"><img src="/api/v1/images/${id}"/></div>
+    return `<div class="risu-inlay-image x-risu-risu-inlay-image"><img src="/api/v1/images/${id}"/></div>
 
 `;
   }, "Wrapped inlay image. Risu parser.svelte.ts + 688.");
@@ -10419,7 +10447,7 @@ var init_assets = __esm(() => {
     const id = String(args[0] ?? "");
     if (!id)
       return "";
-    return `<div class="x-risu-risu-inlay-image"><img src="/api/v1/images/${id}"/></div>
+    return `<div class="risu-inlay-image x-risu-risu-inlay-image"><img src="/api/v1/images/${id}"/></div>
 
 `;
   }, "Wrapped inlay image (data variant). Risu parser.svelte.ts + 688.");
@@ -20217,12 +20245,16 @@ var triggerBindingSchema = exports_external.enum([
   "display",
   "request"
 ]);
+var triggerTypeSchema = exports_external.unknown().transform((v) => {
+  const r = triggerBindingSchema.safeParse(v);
+  return r.success ? r.data : "manual";
+});
 var triggerConditionSchema = exports_external.object({ type: exports_external.string() }).passthrough();
 var triggerEffectSchema = exports_external.object({ type: exports_external.string() }).passthrough();
 var looseComment = exports_external.union([exports_external.string(), exports_external.number(), exports_external.null(), exports_external.undefined()]).transform((v) => v == null ? "" : String(v)).pipe(exports_external.string());
 var triggerscriptSchema = exports_external.object({
   comment: looseComment,
-  type: triggerBindingSchema,
+  type: triggerTypeSchema,
   conditions: exports_external.array(triggerConditionSchema).nullish().transform((v) => v ?? []),
   effect: exports_external.array(triggerEffectSchema).nullish().transform((v) => v ?? []),
   lowLevelAccess: exports_external.unknown().nullish().transform((v) => v === undefined || v === null ? undefined : Boolean(v))
@@ -31389,7 +31421,13 @@ function buildRisuChatView(input) {
   }
   if (stripped > 0)
     adjustments.push(`stripped:${stripped}-trailing-empty-assistant`);
-  return { messages, adjustments };
+  let greeting;
+  if (messages.length > 0 && messages[0].role !== "user") {
+    greeting = messages[0].content;
+    messages.shift();
+    adjustments.push("stripped:1-leading-greeting");
+  }
+  return greeting !== undefined ? { messages, adjustments, greeting } : { messages, adjustments };
 }
 
 // src/interpreter/runtime/vars.ts
@@ -31628,6 +31666,8 @@ function makeChatApi(api, state, notifyStateChanged) {
     return "";
   }
   function getFirstMessage() {
+    if (state.firstMessage !== undefined)
+      return toStr(state.firstMessage);
     return toStr(state.messagesCache[0]?.content);
   }
   async function impersonate(role, value) {
@@ -32696,6 +32736,7 @@ async function makeRisuTriggerRuntime(api, data, scriptNs, opts = {}) {
     _tVars = Date.now() - _t0;
   }
   let messagesCache = [];
+  let firstMessage2;
   let _msgsCount = 0;
   let _msgsSrc = "fetched";
   const _tMsgsStart = Date.now();
@@ -32705,6 +32746,7 @@ async function makeRisuTriggerRuntime(api, data, scriptNs, opts = {}) {
       _msgsCount = preloaded.messagesRaw.length;
       const view = buildRisuChatView({ messages: preloaded.messagesRaw.map((m) => ({ ...m })) });
       messagesCache = view.messages;
+      firstMessage2 = view.greeting;
       if (view.adjustments.length > 0) {
         _logMake.info(`chat-view from-len=${_msgsCount} to-len=${messagesCache.length} adjustments=[${view.adjustments.join(", ")}] src=preloaded`);
       }
@@ -32713,6 +32755,7 @@ async function makeRisuTriggerRuntime(api, data, scriptNs, opts = {}) {
       _msgsCount = msgs.length;
       const view = buildRisuChatView({ messages: msgs.map((m) => ({ ...m })) });
       messagesCache = view.messages;
+      firstMessage2 = view.greeting;
       if (view.adjustments.length > 0) {
         _logMake.info(`chat-view from-len=${msgs.length} to-len=${messagesCache.length} adjustments=[${view.adjustments.join(", ")}]`);
       }
@@ -32763,6 +32806,8 @@ async function makeRisuTriggerRuntime(api, data, scriptNs, opts = {}) {
   }
   const _factoryTotal = Date.now() - _factoryStart;
   _logMake.info(`factory.timing total=${_factoryTotal}ms vars=${_tVars}ms (src=${_varsSrc}) ` + `msgs=${_tMsgs}ms (n=${_msgsCount} src=${_msgsSrc}) chars.get=${_tCharGet}ms ` + `lore=${_tLore}ms (books=${_bookCount} entries=${_entryCount} src=${_loreSrc}) ` + `inherited=${isInheritedVarsCache} chatId=${portalChatId ?? "<none>"} ` + `binding=${binding} characterId=${characterId ?? "<none>"}`);
+  const pendingSendIds = new WeakMap;
+  const pendingChatOps = [];
   const dirty = { value: false };
   const localScopes = new Map;
   const _vars = makeVarsApi({ varsCache, localScopes, dirty, characterId });
@@ -32775,7 +32820,7 @@ async function makeRisuTriggerRuntime(api, data, scriptNs, opts = {}) {
     historyend: "",
     promptend: ""
   };
-  const _chat = makeChatApi(api, { messagesCache, loopCounter, additionalSysPrompt }, (src) => notifyStateChanged(src));
+  const _chat = makeChatApi(api, { messagesCache, loopCounter, additionalSysPrompt, firstMessage: firstMessage2 }, (src) => notifyStateChanged(src));
   const {
     getMessagesTail,
     getMessageCount,
@@ -33035,13 +33080,31 @@ async function makeRisuTriggerRuntime(api, data, scriptNs, opts = {}) {
           _logSetChat.info(`index=${index} (real=${real}) msgId=${msgId} len=${raw.length} ` + `chatId=${portalChatId ?? "<none>"} no-op (raw === prev) \u2014 ` + `skipped editMessage`);
           return;
         }
-        messagesCache[real] = { ...messagesCache[real], content: raw };
+        const oldEntry = messagesCache[real];
+        const newEntry = { ...oldEntry, content: raw };
+        messagesCache[real] = newEntry;
         if (rememberOurWrite && portalChatId) {
           try {
             rememberOurWrite(portalChatId, msgId, raw);
           } catch {}
         }
         _logSetChat.info(`index=${index} (real=${real}) msgId=${msgId} ` + `len=${raw.length} chatId=${portalChatId ?? "<none>"} ` + `rememberOurWrite=${rememberOurWrite && portalChatId ? "called" : "skipped"}`);
+        const pend = pendingSendIds.get(oldEntry);
+        if (pend) {
+          pendingSendIds.set(newEntry, pend);
+          const ed = pend.then((rid) => {
+            if (!rid)
+              return;
+            if (rememberOurWrite && portalChatId) {
+              try {
+                rememberOurWrite(portalChatId, rid, raw);
+              } catch {}
+            }
+            return api.chat.editMessage?.(rid, raw);
+          }).catch(() => {});
+          pendingChatOps.push(ed);
+          return;
+        }
         try {
           api.chat.editMessage?.(msgId, raw);
         } catch {}
@@ -33055,21 +33118,50 @@ async function makeRisuTriggerRuntime(api, data, scriptNs, opts = {}) {
         cutChat(start, end);
       },
       removeChat: (_id, index) => {
-        const m = messagesCache[Number(index)];
+        const n = Number(index);
+        if (!Number.isFinite(n))
+          return;
+        const len = messagesCache.length;
+        const start = n < 0 ? Math.max(len + n, 0) : Math.min(n, len);
+        if (start >= len)
+          return;
+        const m = messagesCache[start];
         if (m) {
-          try {
-            api.chat.deleteMessage?.(m.id);
-          } catch {}
+          const pend = pendingSendIds.get(m);
+          if (pend) {
+            const del = pend.then((rid) => {
+              if (rid)
+                return api.chat.deleteMessage?.(rid);
+            }).catch(() => {});
+            pendingChatOps.push(del);
+          } else if (m.id) {
+            try {
+              const del = api.chat.deleteMessage?.(m.id);
+              if (del && typeof del.then === "function")
+                pendingChatOps.push(del);
+            } catch {}
+          }
         }
-        messagesCache.splice(Number(index), 1);
+        messagesCache.splice(start, 1);
       },
       addChat: (_id, role, value) => {
         const raw = normalizeReplaceStringForSanitizer(toStr(value));
         const lumiRole = risuRoleToLumi(toStr(role));
-        messagesCache.push({ id: String(messagesCache.length + 1), role: lumiRole, content: raw });
+        const entry = { id: "", role: lumiRole, content: raw };
+        messagesCache.push(entry);
         _logAddChat.info(`role=${toStr(role)} len=${raw.length} chatId=${portalChatId ?? "<none>"}`);
         try {
-          api.chat.sendMessage?.(raw, { role: lumiRole });
+          const send = api.chat.sendMessage?.(raw, { role: lumiRole });
+          if (send && typeof send.then === "function") {
+            const idP = send.then((r) => {
+              const realId = r && typeof r.id === "string" ? r.id : "";
+              if (realId)
+                entry.id = realId;
+              return realId;
+            }).catch(() => "");
+            pendingSendIds.set(entry, idP);
+            pendingChatOps.push(idP);
+          }
         } catch {}
       },
       insertChat: (_id, index, role, value) => {
@@ -33134,7 +33226,10 @@ async function makeRisuTriggerRuntime(api, data, scriptNs, opts = {}) {
       getAuthorsNote: (_id) => getVar("__risu_author_note__") || "",
       getBackgroundEmbedding: (_id) => "",
       setBackgroundEmbedding: (_id, _data) => {},
-      getCharacterLastMessage: (_id) => getLastCharMessage(),
+      getCharacterLastMessage: (_id) => {
+        const last = getLastCharMessage();
+        return last !== "" ? last : toStr(firstMessage2 ?? "");
+      },
       getUserLastMessage: (_id) => getLastUserMessage(),
       LLMMain: async (_id, promptStr, _useMulti, _optionsStr) => {
         if (!lowLevelAccess) {
@@ -33395,6 +33490,11 @@ async function makeRisuTriggerRuntime(api, data, scriptNs, opts = {}) {
       }
     }
     dirty.value = false;
+    if (pendingChatOps.length > 0) {
+      const ops = pendingChatOps.splice(0);
+      flog(`draining ${ops.length} pending chat op(s)`);
+      await Promise.allSettled(ops);
+    }
     flog(`DONE`);
   }
   const publicApi = {
@@ -33721,6 +33821,8 @@ var TTL_MS2 = 5000;
 var MAX_ENTRIES = 500;
 var cache4 = new Map;
 var inFlight = new Map;
+var knownOutputs = new Map;
+var KNOWN_OUTPUTS_MAX = 800;
 var hitCount = 0;
 var missCount = 0;
 var inFlightHitCount = 0;
@@ -33756,37 +33858,75 @@ function evictIfNeeded(now) {
     cache4.delete(oldestKey);
 }
 function lookupRenderMcp(chatId, msgId, content) {
-  const entry = cache4.get(key(chatId, msgId));
+  const k = key(chatId, msgId);
+  const liveHash = fnv1a(content);
+  const ko = knownOutputs.get(k);
+  if (ko && ko.hashes.has(liveHash)) {
+    hitCount += 1;
+    return { kind: "noop" };
+  }
+  const entry = cache4.get(k);
   if (!entry) {
     missCount += 1;
     return null;
   }
   const now = Date.now();
   if (now - entry.ts > TTL_MS2) {
-    cache4.delete(key(chatId, msgId));
+    cache4.delete(k);
     missCount += 1;
     return null;
   }
-  if (entry.contentLen !== content.length) {
-    missCount += 1;
-    return null;
+  if (entry.contentLen === content.length && entry.contentHash === liveHash) {
+    hitCount += 1;
+    return entry.result;
   }
-  if (entry.contentHash !== fnv1a(content)) {
-    missCount += 1;
-    return null;
+  if (entry.result.kind === "transformed" && entry.outLen === content.length && entry.outHash === liveHash) {
+    hitCount += 1;
+    return { kind: "noop" };
   }
-  hitCount += 1;
-  return entry.result;
+  missCount += 1;
+  return null;
 }
 function cacheRenderMcp(chatId, msgId, content, result) {
   const now = Date.now();
   evictIfNeeded(now);
-  cache4.set(key(chatId, msgId), {
+  const outContent = result.kind === "transformed" ? result.content : content;
+  const k = key(chatId, msgId);
+  cache4.set(k, {
     contentHash: fnv1a(content),
     contentLen: content.length,
     result,
+    outHash: fnv1a(outContent),
+    outLen: outContent.length,
     ts: now
   });
+  if (result.kind === "transformed") {
+    if (knownOutputs.size >= KNOWN_OUTPUTS_MAX) {
+      let oldestKey = null;
+      let oldestTs = Infinity;
+      for (const [kk, v] of knownOutputs) {
+        if (v.ts < oldestTs) {
+          oldestTs = v.ts;
+          oldestKey = kk;
+        }
+      }
+      if (oldestKey)
+        knownOutputs.delete(oldestKey);
+    }
+    const ko = knownOutputs.get(k);
+    const h = fnv1a(result.content);
+    if (ko) {
+      ko.hashes.add(h);
+      ko.ts = now;
+      if (ko.hashes.size > 16) {
+        const first = ko.hashes.values().next().value;
+        if (first !== undefined)
+          ko.hashes.delete(first);
+      }
+    } else {
+      knownOutputs.set(k, { hashes: new Set([h]), ts: now });
+    }
+  }
 }
 function lookupInFlightRenderMcp(chatId, msgId, content) {
   const entry = inFlight.get(key(chatId, msgId));
@@ -33829,6 +33969,7 @@ function invalidateRenderMcpForMessage(chatId, msgId) {
   if (cache4.delete(k))
     log4.debug(`invalidate chat=${chatId} msg=${msgId}`);
   inFlight.delete(k);
+  knownOutputs.delete(k);
 }
 function renderMcpCacheStats() {
   return { size: cache4.size, hits: hitCount, misses: missCount, inFlightHits: inFlightHitCount, inFlightSize: inFlight.size };
@@ -35693,7 +35834,24 @@ function createLumiInterceptors(deps) {
               userId: ctx.userId
             });
             const editScriptNS = makeDispatcherScriptNS();
+            const puaResolve = async (text) => {
+              if (text.indexOf("{{") < 0)
+                return text;
+              const enc = puaEncodeFeMacros(text);
+              const resolved = await deps.resolveReadonly(enc.text, ctx.chatId, active.card.character_id, ctx.userId);
+              return puaDecodeFeMacros(resolved, enc.tokens);
+            };
             let transformed = ctx.content;
+            let preResolveMs = 0;
+            {
+              const tPre = Date.now();
+              try {
+                transformed = await puaResolve(transformed);
+              } catch (err) {
+                log8.warn(`messageContentProcessor.render pre-resolve threw: ${errMsg2(err)}. Continuing with raw content.`);
+              }
+              preResolveMs = Date.now() - tPre;
+            }
             let chainMs = 0;
             if (hasLuaTrigger) {
               const tChain = Date.now();
@@ -35723,29 +35881,27 @@ function createLumiInterceptors(deps) {
             if (transformed.indexOf("{{") >= 0) {
               const tResolve = Date.now();
               try {
-                const enc = puaEncodeFeMacros(transformed);
-                const resolved = await deps.resolveReadonly(enc.text, ctx.chatId, active.card.character_id, ctx.userId);
-                transformed = puaDecodeFeMacros(resolved, enc.tokens);
+                transformed = await puaResolve(transformed);
               } catch (err) {
                 log8.warn(`messageContentProcessor.render body-resolve threw: ${errMsg2(err)}. Returning pre-resolve content.`);
               }
               resolveMs = Date.now() - tResolve;
             }
             const totalMs = Date.now() - tStart;
-            const otherOverhead = totalMs - chainMs - atActionsMs - resolveMs - (tB - tA);
+            const otherOverhead = totalMs - preResolveMs - chainMs - atActionsMs - resolveMs - (tB - tA);
             if (transformed === ctx.content) {
               if (ctx.messageId) {
                 cacheRenderMcp(ctx.chatId, ctx.messageId, ctx.content, { kind: "noop" });
               }
               workResolve({ kind: "noop" });
-              log8.trace(`messageContentProcessor.exit #${seq} path=render-noop chat=${ctx.chatId} msg=${ctx.messageId ?? "<?>"} idx=${messageIndex} total=${totalMs}ms (chain=${chainMs}ms at_actions=${atActionsMs}ms resolve=${resolveMs}ms ensure=${tB - tA}ms other=${otherOverhead}ms)`);
+              log8.trace(`messageContentProcessor.exit #${seq} path=render-noop chat=${ctx.chatId} msg=${ctx.messageId ?? "<?>"} idx=${messageIndex} total=${totalMs}ms (pre=${preResolveMs}ms chain=${chainMs}ms at_actions=${atActionsMs}ms resolve=${resolveMs}ms ensure=${tB - tA}ms other=${otherOverhead}ms)`);
               return;
             }
             if (ctx.messageId) {
               cacheRenderMcp(ctx.chatId, ctx.messageId, ctx.content, { kind: "transformed", content: transformed });
             }
             workResolve({ kind: "transformed", content: transformed });
-            log8.trace(`messageContentProcessor.exit #${seq} path=render-transformed chat=${ctx.chatId} msg=${ctx.messageId ?? "<?>"} idx=${messageIndex} before_len=${ctx.content.length} after_len=${transformed.length} total=${totalMs}ms (chain=${chainMs}ms at_actions=${atActionsMs}ms resolve=${resolveMs}ms ensure=${tB - tA}ms other=${otherOverhead}ms)`);
+            log8.trace(`messageContentProcessor.exit #${seq} path=render-transformed chat=${ctx.chatId} msg=${ctx.messageId ?? "<?>"} idx=${messageIndex} before_len=${ctx.content.length} after_len=${transformed.length} total=${totalMs}ms (pre=${preResolveMs}ms chain=${chainMs}ms at_actions=${atActionsMs}ms resolve=${resolveMs}ms ensure=${tB - tA}ms other=${otherOverhead}ms)`);
             return { content: transformed };
           } catch (err) {
             workReject(err);

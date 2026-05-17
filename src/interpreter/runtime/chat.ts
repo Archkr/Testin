@@ -11,6 +11,9 @@ export interface ChatState {
   readonly loopCounter: { value: number };
   // Risu triggers.ts systemPrompt accumulator.
   readonly additionalSysPrompt: Record<'start' | 'historyend' | 'promptend', string>;
+  // Risu's `char.firstMessage`: the greeting, excluded from `chat.message[]`.
+  // Risu's getFirstMessage / getCharacterLastMessage fall back to it.
+  readonly firstMessage?: string | undefined;
 }
 
 export interface ChatApi {
@@ -63,6 +66,10 @@ export function makeChatApi(
     return '';
   }
   function getFirstMessage(): string {
+    // Risu v2GetFirstMessage returns char.firstMessage (the greeting), which
+    // is excluded from chat.message[]. Fall back to messagesCache[0] only when
+    // no greeting was present (user-first chat).
+    if (state.firstMessage !== undefined) return toStr(state.firstMessage);
     return toStr(state.messagesCache[0]?.content);
   }
 

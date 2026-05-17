@@ -11655,6 +11655,8 @@ var HIDE_STYLE_ID = "lumirealm-portal-hide-panels";
 var documentStyleEl = null;
 var constructedSheet = null;
 var knownClasses = new Set;
+var knownClassGroups = new Set;
+var GROUP_SEP = "\x1F";
 var knownIds = new Set;
 function ensureSurfaces() {
   if (typeof document === "undefined")
@@ -11716,6 +11718,9 @@ function rebuild() {
   };
   for (const c of knownClasses)
     emit(`.${escapeIdent(c)}`);
+  for (const g of knownClassGroups) {
+    emit(g.split(GROUP_SEP).map((c) => `.${escapeIdent(c)}`).join(""));
+  }
   for (const id of knownIds)
     emit(`#${escapeIdent(id)}`);
   for (const sel of INLINE_STYLE_SELECTORS)
@@ -11732,29 +11737,27 @@ function rebuild() {
   }
 }
 var POISON_CLASSES = new Set(["null", "undefined", ""]);
-function addHidePanelClasses(classes) {
+function addHidePanelClassGroups(groups) {
   let added = false;
-  const newClasses = [];
-  for (const c of classes) {
-    if (!c)
+  for (const group of groups) {
+    const seen = new Set;
+    const cls = [];
+    for (const c of group) {
+      if (!c || POISON_CLASSES.has(c) || seen.has(c))
+        continue;
+      seen.add(c);
+      cls.push(c);
+    }
+    if (cls.length === 0)
       continue;
-    if (POISON_CLASSES.has(c))
-      continue;
-    if (!knownClasses.has(c)) {
-      knownClasses.add(c);
-      newClasses.push(c);
+    const key = cls.join(GROUP_SEP);
+    if (!knownClassGroups.has(key)) {
+      knownClassGroups.add(key);
       added = true;
     }
   }
-  if (added) {
+  if (added)
     rebuild();
-    try {
-      const docCss = documentStyleEl?.textContent ?? "";
-      const sheetRules = constructedSheet ? constructedSheet.cssRules.length : 0;
-      const sheetAdopted = constructedSheet ? Array.from(document.adoptedStyleSheets ?? []).includes(constructedSheet) : false;
-      flog.debug(`added ${JSON.stringify(newClasses)}; ` + `total=${knownClasses.size} doc_chars=${docCss.length} ` + `sheet_rules=${sheetRules} sheet_doc_adopted=${sheetAdopted}`);
-    } catch {}
-  }
   return added;
 }
 function addHidePanelIds(ids) {
@@ -11782,9 +11785,10 @@ function addHidePanelIds(ids) {
   return added;
 }
 function clearHidePanelClasses() {
-  if (knownClasses.size === 0 && knownIds.size === 0)
+  if (knownClasses.size === 0 && knownIds.size === 0 && knownClassGroups.size === 0)
     return;
   knownClasses.clear();
+  knownClassGroups.clear();
   knownIds.clear();
   rebuild();
 }
@@ -12695,17 +12699,18 @@ function setupMessagePortal(ctx, flog2) {
             sourceShadow,
             lastSeenAt: performance.now()
           });
-          const classes = [];
+          const groups = [];
           const ids = [];
           for (const el of liftSet) {
-            for (const c of Array.from(el.classList))
-              classes.push(c);
+            const cls = Array.from(el.classList);
+            if (cls.length > 0)
+              groups.push(cls);
             const id = el.id;
             if (id)
               ids.push(id);
           }
-          if (classes.length > 0)
-            addHidePanelClasses(classes);
+          if (groups.length > 0)
+            addHidePanelClassGroups(groups);
           if (ids.length > 0)
             addHidePanelIds(ids);
           groupsLifted++;

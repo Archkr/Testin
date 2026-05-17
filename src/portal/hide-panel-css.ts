@@ -35,6 +35,11 @@ const HIDE_STYLE_ID = "lumirealm-portal-hide-panels";
 let documentStyleEl: HTMLStyleElement | null = null;
 let constructedSheet: CSSStyleSheet | null = null;
 const knownClasses = new Set<string>();
+// A lifted panel often shares a generic marker class (e.g. `trs-compat`) with
+// non-lifted siblings, so hide each lifted element by the conjunction of its own
+// classes (`.dmt-side-buttons.trs-compat`), strictly narrower than the per-class union.
+const knownClassGroups = new Set<string>();
+const GROUP_SEP = "\x1f";
 // IDs are an independent selector space , cards like Subject Iteration
 // style fixed widgets via `#dg-float-btn` etc. with no class hook. Same
 // reactive rebuild path as classes; rules emit `#<id>` instead of `.<cls>`.
@@ -135,6 +140,9 @@ function rebuild(): void {
     );
   };
   for (const c of knownClasses) emit(`.${escapeIdent(c)}`);
+  for (const g of knownClassGroups) {
+    emit(g.split(GROUP_SEP).map((c) => `.${escapeIdent(c)}`).join(""));
+  }
   for (const id of knownIds) emit(`#${escapeIdent(id)}`);
   // Static inline-style baseline , always emitted, even when no
   // class/id has been learned yet. Cheap (two selectors).
@@ -196,6 +204,30 @@ export function addHidePanelClasses(classes: Iterable<string>): boolean {
   return added;
 }
 
+/** Add a lifted element's full class signature, emitting one compound
+ *  selector (`.a.b.c`) so only elements carrying ALL of its classes hide
+ *  (a one-class survivor degrades to a single-class selector as before). */
+export function addHidePanelClassGroups(groups: Iterable<Iterable<string>>): boolean {
+  let added = false;
+  for (const group of groups) {
+    const seen = new Set<string>();
+    const cls: string[] = [];
+    for (const c of group) {
+      if (!c || POISON_CLASSES.has(c) || seen.has(c)) continue;
+      seen.add(c);
+      cls.push(c);
+    }
+    if (cls.length === 0) continue;
+    const key = cls.join(GROUP_SEP);
+    if (!knownClassGroups.has(key)) {
+      knownClassGroups.add(key);
+      added = true;
+    }
+  }
+  if (added) rebuild();
+  return added;
+}
+
 /** Add panel IDs to the hide-set. Subject Iteration and similar cards
  *  style fixed widgets via `#dg-float-btn` etc. , no class hook. */
 export function addHidePanelIds(ids: Iterable<string>): boolean {
@@ -229,8 +261,9 @@ export function addHidePanelIds(ids: Iterable<string>): boolean {
  *  for card A doesn't bleed over into card B (where the same class/id
  *  name might refer to a non-fixed element that should NOT be hidden). */
 export function clearHidePanelClasses(): void {
-  if (knownClasses.size === 0 && knownIds.size === 0) return;
+  if (knownClasses.size === 0 && knownIds.size === 0 && knownClassGroups.size === 0) return;
   knownClasses.clear();
+  knownClassGroups.clear();
   knownIds.clear();
   rebuild();
 }

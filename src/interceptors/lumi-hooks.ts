@@ -467,7 +467,31 @@ export function createLumiInterceptors(deps: CreateLumiInterceptorsDeps): LumiIn
               userId: ctx.userId,
             });
             const editScriptNS = makeDispatcherScriptNS();
+            // Risu resolves CBS (risuChatParser rmVar+visualize) BEFORE the
+            // editdisplay Lua hook runs, so the hook sees only the active
+            // {{#risu_if}} branch, not the raw body. FE-resolved macros stay
+            // PUA-protected so resolveDisplayMacros gets current persona.
+            const puaResolve = async (text: string): Promise<string> => {
+              if (text.indexOf('{{') < 0) return text;
+              const enc = puaEncodeFeMacros(text);
+              const resolved = await deps.resolveReadonly(
+                enc.text, ctx.chatId, active.card.character_id, ctx.userId,
+              );
+              return puaDecodeFeMacros(resolved, enc.tokens);
+            };
             let transformed = ctx.content;
+            let preResolveMs = 0;
+            {
+              const tPre = Date.now();
+              try {
+                transformed = await puaResolve(transformed);
+              } catch (err) {
+                log.warn(
+                  `messageContentProcessor.render pre-resolve threw: ${errMsg(err)}. Continuing with raw content.`,
+                );
+              }
+              preResolveMs = Date.now() - tPre;
+            }
             let chainMs = 0;
             if (hasLuaTrigger) {
               const tChain = Date.now();
@@ -507,19 +531,13 @@ export function createLumiInterceptors(deps: CreateLumiInterceptorsDeps): LumiIn
               atActionsMs = Date.now() - tAt;
             }
 
-            // Risu parity: commit:false strips body-level setvars while Lumi's display-regex still runs after with commit:true so card outScripts CAN commit, and the FE-resolved set is PUA-protected so resolveDisplayMacros sees current persona context per render.
+            // Second resolve for any CBS the hook emitted, mirroring Risu's
+            // processScriptFull parser pass after the editdisplay hook.
             let resolveMs = 0;
             if (transformed.indexOf('{{') >= 0) {
               const tResolve = Date.now();
               try {
-                const enc = puaEncodeFeMacros(transformed);
-                const resolved = await deps.resolveReadonly(
-                  enc.text,
-                  ctx.chatId,
-                  active.card.character_id,
-                  ctx.userId,
-                );
-                transformed = puaDecodeFeMacros(resolved, enc.tokens);
+                transformed = await puaResolve(transformed);
               } catch (err) {
                 log.warn(
                   `messageContentProcessor.render body-resolve threw: ${errMsg(err)}. Returning pre-resolve content.`,
@@ -529,14 +547,14 @@ export function createLumiInterceptors(deps: CreateLumiInterceptorsDeps): LumiIn
             }
 
             const totalMs = Date.now() - tStart;
-            const otherOverhead = totalMs - chainMs - atActionsMs - resolveMs - (tB - tA);
+            const otherOverhead = totalMs - preResolveMs - chainMs - atActionsMs - resolveMs - (tB - tA);
             if (transformed === ctx.content) {
               if (ctx.messageId) {
                 cacheRenderMcp(ctx.chatId, ctx.messageId, ctx.content, { kind: 'noop' });
               }
               workResolve({ kind: 'noop' });
               log.trace(
-                `messageContentProcessor.exit #${seq} path=render-noop chat=${ctx.chatId} msg=${ctx.messageId ?? '<?>'} idx=${messageIndex} total=${totalMs}ms (chain=${chainMs}ms at_actions=${atActionsMs}ms resolve=${resolveMs}ms ensure=${tB - tA}ms other=${otherOverhead}ms)`,
+                `messageContentProcessor.exit #${seq} path=render-noop chat=${ctx.chatId} msg=${ctx.messageId ?? '<?>'} idx=${messageIndex} total=${totalMs}ms (pre=${preResolveMs}ms chain=${chainMs}ms at_actions=${atActionsMs}ms resolve=${resolveMs}ms ensure=${tB - tA}ms other=${otherOverhead}ms)`,
               );
               return;
             }
@@ -545,7 +563,7 @@ export function createLumiInterceptors(deps: CreateLumiInterceptorsDeps): LumiIn
             }
             workResolve({ kind: 'transformed', content: transformed });
             log.trace(
-              `messageContentProcessor.exit #${seq} path=render-transformed chat=${ctx.chatId} msg=${ctx.messageId ?? '<?>'} idx=${messageIndex} before_len=${ctx.content.length} after_len=${transformed.length} total=${totalMs}ms (chain=${chainMs}ms at_actions=${atActionsMs}ms resolve=${resolveMs}ms ensure=${tB - tA}ms other=${otherOverhead}ms)`,
+              `messageContentProcessor.exit #${seq} path=render-transformed chat=${ctx.chatId} msg=${ctx.messageId ?? '<?>'} idx=${messageIndex} before_len=${ctx.content.length} after_len=${transformed.length} total=${totalMs}ms (pre=${preResolveMs}ms chain=${chainMs}ms at_actions=${atActionsMs}ms resolve=${resolveMs}ms ensure=${tB - tA}ms other=${otherOverhead}ms)`,
             );
             return { content: transformed };
           } catch (err) {

@@ -5,6 +5,9 @@ import type { HostMessage } from './host.js';
 export interface RisuChatView {
   readonly messages: HostMessage[];
   readonly adjustments: readonly string[];
+  // Content of the stripped leading greeting, Risu's `char.firstMessage`
+  // fallback for getCharacterLastMessage / getFirstMessage.
+  readonly greeting?: string;
 }
 
 export interface BuildRisuChatViewInput {
@@ -29,5 +32,16 @@ export function buildRisuChatView(input: BuildRisuChatViewInput): RisuChatView {
   }
   if (stripped > 0) adjustments.push(`stripped:${stripped}-trailing-empty-assistant`);
 
-  return { messages, adjustments };
+  // Risu's `chat.message[]` excludes the greeting, so the Lua chat API must
+  // too: a greeting-included getChatLength is off-by-one vs Risu while
+  // meta.index stays Risu-frame, shifting card `meta.index - getChatLength()`
+  // position math by one. Same leading-non-user drop the backend cache uses.
+  let greeting: string | undefined;
+  if (messages.length > 0 && messages[0]!.role !== 'user') {
+    greeting = messages[0]!.content;
+    messages.shift();
+    adjustments.push('stripped:1-leading-greeting');
+  }
+
+  return greeting !== undefined ? { messages, adjustments, greeting } : { messages, adjustments };
 }

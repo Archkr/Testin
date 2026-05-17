@@ -28,7 +28,7 @@
 import type { SpindleFrontendContext } from "lumiverse-spindle-types";
 import { logStore } from "../log/store.js";
 import {
-  addHidePanelClasses,
+  addHidePanelClassGroups,
   addHidePanelIds,
   clearHidePanelClasses,
   getHidePanelSheet,
@@ -699,20 +699,19 @@ export function setupMessagePortal(ctx: SpindleFrontendContext, flog: Flog): Mes
             lastSeenAt: performance.now(),
           });
 
-          // Reactive CSS source-hiding. Capture every class AND every id
-          // on every element in the lift set; hide-panel-css updates the
-          // document <style> + the constructed sheet adopted into chat
-          // shadows. ID-only fixed widgets (Subject Iteration's
-          // `#dg-float-btn` etc.) need the id branch , without it, cards
-          // that style fixed elements via id selectors slip through.
-          const classes: string[] = [];
+          // Hide each lifted element by the conjunction of its own classes
+          // (one group per element) so a generic marker class shared with a
+          // non-lifted sibling cannot hide that sibling. ID-only fixed
+          // widgets (Subject Iteration's `#dg-float-btn`) still use ids.
+          const groups: string[][] = [];
           const ids: string[] = [];
           for (const el of liftSet) {
-            for (const c of Array.from(el.classList)) classes.push(c);
+            const cls = Array.from(el.classList);
+            if (cls.length > 0) groups.push(cls);
             const id = el.id;
             if (id) ids.push(id);
           }
-          if (classes.length > 0) addHidePanelClasses(classes);
+          if (groups.length > 0) addHidePanelClassGroups(groups);
           if (ids.length > 0) addHidePanelIds(ids);
 
           groupsLifted++;
