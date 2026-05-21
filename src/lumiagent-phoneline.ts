@@ -252,7 +252,7 @@ function checkWritePath(extPath: string): { ok: boolean; message?: string } {
       ok: false,
       message:
         'lumirealm.payload.asset_index / emotion_index map asset NAMES (the user-facing handles referenced by `{{img::name}}` / `{{emotion::name}}` / `<img="name">` in regex replace_string and bg-html) to their underlying image ids. Writing through a path bypasses the refresh hooks (`refreshRisuAssetMap`, attached-character invalidation) and leaves the runtime out of sync.\n\n' +
-        'There is no agent-side tool for asset CRUD today. The wire ops `add_asset` / `add_assets` / `rename_asset` / `delete_asset` exist on the backend but no LumiAgent tool wraps them. Surface to the user: asset add / rename / delete must be done in the LumiRealm Viewer → Assets tab. ' + COUPLING_REMINDER,
+        'Use the dedicated tools, NOT a path write: `asset_rename` and `asset_delete` wrap the rename / delete wire ops with the refresh hooks fired correctly. Adding a NEW asset (`add_asset` / `add_assets`) has no agent tool: surface that asset upload is a LumiRealm Viewer → Assets tab action. ' + COUPLING_REMINDER,
     };
   }
 
@@ -265,8 +265,8 @@ function checkWritePath(extPath: string): { ok: boolean; message?: string } {
     return {
       ok: false,
       message:
-        'lumirealm.user_overrides.default_variables_text and .default_variables_overrides are PER-USER overrides of the card-side `payload.scriptstate_defaults`. The user edits these in State → Variables → Default. No agent tool wraps the `set_default_variables_text` wire op today.\n\n' +
-        'If you want to change the value EVERY user of this card sees, edit `char/extensions/lumirealm.payload.scriptstate_defaults` (the card-side baseline). If you want a per-user override for THIS user only, surface to the user that the State → Variables → Default tab is the place. Reading the user_overrides values for diagnostic context is fine.',
+        'lumirealm.user_overrides.default_variables_text and .default_variables_overrides are PER-USER overrides of the card-side `payload.scriptstate_defaults`. Do NOT path-write them.\n\n' +
+        'For a per-user override for THIS user only, use the `set_default_variables_text` tool (`null` reverts to the card-side baseline). To change the value EVERY user of this card sees, edit `char/extensions/lumirealm.payload.scriptstate_defaults` (the card-side baseline) instead. Reading the user_overrides values for diagnostic context is fine.',
     };
   }
 
@@ -274,7 +274,7 @@ function checkWritePath(extPath: string): { ok: boolean; message?: string } {
     return {
       ok: false,
       message:
-        'lumirealm.user_overrides.* is per-user UI configuration (attached module ids, portal decisions, low-level-access consent, etc.). The user manages these through the LumiRealm UI. The agent has no tool to write them; reading for diagnostic context is fine. For mutations, surface to the user that the relevant LumiRealm tab handles it (Modules tab for attach / detach, etc.).',
+        'lumirealm.user_overrides.* is per-user UI configuration (attached module ids, portal decisions, low-level-access consent, etc.). Do NOT path-write it. Module attach / detach has dedicated tools (`module_attach` / `module_detach`) that write attached_module_ids with the refresh hooks fired. The other user_overrides (portal decisions, low-level-access consent) have no agent tool: reading for diagnostic context is fine, otherwise surface that the relevant LumiRealm tab handles it.',
     };
   }
 
@@ -491,7 +491,7 @@ Every row here can be edited. Translation work, UI rewrites, and content edits a
 | Surface | Path(s) | What the user sees | Notes |
 |---|---|---|---|
 | Character canonical fields | \`char/<field>\` for ${LUMIREALM_DUAL_KEYS_LIST}, plus \`creator_notes\`, \`creator\`, \`name\` | Prose injected into the LLM prompt; greetings + persona shown in chat history | \`update_character({patch})\` for multi-field, or \`edit\` / \`rewrite\` per field. The \`payload.<same>\` mirrors are refused on write. |
-| Alternate greetings | \`char/alternate_greetings/<idx>\` | Greeting #2..#N shown in the chat-start picker | \`rewrite\` for whole-greeting overwrites; \`create_alternate_greeting\` / \`delete_alternate_greeting\` for shape changes. |
+| Alternate greetings | \`char/alternate_greetings/<idx>\` | Greeting #2..#N shown in the chat-start picker | \`rewrite\` for whole-greeting overwrites; \`create({path:"char/alternate_greetings"})\` / \`delete({path:"char/alternate_greetings/<idx>"})\` for shape changes. |
 | Regex replace_string | \`rx/<scriptId>/replace_string\` | HTML / CSS / text injected into the rendered message DOM — status panels, settings UI, buttons, popups, scene backgrounds | THIS is where most card UI HTML lives on Risu-imported cards. Look here first for UI labels. |
 | Regex find_regex | \`rx/<scriptId>/find_regex\` | Not user-visible, but anchors the rule: matches against LLM output / message text | Don't translate the pattern. Touch only if the LLM's output shape genuinely changed. |
 | Lorebook content / comment | \`wb/<entryId>/content\` and \`wb/<entryId>/comment\` | Lore text injected into the LLM prompt when keys hit | \`update_world_book_entry\` for metadata (key arrays, decorators, disabled, priority). |
@@ -506,22 +506,27 @@ Every row here can be edited. Translation work, UI rewrites, and content edits a
 | Module customModuleToggle DSL | \`edit_external\` / \`update_external\` on \`surface_id='module_envelope'\` field \`module.customModuleToggle\` | A string DSL that defines the checkboxes / selects / text inputs / groups shown in State → Toggles when this module is attached. Toggle keys flow into \`{{getvar::toggle_KEY}}\` / Risu \`{{#when::toggle::KEY}}\` macros. | DSL syntax is Risu's \`parseToggleSyntax\` (see ported docs in LumiRealm \`core/toggle-syntax.ts\`). Each line is a directive: \`>group Name\`, \`<\`, \`---\`, \`#caption\`, \`?key|Label\`, \`?key|Label|options,comma,separated\`, \`%key|Label|default\` for text. Translate the labels / captions; never touch the leading directive char or the key name (renaming the key breaks every macro consumer). |
 | Module lorebook | \`wb/<id>/content\` and \`wb/<id>/comment\` for the world book named \`Module: <module name>\` | Lore injected into the LLM prompt for every character that has the module attached. The module viewer also reads from this wb directly. | Use the path-based tools (\`read\`, \`edit\`, \`rewrite\`, \`update_world_book_entry\`) on the installed wb. \`list({path: 'wb'})\` shows every world book including the module-installed ones. Edits are shared across every character that has the module attached (one wb per module). \`module.lorebook[i]\` on the envelope is the frozen import bundle and is refused on write. |
 | Module envelope (other) | \`list_external\` / \`read_external\` / \`grep_external\` / \`edit_external\` / \`update_external\` with \`surface_id='module_envelope'\` | Module-scoped regex (\`module.regex[i].in\` / \`.out\` / \`.comment\`), triggers (\`module.trigger[i].comment\` / \`.effect[k].(value|display|code)\`), bg-html (\`module.backgroundEmbedding\`). Module regex is ALSO installed as top-level mirrors (editable via \`rx/\` paths) — but for migration-safe edits, use the envelope. | Field paths shown above. |
-| Asset name registry (read-only via path) | \`list({path: 'char/extensions/lumirealm.payload.asset_index'})\` then \`read({path: 'char/extensions/lumirealm.payload.asset_index.<name>.ext'})\` (or \`.imageIds[0]\`); same for \`emotion_index\` | The keys of these objects are the asset NAMES referenced by \`{{img::name}}\` / \`{{emotion::name}}\` / \`<img="name">\` macros in regex \`replace_string\` and bg-html. Names are user-visible (they show up in the Viewer → Assets grid). \`survey_cjk\` won't find CJK in asset names because they live in object KEYS, not leaves — explicitly \`list\` this path on translation / UI tasks. | READ only. Asset add / rename / delete go through dedicated WS ops the agent doesn't currently wrap, see UI-only section. |
+| Asset name registry (read-only via path) | \`list({path: 'char/extensions/lumirealm.payload.asset_index'})\` then \`read({path: 'char/extensions/lumirealm.payload.asset_index.<name>.ext'})\` (or \`.imageIds[0]\`); same for \`emotion_index\` | The keys of these objects are the asset NAMES referenced by \`{{img::name}}\` / \`{{emotion::name}}\` / \`<img="name">\` macros in regex \`replace_string\` and bg-html. Names are user-visible (they show up in the Viewer → Assets grid). \`survey_cjk\` won't find CJK in asset names because they live in object KEYS, not leaves — explicitly \`list\` this path on translation / UI tasks. | READ only via path. Rename / delete have dedicated tools (\`asset_rename\` / \`asset_delete\`); asset ADD is UI-only. Never path-write asset_index. |
 
 If a path is NOT in this table and NOT a top-level \`char/\` / \`rx/\` / \`wb/\` surface, it's either internal (opcode types, indent depth, ids, schema versions, raw asset arrays) or a derived mirror — leave it alone or write to the redirect target the refusal message gives you.
 
-## UI-visible surfaces the agent cannot mutate today
+## Chat-state and module mutations have dedicated tools
 
-These show up in the LumiRealm Viewer / State / Modules tabs and ARE user-editable through that UI, but no LumiAgent tool wraps the corresponding WS op yet. When the user asks for a change in one of these areas, **read for diagnostics, then surface to the user that the change has to be made in the named LumiRealm tab.** Don't try to fake it through path writes — the path-write side effects (refresh hooks, runtime invalidations) will be missing and the runtime will silently diverge from storage.
+These have wired LumiAgent tools. Use the tool, NOT a path write to the underlying storage (path writes bypass refresh hooks / runtime invalidations and the runtime silently diverges):
+
+- Asset rename / delete (character or module): \`asset_rename\` / \`asset_delete\`.
+- Module attach / detach on a character: \`module_attach\` / \`module_detach\`.
+- Toggle value for a chat: \`set_toggle\` (key as defined in the module \`customModuleToggle\` DSL, without the \`toggle_\` prefix).
+- Chat-scope local variable: \`set_chat_variable\`.
+- Per-user default-variables override text: \`set_default_variables_text\` (\`null\` reverts to the card-side baseline).
+
+For the toggle / chat-var / default-var DEFINITIONS the user authors on the card itself, the authoring surfaces remain: \`customModuleToggle\` DSL via \`edit_external\` on the module envelope, and \`payload.scriptstate_defaults\` for the all-users baseline.
+
+## Surfaces the agent still cannot mutate
 
 | Surface | Where the user does it | Wire op (FE→BE) | What to tell the user |
 |---|---|---|---|
-| Asset add / rename / delete (character or module) | Viewer → Assets | \`add_asset\` / \`add_assets\` / \`rename_asset\` / \`delete_asset\` | "Asset operations are a Viewer → Assets thing. Open the LumiRealm drawer → Viewer → Assets and make the change there; I can read the current asset_index but I can't add / rename / delete from here." |
-| Attach / detach module on a character | Modules tab | \`attach_module\` / \`detach_module\` | "Module attach / detach is in the Modules tab. I can read what's attached (\`user_overrides.attached_module_ids\`) but can't attach or detach from here." |
-| Toggle values for the active chat | State → Toggles | \`set_toggle\` | "Toggle values live in this chat's metadata. I can read the toggle definitions (module \`customModuleToggle\` DSL) and the current values (\`list_variables\` / \`read_variable\`), but flipping a toggle is a State → Toggles thing." |
-| Chat-scope local vars | State → Variables → Local | \`set_variable\` / \`delete_variable\` (scope='local') | "Editing a chat-scope local variable directly is a State → Variables → Local thing. For PERSISTENT changes (the value the card seeds for every new chat), I CAN edit \`payload.scriptstate_defaults\`; for THIS chat only, you'd flip it there." |
-| Per-user default-variable overrides | State → Variables → Default | \`set_default_variables_text\` | "Per-user default overrides are in State → Variables → Default. For the card-side baseline (everyone sees it), I can edit \`payload.scriptstate_defaults\`; for your-user-only overrides, that's the UI." |
-| Default-variables free-form text | State → Variables → Default (text mode) | \`set_default_variables_text\` | Same as above. |
+| Asset ADD (character or module) | Viewer → Assets | \`add_asset\` / \`add_assets\` | "Adding a new asset is a Viewer → Assets thing. I can rename or delete existing assets, and read the current asset_index, but I can't upload a new one from here." |
 | Background-html (live SVG raster pipeline) | Viewer → HTML | \`set_background_html\` runs a SVG-raster pipeline after the write | The agent's path-based \`set\` / \`edit\` on \`payload.background_html_source\` writes the source but won't fire the SVG-raster dispatch. For HTML that contains \`<svg>\` blocks the user wants rasterized, surface that the Viewer → HTML save button is what triggers raster. Plain HTML / CSS edits via the agent path are fine. |
 
 The pattern: **when a tab in the LumiRealm UI exists for a thing, that's the user's authoritative entry point.** The agent supplements (read for diagnostic context, edit for the surfaces it can reach correctly), it does not replace.
