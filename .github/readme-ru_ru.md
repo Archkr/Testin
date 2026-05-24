@@ -7,7 +7,7 @@
 [English](../README.md) | [한국어](readme-ko_kr.md) | [日本語](readme-ja_jp.md) | [简体中文](readme-zh_cn.md) | [繁體中文](readme-zh_tw.md) | [Deutsch](readme-de_de.md) | **Русский**
 
 [![License](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)](../LICENSE)
-[![Lumiverse](https://img.shields.io/badge/Lumiverse-0.9.7%2B-blueviolet)](https://github.com/prolix-oc/Lumiverse)
+[![Lumiverse](https://img.shields.io/badge/Lumiverse-1.0.0%2B-blueviolet)](https://github.com/prolix-oc/Lumiverse)
 [![RisuAI](https://img.shields.io/badge/RisuAI-port-9cf?logo=svelte)](https://github.com/kwaroran/Risuai)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-blue?logo=typescript)](https://www.typescriptlang.org/)
 [![Bun](https://img.shields.io/badge/Bun-bundle-fbf0df?logo=bun)](https://bun.sh)
@@ -32,7 +32,7 @@ LumiRealm — это расширение [Lumiverse](https://github.com/prolix-
 
 ## Установка
 
-LumiRealm устанавливается как расширение Lumiverse. Требуется Lumiverse версии **0.9.7 или новее (ветка STAGING)**.
+LumiRealm устанавливается как расширение Lumiverse. Требуется Lumiverse версии **1.0.0 или новее**.
 
 1. Откройте свой инстанс Lumiverse.
 2. Перейдите в **Боковую панель → Прокрутите вниз → Вкладка расширений** и добавьте:

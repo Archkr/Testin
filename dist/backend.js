@@ -40972,7 +40972,7 @@ function registerLumiagentPhoneline(spindle2, moduleStorage, log8 = () => {}, on
 
 // src/backend.ts
 var EXTENSION_VERSION = "0.1.0";
-var MINIMUM_LUMIVERSE_VERSION = "0.9.7";
+var MINIMUM_LUMIVERSE_VERSION = "1.0.0";
 function logUid() {
   return currentUserId() ?? null;
 }

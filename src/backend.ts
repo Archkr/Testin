@@ -180,7 +180,7 @@ const EXTENSION_VERSION = '0.1.0';
 
 // Mirrored from `spindle.json minimum_lumiverse_version`. Lumi may not enforce
 // the manifest field at load time, so we re-check at runtime and nag the user.
-const MINIMUM_LUMIVERSE_VERSION = '0.9.7';
+const MINIMUM_LUMIVERSE_VERSION = '1.0.0';
 
 // ALS-backed user attribution: each event handler runs its body inside a
 // `userIdAls.run(userId, ...)` frame, so `currentUserId()` returns the firing
