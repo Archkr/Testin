@@ -47,10 +47,10 @@ LumiRealm installs as a Lumiverse extension. Lumiverse must be at version **1.0.
 
 Pick the branch that matches the Lumiverse you're running.
 
-- **`main`** — default. Tracks the latest released Lumiverse. Use this unless you're running Lumiverse from source on `staging`.
-- **`staging`** — tracks unreleased Lumiverse APIs that haven't shipped yet. Requires you to be running Lumiverse `staging` from source. Bleeding-edge features land here first; they migrate to `main` when the Lumiverse changes they depend on ship in a release.
+- **`main`** is the default. Tracks the latest released Lumiverse. Use this unless you're running Lumiverse from source on `staging`.
+- **`staging`** tracks unreleased Lumiverse APIs that haven't shipped yet. Requires you to be running Lumiverse `staging` from source. Bleeding-edge features land here first. They migrate to `main` when the Lumiverse changes they depend on ship in a release.
 
-To install a specific branch, append `#branch` to the URL when adding the extension (e.g. `https://github.com/AMousePad/LumiRealm#staging`).
+To switch branches after installing, go to the extensions tab and use the **Branch** button on the LumiRealm entry.
 
 Small fixes that don't depend on unreleased Lumiverse APIs land on `main` directly. Anything that depends on a Lumiverse change not yet in a release lands on `staging` first.
 
