@@ -50,7 +50,6 @@ function formatArg(a: unknown): string {
 }
 
 const DOM_ALLOWLIST: readonly string[] = [
-  '.lumi-message-portal-root',
   '[data-risu-bg-host]',
   '[data-message-id]',
 ];

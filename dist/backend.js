@@ -30979,21 +30979,6 @@ function createLifecycleEventHandlers(deps) {
     }
     chatChangedDebounceTimers.set(chatId, timer);
   }
-  const generationsInFlight = new Map;
-  function markGenerationStart(chatId) {
-    const prev = generationsInFlight.get(chatId) ?? 0;
-    generationsInFlight.set(chatId, prev + 1);
-    return prev === 0;
-  }
-  function markGenerationEnd(chatId) {
-    const prev = generationsInFlight.get(chatId) ?? 0;
-    if (prev <= 1) {
-      generationsInFlight.delete(chatId);
-      return prev === 1;
-    }
-    generationsInFlight.set(chatId, prev - 1);
-    return false;
-  }
   function onWorldBookMutation(userId) {
     deps.captureUserId(userId, "WORLD_BOOK");
     if (userId === undefined)
@@ -31062,6 +31047,7 @@ function createLifecycleEventHandlers(deps) {
         } catch {}
         return;
       }
+      deps.setChatStyleMode(chatId, "extension-relaxed", userId);
       deps.invalidateRenderMcpForChat(chatId);
       deps.invalidateMacroInterceptorForChat(chatId);
       deps.refreshMessagesCache(chatId, userId);
@@ -31116,9 +31102,6 @@ function createLifecycleEventHandlers(deps) {
       deps.log.info(`event GENERATION_STARTED chatId=${chatId ?? "?"} characterId=${characterId ?? "?"} payload=${deps.dumpPayload(raw)}`);
       if (!chatId)
         return;
-      if (markGenerationStart(chatId)) {
-        deps.send({ type: "generation_state", chatId, active: true }, userId);
-      }
       const active = await deps.ensureActiveCardForChat(chatId, characterId, userId);
       if (!active)
         return;
@@ -31137,10 +31120,6 @@ function createLifecycleEventHandlers(deps) {
       deps.log.info(`event GENERATION_ENDED chatId=${chatId ?? "?"} characterId=${characterId ?? "?"} payload=${deps.dumpPayload(raw)}`);
       if (!chatId)
         return;
-      const wentIdle = markGenerationEnd(chatId);
-      if (wentIdle) {
-        deps.send({ type: "generation_state", chatId, active: false }, userId);
-      }
       const active = await deps.ensureActiveCardForChat(chatId, characterId, userId);
       if (!active)
         return;
@@ -31159,10 +31138,6 @@ function createLifecycleEventHandlers(deps) {
       deps.log.info(`event GENERATION_STOPPED chatId=${chatId ?? "?"} characterId=${characterId ?? "?"} payload=${deps.dumpPayload(raw)}`);
       if (!chatId)
         return;
-      const wentIdle = markGenerationEnd(chatId);
-      if (wentIdle) {
-        deps.send({ type: "generation_state", chatId, active: false }, userId);
-      }
       const active = await deps.ensureActiveCardForChat(chatId, characterId, userId);
       if (!active)
         return;
@@ -41661,6 +41636,14 @@ var lifecycleHandlers = createLifecycleEventHandlers({
   consumeIfOurWrite,
   send,
   sendSetActiveChat,
+  setChatStyleMode: (chatId, mode, userId) => {
+    const setter = spindle.chat.setStyleMode;
+    if (typeof setter !== "function")
+      return;
+    setter.call(spindle.chat, chatId, mode, userId).catch((err) => {
+      log8.warn(`setChatStyleMode chat=${chatId} mode=${mode}: ${errMsg(err)}`);
+    });
+  },
   listCards,
   pushCards,
   deleteCardByChar,

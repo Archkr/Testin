@@ -610,18 +610,6 @@ export type BackendToFrontend =
       worldBookName?: string;
       reason?: string;
     }
-  // Streaming state , emitted by BE on 0↔1 transitions of
-  // `generationsInFlight[chatId]`. The frontend portal lifter pauses
-  // sweeps while `active === true` to avoid the per-chunk
-  // drop-and-re-clone cycle (Lumi's React re-renders the bubble per
-  // chunk, briefly text-in-light-DOM then text-in-shadow-DOM, our sig
-  // alternates → flicker). One pre-streaming sweep + one post-streaming
-  // sweep is sufficient for stable lifting.
-  | {
-      type: 'generation_state';
-      chatId: string;
-      active: boolean;
-    }
   | {
       type: 'cleanup_character_artifacts';
       characterId: string;

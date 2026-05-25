@@ -663,8 +663,7 @@ export async function makeRisuTriggerRuntime(
           return;
         }
         // Doc-boundary normalize. Strips DOCTYPE/html/head/body tags, wraps
-        // leading style so DOMPurify keeps the CSS. Fixed-position Lua-emitted
-        // content is lifted at render time by message-portal, no write-time wrap.
+        // leading style so DOMPurify keeps the CSS.
         const raw = normalizeReplaceStringForSanitizer(toStr(value));
         const msgId = messagesCache[real]!.id;
         const prevContent = messagesCache[real]!.content;

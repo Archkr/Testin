@@ -992,7 +992,7 @@ async function refreshMessagesCache(chatId: string, _userId: string | undefined)
   if (existing) return existing;
   const task = (async () => {
     try {
-      const raw = (await spindle.chat.getMessages(chatId)) as readonly Record<string, unknown>[];
+      const raw = (await spindle.chat.getMessages(chatId)) as unknown as readonly Record<string, unknown>[];
       const arr = Array.isArray(raw) ? raw : [];
       const sliced = arr.length > 0 && arr[0] && arr[0].role !== 'user' ? arr.slice(1) : arr;
       const msgs = sliced.map((m) => {
@@ -1049,6 +1049,13 @@ const lifecycleHandlers = createLifecycleEventHandlers({
   consumeIfOurWrite,
   send,
   sendSetActiveChat,
+  setChatStyleMode: (chatId, mode, userId) => {
+    const setter = (spindle.chat as { setStyleMode?: (chatId: string, mode: 'bounded' | 'extension-relaxed', userId?: string) => Promise<void> }).setStyleMode;
+    if (typeof setter !== 'function') return;
+    setter.call(spindle.chat, chatId, mode, userId).catch((err: unknown) => {
+      log.warn(`setChatStyleMode chat=${chatId} mode=${mode}: ${errMsg(err)}`);
+    });
+  },
   listCards,
   pushCards,
   deleteCardByChar,

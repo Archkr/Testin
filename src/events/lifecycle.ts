@@ -77,6 +77,13 @@ export interface LifecycleEventHandlerDeps {
     activeCharacterId: string | null,
     userId: string | undefined,
   ) => void;
+  /** Best-effort call to Lumi's ctx.chat.setStyleMode. Feature-detected,
+   *  no-op on hosts that predate the API. */
+  readonly setChatStyleMode: (
+    chatId: string,
+    mode: 'bounded' | 'extension-relaxed',
+    userId: string | undefined,
+  ) => void;
   readonly listCards: (userId: string | undefined) => Promise<readonly import('../types/messages.js').CardSummary[]>;
   readonly pushCards: (cards: readonly import('../types/messages.js').CardSummary[], userId: string | undefined) => void;
 
@@ -237,24 +244,6 @@ export function createLifecycleEventHandlers(deps: LifecycleEventHandlerDeps): L
     chatChangedDebounceTimers.set(chatId, timer);
   }
 
-  // Per-chat in-flight generation counter. 0→1 and N→0 transitions emit
-  // generation_state to the FE so the portal lifter can pause sweeps.
-  const generationsInFlight = new Map<string, number>();
-  function markGenerationStart(chatId: string): boolean {
-    const prev = generationsInFlight.get(chatId) ?? 0;
-    generationsInFlight.set(chatId, prev + 1);
-    return prev === 0;
-  }
-  function markGenerationEnd(chatId: string): boolean {
-    const prev = generationsInFlight.get(chatId) ?? 0;
-    if (prev <= 1) {
-      generationsInFlight.delete(chatId);
-      return prev === 1;
-    }
-    generationsInFlight.set(chatId, prev - 1);
-    return false;
-  }
-
   // World-book entry edits via Lumi's UI emit no character/chat event, so
   // cached {{lorebook}} would go stale. Edits are rare, so coarse per-user
   // invalidation (drop derived caches + reactivate, which repopulates the
@@ -318,6 +307,9 @@ export function createLifecycleEventHandlers(deps: LifecycleEventHandlerDeps): L
         try { deps.send({ type: 'clear_bg_html', chatId }, userId); } catch { /* */ }
         return;
       }
+      // Card-authored position:fixed needs viewport scope, opt the chat out of
+      // Lumi's bubble-CB sandbox. Gated by app_manipulation per Lumi side.
+      deps.setChatStyleMode(chatId, 'extension-relaxed', userId);
       deps.invalidateRenderMcpForChat(chatId);
       deps.invalidateMacroInterceptorForChat(chatId);
       void deps.refreshMessagesCache(chatId, userId);
@@ -374,9 +366,6 @@ export function createLifecycleEventHandlers(deps: LifecycleEventHandlerDeps): L
       const { chatId, characterId } = deps.extractIds(raw);
       deps.log.info(`event GENERATION_STARTED chatId=${chatId ?? '?'} characterId=${characterId ?? '?'} payload=${deps.dumpPayload(raw)}`);
       if (!chatId) return;
-      if (markGenerationStart(chatId)) {
-        deps.send({ type: 'generation_state', chatId, active: true }, userId);
-      }
       const active = await deps.ensureActiveCardForChat(chatId, characterId, userId);
       if (!active) return;
       deps.log.info(`GENERATION_STARTED: → runBinding(start)`);
@@ -394,10 +383,6 @@ export function createLifecycleEventHandlers(deps: LifecycleEventHandlerDeps): L
       const { chatId, characterId } = deps.extractIds(raw);
       deps.log.info(`event GENERATION_ENDED chatId=${chatId ?? '?'} characterId=${characterId ?? '?'} payload=${deps.dumpPayload(raw)}`);
       if (!chatId) return;
-      const wentIdle = markGenerationEnd(chatId);
-      if (wentIdle) {
-        deps.send({ type: 'generation_state', chatId, active: false }, userId);
-      }
       const active = await deps.ensureActiveCardForChat(chatId, characterId, userId);
       if (!active) return;
       for (const binding of deps.generationEndedBindings) {
@@ -415,10 +400,6 @@ export function createLifecycleEventHandlers(deps: LifecycleEventHandlerDeps): L
       const { chatId, characterId } = deps.extractIds(raw);
       deps.log.info(`event GENERATION_STOPPED chatId=${chatId ?? '?'} characterId=${characterId ?? '?'} payload=${deps.dumpPayload(raw)}`);
       if (!chatId) return;
-      const wentIdle = markGenerationEnd(chatId);
-      if (wentIdle) {
-        deps.send({ type: 'generation_state', chatId, active: false }, userId);
-      }
       const active = await deps.ensureActiveCardForChat(chatId, characterId, userId);
       if (!active) return;
       deps.invalidateRenderMcpForChat(chatId);
