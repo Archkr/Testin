@@ -82,12 +82,22 @@ interface PendingAck {
   timer: VizTimer;
 }
 
+interface ChunkTiming {
+  seq: number;
+  encodeMs: number;
+  sentAt: number;
+  ackedAt: number | null;
+}
+
 interface UploadSession {
   readonly sessionId: string;
   lastAckSeq: number;
   receivedBytesOnBackend: number;
   pendingAcks: Map<number, PendingAck>;
   aborted: boolean;
+  startedAt: number;
+  lastAckAt: number;
+  timings: ChunkTiming[];
 }
 
 export interface ModulesPanelHandle {
@@ -716,6 +726,9 @@ export function mountModulesPanel(opts: MountModulesPanelOptions): ModulesPanelH
       receivedBytesOnBackend: 0,
       pendingAcks: new Map(),
       aborted: false,
+      startedAt: performance.now(),
+      lastAckAt: performance.now(),
+      timings: [],
     };
     const session = activeUpload;
     opts.onImportStart?.(file.name, () => {
@@ -748,6 +761,7 @@ export function mountModulesPanel(opts: MountModulesPanelOptions): ModulesPanelH
           const start = seq * CHUNK_BYTES;
           const end = Math.min(start + CHUNK_BYTES, totalBytes);
           const slice = file.bytes.subarray(start, end);
+          const tEncodeStart = performance.now();
           const b64 = bytesToBase64(slice);
           const chunkMsg: FrontendToBackend = {
             type: 'upload_module_chunk',
@@ -756,6 +770,9 @@ export function mountModulesPanel(opts: MountModulesPanelOptions): ModulesPanelH
             bytesB64Chunk: b64,
           };
           const wireSize = JSON.stringify(chunkMsg).length;
+          const encodeMs = performance.now() - tEncodeStart;
+          session.timings.push({ seq, encodeMs, sentAt: performance.now(), ackedAt: null });
+          if (session.timings.length > 60) session.timings.shift();
           if (wireSize > CHUNK_WIRE_WARN_BYTES) {
             log.warn(
               `modules-panel: chunk wire size ${wireSize}B approaches Lumi's 64KB inbound guard ` +
@@ -789,6 +806,7 @@ export function mountModulesPanel(opts: MountModulesPanelOptions): ModulesPanelH
       setStatus(null);
     } catch (err) {
       log.error('modules-panel: upload failed', err);
+      dumpUploadDiagnostics(session, err);
       try {
         sendToBackend({ type: 'upload_module_abort', sessionId, reason: errMsg(err) });
       } catch { /* ignore */ }
@@ -799,6 +817,36 @@ export function mountModulesPanel(opts: MountModulesPanelOptions): ModulesPanelH
       if (activeUpload?.sessionId === sessionId) activeUpload = null;
       uploadBtn.disabled = false;
     }
+  }
+
+  function dumpUploadDiagnostics(session: UploadSession, err: unknown): void {
+    try {
+      const now = performance.now();
+      const wallMs = Math.round(now - session.startedAt);
+      const sinceAckMs = Math.round(now - session.lastAckAt);
+      const acked = session.timings.filter(t => t.ackedAt !== null);
+      const unacked = session.timings.filter(t => t.ackedAt === null).map(t => t.seq);
+      const encodes = session.timings.map(t => t.encodeMs);
+      const rtts = acked.map(t => (t.ackedAt as number) - t.sentAt);
+      const stats = (xs: number[]) => xs.length === 0 ? 'n/a' :
+        `min=${Math.round(Math.min(...xs))}ms p50=${Math.round(percentile(xs, 50))}ms p95=${Math.round(percentile(xs, 95))}ms max=${Math.round(Math.max(...xs))}ms`;
+      log.warn(
+        `modules-panel: upload diagnostics session=${session.sessionId} wall=${wallMs}ms ` +
+          `lastAckSeq=${session.lastAckSeq} sinceLastAck=${sinceAckMs}ms ` +
+          `pendingAcks=${session.pendingAcks.size} unackedSeqs=[${unacked.slice(0, 10).join(',')}${unacked.length > 10 ? ',…' : ''}] ` +
+          `encode(${session.timings.length} samples): ${stats(encodes)} ` +
+          `rtt(${rtts.length} samples): ${stats(rtts)} ` +
+          `err=${errMsg(err)}`,
+      );
+    } catch (diagErr) {
+      log.warn('modules-panel: diagnostics dump threw', diagErr);
+    }
+  }
+
+  function percentile(xs: number[], p: number): number {
+    const sorted = [...xs].sort((a, b) => a - b);
+    const idx = Math.min(sorted.length - 1, Math.floor((p / 100) * sorted.length));
+    return sorted[idx] ?? 0;
   }
 
   function trackAck(
@@ -832,6 +880,9 @@ export function mountModulesPanel(opts: MountModulesPanelOptions): ModulesPanelH
     if (!session || session.sessionId !== sessionId) return;
     session.lastAckSeq = seq;
     session.receivedBytesOnBackend = receivedBytes;
+    session.lastAckAt = performance.now();
+    const t = session.timings.find(t => t.seq === seq);
+    if (t) t.ackedAt = session.lastAckAt;
     const p = session.pendingAcks.get(seq);
     if (p) {
       session.pendingAcks.delete(seq);
