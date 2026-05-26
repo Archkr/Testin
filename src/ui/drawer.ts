@@ -158,10 +158,6 @@ export function mountCardsPanel(opts: MountCardsPanelOptions): DrawerHandle {
           if (session.aborted || errors.length > 0) return;
           const seq = nextSeq++;
           if (seq >= totalChunks) return;
-          // Yield before heavy encode/stringify so the WS message handler can
-          // dispatch incoming pongs between chunks (otherwise N parallel workers
-          // monopolize the main thread and pongs miss the watchdog window).
-          await new Promise<void>((r) => setTimeout(r, 0));
           const start = seq * CHUNK_BYTES;
           const end = Math.min(start + CHUNK_BYTES, totalBytes);
           const slice = file.bytes.subarray(start, end);
