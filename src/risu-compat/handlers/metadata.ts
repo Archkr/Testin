@@ -1,6 +1,7 @@
 import type { MacroHandler } from "../../core/cbs/index.js";
 import { registry } from "../registry.js";
 import { makeArray } from "../risu-helpers.js";
+import { base64ToUtf8 } from "../../util/base64.js";
 
 // Metadata and declare-style macros. Risu citations inline.
 
@@ -40,7 +41,7 @@ register("file", (ctx, a) => {
   if (!decode) return `<br><div class="x-risu-risu-file">${a[0] ?? ""}</div><br>`;
   const content = a[1] ?? "";
   try {
-    return Buffer.from(content, "base64").toString("utf-8");
+    return base64ToUtf8(content);
   } catch {
     return "";
   }

@@ -47,6 +47,9 @@ export function setCharAt(source: unknown, index: unknown, value: unknown): stri
 export function calculate(expr: unknown): string { return calcString(toStr(expr)); }
 
 export function splitString(source: unknown, delimiter: unknown, kind?: string): readonly string[] {
-  const d = kind === 'regex' ? new RegExp(toStr(delimiter)) : toStr(delimiter);
+  let d: string | RegExp = toStr(delimiter);
+  if (kind === 'regex') {
+    try { d = new RegExp(toStr(delimiter)); } catch { d = toStr(delimiter); }
+  }
   return toStr(source).split(d);
 }

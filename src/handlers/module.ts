@@ -1,4 +1,5 @@
 import type { ModuleEnvelope } from '../state/modules-store.js';
+import { base64ToBytes } from '../util/base64.js';
 import type { LumirealmCharacterData, LumirealmUserOverrides } from '../payload/types.js';
 import type { SpindleCharactersApi } from '../state/lumirealm-character.js';
 import type { OrphanDetectDeps } from '../state/orphan-detect.js';
@@ -142,7 +143,7 @@ export function createModuleHandlers(deps: ModuleHandlerDeps): {
         return;
       }
       if (msg.seq < 0 || msg.seq >= session.totalChunks) return;
-      const chunkBytes = new Uint8Array(Buffer.from(msg.bytesB64Chunk, 'base64'));
+      const chunkBytes = base64ToBytes(msg.bytesB64Chunk);
       if (session.buffer[msg.seq] === null) {
         session.receivedChunks += 1;
       }

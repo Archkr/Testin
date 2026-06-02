@@ -438,7 +438,7 @@ export async function makeRisuTriggerRuntime(
         const joined = msgs.map((m) => toStr(m.content)).join('\n').toLowerCase();
         const cond = co['condition'];
         pass = cond === 'loose' ? joined.indexOf(needle) >= 0
-          : cond === 'regex' ? new RegExp(needle).test(joined)
+          : cond === 'regex' ? (() => { try { return new RegExp(needle).test(joined); } catch { return joined.indexOf(needle) >= 0; } })()
           : joined.split(/\s+/).indexOf(needle) >= 0;
       } else {
         const source = type === 'value' ? toStr(co['var']) : getVar(toStr(co['var']));
@@ -649,7 +649,7 @@ export async function makeRisuTriggerRuntime(
         const m = messagesCache[real];
         // Risu chat.message[i].role is 'user' | 'char' (scriptings.ts:154-165,182).
         // Cards branch on `msg.role == "char"`; surface Lumi roles in Risu shape.
-        return m ? JSON.stringify({ role: lumiRoleToRisu(m.role), data: toStr(m.content) }) : JSON.stringify({ role: '', data: '' });
+        return m ? JSON.stringify({ role: lumiRoleToRisu(m.role), data: toStr(m.content) }) : JSON.stringify(null);
       },
       setChat: (_id: unknown, index: unknown, value: unknown) => {
         const n = Number(index);

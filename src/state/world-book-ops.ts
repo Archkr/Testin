@@ -172,25 +172,28 @@ export function createWorldBookOps(deps: WorldBookOpsDeps): WorldBookOps {
     const moduleName = typeof m.name === 'string' && m.name.length > 0 ? m.name : env.id;
     if (existingId) {
       try {
+        const oldIds: string[] = [];
         let offset = 0;
         while (true) {
           const page = await spindle.world_books.entries.list(existingId, { limit: 200, offset, userId });
           if (page.data.length === 0) break;
-          for (const e of page.data) {
-            await spindle.world_books.entries.delete(e.id, userId).catch(() => undefined);
-          }
+          for (const e of page.data) oldIds.push(e.id);
           if (page.data.length < 200) break;
+          offset += page.data.length;
         }
-        await spindle.world_books.update(existingId, { name: `Module: ${moduleName}` }, userId).catch(() => undefined);
         const projected = projectModuleLorebookForCreate(lorebook, env.id, existingId);
         for (const entry of projected) {
           await spindle.world_books.entries.create(existingId, entry as never, userId);
         }
+        for (const id of oldIds) {
+          await spindle.world_books.entries.delete(id, userId).catch(() => undefined);
+        }
+        await spindle.world_books.update(existingId, { name: `Module: ${moduleName}` }, userId).catch(() => undefined);
         log.info(`syncModuleWorldBook: refreshed module=${env.id} wb=${existingId} entries=${projected.length}/${lorebook.length}`);
         return existingId;
       } catch (err) {
-        log.warn(`syncModuleWorldBook: refresh failed module=${env.id} wb=${existingId}: ${errMsg(err)},recreating`);
-        await deleteModuleWorldBookEverywhere(env.id, existingId, userId);
+        log.warn(`syncModuleWorldBook: refresh failed module=${env.id} wb=${existingId}: ${errMsg(err)} — kept existing WB, entries intact`);
+        return existingId;
       }
     }
     const wb = await spindle.world_books.create({ name: `Module: ${moduleName}` }, userId);

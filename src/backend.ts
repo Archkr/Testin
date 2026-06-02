@@ -48,7 +48,7 @@ import {
 import { type CompiledTriggerEntry } from './interpreter/dispatcher.js';
 import { parseDirectLorebook } from './payload/lorebook-direct-import.js';
 import { mapLoreBook } from './core/mappers/lorebook.js';
-import { registerAll as registerAllMacros } from './interpreter/macros.js';
+import { registerAll as registerAllMacros, clearMacroVarOverlay } from './interpreter/macros.js';
 import { setActiveAssetIndexes, clearActiveAssetIndexes } from './interpreter/asset-cache.js';
 import {
   setActiveCharacterImage,
@@ -1039,6 +1039,7 @@ const lifecycleHandlers = createLifecycleEventHandlers({
   clearActiveScriptstateDefaults,
   clearActiveLorebook,
   clearVarOverlay,
+  clearMacroVarOverlay,
   refreshBgHtml,
   refreshVariables,
   refreshToggleDefinitions,

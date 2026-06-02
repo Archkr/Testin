@@ -11,6 +11,18 @@ export function currentUserId(): string | null {
 
 export const inheritedVarsAls = new AsyncLocalStorage<Record<string, string>>();
 
+export const triggerDepthAls = new AsyncLocalStorage<number>();
+
+export const MAX_TRIGGER_DEPTH = 64;
+
+export function withTriggerDepth<T>(fn: () => Promise<T> | T): Promise<T> | T {
+  const depth = (triggerDepthAls.getStore() ?? 0) + 1;
+  if (depth > MAX_TRIGGER_DEPTH) {
+    throw new Error(`trigger recursion exceeded max depth (${MAX_TRIGGER_DEPTH})`);
+  }
+  return triggerDepthAls.run(depth, fn) as Promise<T> | T;
+}
+
 export function withUserId<T>(userId: string, fn: () => Promise<T> | T): Promise<T> | T {
   return userIdAls.run(userId, fn) as Promise<T> | T;
 }

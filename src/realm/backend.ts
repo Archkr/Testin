@@ -1,4 +1,5 @@
 import type { RealmFrontendToBackend, RealmBackendToFrontend } from './messages.js';
+import { base64ToBytes } from '../util/base64.js';
 import { searchRealm, getRealmInfo, downloadRealmCard } from './api.js';
 import { convertToCharx, type ImportFormatConversion } from './import-formats/index.js';
 
@@ -180,13 +181,3 @@ function bytesToBase64(bytes: Uint8Array): string {
   return btoa(bin);
 }
 
-function base64ToBytes(b64: string): Uint8Array {
-  const g = globalThis as { Buffer?: { from(s: string, enc: string): Uint8Array } };
-  if (g.Buffer && typeof g.Buffer.from === 'function') {
-    return new Uint8Array(g.Buffer.from(b64, 'base64'));
-  }
-  const bin = atob(b64);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
-}

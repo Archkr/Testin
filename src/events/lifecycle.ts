@@ -42,6 +42,7 @@ export interface LifecycleEventHandlerDeps {
   readonly clearActiveScriptstateDefaults: (chatId: string) => void;
   readonly clearActiveLorebook: (chatId: string) => void;
   readonly clearVarOverlay: (chatId: string) => void;
+  readonly clearMacroVarOverlay: (chatId: string) => void;
 
   // Refresh / dispatch
   readonly refreshBgHtml: (active: ActiveCard, chatId: string, userId: string | undefined) => Promise<void>;
@@ -334,6 +335,8 @@ export function createLifecycleEventHandlers(deps: LifecycleEventHandlerDeps): L
         deps.invalidateMacroInterceptorForChat(chatId);
         // Own runtime.flush already updated this cache, only external writes need the drop.
         if (!wasOwn) invalidateRecentFlush(chatId);
+        if (!wasOwn) deps.clearVarOverlay(chatId);
+        if (!wasOwn) deps.clearMacroVarOverlay(chatId);
       }
       const fieldsPreview = changedFields === undefined
         ? 'undefined'
@@ -485,6 +488,7 @@ export function createLifecycleEventHandlers(deps: LifecycleEventHandlerDeps): L
       deps.clearActiveScriptstateDefaults(chatId);
       deps.clearActiveLorebook(chatId);
       deps.clearVarOverlay(chatId);
+      deps.clearMacroVarOverlay(chatId);
       deps.variableState.clearChat(chatId);
       deps.toggleState.clearChat(chatId);
     },

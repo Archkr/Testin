@@ -1,6 +1,7 @@
 import type { MacroHandler } from "../../core/cbs/index.js";
 import { registry } from "../registry.js";
 import { dateTimeFormat, makeArray } from "../risu-helpers.js";
+import { base64ToBytes } from "../../util/base64.js";
 
 // Small utility macros (Risu parity).
 
@@ -30,7 +31,7 @@ register("xor", (_c, a) => {
 }, "XOR-encrypts a string with 0xFF and base64-encodes.");
 
 register("xordecrypt", (_c, a) => {
-  const bytes: Uint8Array = Buffer.from(a[0] ?? "", "base64");
+  const bytes = base64ToBytes(a[0] ?? "");
   for (let i = 0; i < bytes.length; i++) bytes[i]! ^= 0xFF;
   return new TextDecoder().decode(bytes);
 }, "Decrypts an XOR-encrypted base64 string.");

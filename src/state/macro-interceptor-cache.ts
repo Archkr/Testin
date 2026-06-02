@@ -26,8 +26,8 @@ function fnv1a(s: string): number {
   return h >>> 0;
 }
 
-function key(chatId: string, template: string, commit: boolean): string {
-  return `${chatId}::${commit ? 'c' : 'd'}::${template.length}::${fnv1a(template)}`;
+function key(chatId: string, template: string, commit: boolean, ctxKey: string): string {
+  return `${chatId}::${commit ? 'c' : 'd'}::${ctxKey}::${template.length}::${fnv1a(template)}`;
 }
 
 function evictIfNeeded(now: number): void {
@@ -51,8 +51,9 @@ export function lookupMacroInterceptor(
   chatId: string,
   template: string,
   commit: boolean,
+  ctxKey: string,
 ): string | null {
-  const k = key(chatId, template, commit);
+  const k = key(chatId, template, commit, ctxKey);
   const entry = cache.get(k);
   if (!entry) {
     missCount += 1;
@@ -72,11 +73,12 @@ export function cacheMacroInterceptor(
   chatId: string,
   template: string,
   commit: boolean,
+  ctxKey: string,
   result: string,
 ): void {
   const now = Date.now();
   evictIfNeeded(now);
-  cache.set(key(chatId, template, commit), { result, ts: now });
+  cache.set(key(chatId, template, commit, ctxKey), { result, ts: now });
 }
 
 export function invalidateMacroInterceptorForChat(chatId: string): void {

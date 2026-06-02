@@ -1,4 +1,5 @@
 import type { CardSummary } from '../types/messages.js';
+import { base64ToBytes } from '../util/base64.js';
 import type { ActiveCard } from '../interpreter/dispatch.js';
 import type { HostVersionCheckResult } from '../util/version-check.js';
 import type { Handler } from './types.js';
@@ -202,7 +203,7 @@ export function createImportHandlers(deps: ImportHandlerDeps): {
       if (session.buffer[msg.seq] !== null) {
         deps.log.warn(`import_card_chunk: duplicate seq=${msg.seq} on session ${msg.sessionId},overwriting`);
       }
-      const chunkBytes = new Uint8Array(Buffer.from(msg.bytesB64Chunk, 'base64'));
+      const chunkBytes = base64ToBytes(msg.bytesB64Chunk);
       session.buffer[msg.seq] = chunkBytes;
       session.receivedBytes += chunkBytes.byteLength;
       session.receivedChunks += 1;
@@ -293,11 +294,15 @@ export function createImportHandlers(deps: ImportHandlerDeps): {
       deps.log.info(
         `register_svg_raster_index: char=${msg.characterId} total=${total} successful=${successful} failed=${failed}`,
       );
-      await deps.applySvgRasterIndex({
-        characterId: msg.characterId,
-        imageIdByMarker: msg.imageIdByMarker,
-        userId: ctx.userId,
-      });
+      try {
+        await deps.applySvgRasterIndex({
+          characterId: msg.characterId,
+          imageIdByMarker: msg.imageIdByMarker,
+          userId: ctx.userId,
+        });
+      } catch (err) {
+        deps.log.warn(`register_svg_raster_index: applySvgRasterIndex failed char=${msg.characterId}: ${deps.errMsg(err)} — finalizing import without SVG raster`);
+      }
       pendingForSvgCheck.hasPendingSvgRaster = false;
       deps.log.info(`register_svg_raster_index: cleared svg-pending flag char=${msg.characterId}`);
       await deps.maybeFinalizeImport(msg.characterId);

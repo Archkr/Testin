@@ -227,7 +227,7 @@ export function createModuleUploader(deps: ModuleUploaderDeps): ModuleUploader {
           let batchBytes = 0;
           while (i < pending.length && batchItems.length < BATCH_MAX_ITEMS) {
             const meta = pending[i];
-            const bytes = decoded.assets[i];
+            const bytes = meta ? decoded.assets[meta.sourceIndex] : undefined;
             if (!meta || !bytes) { i += 1; continue; }
             if (batchItems.length > 0 && batchBytes + bytes.byteLength > BATCH_MAX_BYTES) break;
             const sniff = deps.sniffImageMime(bytes);
@@ -273,7 +273,7 @@ export function createModuleUploader(deps: ModuleUploaderDeps): ModuleUploader {
             const idx = nextIndex++;
             if (idx >= pending.length) break;
             const meta = pending[idx];
-            const bytes = decoded.assets[idx];
+            const bytes = meta ? decoded.assets[meta.sourceIndex] : undefined;
             if (!meta || !bytes) continue;
             const assetName = meta.path;
             const sniff = deps.sniffImageMime(bytes);

@@ -6,6 +6,8 @@ import { runPipeline } from '../interpreter/evaluator/pipeline.js';
 import { runListenEditChain } from '../interpreter/listen-edit.js';
 import { runAtActionsForPhase, coerceAtActions } from '../interpreter/at-actions-runtime.js';
 import { puaEncodeFeMacros, puaDecodeFeMacros } from '../util/pua-roundtrip.js';
+import { panelTrace } from '../util/perf.js';
+import { perfEnabled, perfRecord } from '../util/perf.js';
 import { normalizeReplaceStringForSanitizer } from '../util/sanitizer-doc-shape.js';
 import {
   lookupRenderMcp,
@@ -176,9 +178,11 @@ export function createLumiInterceptors(deps: CreateLumiInterceptorsDeps): LumiIn
         return;
       }
 
+      const micDynForKey = (ctx.env as { dynamicMacros?: Record<string, string> }).dynamicMacros;
+      const micCtxKey = `${micDynForKey?.chat_index ?? ''}|${micDynForKey?.role ?? ''}`;
       const cacheable = !(ctx.commit === false && !mcpRenderAvailable);
       if (cacheable) {
-        const hit = lookupMacroInterceptor(chatId, ctx.template, ctx.commit !== false);
+        const hit = lookupMacroInterceptor(chatId, ctx.template, ctx.commit !== false, micCtxKey);
         if (hit !== null) {
           maybeEmitMicCacheStats();
           log.trace(
@@ -232,6 +236,7 @@ export function createLumiInterceptors(deps: CreateLumiInterceptorsDeps): LumiIn
       }
 
       let resolved: string;
+      const __ppT0 = perfEnabled() ? Date.now() : 0;
       try {
         resolved = runPipeline({
           template: ctx.template,
@@ -286,6 +291,7 @@ export function createLumiInterceptors(deps: CreateLumiInterceptorsDeps): LumiIn
         log.warn(`macroInterceptor: runPipeline threw chat=${chatId} phase=${ctx.phase}: ${errMsg(err)}. Passing through.`);
         return;
       }
+      if (__ppT0) perfRecord("cbs.runPipeline", Date.now() - __ppT0);
 
       const resolvedMarker = /★[A-Z_]+★|###[A-Z_]+###/.exec(resolved)?.[0] ?? null;
       const stillHasRaw = resolved.includes('{{risu_') || resolved.includes('{{getvar::') || resolved.includes('{{#risu_');
@@ -336,7 +342,7 @@ export function createLumiInterceptors(deps: CreateLumiInterceptorsDeps): LumiIn
 
       if (resolved === ctx.template) {
         if (cacheable) {
-          cacheMacroInterceptor(chatId, ctx.template, ctx.commit !== false, resolved);
+          cacheMacroInterceptor(chatId, ctx.template, ctx.commit !== false, micCtxKey, resolved);
           maybeEmitMicCacheStats();
         }
         log.trace(
@@ -346,7 +352,7 @@ export function createLumiInterceptors(deps: CreateLumiInterceptorsDeps): LumiIn
         return;
       }
       if (cacheable) {
-        cacheMacroInterceptor(chatId, ctx.template, ctx.commit !== false, resolved);
+        cacheMacroInterceptor(chatId, ctx.template, ctx.commit !== false, micCtxKey, resolved);
         maybeEmitMicCacheStats();
       }
       // Doc-boundary normalize is NOT applied here. macroInterceptor fires for both replace_string and find_regex, and wrapping a find_regex would break compilation.
@@ -480,6 +486,7 @@ export function createLumiInterceptors(deps: CreateLumiInterceptorsDeps): LumiIn
               return puaDecodeFeMacros(resolved, enc.tokens);
             };
             let transformed = ctx.content;
+            panelTrace('mcp.render.in', transformed);
             let preResolveMs = 0;
             {
               const tPre = Date.now();
@@ -492,6 +499,7 @@ export function createLumiInterceptors(deps: CreateLumiInterceptorsDeps): LumiIn
               }
               preResolveMs = Date.now() - tPre;
             }
+            panelTrace('mcp.render.afterPreResolve', transformed);
             let chainMs = 0;
             if (hasLuaTrigger) {
               const tChain = Date.now();
@@ -514,6 +522,7 @@ export function createLumiInterceptors(deps: CreateLumiInterceptorsDeps): LumiIn
                 `messageContentProcessor.render chain.elapsed #${seq} chain=${chainMs}ms (mcp_total_so_far=${Date.now() - tStart}ms)`,
               );
             }
+            panelTrace('mcp.render.afterLua', transformed);
             let atActionsMs = 0;
             if (renderAtActions.length > 0) {
               const tAt = Date.now();
@@ -530,6 +539,7 @@ export function createLumiInterceptors(deps: CreateLumiInterceptorsDeps): LumiIn
               }
               atActionsMs = Date.now() - tAt;
             }
+            panelTrace('mcp.render.afterAtActions', transformed);
 
             // Second resolve for any CBS the hook emitted, mirroring Risu's
             // processScriptFull parser pass after the editdisplay hook.
@@ -545,9 +555,18 @@ export function createLumiInterceptors(deps: CreateLumiInterceptorsDeps): LumiIn
               }
               resolveMs = Date.now() - tResolve;
             }
+            panelTrace('mcp.render.afterBodyResolve', transformed);
 
             const totalMs = Date.now() - tStart;
             const otherOverhead = totalMs - preResolveMs - chainMs - atActionsMs - resolveMs - (tB - tA);
+            if (perfEnabled()) {
+              perfRecord("mcp.render.total", totalMs);
+              perfRecord("mcp.render.preResolve", preResolveMs);
+              if (hasLuaTrigger) perfRecord("mcp.render.luaChain", chainMs);
+              if (renderAtActions.length > 0) perfRecord("mcp.render.atActions", atActionsMs);
+              perfRecord("mcp.render.bodyResolve", resolveMs);
+              perfRecord("mcp.render.ensureCard", tB - tA);
+            }
             if (transformed === ctx.content) {
               if (ctx.messageId) {
                 cacheRenderMcp(ctx.chatId, ctx.messageId, ctx.content, { kind: 'noop' });
@@ -707,8 +726,11 @@ export function createLumiInterceptors(deps: CreateLumiInterceptorsDeps): LumiIn
                 `fallback_append=${applyResult.fallbackAppendCount}`,
             );
           }
-          // Single point of consumption per generation. Drop the buffer now.
-          clearDecoratorBuffer(chatId);
+          if (buffers.positionPt && Object.keys(buffers.positionPt).length > 0) {
+            setDecoratorBuffers(chatId, { injectAt: [], positionPt: buffers.positionPt });
+          } else {
+            clearDecoratorBuffer(chatId);
+          }
         }
 
         const triggers = active.card.risuPayload.triggers as ReadonlyArray<{

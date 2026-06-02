@@ -7745,7 +7745,10 @@ filename: ${m.filename}`;
       lastAckSeq: -999,
       receivedBytesOnBackend: 0,
       pendingAcks: new Map,
-      aborted: false
+      aborted: false,
+      startedAt: performance.now(),
+      lastAckAt: performance.now(),
+      timings: []
     };
     const session = activeUpload;
     opts.onImportStart?.(file.name, () => {
@@ -7777,6 +7780,7 @@ filename: ${m.filename}`;
           const start = seq * CHUNK_BYTES2;
           const end = Math.min(start + CHUNK_BYTES2, totalBytes);
           const slice = file.bytes.subarray(start, end);
+          const tEncodeStart = performance.now();
           const b64 = bytesToBase642(slice);
           const chunkMsg = {
             type: "upload_module_chunk",
@@ -7785,6 +7789,10 @@ filename: ${m.filename}`;
             bytesB64Chunk: b64
           };
           const wireSize = JSON.stringify(chunkMsg).length;
+          const encodeMs = performance.now() - tEncodeStart;
+          session.timings.push({ seq, encodeMs, sentAt: performance.now(), ackedAt: null });
+          if (session.timings.length > 60)
+            session.timings.shift();
           if (wireSize > CHUNK_WIRE_WARN_BYTES2) {
             log.warn(`modules-panel: chunk wire size ${wireSize}B approaches Lumi's 64KB inbound guard ` + `(seq=${seq} of ${totalChunks}, raw_chunk=${slice.byteLength}B, b64=${b64.length}B).`);
           }
@@ -7815,6 +7823,7 @@ filename: ${m.filename}`;
       setStatus(null);
     } catch (err) {
       log.error("modules-panel: upload failed", err);
+      dumpUploadDiagnostics(session, err);
       try {
         sendToBackend({ type: "upload_module_abort", sessionId, reason: errMsg(err) });
       } catch {}
@@ -7826,6 +7835,26 @@ filename: ${m.filename}`;
         activeUpload = null;
       uploadBtn.disabled = false;
     }
+  }
+  function dumpUploadDiagnostics(session, err) {
+    try {
+      const now = performance.now();
+      const wallMs = Math.round(now - session.startedAt);
+      const sinceAckMs = Math.round(now - session.lastAckAt);
+      const acked = session.timings.filter((t) => t.ackedAt !== null);
+      const unacked = session.timings.filter((t) => t.ackedAt === null).map((t) => t.seq);
+      const encodes = session.timings.map((t) => t.encodeMs);
+      const rtts = acked.map((t) => t.ackedAt - t.sentAt);
+      const stats = (xs) => xs.length === 0 ? "n/a" : `min=${Math.round(Math.min(...xs))}ms p50=${Math.round(percentile(xs, 50))}ms p95=${Math.round(percentile(xs, 95))}ms max=${Math.round(Math.max(...xs))}ms`;
+      log.warn(`modules-panel: upload diagnostics session=${session.sessionId} wall=${wallMs}ms ` + `lastAckSeq=${session.lastAckSeq} sinceLastAck=${sinceAckMs}ms ` + `pendingAcks=${session.pendingAcks.size} unackedSeqs=[${unacked.slice(0, 10).join(",")}${unacked.length > 10 ? ",…" : ""}] ` + `encode(${session.timings.length} samples): ${stats(encodes)} ` + `rtt(${rtts.length} samples): ${stats(rtts)} ` + `err=${errMsg(err)}`);
+    } catch (diagErr) {
+      log.warn("modules-panel: diagnostics dump threw", diagErr);
+    }
+  }
+  function percentile(xs, p) {
+    const sorted = [...xs].sort((a, b) => a - b);
+    const idx = Math.min(sorted.length - 1, Math.floor(p / 100 * sorted.length));
+    return sorted[idx] ?? 0;
   }
   function trackAck(session, seq, timeoutMs, label) {
     if (session.lastAckSeq === seq)
@@ -7853,6 +7882,10 @@ filename: ${m.filename}`;
       return;
     session.lastAckSeq = seq;
     session.receivedBytesOnBackend = receivedBytes;
+    session.lastAckAt = performance.now();
+    const t = session.timings.find((t2) => t2.seq === seq);
+    if (t)
+      t.ackedAt = session.lastAckAt;
     const p = session.pendingAcks.get(seq);
     if (p) {
       session.pendingAcks.delete(seq);

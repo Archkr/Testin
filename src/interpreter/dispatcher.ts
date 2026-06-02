@@ -10,11 +10,8 @@ import { execute as luaExecute } from './lua-bridge.js';
 import type { HostApi, DispatchData, ScriptNS, TriggerRuntimeOpts } from './host.js';
 import type { RisuBinding } from './runtime.js';
 import { makeSafeLogger } from '../util/safe-log.js';
-
-const AsyncFunctionCtor =
-  Object.getPrototypeOf(async function () {}).constructor as new (
-    ...args: string[]
-  ) => (...args: unknown[]) => Promise<unknown>;
+import { interpretTrigger, type InterpConsole } from './trigger-interpreter.js';
+import { withTriggerDepth } from './runtime/als.js';
 
 export interface DispatcherScriptNS extends ScriptNS {
   /** Manual triggers registered by name — v2RunTrigger resolves through here. */
@@ -43,6 +40,13 @@ export function makeDispatcherScriptNS(): DispatcherScriptNS {
   };
 }
 
+export interface TriggerRtOpts {
+  readonly displayMode: boolean;
+  readonly lowLevelAccess: boolean;
+  readonly binding: RisuBinding;
+  readonly characterId: string;
+}
+
 export interface CompiledTriggerEntry {
   readonly name: string;
   readonly code: string;
@@ -50,6 +54,7 @@ export interface CompiledTriggerEntry {
   readonly triggers: readonly string[];
   readonly binding: RisuBinding;
   readonly source: TriggerScript;
+  readonly rtOpts: TriggerRtOpts;
 }
 
 export function prepareTriggers(
@@ -63,13 +68,20 @@ export function prepareTriggers(
     const f = compiled.files[i]!;
     const sourceTrigger = rawTriggers[i];
     if (!sourceTrigger) continue;
+    const binding = sourceTrigger.type as RisuBinding;
     out.push({
       name: f.name,
       code: f.code,
       type: f.type,
       triggers: f.triggers ?? [],
-      binding: sourceTrigger.type as RisuBinding,
+      binding,
       source: sourceTrigger,
+      rtOpts: {
+        displayMode: binding === 'display',
+        lowLevelAccess: Boolean(sourceTrigger.lowLevelAccess),
+        binding,
+        characterId,
+      },
     });
   }
   return out;
@@ -106,9 +118,9 @@ export async function dispatchBinding(
   dlog(`dispatchBinding: binding=${binding} matches=${matches.length}/${ctx.compiledTriggers.length} data=${JSON.stringify(ctx.data).slice(0, 200)}`);
   for (const entry of matches) {
     const tStart = Date.now();
-    dlog(`→ trigger START name=${entry.name} binding=${entry.binding} triggers=${JSON.stringify(entry.triggers)} code_len=${entry.code.length}`);
+    dlog(`→ trigger START name=${entry.name} binding=${entry.binding} triggers=${JSON.stringify(entry.triggers)} effects=${entry.source?.effect?.length ?? 0}`);
     try {
-      await runCompiledTrigger(entry, ctx);
+      await runInterpretedTrigger(entry, ctx.api, ctx.data, ctx.scriptNS);
       dlog(`← trigger DONE name=${entry.name} elapsed=${Date.now() - tStart}ms`);
     } catch (err) {
       dlog(`× trigger ERROR name=${entry.name} elapsed=${Date.now() - tStart}ms msg=${(err as Error).message}`);
@@ -118,40 +130,51 @@ export async function dispatchBinding(
   }
 }
 
-async function runCompiledTrigger(
-  entry: CompiledTriggerEntry,
-  ctx: DispatchCtx,
-): Promise<void> {
-  const rLog = makeSafeLogger(`runCompiledTrigger[${entry.name}]`);
-  const rlog = rLog.info;
-  const rerr = rLog.error;
-  // Mirror console.* to spindle.log.
-  const mirroredConsole = {
-    log: (...a: unknown[]) => rlog(`console.log: ${a.map((x) => { try { return typeof x === 'string' ? x : JSON.stringify(x); } catch { return String(x); } }).join(' ').slice(0, 600)}`),
-    warn: (...a: unknown[]) => rlog(`console.warn: ${a.map((x) => { try { return typeof x === 'string' ? x : JSON.stringify(x); } catch { return String(x); } }).join(' ').slice(0, 600)}`),
-    error: (...a: unknown[]) => rerr(`console.error: ${a.map((x) => { try { return typeof x === 'string' ? x : JSON.stringify(x); } catch { return String(x); } }).join(' ').slice(0, 600)}`),
-    info: (...a: unknown[]) => rlog(`console.info: ${a.map((x) => { try { return typeof x === 'string' ? x : JSON.stringify(x); } catch { return String(x); } }).join(' ').slice(0, 600)}`),
+function makeMirroredConsole(name: string): InterpConsole {
+  const L = makeSafeLogger(`trigger[${name}]`);
+  const fmt = (a: unknown[]): string =>
+    a
+      .map((x) => {
+        try { return typeof x === 'string' ? x : JSON.stringify(x); } catch { return String(x); }
+      })
+      .join(' ')
+      .slice(0, 600);
+  return {
+    log: (...a: unknown[]) => L.info(`console.log: ${fmt(a)}`),
+    warn: (...a: unknown[]) => L.info(`console.warn: ${fmt(a)}`),
+    error: (...a: unknown[]) => L.error(`console.error: ${fmt(a)}`),
+    info: (...a: unknown[]) => L.info(`console.info: ${fmt(a)}`),
   };
-  rlog(`COMPILE AsyncFunction code_len=${entry.code.length}`);
-  const fn = new AsyncFunctionCtor(
-    'api', 'data', 'script', '__console', 'z', 'fetch', 'Bun', 'process',
-    '"use strict";\nconst console = __console;\n' + entry.code + '\n',
-  );
-  rlog(`INVOKE AsyncFunction`);
-  const t0 = Date.now();
-  try {
-    await fn(
-      ctx.api,
-      ctx.data,
-      ctx.scriptNS,
-      mirroredConsole,
-      undefined, undefined, undefined, undefined,
-    );
-    rlog(`RETURN OK elapsed=${Date.now() - t0}ms`);
-  } catch (err) {
-    rerr(`THREW elapsed=${Date.now() - t0}ms — ${(err as Error).message}\n${(err as Error).stack ?? ''}`);
-    throw err;
-  }
+}
+
+async function runInterpretedTrigger(
+  entry: CompiledTriggerEntry,
+  api: HostApi,
+  data: DispatchData,
+  scriptNS: DispatcherScriptNS,
+): Promise<void> {
+  await withTriggerDepth(async () => {
+    const rLog = makeSafeLogger(`runTrigger[${entry.name}]`);
+    const t0 = Date.now();
+    const rt = await makeRisuTriggerRuntime(api, data, scriptNS, {
+      displayMode: entry.rtOpts.displayMode,
+      lowLevelAccess: entry.rtOpts.lowLevelAccess,
+      binding: entry.rtOpts.binding,
+      characterId: entry.rtOpts.characterId,
+    });
+    try {
+      await interpretTrigger(entry.source, rt, makeMirroredConsole(entry.name), {
+        displayMode: entry.rtOpts.displayMode,
+        lowLevelAccess: entry.rtOpts.lowLevelAccess,
+      });
+      rLog.info(`RETURN OK elapsed=${Date.now() - t0}ms`);
+    } catch (err) {
+      rLog.error(`THREW elapsed=${Date.now() - t0}ms — ${(err as Error).message}\n${(err as Error).stack ?? ''}`);
+      throw err;
+    } finally {
+      await rt.flush();
+    }
+  });
 }
 
 export async function dispatchByManualName(
@@ -160,8 +183,6 @@ export async function dispatchByManualName(
   onError?: (err: unknown, triggerName: string) => void,
 ): Promise<number> {
   const dlog = makeSafeLogger('dispatcher').info;
-  // Risu filter: comment exact-match on non-triggerlua triggers.
-  // triggerlua/triggercode excluded; backend.ts handles those separately.
   const matches = ctx.compiledTriggers.filter((t) => {
     const firstEffect = t.source?.effect?.[0];
     const isLuaOrCode = firstEffect?.type === 'triggerlua' || firstEffect?.type === 'triggercode';
@@ -172,22 +193,9 @@ export async function dispatchByManualName(
   let fired = 0;
   for (const entry of matches) {
     try {
-      if (entry.type === 'library') {
-        const lib = (await ctx.scriptNS.require(entry.name)) as
-          | { run?: (c: unknown) => Promise<void> }
-          | null;
-        if (lib && typeof lib.run === 'function') {
-          await lib.run({ api: ctx.api, data: ctx.data, script: ctx.scriptNS });
-          fired++;
-          dlog(`dispatchByManualName: fired library entry name=${entry.name}`);
-        } else {
-          dlog(`dispatchByManualName: library entry name=${entry.name} has no run() — skip`);
-        }
-      } else {
-        await runCompiledTrigger(entry, ctx);
-        fired++;
-        dlog(`dispatchByManualName: fired trigger entry name=${entry.name} binding=${entry.binding}`);
-      }
+      await runInterpretedTrigger(entry, ctx.api, ctx.data, ctx.scriptNS);
+      fired++;
+      dlog(`dispatchByManualName: fired entry name=${entry.name} type=${entry.type} binding=${entry.binding}`);
     } catch (err) {
       onError?.(err, entry.name);
     }
@@ -203,16 +211,7 @@ export function registerManualTriggers(
   for (const entry of compiled) {
     if (entry.type !== 'library') continue;
     scriptNS.registerManual(entry.name, async (ctx) => {
-      const silentConsole = { log: () => {}, warn: () => {}, error: () => {}, info: () => {} };
-      const exportsObj: Record<string, unknown> = {};
-      const moduleObj = { exports: exportsObj };
-      const fn = new AsyncFunctionCtor(
-        'api', 'data', 'script', '__console', 'exports', 'module', 'fetch', 'Bun', 'process',
-        '"use strict";\nconst console = __console;\n' + entry.code + '\n',
-      );
-      await fn(api, ctx.data, scriptNS, silentConsole, exportsObj, moduleObj, undefined, undefined, undefined);
-      const mod = moduleObj.exports as { run?: (c: unknown) => Promise<void> };
-      if (mod && typeof mod.run === 'function') await mod.run(ctx);
+      await runInterpretedTrigger(entry, ctx.api ?? api, ctx.data, scriptNS);
     });
   }
 }

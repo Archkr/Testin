@@ -63,6 +63,41 @@ var __export = (target, all) => {
 };
 var __esm = (fn, res) => () => (fn && (res = fn(fn = 0)), res);
 
+// src/util/base64.ts
+function base64ToBytes(input) {
+  const sextets = [];
+  for (let i = 0;i < input.length; i++) {
+    const v = DECODE[input.charCodeAt(i)] ?? -1;
+    if (v >= 0)
+      sextets.push(v);
+  }
+  const out = new Uint8Array(sextets.length * 6 >> 3);
+  let bitBuf = 0;
+  let bitCount = 0;
+  let o = 0;
+  for (const s of sextets) {
+    bitBuf = bitBuf << 6 | s;
+    bitCount += 6;
+    if (bitCount >= 8) {
+      bitCount -= 8;
+      out[o++] = bitBuf >> bitCount & 255;
+    }
+  }
+  return out;
+}
+function base64ToUtf8(input) {
+  return new TextDecoder().decode(base64ToBytes(input));
+}
+var B64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/", DECODE;
+var init_base64 = __esm(() => {
+  DECODE = new Int16Array(256).fill(-1);
+  for (let i = 0;i < B64_ALPHABET.length; i++) {
+    DECODE[B64_ALPHABET.charCodeAt(i)] = i;
+  }
+  DECODE[45] = 62;
+  DECODE[95] = 63;
+});
+
 // node_modules/zod/v3/helpers/util.js
 var util, objectUtil, ZodParsedType, getParsedType = (data) => {
   const t = typeof data;
@@ -9880,6 +9915,7 @@ var BARE_AMP_RE;
 var init_misc = __esm(() => {
   init_registry();
   init_risu_helpers();
+  init_base64();
   register8("u", (_c, a) => String.fromCharCode(parseInt(a[0] ?? "0", 16)), "Returns the character for a hex codepoint.");
   register8("ue", (_c, a) => String.fromCharCode(parseInt(a[0] ?? "0", 16)), "Alias for {{u}}.");
   register8("unicodeencode", (_c, a) => (a[0] ?? "").charCodeAt(a[1] ? Number(a[1]) : 0).toString(), "Returns the Unicode code point of a character at the given index (default 0).");
@@ -9893,7 +9929,7 @@ var init_misc = __esm(() => {
     return Buffer.from(bytes).toString("base64");
   }, "XOR-encrypts a string with 0xFF and base64-encodes.");
   register8("xordecrypt", (_c, a) => {
-    const bytes = Buffer.from(a[0] ?? "", "base64");
+    const bytes = base64ToBytes(a[0] ?? "");
     for (let i = 0;i < bytes.length; i++)
       bytes[i] ^= 255;
     return new TextDecoder().decode(bytes);
@@ -10168,6 +10204,7 @@ function register11(name, handler, description) {
 var init_metadata = __esm(() => {
   init_registry();
   init_risu_helpers();
+  init_base64();
   register11("declare", (ctx, a) => {
     ctx.vars.set("temp", `__declared_${a[0] ?? ""}__`, "1");
     return "";
@@ -10192,7 +10229,7 @@ var init_metadata = __esm(() => {
       return `<br><div class="x-risu-risu-file">${a[0] ?? ""}</div><br>`;
     const content = a[1] ?? "";
     try {
-      return Buffer.from(content, "base64").toString("utf-8");
+      return base64ToUtf8(content);
     } catch {
       return "";
     }
@@ -18887,6 +18924,9 @@ function toStr(v) {
   }
 }
 
+// src/realm/backend.ts
+init_base64();
+
 // src/realm/messages.ts
 var REALM_HUB_API_URL = "https://sv.risuai.xyz";
 var REALM_DOWNLOAD_URL = "https://realm.risuai.net";
@@ -19036,6 +19076,9 @@ function extractPngTextChunks(bytes) {
   return out;
 }
 
+// src/realm/import-formats/png-card.ts
+init_base64();
+
 // src/realm/import-formats/crc32.ts
 var CRC_TABLE = null;
 function getTable() {
@@ -19161,15 +19204,7 @@ function writeStoredZip(entries) {
 // src/realm/import-formats/png-card.ts
 var ASSET_KEY_PREFIX = "chara-ext-asset_";
 function base64Decode(str) {
-  const g = globalThis;
-  if (g.Buffer && typeof g.Buffer.from === "function") {
-    return new Uint8Array(g.Buffer.from(str, "base64"));
-  }
-  const bin = atob(str);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0;i < bin.length; i++)
-    out[i] = bin.charCodeAt(i);
-  return out;
+  return base64ToBytes(str);
 }
 function decodeBase64Json(text) {
   const bytes = base64Decode(text);
@@ -19579,17 +19614,6 @@ function bytesToBase64(bytes) {
     bin += String.fromCharCode.apply(null, Array.from(slice));
   }
   return btoa(bin);
-}
-function base64ToBytes(b64) {
-  const g = globalThis;
-  if (g.Buffer && typeof g.Buffer.from === "function") {
-    return new Uint8Array(g.Buffer.from(b64, "base64"));
-  }
-  const bin = atob(b64);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0;i < bin.length; i++)
-    out[i] = bin.charCodeAt(i);
-  return out;
 }
 
 // src/core/errors.ts
@@ -20141,6 +20165,9 @@ function readCharx(bytes, opts = {}) {
     jpegPreview
   };
 }
+
+// src/core/pipeline/translate.ts
+init_base64();
 
 // src/core/schemas/module.ts
 init_zod();
@@ -22412,7 +22439,7 @@ function renderAtActionCode(a) {
   const s = a.action.script;
   const body = renderActionBody(a.action);
   const frontmatter = [
-    `// @name       ${a.name}`,
+    `// @name       ${oneLine(a.name)}`,
     `// @type       trigger`,
     ...a.events.length > 0 ? [`// @triggers   ${a.events.join(", ")}`] : [],
     `// @folder     risu/at-actions`,
@@ -23504,6 +23531,7 @@ function compileBlock(effects, start, minIndent, ctx) {
     }
     switch (op.type) {
       case "v2If":
+      case "v2IfVar":
       case "v2IfAdvanced": {
         out.push(line2(ctx, `if (${emitCondition(op)}) {`));
         const innerCtx = { ...ctx, indent: ctx.indent + 1 };
@@ -24357,7 +24385,7 @@ function expandInlineDataUriAssets(card, assets) {
     let bytes;
     try {
       if (head.includes(";base64")) {
-        bytes = new Uint8Array(Buffer.from(body, "base64"));
+        bytes = base64ToBytes(body);
       } else {
         bytes = new TextEncoder().encode(decodeURIComponent(body));
       }
@@ -24753,7 +24781,7 @@ function pickPreferredAvatar(card, assets) {
         const body = uri.slice(comma + 1);
         try {
           if (head.includes(";base64")) {
-            bytes = new Uint8Array(Buffer.from(body, "base64"));
+            bytes = base64ToBytes(body);
           } else {
             bytes = new TextEncoder().encode(decodeURIComponent(body));
           }
@@ -24865,6 +24893,7 @@ function detectMacrosInText(c) {
   return false;
 }
 // src/payload/import.ts
+init_base64();
 init_cbs();
 
 // src/payload/codec.ts
@@ -25350,16 +25379,13 @@ function pickAvatar(assets) {
   }
   return null;
 }
-function base64ToBytes2(b64) {
-  return new Uint8Array(Buffer.from(b64, "base64"));
-}
 async function importCard(args) {
   const progress = args.onProgress ?? (() => {});
   const tImport = Date.now();
   logInfo(`start file=${args.fileName} b64-bytes=${args.bytesB64.length} userId=${args.userId ?? "<none>"}`);
   progress("decoding", `Decoding ${args.fileName}\u2026`, 0.05);
   const tDecode = Date.now();
-  const bytes = base64ToBytes2(args.bytesB64);
+  const bytes = base64ToBytes(args.bytesB64);
   logInfo(`(1) decoded base64 -> ${bytes.byteLength} bytes in ${Date.now() - tDecode}ms`);
   progress("translating", "Translating Risu card\u2026", 0.15);
   const tTranslate = Date.now();
@@ -27223,6 +27249,9 @@ var sessionFunctions = (() => {
     has: (name) => table.has(name)
   };
 })();
+function clearMacroVarOverlay(chatId) {
+  varOverlays.delete(chatId);
+}
 function buildRuntimeContext(mctx) {
   const env = mctx.env ?? {};
   const chatId = env.chat?.id ?? "";
@@ -29204,7 +29233,8 @@ function pairModuleAssetsForUpload(manifest, bytesList, bytesToBase642, mimeFor)
     out.push({
       path: name,
       base64: bytesToBase642(bytes),
-      mimeType: mimeFor(name)
+      mimeType: mimeFor(name),
+      sourceIndex: i
     });
   }
   return out;
@@ -29318,7 +29348,7 @@ function createModuleUploader(deps) {
           let batchBytes = 0;
           while (i < pending.length && batchItems.length < BATCH_MAX_ITEMS) {
             const meta = pending[i];
-            const bytes = decoded.assets[i];
+            const bytes = meta ? decoded.assets[meta.sourceIndex] : undefined;
             if (!meta || !bytes) {
               i += 1;
               continue;
@@ -29366,7 +29396,7 @@ function createModuleUploader(deps) {
             if (idx >= pending.length)
               break;
             const meta = pending[idx];
-            const bytes = decoded.assets[idx];
+            const bytes = meta ? decoded.assets[meta.sourceIndex] : undefined;
             if (!meta || !bytes)
               continue;
             const assetName = meta.path;
@@ -30186,6 +30216,7 @@ function createViewerHandlers(deps) {
 }
 
 // src/handlers/module.ts
+init_base64();
 function createModuleHandlers(deps) {
   return {
     upload_module_init: async (msg, ctx) => {
@@ -30233,7 +30264,7 @@ function createModuleHandlers(deps) {
       }
       if (msg.seq < 0 || msg.seq >= session.totalChunks)
         return;
-      const chunkBytes = new Uint8Array(Buffer.from(msg.bytesB64Chunk, "base64"));
+      const chunkBytes = base64ToBytes(msg.bytesB64Chunk);
       if (session.buffer[msg.seq] === null) {
         session.receivedChunks += 1;
       }
@@ -30472,6 +30503,7 @@ function createModuleHandlers(deps) {
 }
 
 // src/handlers/import.ts
+init_base64();
 function createImportHandlers(deps) {
   return {
     get_cards: async (_msg, ctx) => {
@@ -30579,7 +30611,7 @@ function createImportHandlers(deps) {
       if (session.buffer[msg.seq] !== null) {
         deps.log.warn(`import_card_chunk: duplicate seq=${msg.seq} on session ${msg.sessionId},overwriting`);
       }
-      const chunkBytes = new Uint8Array(Buffer.from(msg.bytesB64Chunk, "base64"));
+      const chunkBytes = base64ToBytes(msg.bytesB64Chunk);
       session.buffer[msg.seq] = chunkBytes;
       session.receivedBytes += chunkBytes.byteLength;
       session.receivedChunks += 1;
@@ -30665,11 +30697,15 @@ function createImportHandlers(deps) {
       const successful = Object.values(msg.imageIdByMarker).filter((v) => typeof v === "string" && v.length > 0).length;
       const failed = total - successful;
       deps.log.info(`register_svg_raster_index: char=${msg.characterId} total=${total} successful=${successful} failed=${failed}`);
-      await deps.applySvgRasterIndex({
-        characterId: msg.characterId,
-        imageIdByMarker: msg.imageIdByMarker,
-        userId: ctx.userId
-      });
+      try {
+        await deps.applySvgRasterIndex({
+          characterId: msg.characterId,
+          imageIdByMarker: msg.imageIdByMarker,
+          userId: ctx.userId
+        });
+      } catch (err) {
+        deps.log.warn(`register_svg_raster_index: applySvgRasterIndex failed char=${msg.characterId}: ${deps.errMsg(err)} \u2014 finalizing import without SVG raster`);
+      }
       pendingForSvgCheck.hasPendingSvgRaster = false;
       deps.log.info(`register_svg_raster_index: cleared svg-pending flag char=${msg.characterId}`);
       await deps.maybeFinalizeImport(msg.characterId);
@@ -31072,6 +31108,10 @@ function createLifecycleEventHandlers(deps) {
         deps.invalidateMacroInterceptorForChat(chatId);
         if (!wasOwn)
           invalidateRecentFlush(chatId);
+        if (!wasOwn)
+          deps.clearVarOverlay(chatId);
+        if (!wasOwn)
+          deps.clearMacroVarOverlay(chatId);
       }
       const fieldsPreview = changedFields === undefined ? "undefined" : changedFields.length === 0 ? "empty" : `[${changedFields.slice(0, 4).join(",")}${changedFields.length > 4 ? `,+${changedFields.length - 4}` : ""}]`;
       deps.log.info(`event CHAT_CHANGED chatId=${chatId} characterId=${characterId ?? "?"} ` + `ownWrite=${wasOwn} fields=${fieldsPreview} requiresRefresh=${requiresRefresh}`);
@@ -31219,6 +31259,7 @@ function createLifecycleEventHandlers(deps) {
       deps.clearActiveScriptstateDefaults(chatId);
       deps.clearActiveLorebook(chatId);
       deps.clearVarOverlay(chatId);
+      deps.clearMacroVarOverlay(chatId);
       deps.variableState.clearChat(chatId);
       deps.toggleState.clearChat(chatId);
     },
@@ -31707,7 +31748,13 @@ function makeChatApi(api, state, notifyStateChanged) {
     const joined = msgs.map((m) => toStr(m.content)).join(`
 `).toLowerCase();
     const needle = toStr(value).toLowerCase();
-    return condition === "regex" ? new RegExp(needle).test(joined) : condition === "loose" ? joined.indexOf(needle) >= 0 : joined.split(/\s+/).indexOf(needle) >= 0;
+    return condition === "regex" ? (() => {
+      try {
+        return new RegExp(needle).test(joined);
+      } catch {
+        return joined.indexOf(needle) >= 0;
+      }
+    })() : condition === "loose" ? joined.indexOf(needle) >= 0 : joined.split(/\s+/).indexOf(needle) >= 0;
   }
   return {
     getMessagesTail,
@@ -32299,7 +32346,14 @@ function calculate(expr) {
   return calcString2(toStr(expr));
 }
 function splitString(source, delimiter, kind) {
-  const d = kind === "regex" ? new RegExp(toStr(delimiter)) : toStr(delimiter);
+  let d = toStr(delimiter);
+  if (kind === "regex") {
+    try {
+      d = new RegExp(toStr(delimiter));
+    } catch {
+      d = toStr(delimiter);
+    }
+  }
   return toStr(source).split(d);
 }
 
@@ -32518,6 +32572,15 @@ function currentUserId() {
   return userIdAls.getStore() ?? null;
 }
 var inheritedVarsAls = new AsyncLocalStorage2;
+var triggerDepthAls = new AsyncLocalStorage2;
+var MAX_TRIGGER_DEPTH = 64;
+function withTriggerDepth(fn) {
+  const depth = (triggerDepthAls.getStore() ?? 0) + 1;
+  if (depth > MAX_TRIGGER_DEPTH) {
+    throw new Error(`trigger recursion exceeded max depth (${MAX_TRIGGER_DEPTH})`);
+  }
+  return triggerDepthAls.run(depth, fn);
+}
 function withInheritedVarsCache(varsCache, fn) {
   return inheritedVarsAls.run(varsCache, fn);
 }
@@ -32550,19 +32613,39 @@ function compareValues(a, b, op) {
       return as !== "" && as !== "0" && as !== "false" && as !== "null" && as !== "undefined";
     case "contains":
     case "\u220B":
-      return as.indexOf(bs) >= 0;
+      try {
+        return JSON.parse(as).includes(bs);
+      } catch {
+        return false;
+      }
     case "notcontains":
     case "\u220C":
-      return as.indexOf(bs) < 0;
+      try {
+        return !JSON.parse(as).includes(bs);
+      } catch {
+        return true;
+      }
     case "in":
     case "\u2208":
-      return bs.indexOf(as) >= 0;
+      try {
+        return JSON.parse(bs).includes(as);
+      } catch {
+        return false;
+      }
     case "notin":
     case "\u2209":
-      return bs.indexOf(as) < 0;
+      try {
+        return !JSON.parse(bs).includes(as);
+      } catch {
+        return true;
+      }
     case "approx":
-    case "\u2252":
-      return as.toLowerCase() === bs.toLowerCase();
+    case "\u2252": {
+      const n1 = Number(as), n2 = Number(bs);
+      if (Number.isNaN(n1) || Number.isNaN(n2))
+        return as.toLowerCase().replace(/ /g, "") === bs.toLowerCase().replace(/ /g, "");
+      return Math.abs(n1 - n2) < 0.0001;
+    }
     default:
       return as === bs;
   }
@@ -32836,7 +32919,13 @@ async function makeRisuTriggerRuntime(api, data, scriptNs, opts = {}) {
         const joined = msgs.map((m) => toStr(m.content)).join(`
 `).toLowerCase();
         const cond = co["condition"];
-        pass = cond === "loose" ? joined.indexOf(needle) >= 0 : cond === "regex" ? new RegExp(needle).test(joined) : joined.split(/\s+/).indexOf(needle) >= 0;
+        pass = cond === "loose" ? joined.indexOf(needle) >= 0 : cond === "regex" ? (() => {
+          try {
+            return new RegExp(needle).test(joined);
+          } catch {
+            return joined.indexOf(needle) >= 0;
+          }
+        })() : joined.split(/\s+/).indexOf(needle) >= 0;
       } else {
         const source = type === "value" ? toStr(co["var"]) : getVar(toStr(co["var"]));
         const target = resolve(co["value"], toStr(co["valueType"] ?? "value"));
@@ -33039,7 +33128,7 @@ async function makeRisuTriggerRuntime(api, data, scriptNs, opts = {}) {
         const n = Number(index);
         const real = n >= 0 ? n : messagesCache.length + n;
         const m = messagesCache[real];
-        return m ? JSON.stringify({ role: lumiRoleToRisu(m.role), data: toStr(m.content) }) : JSON.stringify({ role: "", data: "" });
+        return m ? JSON.stringify({ role: lumiRoleToRisu(m.role), data: toStr(m.content) }) : JSON.stringify(null);
       },
       setChat: (_id, index, value) => {
         const n = Number(index);
@@ -33790,6 +33879,118 @@ function puaDecodeFeMacros(text, tokens) {
   });
 }
 
+// src/util/perf.ts
+var ENABLED = (() => {
+  try {
+    return globalThis.process?.env?.RISU_COMPAT_PERF === "1";
+  } catch {
+    return false;
+  }
+})();
+function emitLine(line3) {
+  try {
+    const sp = globalThis.spindle;
+    if (sp?.log?.info) {
+      sp.log.info(line3);
+      return;
+    }
+  } catch {}
+  try {
+    console.log(line3);
+  } catch {}
+}
+if (ENABLED) {
+  emitLine("[lumirealm perf] instrumentation ENABLED (RISU_COMPAT_PERF=1)");
+}
+var buckets = new Map;
+var startedAt = 0;
+var dirty = false;
+var flushTimer = null;
+var FLUSH_INTERVAL_MS = 5000;
+function perfEnabled() {
+  return ENABLED;
+}
+function ensureTimer() {
+  if (flushTimer)
+    return;
+  startedAt = Date.now();
+  flushTimer = setInterval(() => {
+    if (dirty)
+      flushNow();
+  }, FLUSH_INTERVAL_MS);
+  flushTimer.unref?.();
+}
+function getBucket(name) {
+  let b = buckets.get(name);
+  if (!b) {
+    b = { count: 0, totalMs: 0, subs: {} };
+    buckets.set(name, b);
+  }
+  return b;
+}
+function perfRecord(name, ms, subs) {
+  if (!ENABLED)
+    return;
+  ensureTimer();
+  const b = getBucket(name);
+  b.count += 1;
+  b.totalMs += ms;
+  if (subs)
+    for (const k in subs)
+      b.subs[k] = (b.subs[k] ?? 0) + subs[k];
+  dirty = true;
+}
+function perfBump(name, subs) {
+  if (!ENABLED)
+    return;
+  ensureTimer();
+  const b = getBucket(name);
+  b.count += 1;
+  if (subs)
+    for (const k in subs)
+      b.subs[k] = (b.subs[k] ?? 0) + subs[k];
+  dirty = true;
+}
+var PANEL_TRACE = (() => {
+  try {
+    return globalThis.process?.env?.LUMIVERSE_PANEL_TRACE === "1";
+  } catch {
+    return false;
+  }
+})();
+var PANEL_MARKERS = ["\u2605\u25A0", "\uD83E\uDDB6", "\u2605OMEGA\u2605", "data-lr-style-wrap", "data-risu-island", "sys-panel", "status-panel"];
+function panelTrace(stage, content) {
+  if (!PANEL_TRACE)
+    return;
+  const found = [];
+  let firstIdx = -1;
+  for (const m of PANEL_MARKERS) {
+    const i = content.indexOf(m);
+    if (i >= 0) {
+      found.push(m);
+      if (firstIdx < 0 || i < firstIdx)
+        firstIdx = i;
+    }
+  }
+  const slice = firstIdx >= 0 ? content.slice(Math.max(0, firstIdx - 50), firstIdx + 140) : content.slice(0, 140);
+  emitLine(`[panel-trace] ${stage} len=${content.length} markers=[${found.join(",")}] slice=${JSON.stringify(slice)}`);
+}
+function flushNow() {
+  if (!ENABLED || buckets.size === 0)
+    return;
+  dirty = false;
+  const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
+  const rows = [...buckets.entries()].sort((a, b) => b[1].totalMs - a[1].totalMs);
+  const lines = rows.map(([name, b]) => {
+    const avg = b.count > 0 ? (b.totalMs / b.count).toFixed(2) : "0";
+    const subStr = Object.keys(b.subs).length ? "  " + Object.entries(b.subs).map(([k, v]) => `${k}=${v}`).join(" ") : "";
+    return `    ${name.padEnd(28)} n=${b.count} total=${Math.round(b.totalMs)}ms avg=${avg}ms${subStr}`;
+  });
+  emitLine(`[lumirealm perf] +${elapsed}s \u2014 LumiRealm cost centers (by total ms):
+${lines.join(`
+`)}`);
+}
+
 // src/state/render-mcp-cache.ts
 var log4 = makeSafeLogger("render-mcp-cache");
 var TTL_MS2 = 5000;
@@ -33965,8 +34166,8 @@ function fnv1a2(s) {
   }
   return h >>> 0;
 }
-function key2(chatId, template, commit) {
-  return `${chatId}::${commit ? "c" : "d"}::${template.length}::${fnv1a2(template)}`;
+function key2(chatId, template, commit, ctxKey) {
+  return `${chatId}::${commit ? "c" : "d"}::${ctxKey}::${template.length}::${fnv1a2(template)}`;
 }
 function evictIfNeeded2(now) {
   if (cache5.size < MAX_ENTRIES2)
@@ -33988,8 +34189,8 @@ function evictIfNeeded2(now) {
   if (oldestKey)
     cache5.delete(oldestKey);
 }
-function lookupMacroInterceptor(chatId, template, commit) {
-  const k = key2(chatId, template, commit);
+function lookupMacroInterceptor(chatId, template, commit, ctxKey) {
+  const k = key2(chatId, template, commit, ctxKey);
   const entry = cache5.get(k);
   if (!entry) {
     missCount2 += 1;
@@ -34004,10 +34205,10 @@ function lookupMacroInterceptor(chatId, template, commit) {
   hitCount2 += 1;
   return entry.result;
 }
-function cacheMacroInterceptor(chatId, template, commit, result) {
+function cacheMacroInterceptor(chatId, template, commit, ctxKey, result) {
   const now = Date.now();
   evictIfNeeded2(now);
-  cache5.set(key2(chatId, template, commit), { result, ts: now });
+  cache5.set(key2(chatId, template, commit, ctxKey), { result, ts: now });
 }
 function invalidateMacroInterceptorForChat(chatId) {
   const prefix = `${chatId}::`;
@@ -35064,6 +35265,15 @@ function registerJsonModule(L) {
   }
   lua.lua_pcall(L, 0, 0, 0);
 }
+var __luaBytecodeCache = new Map;
+function __luaCodeHash(s) {
+  let h = 2166136261;
+  for (let i = 0;i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24)) >>> 0;
+  }
+  return h >>> 0;
+}
 async function execute(code, globals, opts = {}) {
   const tStart = Date.now();
   const codeStr = String(code || "");
@@ -35071,12 +35281,15 @@ async function execute(code, globals, opts = {}) {
   flog(`execute: START code_len=${codeStr.length} globals=${globalKeys.length} entry=${String(opts.entry ?? "<none>")} args=${JSON.stringify(opts.args ?? [])}`);
   fverbose(`execute: globals_keys=${globalKeys.join(",").slice(0, 400)}`);
   fverbose(`execute: code[0..300]=${JSON.stringify(codeStr.slice(0, 300))}`);
+  const __perfCreate0 = perfEnabled() ? Date.now() : 0;
   const L = lauxlib.luaL_newstate();
   try {
     lualib.luaL_openlibs(L);
     fverbose(`execute: luaL_openlibs done`);
     registerJsonModule(L);
     fverbose(`execute: registerJsonModule done`);
+    if (__perfCreate0)
+      perfRecord("lua.vmCreate", Date.now() - __perfCreate0);
     if (globals && typeof globals === "object") {
       let pushed = 0;
       for (const name of Object.keys(globals)) {
@@ -35227,7 +35440,33 @@ end
 `;
     const wrapped = prelude + `
 ` + codeStr;
-    const loadStatus = lauxlib.luaL_loadstring(L, toL(wrapped));
+    const __compile0 = perfEnabled() ? Date.now() : 0;
+    const __bcKey = __luaCodeHash(wrapped);
+    const __cachedBc = __luaBytecodeCache.get(__bcKey);
+    let loadStatus;
+    if (__cachedBc) {
+      loadStatus = lauxlib.luaL_loadbuffer(L, __cachedBc, __cachedBc.length, toL("=card"));
+    } else {
+      loadStatus = lauxlib.luaL_loadstring(L, toL(wrapped));
+      if (loadStatus === lua.LUA_OK) {
+        try {
+          const __bc = [];
+          lua.lua_dump(L, (_L, p, sz) => {
+            for (let i = 0;i < sz; i++)
+              __bc.push(p[i]);
+            return 0;
+          }, null, 0);
+          __luaBytecodeCache.set(__bcKey, new Uint8Array(__bc));
+          if (__luaBytecodeCache.size > 32) {
+            const k = __luaBytecodeCache.keys().next().value;
+            if (k !== undefined)
+              __luaBytecodeCache.delete(k);
+          }
+        } catch {}
+      }
+    }
+    if (__compile0)
+      perfRecord("lua.compile", Date.now() - __compile0, { codeLen: wrapped.length, cached: __cachedBc ? 1 : 0 });
     if (loadStatus !== lua.LUA_OK) {
       const err = toJS(lua.lua_tostring(L, -1));
       flogErr(`execute: luaL_loadstring failed \u2014 ${err}`);
@@ -35235,7 +35474,10 @@ end
     }
     fverbose(`execute: luaL_loadstring OK`);
     const topBefore = lua.lua_gettop(L);
+    const __run0 = perfEnabled() ? Date.now() : 0;
     const runStatus = lua.lua_pcall(L, 0, lua.LUA_MULTRET, 0);
+    if (__run0)
+      perfRecord("lua.runChunk", Date.now() - __run0);
     if (runStatus !== lua.LUA_OK) {
       const err = toJS(lua.lua_tostring(L, -1));
       flogErr(`execute: main chunk pcall FAILED \u2014 ${err}`);
@@ -35311,11 +35553,684 @@ end
     try {
       lua.lua_close(L);
     } catch {}
+    if (perfEnabled()) {
+      perfRecord("lua.execute", Date.now() - tStart, { codeLen: codeStr.length });
+      perfBump(`lua.execute.entry:${String(opts.entry ?? "<none>")}`);
+    }
   }
 }
 
+// src/interpreter/trigger-interpreter.ts
+class TriggerBudgetExceededError extends Error {
+  constructor(budget) {
+    super(`trigger interpreter exceeded step budget (${budget})`);
+    this.name = "TriggerBudgetExceededError";
+  }
+}
+var DEFAULT_STEP_BUDGET = 5000000;
+function readIndent2(op) {
+  const raw = op.indent;
+  if (typeof raw === "number" && raw >= 0)
+    return raw;
+  return 0;
+}
+function parseBlock(effects, start, minIndent) {
+  const nodes = [];
+  let i = start;
+  while (i < effects.length) {
+    const op = effects[i];
+    const opIndent = readIndent2(op);
+    if (opIndent < minIndent)
+      break;
+    if ((op.type === "v2EndIndent" || op.type === "v2Else") && opIndent === minIndent && minIndent > 0) {
+      break;
+    }
+    switch (op.type) {
+      case "v2If":
+      case "v2IfVar":
+      case "v2IfAdvanced": {
+        const thenRes = parseBlock(effects, i + 1, opIndent + 1);
+        i = thenRes.next;
+        const node = { kind: "if", op, then: thenRes.nodes, else: null };
+        const endOp = effects[i];
+        if (endOp && endOp.type === "v2EndIndent" && readIndent2(endOp) === opIndent + 1) {
+          i++;
+          const elseOp = effects[i];
+          if (elseOp && elseOp.type === "v2Else" && readIndent2(elseOp) === opIndent) {
+            const elseRes = parseBlock(effects, i + 1, opIndent + 1);
+            node.else = elseRes.nodes;
+            i = elseRes.next;
+            const elseEnd = effects[i];
+            if (elseEnd && elseEnd.type === "v2EndIndent" && readIndent2(elseEnd) === opIndent + 1) {
+              i++;
+            }
+          }
+        }
+        nodes.push(node);
+        break;
+      }
+      case "v2Loop": {
+        const bodyRes = parseBlock(effects, i + 1, opIndent + 1);
+        i = bodyRes.next;
+        const endOp = effects[i];
+        if (endOp && endOp.type === "v2EndIndent" && readIndent2(endOp) === opIndent + 1) {
+          i++;
+        }
+        nodes.push({ kind: "loop", body: bodyRes.nodes });
+        break;
+      }
+      case "v2LoopNTimes": {
+        const bodyRes = parseBlock(effects, i + 1, opIndent + 1);
+        i = bodyRes.next;
+        const endOp = effects[i];
+        if (endOp && endOp.type === "v2EndIndent" && readIndent2(endOp) === opIndent + 1) {
+          i++;
+        }
+        nodes.push({ kind: "loopN", op, body: bodyRes.nodes });
+        break;
+      }
+      case "v2BreakLoop": {
+        nodes.push({ kind: "break" });
+        i++;
+        break;
+      }
+      case "v2Else":
+      case "v2EndIndent": {
+        i++;
+        break;
+      }
+      default: {
+        nodes.push({ kind: "leaf", op });
+        i++;
+        break;
+      }
+    }
+  }
+  return { nodes, next: i };
+}
+function evalCondition(op, rt) {
+  const e = op;
+  const sourceKind = e.type === "v2If" ? "var" : e.sourceType ?? "var";
+  return rt.compare(rt.resolve(e.source, sourceKind), rt.resolve(e.target, e.targetType), e.condition);
+}
+var NOOP = () => {};
+var LEAVES = {
+  v2Header: NOOP,
+  v2If: NOOP,
+  v2IfVar: NOOP,
+  v2IfAdvanced: NOOP,
+  v2Else: NOOP,
+  v2EndIndent: NOOP,
+  v2Loop: NOOP,
+  v2LoopNTimes: NOOP,
+  v2BreakLoop: NOOP,
+  v2Comment: NOOP,
+  setvar: async (op, { rt }) => {
+    const e = op;
+    await rt.setvarV1(e.var, e.operator, e.value);
+  },
+  impersonate: async (op, { rt }) => {
+    const e = op;
+    await rt.impersonate(e.role, rt.resolve(e.value, "value"));
+  },
+  systemprompt: async (op, { rt }) => {
+    const e = op;
+    await rt.systemPrompt(e.location, rt.resolve(e.value, "value"));
+  },
+  command: async (op, { rt }) => {
+    const e = op;
+    await rt.command(rt.resolve(e.value, "value"));
+  },
+  stop: (_op, { rt }) => {
+    rt.stopSending = true;
+  },
+  runtrigger: async (op, { rt }) => {
+    const e = op;
+    await rt.runTrigger(e.value);
+  },
+  cutchat: async (op, { rt }) => {
+    const e = op;
+    await rt.cutChat(Number(rt.resolve(e.start, "value")), Number(rt.resolve(e.end, "value")));
+  },
+  modifychat: async (op, { rt }) => {
+    const e = op;
+    await rt.modifyChat(Number(rt.resolve(e.index, "value")), rt.resolve(e.value, "value"));
+  },
+  showAlert: async (op, ctx) => {
+    if (!ctx.lowLevelAccess)
+      return;
+    if (ctx.displayMode)
+      return "return";
+    const e = op;
+    await ctx.rt.showAlert(e.alertType, ctx.rt.resolve(e.value, "value"), ctx.rt.resolve(e.inputVar, "value"));
+  },
+  sendAIprompt: (_op, ctx) => {
+    if (!ctx.lowLevelAccess)
+      return;
+    ctx.rt.sendAIprompt = true;
+  },
+  runLLM: async (op, ctx) => {
+    if (!ctx.lowLevelAccess)
+      return;
+    const e = op;
+    ctx.rt.setVar(e.inputVar, await ctx.rt.runLLM(ctx.rt.resolve(e.value, "value"), "model"));
+  },
+  runAxLLM: async (op, ctx) => {
+    if (!ctx.lowLevelAccess)
+      return;
+    const e = op;
+    ctx.rt.setVar(e.inputVar, await ctx.rt.runLLM(ctx.rt.resolve(e.value, "value"), "submodel"));
+  },
+  checkSimilarity: async (op, ctx) => {
+    if (!ctx.lowLevelAccess)
+      return;
+    const e = op;
+    ctx.rt.setVar(e.inputVar, (await ctx.rt.checkSimilarity(ctx.rt.resolve(e.value, "value"), ctx.rt.resolve(e.source, "value"))).join("\xA7"));
+  },
+  extractRegex: (op, ctx) => {
+    if (!ctx.lowLevelAccess)
+      return;
+    const e = op;
+    ctx.rt.setVar(e.inputVar, ctx.rt.extractRegex(ctx.rt.resolve(e.value, "value"), e.regex, e.flags, e.result));
+  },
+  runImgGen: async (op, ctx) => {
+    if (!ctx.lowLevelAccess)
+      return;
+    const e = op;
+    ctx.rt.setVar(e.inputVar, await ctx.rt.runImgGen(ctx.rt.resolve(e.value, "value"), ctx.rt.resolve(e.negValue, "value")));
+  },
+  triggercode: (op, { rt }) => {
+    const e = op;
+    if (rt.warnDroppedTriggerCode)
+      rt.warnDroppedTriggerCode(String(e.code ?? "").slice(0, 60));
+  },
+  triggerlua: async (op, { rt }) => {
+    const e = op;
+    await rt.runLua(e.code);
+  },
+  v2StopTrigger: () => "return",
+  v2ConsoleLog: (op, ctx) => {
+    const e = op;
+    ctx.console.log(ctx.rt.resolve(e.source, e.sourceType));
+  },
+  v2SetVar: async (op, { rt }) => {
+    const e = op;
+    await rt.setvarV2(rt.resolve(e.var, "value"), e.operator, rt.resolve(e.value, e.valueType));
+  },
+  v2DeclareLocalVar: (op, { rt }) => {
+    const e = op;
+    rt.declareLocalVar(rt.resolve(e.var, "value"), rt.resolve(e.value, e.valueType), e.indent);
+  },
+  v2CutChat: async (op, { rt }) => {
+    const e = op;
+    await rt.cutChat(Number(rt.resolve(e.start, e.startType)), Number(rt.resolve(e.end, e.endType)));
+  },
+  v2ModifyChat: async (op, { rt }) => {
+    const e = op;
+    await rt.modifyChat(Number(rt.resolve(e.index, e.indexType)), rt.resolve(e.value, e.valueType));
+  },
+  v2SystemPrompt: async (op, { rt }) => {
+    const e = op;
+    await rt.systemPrompt(e.location, rt.resolve(e.value, e.valueType));
+  },
+  v2Impersonate: async (op, { rt }) => {
+    const e = op;
+    await rt.impersonate(e.role, rt.resolve(e.value, e.valueType));
+  },
+  v2Command: async (op, { rt }) => {
+    const e = op;
+    await rt.command(rt.resolve(e.value, e.valueType));
+  },
+  v2SendAIprompt: (_op, ctx) => {
+    if (!ctx.lowLevelAccess)
+      return;
+    ctx.rt.sendAIprompt = true;
+  },
+  v2StopPromptSending: (_op, { rt }) => {
+    rt.stopSending = true;
+  },
+  v2UpdateGUI: async (_op, { rt }) => {
+    await rt.updateGUI();
+  },
+  v2UpdateChatAt: async (op, { rt }) => {
+    const e = op;
+    await rt.updateChatAt(Number(e.index));
+  },
+  v2Wait: async (op, { rt }) => {
+    const e = op;
+    await rt.sleep(Number(rt.resolve(e.value, e.valueType)) * 1000);
+  },
+  v2Tokenize: async (op, { rt }) => {
+    const e = op;
+    rt.setVar(e.outputVar, String(await rt.tokenize(rt.resolve(e.value, e.valueType))));
+  },
+  v2QuickSearchChat: (op, { rt }) => {
+    const e = op;
+    rt.setVar(e.outputVar, rt.quickSearchChat(rt.resolve(e.value, e.valueType), e.condition, Number(rt.resolve(e.depth, e.depthType))) ? "1" : "0");
+  },
+  v2GetLastMessage: (op, { rt }) => {
+    const e = op;
+    rt.setVar(e.outputVar, rt.getLastMessage());
+  },
+  v2GetMessageAtIndex: (op, { rt }) => {
+    const e = op;
+    rt.setVar(e.outputVar, rt.getMessageAtIndex(Number(rt.resolve(e.index, e.indexType))));
+  },
+  v2GetMessageCount: (op, { rt }) => {
+    const e = op;
+    rt.setVar(e.outputVar, String(rt.getMessageCount()));
+  },
+  v2GetLastUserMessage: (op, { rt }) => {
+    const e = op;
+    rt.setVar(e.outputVar, rt.getLastUserMessage());
+  },
+  v2GetLastCharMessage: (op, { rt }) => {
+    const e = op;
+    rt.setVar(e.outputVar, rt.getLastCharMessage());
+  },
+  v2GetFirstMessage: (op, { rt }) => {
+    const e = op;
+    rt.setVar(e.outputVar, rt.getFirstMessage());
+  },
+  v2ShowAlert: async (op, ctx) => {
+    if (ctx.displayMode)
+      return "return";
+    const e = op;
+    await ctx.rt.showAlert("normal", ctx.rt.resolve(e.value, e.valueType), "");
+  },
+  v2RunLLM: async (op, ctx) => {
+    if (!ctx.lowLevelAccess)
+      return;
+    const e = op;
+    ctx.rt.setVar(e.outputVar, await ctx.rt.runLLM(ctx.rt.resolve(e.value, e.valueType), e.model, Boolean(e.streaming)));
+  },
+  v2GetAlertInput: async (op, ctx) => {
+    if (ctx.displayMode)
+      return "return";
+    const e = op;
+    ctx.rt.setVar(e.outputVar, await ctx.rt.alertInput(ctx.rt.resolve(e.display, e.displayType)));
+  },
+  v2GetAlertSelect: async (op, ctx) => {
+    if (ctx.displayMode)
+      return "return";
+    const e = op;
+    ctx.rt.setVar(e.outputVar, await ctx.rt.alertSelect(ctx.rt.resolve(e.display, e.displayType), String(ctx.rt.resolve(e.value, e.valueType)).split("|")));
+  },
+  v2CheckSimilarity: async (op, ctx) => {
+    if (!ctx.lowLevelAccess)
+      return;
+    const e = op;
+    ctx.rt.setVar(e.outputVar, (await ctx.rt.checkSimilarity(ctx.rt.resolve(e.value, e.valueType), ctx.rt.resolve(e.source, e.sourceType))).join("\xA7"));
+  },
+  v2ImgGen: async (op, ctx) => {
+    if (!ctx.lowLevelAccess)
+      return;
+    const e = op;
+    ctx.rt.setVar(e.outputVar, await ctx.rt.runImgGen(ctx.rt.resolve(e.value, e.valueType), ctx.rt.resolve(e.negValue, e.negValueType)));
+  },
+  v2ExtractRegex: (op, { rt }) => {
+    const e = op;
+    rt.setVar(e.outputVar, rt.extractRegex(rt.resolve(e.value, e.valueType), rt.resolve(e.regex, e.regexType), rt.resolve(e.flags, e.flagsType), rt.resolve(e.result, e.resultType)));
+  },
+  v2RegexTest: (op, { rt }) => {
+    const e = op;
+    rt.setVar(e.outputVar, rt.regexTest(rt.resolve(e.value, e.valueType), rt.resolve(e.regex, e.regexType), rt.resolve(e.flags, e.flagsType)) ? "1" : "0");
+  },
+  v2ReplaceString: (op, { rt }) => {
+    const e = op;
+    rt.setVar(e.outputVar, rt.replaceString(rt.resolve(e.source, e.sourceType), rt.resolve(e.regex, e.regexType), rt.resolve(e.result, e.resultType), rt.resolve(e.replacement, e.replacementType), rt.resolve(e.flags, e.flagsType)));
+  },
+  v2Random: (op, { rt }) => {
+    const e = op;
+    rt.setVar(e.outputVar, String(rt.random(Number(rt.resolve(e.min, e.minType)), Number(rt.resolve(e.max, e.maxType)))));
+  },
+  v2GetCharAt: (op, { rt }) => {
+    const e = op;
+    rt.setVar(e.outputVar, String(rt.resolve(e.source, e.sourceType))[Number(rt.resolve(e.index, e.indexType))] ?? "null");
+  },
+  v2GetCharCount: (op, { rt }) => {
+    const e = op;
+    rt.setVar(e.outputVar, String(String(rt.resolve(e.source, e.sourceType)).length));
+  },
+  v2ToLowerCase: (op, { rt }) => {
+    const e = op;
+    rt.setVar(e.outputVar, String(rt.resolve(e.source, e.sourceType)).toLowerCase());
+  },
+  v2ToUpperCase: (op, { rt }) => {
+    const e = op;
+    rt.setVar(e.outputVar, String(rt.resolve(e.source, e.sourceType)).toUpperCase());
+  },
+  v2SetCharAt: (op, { rt }) => {
+    const e = op;
+    rt.setVar(e.outputVar, rt.setCharAt(rt.resolve(e.source, e.sourceType), Number(rt.resolve(e.index, e.indexType)), rt.resolve(e.value, e.valueType)));
+  },
+  v2SplitString: (op, { rt }) => {
+    const e = op;
+    rt.setVar(e.outputVar, JSON.stringify(rt.splitString(rt.resolve(e.source, e.sourceType), rt.resolve(e.delimiter, e.delimiterType), e.delimiterType)));
+  },
+  v2ConcatString: (op, { rt }) => {
+    const e = op;
+    rt.setVar(e.outputVar, String(rt.resolve(e.source1, e.source1Type)) + String(rt.resolve(e.source2, e.source2Type)));
+  },
+  v2Calculate: (op, { rt }) => {
+    const e = op;
+    rt.setVar(e.outputVar, String(rt.calculate(rt.resolve(e.expression, e.expressionType))));
+  },
+  v2MakeArrayVar: (op, { rt }) => {
+    const e = op;
+    rt.makeArrayVar(rt.resolve(e.var, "value"));
+  },
+  v2GetArrayVarLength: (op, { rt }) => {
+    const e = op;
+    rt.setVar(e.outputVar, String(rt.arrayLength(rt.resolve(e.var, "value"))));
+  },
+  v2GetArrayVar: (op, { rt }) => {
+    const e = op;
+    rt.setVar(e.outputVar, rt.arrayGet(rt.resolve(e.var, "value"), Number(rt.resolve(e.index, e.indexType))));
+  },
+  v2SetArrayVar: (op, { rt }) => {
+    const e = op;
+    rt.arraySet(rt.resolve(e.var, "value"), Number(rt.resolve(e.index, e.indexType)), rt.resolve(e.value, e.valueType));
+  },
+  v2PushArrayVar: (op, { rt }) => {
+    const e = op;
+    rt.arrayPush(rt.resolve(e.var, "value"), rt.resolve(e.value, e.valueType));
+  },
+  v2PopArrayVar: (op, { rt }) => {
+    const e = op;
+    rt.setVar(e.outputVar, rt.arrayPop(rt.resolve(e.var, "value")));
+  },
+  v2ShiftArrayVar: (op, { rt }) => {
+    const e = op;
+    rt.setVar(e.outputVar, rt.arrayShift(rt.resolve(e.var, "value")));
+  },
+  v2UnshiftArrayVar: (op, { rt }) => {
+    const e = op;
+    rt.arrayUnshift(rt.resolve(e.var, "value"), rt.resolve(e.value, e.valueType));
+  },
+  v2SpliceArrayVar: (op, { rt }) => {
+    const e = op;
+    rt.arraySplice(rt.resolve(e.var, "value"), Number(rt.resolve(e.start, e.startType)), rt.resolve(e.item, e.itemType));
+  },
+  v2SliceArrayVar: (op, { rt }) => {
+    const e = op;
+    rt.setVar(e.outputVar, rt.arraySlice(rt.resolve(e.var, "value"), Number(rt.resolve(e.start, e.startType)), Number(rt.resolve(e.end, e.endType))));
+  },
+  v2JoinArrayVar: (op, { rt }) => {
+    const e = op;
+    rt.setVar(e.outputVar, rt.arrayJoin(rt.resolve(e.var, e.varType), rt.resolve(e.delimiter, e.delimiterType)));
+  },
+  v2GetIndexOfValueInArrayVar: (op, { rt }) => {
+    const e = op;
+    rt.setVar(e.outputVar, String(rt.arrayIndexOf(rt.resolve(e.var, "value"), rt.resolve(e.value, e.valueType))));
+  },
+  v2RemoveIndexFromArrayVar: (op, { rt }) => {
+    const e = op;
+    rt.arrayRemoveIndex(rt.resolve(e.var, "value"), Number(rt.resolve(e.index, e.indexType)));
+  },
+  v2MakeDictVar: (op, { rt }) => {
+    const e = op;
+    rt.makeDictVar(rt.resolve(e.var, "value"));
+  },
+  v2GetDictVar: (op, { rt }) => {
+    const e = op;
+    rt.setVar(e.outputVar, rt.dictGet(rt.resolve(e.var, e.varType), rt.resolve(e.key, e.keyType)));
+  },
+  v2SetDictVar: (op, { rt }) => {
+    const e = op;
+    if (e.varType === "value")
+      return;
+    rt.dictSet(rt.resolve(e.var, e.varType), rt.resolve(e.key, e.keyType), rt.resolve(e.value, e.valueType));
+  },
+  v2DeleteDictKey: (op, { rt }) => {
+    const e = op;
+    if (e.varType === "value")
+      return;
+    rt.dictDelete(rt.resolve(e.var, e.varType), rt.resolve(e.key, e.keyType));
+  },
+  v2HasDictKey: (op, { rt }) => {
+    const e = op;
+    rt.setVar(e.outputVar, rt.dictHasKey(rt.resolve(e.var, e.varType), rt.resolve(e.key, e.keyType)) ? "1" : "0");
+  },
+  v2ClearDict: (op, { rt }) => {
+    const e = op;
+    rt.dictClear(rt.resolve(e.var, "value"));
+  },
+  v2GetDictSize: (op, { rt }) => {
+    const e = op;
+    rt.setVar(e.outputVar, String(rt.dictSize(rt.resolve(e.var, e.varType))));
+  },
+  v2GetDictKeys: (op, { rt }) => {
+    const e = op;
+    rt.setVar(e.outputVar, JSON.stringify(rt.dictKeys(rt.resolve(e.var, e.varType))));
+  },
+  v2GetDictValues: (op, { rt }) => {
+    const e = op;
+    rt.setVar(e.outputVar, JSON.stringify(rt.dictValues(rt.resolve(e.var, e.varType))));
+  },
+  v2GetCharacterDesc: (op, { rt }) => {
+    const e = op;
+    rt.setVar(e.outputVar, rt.getCharacterDesc());
+  },
+  v2SetCharacterDesc: async (op, { rt }) => {
+    const e = op;
+    await rt.setCharacterDesc(rt.resolve(e.value, e.valueType));
+  },
+  v2GetPersonaDesc: (op, { rt }) => {
+    const e = op;
+    rt.setVar(e.outputVar, rt.getPersonaDesc());
+  },
+  v2SetPersonaDesc: async (op, { rt }) => {
+    const e = op;
+    await rt.setPersonaDesc(rt.resolve(e.value, e.valueType));
+  },
+  v2GetReplaceGlobalNote: (op, { rt }) => {
+    const e = op;
+    rt.setVar(e.outputVar, rt.getReplaceGlobalNote());
+  },
+  v2SetReplaceGlobalNote: async (op, { rt }) => {
+    const e = op;
+    await rt.setReplaceGlobalNote(rt.resolve(e.value, e.valueType));
+  },
+  v2GetAuthorNote: (op, { rt }) => {
+    const e = op;
+    rt.setVar(e.outputVar, rt.getAuthorNote());
+  },
+  v2SetAuthorNote: async (op, { rt }) => {
+    const e = op;
+    await rt.setAuthorNote(rt.resolve(e.value, e.valueType));
+  },
+  v2ModifyLorebook: async (op, { rt }) => {
+    const e = op;
+    await rt.modifyLorebook(rt.resolve(e.target, e.targetType), rt.resolve(e.value, e.valueType));
+  },
+  v2GetLorebook: (op, { rt }) => {
+    const e = op;
+    rt.setVar(e.outputVar, rt.getLorebookByKey(rt.resolve(e.target, e.targetType)));
+  },
+  v2GetLorebookCount: (op, { rt }) => {
+    const e = op;
+    rt.setVar(e.outputVar, String(rt.getLorebookCount()));
+  },
+  v2GetLorebookEntry: (op, { rt }) => {
+    const e = op;
+    rt.setVar(e.outputVar, rt.getLorebookEntry(Number(rt.resolve(e.index, e.indexType))));
+  },
+  v2SetLorebookActivation: async (op, { rt }) => {
+    const e = op;
+    await rt.setLorebookActivation(Number(rt.resolve(e.index, e.indexType)), Boolean(e.value));
+  },
+  v2GetLorebookIndexViaName: (op, { rt }) => {
+    const e = op;
+    rt.setVar(e.outputVar, String(rt.getLorebookIndexViaName(rt.resolve(e.name, e.nameType))));
+  },
+  v2GetAllLorebooks: (op, { rt }) => {
+    const e = op;
+    rt.setVar(e.outputVar, JSON.stringify(rt.getAllLorebooks()));
+  },
+  v2GetLorebookByName: (op, { rt }) => {
+    const e = op;
+    rt.setVar(e.outputVar, JSON.stringify(rt.getLorebookByName(rt.resolve(e.name, e.nameType))));
+  },
+  v2GetLorebookByIndex: (op, { rt }) => {
+    const e = op;
+    rt.setVar(e.outputVar, rt.getLorebookByIndex(Number(rt.resolve(e.index, e.indexType))));
+  },
+  v2CreateLorebook: async (op, { rt }) => {
+    const e = op;
+    await rt.createLorebook(rt.resolve(e.name, e.nameType), rt.resolve(e.key, e.keyType), rt.resolve(e.content, e.contentType), Number(rt.resolve(e.insertOrder, e.insertOrderType)));
+  },
+  v2ModifyLorebookByIndex: async (op, { rt }) => {
+    const e = op;
+    await rt.modifyLorebookByIndex(Number(rt.resolve(e.index, e.indexType)), rt.resolve(e.name, e.nameType), rt.resolve(e.key, e.keyType), rt.resolve(e.content, e.contentType), rt.resolve(e.insertOrder, e.insertOrderType));
+  },
+  v2DeleteLorebookByIndex: async (op, { rt }) => {
+    const e = op;
+    await rt.deleteLorebookByIndex(Number(rt.resolve(e.index, e.indexType)));
+  },
+  v2GetLorebookCountNew: (op, { rt }) => {
+    const e = op;
+    rt.setVar(e.outputVar, String(rt.getLorebookCount()));
+  },
+  v2SetLorebookAlwaysActive: async (op, { rt }) => {
+    const e = op;
+    await rt.setLorebookAlwaysActive(Number(rt.resolve(e.index, e.indexType)), Boolean(e.value));
+  },
+  v2GetDisplayState: (op, ctx) => {
+    if (!ctx.displayMode)
+      return "return";
+    const e = op;
+    ctx.rt.setVar(e.outputVar, ctx.rt.getDisplayState());
+  },
+  v2SetDisplayState: (op, ctx) => {
+    if (!ctx.displayMode)
+      return "return";
+    const e = op;
+    ctx.rt.setDisplayState(ctx.rt.resolve(e.value, e.valueType));
+  },
+  v2GetRequestState: (op, ctx) => {
+    if (!ctx.displayMode)
+      return "return";
+    const e = op;
+    ctx.rt.setVar(e.outputVar, ctx.rt.getRequestState(Number(ctx.rt.resolve(e.index, e.indexType))));
+  },
+  v2SetRequestState: (op, ctx) => {
+    if (!ctx.displayMode)
+      return "return";
+    const e = op;
+    ctx.rt.setRequestState(Number(ctx.rt.resolve(e.index, e.indexType)), ctx.rt.resolve(e.value, e.valueType));
+  },
+  v2GetRequestStateRole: (op, ctx) => {
+    if (!ctx.displayMode)
+      return "return";
+    const e = op;
+    ctx.rt.setVar(e.outputVar, ctx.rt.getRequestStateRole(Number(ctx.rt.resolve(e.index, e.indexType))));
+  },
+  v2SetRequestStateRole: (op, ctx) => {
+    if (!ctx.displayMode)
+      return "return";
+    const e = op;
+    ctx.rt.setRequestStateRole(Number(ctx.rt.resolve(e.index, e.indexType)), ctx.rt.resolve(e.value, e.valueType));
+  },
+  v2GetRequestStateLength: (op, ctx) => {
+    if (!ctx.displayMode)
+      return "return";
+    const e = op;
+    ctx.rt.setVar(e.outputVar, String(ctx.rt.getRequestStateLength()));
+  },
+  v2RunTrigger: async (op, { rt }) => {
+    const e = op;
+    await rt.runTrigger(e.target);
+  }
+};
+function bumpBudget(ctx) {
+  ctx.steps++;
+  if (ctx.steps > ctx.budget)
+    throw new TriggerBudgetExceededError(ctx.budget);
+}
+async function execLeaf(op, ctx) {
+  bumpBudget(ctx);
+  const handler = LEAVES[op.type];
+  if (!handler)
+    return "normal";
+  const r = await handler(op, ctx);
+  return r === "return" || r === "break" ? r : "normal";
+}
+async function execNodes(nodes, loopDepth, ctx) {
+  for (const node of nodes) {
+    switch (node.kind) {
+      case "leaf": {
+        const f = await execLeaf(node.op, ctx);
+        if (f !== "normal")
+          return f;
+        break;
+      }
+      case "if": {
+        const cond = evalCondition(node.op, ctx.rt);
+        const branch = cond ? node.then : node.else;
+        if (branch) {
+          const f = await execNodes(branch, loopDepth, ctx);
+          if (f !== "normal")
+            return f;
+        }
+        break;
+      }
+      case "loop": {
+        for (;; ) {
+          const tick = ctx.rt.loopTick();
+          if ((tick & 255) === 0)
+            await ctx.rt.sleep(1);
+          bumpBudget(ctx);
+          const f = await execNodes(node.body, loopDepth + 1, ctx);
+          if (f === "break")
+            break;
+          if (f === "return")
+            return "return";
+        }
+        break;
+      }
+      case "loopN": {
+        const e = node.op;
+        const lim = Math.max(0, Number(ctx.rt.resolve(e.value, e.valueType)) || 0);
+        let broke = false;
+        for (let n = 0;n < lim; n++) {
+          bumpBudget(ctx);
+          const f = await execNodes(node.body, loopDepth + 1, ctx);
+          if (f === "break") {
+            broke = true;
+            break;
+          }
+          if (f === "return")
+            return "return";
+        }
+        break;
+      }
+      case "break": {
+        bumpBudget(ctx);
+        return loopDepth > 0 ? "break" : "return";
+      }
+    }
+  }
+  return "normal";
+}
+async function interpretTrigger(trigger, rt, console2, opts) {
+  const conditions = trigger.conditions ?? [];
+  if (conditions.length > 0 && !rt.checkConditions(conditions))
+    return;
+  const effects = trigger.effect ?? [];
+  const { nodes } = parseBlock(effects, 0, 0);
+  const ctx = {
+    rt,
+    console: console2,
+    displayMode: opts.displayMode,
+    lowLevelAccess: opts.lowLevelAccess,
+    budget: opts.stepBudget ?? DEFAULT_STEP_BUDGET,
+    steps: 0
+  };
+  await execNodes(nodes, 0, ctx);
+}
+
 // src/interpreter/dispatcher.ts
-var AsyncFunctionCtor = Object.getPrototypeOf(async function() {}).constructor;
 function makeDispatcherScriptNS() {
   const nlog = makeSafeLogger("scriptNS").info;
   const manuals = new Map;
@@ -35358,13 +36273,20 @@ function prepareTriggers(payload, characterId) {
     const sourceTrigger = rawTriggers[i];
     if (!sourceTrigger)
       continue;
+    const binding = sourceTrigger.type;
     out.push({
       name: f.name,
       code: f.code,
       type: f.type,
       triggers: f.triggers ?? [],
-      binding: sourceTrigger.type,
-      source: sourceTrigger
+      binding,
+      source: sourceTrigger,
+      rtOpts: {
+        displayMode: binding === "display",
+        lowLevelAccess: Boolean(sourceTrigger.lowLevelAccess),
+        binding,
+        characterId
+      }
     });
   }
   return out;
@@ -35384,9 +36306,9 @@ async function dispatchBinding(ctx, binding, onError) {
   dlog(`dispatchBinding: binding=${binding} matches=${matches.length}/${ctx.compiledTriggers.length} data=${JSON.stringify(ctx.data).slice(0, 200)}`);
   for (const entry of matches) {
     const tStart = Date.now();
-    dlog(`\u2192 trigger START name=${entry.name} binding=${entry.binding} triggers=${JSON.stringify(entry.triggers)} code_len=${entry.code.length}`);
+    dlog(`\u2192 trigger START name=${entry.name} binding=${entry.binding} triggers=${JSON.stringify(entry.triggers)} effects=${entry.source?.effect?.length ?? 0}`);
     try {
-      await runCompiledTrigger(entry, ctx);
+      await runInterpretedTrigger(entry, ctx.api, ctx.data, ctx.scriptNS);
       dlog(`\u2190 trigger DONE name=${entry.name} elapsed=${Date.now() - tStart}ms`);
     } catch (err) {
       dlog(`\xD7 trigger ERROR name=${entry.name} elapsed=${Date.now() - tStart}ms msg=${err.message}`);
@@ -35397,55 +36319,46 @@ async function dispatchBinding(ctx, binding, onError) {
     }
   }
 }
-async function runCompiledTrigger(entry, ctx) {
-  const rLog = makeSafeLogger(`runCompiledTrigger[${entry.name}]`);
-  const rlog = rLog.info;
-  const rerr = rLog.error;
-  const mirroredConsole = {
-    log: (...a) => rlog(`console.log: ${a.map((x) => {
-      try {
-        return typeof x === "string" ? x : JSON.stringify(x);
-      } catch {
-        return String(x);
-      }
-    }).join(" ").slice(0, 600)}`),
-    warn: (...a) => rlog(`console.warn: ${a.map((x) => {
-      try {
-        return typeof x === "string" ? x : JSON.stringify(x);
-      } catch {
-        return String(x);
-      }
-    }).join(" ").slice(0, 600)}`),
-    error: (...a) => rerr(`console.error: ${a.map((x) => {
-      try {
-        return typeof x === "string" ? x : JSON.stringify(x);
-      } catch {
-        return String(x);
-      }
-    }).join(" ").slice(0, 600)}`),
-    info: (...a) => rlog(`console.info: ${a.map((x) => {
-      try {
-        return typeof x === "string" ? x : JSON.stringify(x);
-      } catch {
-        return String(x);
-      }
-    }).join(" ").slice(0, 600)}`)
+function makeMirroredConsole(name) {
+  const L = makeSafeLogger(`trigger[${name}]`);
+  const fmt = (a) => a.map((x) => {
+    try {
+      return typeof x === "string" ? x : JSON.stringify(x);
+    } catch {
+      return String(x);
+    }
+  }).join(" ").slice(0, 600);
+  return {
+    log: (...a) => L.info(`console.log: ${fmt(a)}`),
+    warn: (...a) => L.info(`console.warn: ${fmt(a)}`),
+    error: (...a) => L.error(`console.error: ${fmt(a)}`),
+    info: (...a) => L.info(`console.info: ${fmt(a)}`)
   };
-  rlog(`COMPILE AsyncFunction code_len=${entry.code.length}`);
-  const fn = new AsyncFunctionCtor("api", "data", "script", "__console", "z", "fetch", "Bun", "process", `"use strict";
-const console = __console;
-` + entry.code + `
-`);
-  rlog(`INVOKE AsyncFunction`);
-  const t0 = Date.now();
-  try {
-    await fn(ctx.api, ctx.data, ctx.scriptNS, mirroredConsole, undefined, undefined, undefined, undefined);
-    rlog(`RETURN OK elapsed=${Date.now() - t0}ms`);
-  } catch (err) {
-    rerr(`THREW elapsed=${Date.now() - t0}ms \u2014 ${err.message}
+}
+async function runInterpretedTrigger(entry, api, data, scriptNS) {
+  await withTriggerDepth(async () => {
+    const rLog = makeSafeLogger(`runTrigger[${entry.name}]`);
+    const t0 = Date.now();
+    const rt = await makeRisuTriggerRuntime(api, data, scriptNS, {
+      displayMode: entry.rtOpts.displayMode,
+      lowLevelAccess: entry.rtOpts.lowLevelAccess,
+      binding: entry.rtOpts.binding,
+      characterId: entry.rtOpts.characterId
+    });
+    try {
+      await interpretTrigger(entry.source, rt, makeMirroredConsole(entry.name), {
+        displayMode: entry.rtOpts.displayMode,
+        lowLevelAccess: entry.rtOpts.lowLevelAccess
+      });
+      rLog.info(`RETURN OK elapsed=${Date.now() - t0}ms`);
+    } catch (err) {
+      rLog.error(`THREW elapsed=${Date.now() - t0}ms \u2014 ${err.message}
 ${err.stack ?? ""}`);
-    throw err;
-  }
+      throw err;
+    } finally {
+      await rt.flush();
+    }
+  });
 }
 async function dispatchByManualName(ctx, manualName, onError) {
   const dlog = makeSafeLogger("dispatcher").info;
@@ -35460,20 +36373,9 @@ async function dispatchByManualName(ctx, manualName, onError) {
   let fired = 0;
   for (const entry of matches) {
     try {
-      if (entry.type === "library") {
-        const lib = await ctx.scriptNS.require(entry.name);
-        if (lib && typeof lib.run === "function") {
-          await lib.run({ api: ctx.api, data: ctx.data, script: ctx.scriptNS });
-          fired++;
-          dlog(`dispatchByManualName: fired library entry name=${entry.name}`);
-        } else {
-          dlog(`dispatchByManualName: library entry name=${entry.name} has no run() \u2014 skip`);
-        }
-      } else {
-        await runCompiledTrigger(entry, ctx);
-        fired++;
-        dlog(`dispatchByManualName: fired trigger entry name=${entry.name} binding=${entry.binding}`);
-      }
+      await runInterpretedTrigger(entry, ctx.api, ctx.data, ctx.scriptNS);
+      fired++;
+      dlog(`dispatchByManualName: fired entry name=${entry.name} type=${entry.type} binding=${entry.binding}`);
     } catch (err) {
       onError?.(err, entry.name);
     }
@@ -35485,17 +36387,7 @@ function registerManualTriggers(scriptNS, compiled, api) {
     if (entry.type !== "library")
       continue;
     scriptNS.registerManual(entry.name, async (ctx) => {
-      const silentConsole = { log: () => {}, warn: () => {}, error: () => {}, info: () => {} };
-      const exportsObj = {};
-      const moduleObj = { exports: exportsObj };
-      const fn = new AsyncFunctionCtor("api", "data", "script", "__console", "exports", "module", "fetch", "Bun", "process", `"use strict";
-const console = __console;
-` + entry.code + `
-`);
-      await fn(api, ctx.data, scriptNS, silentConsole, exportsObj, moduleObj, undefined, undefined, undefined);
-      const mod = moduleObj.exports;
-      if (mod && typeof mod.run === "function")
-        await mod.run(ctx);
+      await runInterpretedTrigger(entry, ctx.api ?? api, ctx.data, scriptNS);
     });
   }
 }
@@ -35606,9 +36498,11 @@ function createLumiInterceptors(deps) {
         log8.warn(`macroInterceptor.exit #${callId} path=owner_mismatch chat=${chatId} ` + `cached=${active.ownerUserId} ctx=${ctx.userId} elapsed=${Date.now() - t0}ms`);
         return;
       }
+      const micDynForKey = ctx.env.dynamicMacros;
+      const micCtxKey = `${micDynForKey?.chat_index ?? ""}|${micDynForKey?.role ?? ""}`;
       const cacheable = !(ctx.commit === false && !mcpRenderAvailable);
       if (cacheable) {
-        const hit = lookupMacroInterceptor(chatId, ctx.template, ctx.commit !== false);
+        const hit = lookupMacroInterceptor(chatId, ctx.template, ctx.commit !== false, micCtxKey);
         if (hit !== null) {
           maybeEmitMicCacheStats();
           log8.trace(`macroInterceptor.exit #${callId} path=cache_hit elapsed=${Date.now() - t0}ms ` + `tmpl_len=${ctx.template.length} out_len=${hit.length}`);
@@ -35635,6 +36529,7 @@ function createLumiInterceptors(deps) {
         log8.trace(`macroInterceptor #${callId}: lorebook entries=${activeLore.length} for chat=${chatId} (tmpl mentions lorebook/each)`);
       }
       let resolved;
+      const __ppT0 = perfEnabled() ? Date.now() : 0;
       try {
         resolved = runPipeline({
           template: ctx.template,
@@ -35685,6 +36580,8 @@ function createLumiInterceptors(deps) {
         log8.warn(`macroInterceptor: runPipeline threw chat=${chatId} phase=${ctx.phase}: ${errMsg2(err)}. Passing through.`);
         return;
       }
+      if (__ppT0)
+        perfRecord("cbs.runPipeline", Date.now() - __ppT0);
       const resolvedMarker = /\u2605[A-Z_]+\u2605|###[A-Z_]+###/.exec(resolved)?.[0] ?? null;
       const stillHasRaw = resolved.includes("{{risu_") || resolved.includes("{{getvar::") || resolved.includes("{{#risu_");
       if (!ctx.commit && !mcpRenderAvailable) {
@@ -35715,14 +36612,14 @@ function createLumiInterceptors(deps) {
       }
       if (resolved === ctx.template) {
         if (cacheable) {
-          cacheMacroInterceptor(chatId, ctx.template, ctx.commit !== false, resolved);
+          cacheMacroInterceptor(chatId, ctx.template, ctx.commit !== false, micCtxKey, resolved);
           maybeEmitMicCacheStats();
         }
         log8.trace(`macroInterceptor.exit #${callId} path=unchanged_passthrough elapsed=${Date.now() - t0}ms ` + `tmpl_len=${ctx.template.length} marker=${resolvedMarker ?? "none"}`);
         return;
       }
       if (cacheable) {
-        cacheMacroInterceptor(chatId, ctx.template, ctx.commit !== false, resolved);
+        cacheMacroInterceptor(chatId, ctx.template, ctx.commit !== false, micCtxKey, resolved);
         maybeEmitMicCacheStats();
       }
       log8.trace(`macroInterceptor.exit #${callId} path=resolved elapsed=${Date.now() - t0}ms ` + `in_len=${ctx.template.length} out_len=${resolved.length} ` + `marker=${resolvedMarker ?? "none"} still_has_raw_cbs=${stillHasRaw} ` + `out_head=${JSON.stringify(resolved.slice(0, 120))}`);
@@ -35817,6 +36714,7 @@ function createLumiInterceptors(deps) {
               return puaDecodeFeMacros(resolved, enc.tokens);
             };
             let transformed = ctx.content;
+            panelTrace("mcp.render.in", transformed);
             let preResolveMs = 0;
             {
               const tPre = Date.now();
@@ -35827,6 +36725,7 @@ function createLumiInterceptors(deps) {
               }
               preResolveMs = Date.now() - tPre;
             }
+            panelTrace("mcp.render.afterPreResolve", transformed);
             let chainMs = 0;
             if (hasLuaTrigger) {
               const tChain = Date.now();
@@ -35838,6 +36737,7 @@ function createLumiInterceptors(deps) {
               chainMs = Date.now() - tChain;
               log8.trace(`messageContentProcessor.render chain.elapsed #${seq} chain=${chainMs}ms (mcp_total_so_far=${Date.now() - tStart}ms)`);
             }
+            panelTrace("mcp.render.afterLua", transformed);
             let atActionsMs = 0;
             if (renderAtActions.length > 0) {
               const tAt = Date.now();
@@ -35852,6 +36752,7 @@ function createLumiInterceptors(deps) {
               }
               atActionsMs = Date.now() - tAt;
             }
+            panelTrace("mcp.render.afterAtActions", transformed);
             let resolveMs = 0;
             if (transformed.indexOf("{{") >= 0) {
               const tResolve = Date.now();
@@ -35862,8 +36763,19 @@ function createLumiInterceptors(deps) {
               }
               resolveMs = Date.now() - tResolve;
             }
+            panelTrace("mcp.render.afterBodyResolve", transformed);
             const totalMs = Date.now() - tStart;
             const otherOverhead = totalMs - preResolveMs - chainMs - atActionsMs - resolveMs - (tB - tA);
+            if (perfEnabled()) {
+              perfRecord("mcp.render.total", totalMs);
+              perfRecord("mcp.render.preResolve", preResolveMs);
+              if (hasLuaTrigger)
+                perfRecord("mcp.render.luaChain", chainMs);
+              if (renderAtActions.length > 0)
+                perfRecord("mcp.render.atActions", atActionsMs);
+              perfRecord("mcp.render.bodyResolve", resolveMs);
+              perfRecord("mcp.render.ensureCard", tB - tA);
+            }
             if (transformed === ctx.content) {
               if (ctx.messageId) {
                 cacheRenderMcp(ctx.chatId, ctx.messageId, ctx.content, { kind: "noop" });
@@ -35989,7 +36901,11 @@ function createLumiInterceptors(deps) {
           if (applyResult.mutationCount > 0 || applyResult.synthesizedCount > 0 || applyResult.fallbackAppendCount > 0) {
             log8.info(`[decorators] injectAt applied chat=${chatId} mutations=${applyResult.mutationCount}/${buffers.injectAt.length} synthesized=${applyResult.synthesizedCount} fallback_append=${applyResult.fallbackAppendCount}`);
           }
-          clearDecoratorBuffers(chatId);
+          if (buffers.positionPt && Object.keys(buffers.positionPt).length > 0) {
+            setDecoratorBuffers(chatId, { injectAt: [], positionPt: buffers.positionPt });
+          } else {
+            clearDecoratorBuffers(chatId);
+          }
         }
         const triggers2 = active.card.risuPayload.triggers;
         const luaScripts = active.card.risuPayload.lua_scripts;
@@ -38893,31 +39809,35 @@ function createWorldBookOps(deps) {
     const moduleName = typeof m.name === "string" && m.name.length > 0 ? m.name : env.id;
     if (existingId) {
       try {
+        const oldIds = [];
         let offset = 0;
         while (true) {
           const page = await spindle.world_books.entries.list(existingId, { limit: 200, offset, userId });
           if (page.data.length === 0)
             break;
-          for (const e of page.data) {
-            await spindle.world_books.entries.delete(e.id, userId).catch(() => {
-              return;
-            });
-          }
+          for (const e of page.data)
+            oldIds.push(e.id);
           if (page.data.length < 200)
             break;
+          offset += page.data.length;
         }
-        await spindle.world_books.update(existingId, { name: `Module: ${moduleName}` }, userId).catch(() => {
-          return;
-        });
         const projected2 = projectModuleLorebookForCreate(lorebook2, env.id, existingId);
         for (const entry of projected2) {
           await spindle.world_books.entries.create(existingId, entry, userId);
         }
+        for (const id of oldIds) {
+          await spindle.world_books.entries.delete(id, userId).catch(() => {
+            return;
+          });
+        }
+        await spindle.world_books.update(existingId, { name: `Module: ${moduleName}` }, userId).catch(() => {
+          return;
+        });
         log8.info(`syncModuleWorldBook: refreshed module=${env.id} wb=${existingId} entries=${projected2.length}/${lorebook2.length}`);
         return existingId;
       } catch (err) {
-        log8.warn(`syncModuleWorldBook: refresh failed module=${env.id} wb=${existingId}: ${errMsg2(err)},recreating`);
-        await deleteModuleWorldBookEverywhere(env.id, existingId, userId);
+        log8.warn(`syncModuleWorldBook: refresh failed module=${env.id} wb=${existingId}: ${errMsg2(err)} \u2014 kept existing WB, entries intact`);
+        return existingId;
       }
     }
     const wb = await spindle.world_books.create({ name: `Module: ${moduleName}` }, userId);
@@ -41626,6 +42546,7 @@ var lifecycleHandlers = createLifecycleEventHandlers({
   clearActiveScriptstateDefaults,
   clearActiveLorebook,
   clearVarOverlay,
+  clearMacroVarOverlay,
   refreshBgHtml,
   refreshVariables,
   refreshToggleDefinitions,

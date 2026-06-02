@@ -276,8 +276,8 @@ export function pairModuleAssetsForUpload(
   bytesList: readonly Uint8Array[],
   bytesToBase64: (b: Uint8Array) => string,
   mimeFor: (name: string) => string,
-): readonly { path: string; base64: string; mimeType: string }[] {
-  const out: { path: string; base64: string; mimeType: string }[] = [];
+): readonly { path: string; base64: string; mimeType: string; sourceIndex: number }[] {
+  const out: { path: string; base64: string; mimeType: string; sourceIndex: number }[] = [];
   const pairCount = Math.min(manifest.length, bytesList.length);
   for (let i = 0; i < pairCount; i++) {
     const triple = manifest[i];
@@ -289,6 +289,7 @@ export function pairModuleAssetsForUpload(
       path: name,
       base64: bytesToBase64(bytes),
       mimeType: mimeFor(name),
+      sourceIndex: i,
     });
   }
   return out;

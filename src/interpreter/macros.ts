@@ -152,6 +152,10 @@ const sessionFunctions: FunctionRegistry = (() => {
 })();
 
 
+export function clearMacroVarOverlay(chatId: string): void {
+  varOverlays.delete(chatId);
+}
+
 export function buildRuntimeContext(mctx: MacroInvokeCtx): RisuRuntimeContext {
   const env = mctx.env ?? ({} as MacroInvokeEnv);
   const chatId = env.chat?.id ?? '';

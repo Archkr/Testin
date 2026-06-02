@@ -32,7 +32,6 @@
     "macro_interceptor"
   ],
   "requested_capabilities": [
-    "dynamic_code_execution",
     "base64_decode"
   ],
   "entry_backend": "dist/backend.js",
