@@ -30,7 +30,7 @@
     "fengari": "^0.1.5",
     "happy-dom": "^15.0.0",
     "juice": "^11.0.0",
-    "lumiverse-spindle-types": "0.5.13",
+    "lumiverse-spindle-types": "0.5.19",
     "playwright": "^1.59.1",
     "tsx": "^4.21.0",
     "typescript": "^5.5.0",
