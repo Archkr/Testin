@@ -1,7 +1,4 @@
 import jsonLuaSource from './lua-json.lua' with { type: 'text' };
-import { makeSafeLogger } from '../util/safe-log.js';
-
-const log = makeSafeLogger('lua-wasmoon');
 
 interface WasmoonEngine {
   global: { set: (n: string, v: unknown) => void; get: (n: string) => unknown };
@@ -132,20 +129,11 @@ interface EngineEntry {
   engine: WasmoonEngine;
   code: string | null;
   tail: Promise<unknown>;
-  // Globals are bound ONCE as stable wrappers that delegate to `current`; per
-  // call we only swap `current` (O(1)) instead of re-pushing ~40 closures.
-  // Safe because the mutex (tail) serializes calls, so `current` is correct for
-  // the in-flight call. Mirrors RisuAI's mutable ScriptingEngineState.chat.
   current: Record<string, unknown>;
   bound: Set<string>;
 }
 
 let factoryPromise: Promise<WasmoonFactory> | null = null;
-// Map the CREATION PROMISE, not the resolved entry: editDisplay fires ~38 calls
-// for the same character concurrently, and all await getEngineEntry before any
-// resolves. Caching the resolved value would let each create its own engine
-// (38 recompiles + no shared mutex). Caching the promise gives them one shared
-// engine + one shared tail, so the mutex serializes and only the first compiles.
 const engines = new Map<string, Promise<EngineEntry>>();
 
 async function ensureFactory(): Promise<WasmoonFactory> {
@@ -189,7 +177,6 @@ export async function executeWasmoon(
   globals: Record<string, unknown>,
   opts: WasmoonExecuteOpts,
 ): Promise<unknown> {
-  const tStart = Date.now();
   const entry = await getEngineEntry(opts.wasmoonKey);
   const run = entry.tail.then(async () => {
     const engine = entry.engine;
@@ -199,25 +186,15 @@ export async function executeWasmoon(
       engine.global.set(name, (...args: unknown[]) => (entry.current[name] as (...a: unknown[]) => unknown)(...args));
       entry.bound.add(name);
     }
-    let _compileMs = 0;
-    const firstLoad = entry.code !== code;
-    if (firstLoad) {
-      const tC = Date.now();
+    if (entry.code !== code) {
       await engine.doString(PRELUDE + '\n' + code);
       entry.code = code;
-      _compileMs = Date.now() - tC;
     }
-    const tCall = Date.now();
     const fn = engine.global.get(String(opts.entry ?? 'callListenMain'));
-    let res: unknown;
     if (typeof fn === 'function') {
-      res = await (fn as (...a: unknown[]) => unknown)(...(opts.args ?? []));
+      return await (fn as (...a: unknown[]) => unknown)(...(opts.args ?? []));
     }
-    log.info(
-      `execute: TIMING total=${Date.now() - tStart}ms compile=${_compileMs}ms(firstLoad=${firstLoad ? 1 : 0}) ` +
-        `call=${Date.now() - tCall}ms entry=${String(opts.entry ?? 'callListenMain')} code_len=${code.length} key=${opts.wasmoonKey.slice(0, 8)}`,
-    );
-    return res;
+    return undefined;
   });
   entry.tail = run.catch(() => undefined);
   return run;

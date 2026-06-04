@@ -12,7 +12,6 @@ import {
   ownsDisplayChat,
   type DisplayResolutionMode,
 } from './display/snapshot.js';
-import { markOpen, markEvent } from './display/open-timeline.js';
 import { MSG_DEP_KEY } from './interpreter/evaluator/context.js';
 import { STYLES } from './ui/styles.js';
 import { createSidebar } from './ui/sidebar.js';
@@ -132,19 +131,13 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     setDisplayResolutionMode(mode);
     publishOwnedCharacters();
     sendDisplayAuthority(activeRisuChatId);
-    flog.info(`display resolution mode='${mode}' resolverRegistered=${displayRegistered} (backend push needs LUMIREALM_FE_DISPLAY=1 + chat reopen)`);
+    flog.info(`display resolution mode='${mode}' resolverRegistered=${displayRegistered}`);
     if (!displayRegistered) {
-      flog.warn('display resolver NOT registered: host ctx.display is undefined — the Lumiverse CORE frontend lacks the P0 display hook. Rebuild it (cd Lumiverse/frontend && bun run build) + restart Lumi + hard-refresh.');
+      flog.warn('display resolver NOT registered: host ctx.display is undefined — the Lumiverse core frontend lacks the display hook.');
     }
   };
   cleanups.push(() => {
     try { delete (window as unknown as Record<string, unknown>).__lumirealmDisplayMode; } catch { /* */ }
-  });
-  (window as unknown as { __lumirealmWasmoonProbe?: () => void }).__lumirealmWasmoonProbe = () => {
-    void import('./display/wasmoon-probe.js').then((m) => m.runWasmoonProbe()).catch((e) => flog.error(`wasmoon probe import failed: ${String(e)}`));
-  };
-  cleanups.push(() => {
-    try { delete (window as unknown as Record<string, unknown>).__lumirealmWasmoonProbe; } catch { /* */ }
   });
 
   const originalFetch = window.fetch.bind(window);
@@ -569,7 +562,6 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     }
     if (msg.type === 'display_snapshot') {
       if (getDisplayResolutionMode() !== 'off') {
-        markEvent(msg.snapshot.chatId, 'snapshot-arrived');
         const prev = getDisplaySnapshot(msg.snapshot.chatId);
         setDisplaySnapshot(msg.snapshot);
         if (prev) {
@@ -618,7 +610,6 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       const prevChatId = activeRisuChatId;
       activeRisuChatId = msg.chatId;
       setOwnedDisplayChat(msg.chatId, msg.feDisplay === true);
-      if (msg.chatId && msg.feDisplay === true) markOpen(msg.chatId);
       sendDisplayAuthority(msg.chatId);
       if (activeRisuChatId !== prevChatId) {
         if (sidebar) sidebar.setActiveChatId(activeRisuChatId);

@@ -804,14 +804,18 @@ function dumpPayload(raw: unknown): string {
 // succeed before any frontend message arrives.
 
 // Decoupled from bg-html paint so empty-bg cards activate.
+const FE_DISPLAY_ENABLED = (() => {
+  const v = (globalThis as { Bun?: { env?: Record<string, string | undefined> } }).Bun?.env?.LUMIREALM_FE_DISPLAY;
+  return v !== '0' && v !== 'false';
+})();
+
 function sendSetActiveChat(
   activeChatId: string | null,
   activeCharacterId: string | null,
   userId: string | undefined,
 ): void {
   try {
-    const feEnv = (globalThis as { Bun?: { env?: Record<string, string | undefined> } }).Bun?.env?.LUMIREALM_FE_DISPLAY;
-    const feDisplay = activeChatId !== null && (feEnv === '1' || feEnv === 'true');
+    const feDisplay = activeChatId !== null && FE_DISPLAY_ENABLED;
     send({ type: 'set_active_chat', chatId: activeChatId, characterId: activeCharacterId, feDisplay }, userId);
   } catch (err) {
     log.warn(`sendSetActiveChat: ${(err as Error).message}`);
@@ -941,11 +945,6 @@ const applySvgRasterIndex = createApplySvgRasterIndex({
 
 const TRANSLATE_TARGET_LANG = 'en';
 
-// Display-snapshot push attribution (probe #4): per-chat push count + last
-// content signature, so redundant identical assemblies are visible in the log.
-const _displaySnapshotSig = new Map<string, string>();
-const _displaySnapshotPushCount = new Map<string, number>();
-
 const variablesTogglesService = createVariablesTogglesService({
   translateLang: TRANSLATE_TARGET_LANG,
   variableState,
@@ -956,8 +955,7 @@ const variablesTogglesService = createVariablesTogglesService({
   refreshBgHtml,
   send,
   pushDisplaySnapshot: (active, chatId, userId, vars) => {
-    const env = (globalThis as { Bun?: { env?: Record<string, string | undefined> } }).Bun?.env;
-    if (!env || (env.LUMIREALM_FE_DISPLAY !== '1' && env.LUMIREALM_FE_DISPLAY !== 'true')) return;
+    if (!FE_DISPLAY_ENABLED) return;
     void assembleDisplaySnapshot(
       {
         modulesByNamespaceFromCard,
@@ -981,20 +979,7 @@ const variablesTogglesService = createVariablesTogglesService({
       userId,
       vars,
     )
-      .then((snapshot) => {
-        // Attribution: how often we assemble+push, and whether the push is
-        // byte-for-byte redundant (same vars-signature + message shape). Each
-        // assembleDisplaySnapshot does ~4 host IPCs, so redundant pushes are
-        // pure waste AND re-trigger FE re-resolution. Logged, not suppressed.
-        const sig = `${snapshot.chat.messageCount}|${snapshot.chat.lastMessage.length}|`
-          + `${Object.keys(snapshot.vars.local).length}|${Object.keys(snapshot.vars.global).length}|${Object.keys(snapshot.vars.chat).length}`;
-        const prev = _displaySnapshotSig.get(chatId);
-        const n = (_displaySnapshotPushCount.get(chatId) ?? 0) + 1;
-        _displaySnapshotPushCount.set(chatId, n);
-        _displaySnapshotSig.set(chatId, sig);
-        log.info(`pushDisplaySnapshot: send #${n} chat=${chatId} sig=${sig}${prev === sig ? ' REDUNDANT(matches prior)' : ''}`);
-        send({ type: 'display_snapshot', snapshot }, userId);
-      })
+      .then((snapshot) => { send({ type: 'display_snapshot', snapshot }, userId); })
       .catch((err) => { log.warn(`pushDisplaySnapshot: assemble failed chat=${chatId}: ${errMsg(err)}`); });
   },
   log,
@@ -1022,17 +1007,13 @@ const runBinding = triggerDispatcher.runBinding;
 const dispatchManualTrigger = triggerDispatcher.dispatchManualTrigger;
 const dispatchButtonClick = triggerDispatcher.dispatchButtonClick;
 
-const FE_DISPLAY_ENV = (() => {
-  const v = (globalThis as { Bun?: { env?: Record<string, string | undefined> } }).Bun?.env?.LUMIREALM_FE_DISPLAY;
-  return v === '1' || v === 'true';
-})();
 const feDisplayShadowOptOut = new Set<string>();
 
 createLumiInterceptors({
   activeCardByChat,
   lastActiveChatByUser,
   captureUserId,
-  isFeDisplayAuthoritative: (chatId) => FE_DISPLAY_ENV && !feDisplayShadowOptOut.has(chatId),
+  isFeDisplayAuthoritative: (chatId) => FE_DISPLAY_ENABLED && !feDisplayShadowOptOut.has(chatId),
   ensureActiveCardForChat,
   getCachedSettingsSync,
   modulesByNamespaceFromCard,

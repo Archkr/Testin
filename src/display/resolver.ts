@@ -26,22 +26,7 @@ import {
   type FeRegexScript,
 } from './regex-apply.js';
 import { runEditDisplayChain, runEditDisplayAtActions } from './lua-runner.js';
-import { markEvent } from './open-timeline.js';
-
 const log = makeSafeLogger('display-resolver');
-
-// Attribution counters: how many times each surface re-resolves the SAME
-// message during one chat-open. Risu resolves each message's display once;
-// >1 here means a snapshot/var push (or a host re-render) is re-triggering us.
-// Keyed `surface:chatId:msgId`. Logged only when the count climbs past 1 so a
-// clean open is silent.
-const _resolveCounts = new Map<string, number>();
-function countResolve(surface: string, chatId: string, msgId: string | undefined): void {
-  const key = `${surface}:${chatId}:${msgId ?? '<batch>'}`;
-  const n = (_resolveCounts.get(key) ?? 0) + 1;
-  _resolveCounts.set(key, n);
-  if (n > 1) log.info(`re-resolve #${n} surface=${surface} chat=${chatId} msg=${msgId ?? '<batch>'} (same message resolved ${n}x this session)`);
-}
 
 export type DisplayWritebackSink = (chatId: string, vars: Record<string, string>) => void;
 
@@ -181,12 +166,6 @@ async function fetchBackendApply(args: SpindleDisplayScriptsArgs): Promise<strin
   }
 }
 
-const APPLY_MARKERS = ['★■', '🦶', '★OMEGA★'];
-function markersIn(s: string): string {
-  const hit = APPLY_MARKERS.filter((m) => s.includes(m));
-  return hit.length ? `[${hit.join(',')}]` : '';
-}
-
 function runApply(
   snap: DisplaySnapshot,
   args: SpindleDisplayScriptsArgs,
@@ -196,19 +175,13 @@ function runApply(
   const placement = ctx.isUser ? 'user_input' : 'ai_output';
   const scripts = args.scripts as readonly FeRegexScript[];
   let result = args.content;
-  const tApplyStart = Date.now();
-  const trace: string[] = [];
-  let skipped = 0;
-  const inMarkers = markersIn(result);
 
   for (const script of scripts) {
-    if (script.disabled === true) { skipped += 1; continue; }
-    if (!script.placement.includes(placement)) { skipped += 1; continue; }
-    if (script.min_depth !== null && ctx.depth < script.min_depth) { skipped += 1; continue; }
-    if (script.max_depth !== null && ctx.depth > script.max_depth) { skipped += 1; continue; }
+    if (script.disabled === true) continue;
+    if (!script.placement.includes(placement)) continue;
+    if (script.min_depth !== null && ctx.depth < script.min_depth) continue;
+    if (script.max_depth !== null && ctx.depth > script.max_depth) continue;
 
-    const tRule = Date.now();
-    const before = result;
     let findRegex = script.find_regex;
     const preFind = args.resolvedFindPatterns?.[script.id];
     if (preFind !== undefined) {
@@ -218,10 +191,7 @@ function runApply(
     }
 
     const regex = compileRegex(findRegex, script.flags);
-    if (!regex) {
-      trace.push(`${script.id.slice(0, 8)}:compile-fail`);
-      continue;
-    }
+    if (!regex) continue;
 
     try {
       if (script.substitute_macros === 'raw') {
@@ -255,27 +225,10 @@ function runApply(
       }
 
       result = applyTrimStrings(result, script.trim_strings);
-    } catch (err) {
+    } catch {
       recorder.volatile = true;
-      trace.push(`${script.id.slice(0, 8)}:THREW(${String(err).slice(0, 40)})`);
       continue;
     }
-    const ruleMs = Date.now() - tRule;
-    const changed = before !== result;
-    if (changed || ruleMs >= 20) {
-      trace.push(`${script.id.slice(0, 8)}:${script.substitute_macros}:${ruleMs}ms:${changed ? `${before.length}->${result.length}` : 'no-change'}`);
-    }
-  }
-
-  const outMarkers = markersIn(result);
-  if (inMarkers || outMarkers || (Date.now() - tApplyStart) >= 20) {
-    log.info(
-      `applyScripts.trace chat=${ctx.chatId ?? '?'} msg=${ctx.messageId ?? '?'} placement=${placement} ` +
-        `total=${Date.now() - tApplyStart}ms rules=${scripts.length} skipped=${skipped} ` +
-        `cacheable=${!recorder.volatile} touched=${recorder.touched.size} ` +
-        `markersIn=${inMarkers || 'none'} markersOut=${outMarkers || 'none'} ` +
-        `applied=[${trace.join(' ')}]`,
-    );
   }
 
   return result;
@@ -289,8 +242,6 @@ export function createDisplayResolver(writeback?: DisplayWritebackSink): Spindle
     async resolveBody(args: SpindleDisplayBodyArgs): Promise<SpindleDisplayResolveResult | null> {
       const chatId = args.context.chatId;
       if (!chatId) return null;
-      markEvent(chatId, 'first-resolveBody');
-      countResolve('body', chatId, args.context.messageId);
       const snap = await getSnapshotOrWait(chatId);
       if (!snap) return null;
 
@@ -385,8 +336,6 @@ export function createDisplayResolver(writeback?: DisplayWritebackSink): Spindle
     async applyScripts(args: SpindleDisplayScriptsArgs): Promise<SpindleDisplayResolveResult | null> {
       const chatId = args.context.chatId;
       if (!chatId) return null;
-      markEvent(chatId, 'first-applyScripts');
-      countResolve('apply', chatId, args.context.messageId);
       const snap = await getSnapshotOrWait(chatId);
       if (!snap) return null;
 

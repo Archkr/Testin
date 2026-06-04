@@ -28408,8 +28408,6 @@ var _logAxLLMMain = makeSafeLogger("runtime.axLLMMain");
 var _logFlush = makeSafeLogger("runtime.flush");
 var _logLuaPrint = makeSafeLogger("runtime.lua");
 var _logCbs = makeSafeLogger("runtime.cbs");
-var _luaInFlight = 0;
-var _luaInFlightPeak = 0;
 var _wasmoonExec = null;
 var _cbsUnresolvedAlertFired = false;
 function warnCbsUnresolvedOnce(api) {
@@ -28718,18 +28716,11 @@ async function makeRisuTriggerRuntime(api, data, scriptNs, opts = {}) {
     const rerr = _logRunLua.error;
     const codeStr = toStr(code);
     const tStart = Date.now();
-    _luaInFlight += 1;
-    if (_luaInFlight > _luaInFlightPeak)
-      _luaInFlightPeak = _luaInFlight;
-    const inFlightAtEntry = _luaInFlight;
-    rlog(`START binding=${binding} code_len=${codeStr.length} characterId=${characterId ?? "<none>"} entry=${String(luaOpts?.["entry"] ?? "<default>")} inFlight=${inFlightAtEntry}`);
+    rlog(`START binding=${binding} code_len=${codeStr.length} characterId=${characterId ?? "<none>"} entry=${String(luaOpts?.["entry"] ?? "<default>")}`);
     rverbose(`START ctx varsCache_keys=${Object.keys(varsCache).length} messagesCache_count=${messagesCache.length} lorebook_entries=${lorebook2.entries.length}`);
     rverbose(`luaOpts=${JSON.stringify(luaOpts ?? {})}`);
-    const tReq = Date.now();
     const lua = await scriptNs.require("risu-compat-lua");
-    const requireMs = Date.now() - tReq;
     if (!lua || typeof lua.execute !== "function") {
-      _luaInFlight -= 1;
       rerr(`risu-compat-lua bridge missing/invalid: require returned ${lua === null ? "null" : typeof lua}`);
       return unsupported("runLua", "risu-compat-lua bridge failed to load exports.execute");
     }
@@ -28750,19 +28741,15 @@ async function makeRisuTriggerRuntime(api, data, scriptNs, opts = {}) {
     rverbose(`globals keys=${Object.keys(globals).length}: ${Object.keys(globals).slice(0, 20).join(",")}${Object.keys(globals).length > 20 ? "\u2026" : ""}`);
     const wasmoonKey = typeof effective["wasmoonKey"] === "string" ? effective["wasmoonKey"] : null;
     try {
-      const tExec = Date.now();
       const result = wasmoonKey && _wasmoonExec ? await _wasmoonExec(codeStr, globals, { entry: String(effective["entry"]), args: effective["args"], wasmoonKey }) : await lua.execute(codeStr, globals, effective);
-      const execMs = Date.now() - tExec;
       const preview = result === undefined ? "undefined" : String(JSON.stringify(result) ?? "").slice(0, 200);
-      rlog(`DONE elapsed=${Date.now() - tStart}ms requireMs=${requireMs} execMs=${execMs} inFlight=${inFlightAtEntry} peak=${_luaInFlightPeak} result_type=${typeof result} result_preview=${preview}`);
+      rlog(`DONE elapsed=${Date.now() - tStart}ms result_type=${typeof result} result_preview=${preview}`);
       if (result === false)
         stopSending = true;
       return result;
     } catch (err) {
-      rerr(`THREW after ${Date.now() - tStart}ms requireMs=${requireMs}: ${err.message}`);
+      rerr(`THREW after ${Date.now() - tStart}ms: ${err.message}`);
       throw err;
-    } finally {
-      _luaInFlight -= 1;
     }
   }
   function makeRisuLuaGlobals() {
@@ -30061,20 +30048,18 @@ async function execute(code, globals, opts = {}) {
   const tStart = Date.now();
   const codeStr = String(code || "");
   const globalKeys = globals && typeof globals === "object" ? Object.keys(globals) : [];
-  let _vmMs = 0, _compileMs = 0, _runChunkMs = 0, _cached = 0, _yields = 0;
   flog(`execute: START code_len=${codeStr.length} globals=${globalKeys.length} entry=${String(opts.entry ?? "<none>")} args=${JSON.stringify(opts.args ?? [])}`);
   fverbose(`execute: globals_keys=${globalKeys.join(",").slice(0, 400)}`);
   fverbose(`execute: code[0..300]=${JSON.stringify(codeStr.slice(0, 300))}`);
-  const __perfCreate0 = Date.now();
+  const __perfCreate0 = perfEnabled() ? Date.now() : 0;
   const L = lauxlib.luaL_newstate();
   try {
     lualib.luaL_openlibs(L);
     fverbose(`execute: luaL_openlibs done`);
     registerJsonModule(L);
     fverbose(`execute: registerJsonModule done`);
-    _vmMs = Date.now() - __perfCreate0;
-    if (perfEnabled())
-      perfRecord("lua.vmCreate", _vmMs);
+    if (__perfCreate0)
+      perfRecord("lua.vmCreate", Date.now() - __perfCreate0);
     if (globals && typeof globals === "object") {
       let pushed = 0;
       for (const name of Object.keys(globals)) {
@@ -30225,10 +30210,9 @@ end
 `;
     const wrapped = prelude + `
 ` + codeStr;
-    const __compile0 = Date.now();
+    const __compile0 = perfEnabled() ? Date.now() : 0;
     const __bcKey = __luaCodeHash(wrapped);
     const __cachedBc = __luaBytecodeCache.get(__bcKey);
-    _cached = __cachedBc ? 1 : 0;
     let loadStatus;
     if (__cachedBc) {
       loadStatus = lauxlib.luaL_loadbuffer(L, __cachedBc, __cachedBc.length, toL("=card"));
@@ -30251,9 +30235,8 @@ end
         } catch {}
       }
     }
-    _compileMs = Date.now() - __compile0;
-    if (perfEnabled())
-      perfRecord("lua.compile", _compileMs, { codeLen: wrapped.length, cached: _cached });
+    if (__compile0)
+      perfRecord("lua.compile", Date.now() - __compile0, { codeLen: wrapped.length, cached: __cachedBc ? 1 : 0 });
     if (loadStatus !== lua.LUA_OK) {
       const err = toJS(lua.lua_tostring(L, -1));
       flogErr(`execute: luaL_loadstring failed \u2014 ${err}`);
@@ -30261,11 +30244,10 @@ end
     }
     fverbose(`execute: luaL_loadstring OK`);
     const topBefore = lua.lua_gettop(L);
-    const __run0 = Date.now();
+    const __run0 = perfEnabled() ? Date.now() : 0;
     const runStatus = lua.lua_pcall(L, 0, lua.LUA_MULTRET, 0);
-    _runChunkMs = Date.now() - __run0;
-    if (perfEnabled())
-      perfRecord("lua.runChunk", _runChunkMs);
+    if (__run0)
+      perfRecord("lua.runChunk", Date.now() - __run0);
     if (runStatus !== lua.LUA_OK) {
       const err = toJS(lua.lua_tostring(L, -1));
       flogErr(`execute: main chunk pcall FAILED \u2014 ${err}`);
@@ -30320,7 +30302,6 @@ end
         throw new Error("Lua entry '" + opts.entry + "' error: " + err);
       }
       const nret = lua.lua_gettop(co);
-      _yields = iters;
       flog(`execute: entry '${opts.entry}' OK after ${iters} yields nret=${nret} elapsed=${Date.now() - tStart}ms`);
       if (nret === 0)
         return;
@@ -30342,10 +30323,8 @@ end
     try {
       lua.lua_close(L);
     } catch {}
-    const _execTotal = Date.now() - tStart;
-    flog(`execute: TIMING total=${_execTotal}ms vmCreate=${_vmMs}ms compile=${_compileMs}ms(cached=${_cached}) runChunk=${_runChunkMs}ms yields=${_yields} entry=${String(opts.entry ?? "<none>")} code_len=${codeStr.length}`);
     if (perfEnabled()) {
-      perfRecord("lua.execute", _execTotal, { codeLen: codeStr.length });
+      perfRecord("lua.execute", Date.now() - tStart, { codeLen: codeStr.length });
       perfBump(`lua.execute.entry:${String(opts.entry ?? "<none>")}`);
     }
   }
@@ -42632,10 +42611,13 @@ function dumpPayload(raw) {
     return "<unstringifiable>";
   }
 }
+var FE_DISPLAY_ENABLED = (() => {
+  const v = globalThis.Bun?.env?.LUMIREALM_FE_DISPLAY;
+  return v !== "0" && v !== "false";
+})();
 function sendSetActiveChat(activeChatId, activeCharacterId, userId) {
   try {
-    const feEnv = globalThis.Bun?.env?.LUMIREALM_FE_DISPLAY;
-    const feDisplay = activeChatId !== null && (feEnv === "1" || feEnv === "true");
+    const feDisplay = activeChatId !== null && FE_DISPLAY_ENABLED;
     send({ type: "set_active_chat", chatId: activeChatId, characterId: activeCharacterId, feDisplay }, userId);
   } catch (err) {
     log8.warn(`sendSetActiveChat: ${err.message}`);
@@ -42748,8 +42730,6 @@ var applySvgRasterIndex = createApplySvgRasterIndex({
   errMsg
 });
 var TRANSLATE_TARGET_LANG = "en";
-var _displaySnapshotSig = new Map;
-var _displaySnapshotPushCount = new Map;
 var variablesTogglesService = createVariablesTogglesService({
   translateLang: TRANSLATE_TARGET_LANG,
   variableState,
@@ -42760,8 +42740,7 @@ var variablesTogglesService = createVariablesTogglesService({
   refreshBgHtml,
   send,
   pushDisplaySnapshot: (active, chatId, userId, vars) => {
-    const env = globalThis.Bun?.env;
-    if (!env || env.LUMIREALM_FE_DISPLAY !== "1" && env.LUMIREALM_FE_DISPLAY !== "true")
+    if (!FE_DISPLAY_ENABLED)
       return;
     assembleDisplaySnapshot({
       modulesByNamespaceFromCard,
@@ -42780,12 +42759,6 @@ var variablesTogglesService = createVariablesTogglesService({
         return compiled.filter((e) => e.type === "library");
       }
     }, active, chatId, userId, vars).then((snapshot) => {
-      const sig = `${snapshot.chat.messageCount}|${snapshot.chat.lastMessage.length}|` + `${Object.keys(snapshot.vars.local).length}|${Object.keys(snapshot.vars.global).length}|${Object.keys(snapshot.vars.chat).length}`;
-      const prev = _displaySnapshotSig.get(chatId);
-      const n = (_displaySnapshotPushCount.get(chatId) ?? 0) + 1;
-      _displaySnapshotPushCount.set(chatId, n);
-      _displaySnapshotSig.set(chatId, sig);
-      log8.info(`pushDisplaySnapshot: send #${n} chat=${chatId} sig=${sig}${prev === sig ? " REDUNDANT(matches prior)" : ""}`);
       send({ type: "display_snapshot", snapshot }, userId);
     }).catch((err) => {
       log8.warn(`pushDisplaySnapshot: assemble failed chat=${chatId}: ${errMsg(err)}`);
@@ -42814,16 +42787,12 @@ var triggerDispatcher = createTriggerDispatcher({
 var runBinding = triggerDispatcher.runBinding;
 var dispatchManualTrigger = triggerDispatcher.dispatchManualTrigger;
 var dispatchButtonClick = triggerDispatcher.dispatchButtonClick;
-var FE_DISPLAY_ENV = (() => {
-  const v = globalThis.Bun?.env?.LUMIREALM_FE_DISPLAY;
-  return v === "1" || v === "true";
-})();
 var feDisplayShadowOptOut = new Set;
 createLumiInterceptors({
   activeCardByChat,
   lastActiveChatByUser,
   captureUserId,
-  isFeDisplayAuthoritative: (chatId) => FE_DISPLAY_ENV && !feDisplayShadowOptOut.has(chatId),
+  isFeDisplayAuthoritative: (chatId) => FE_DISPLAY_ENABLED && !feDisplayShadowOptOut.has(chatId),
   ensureActiveCardForChat,
   getCachedSettingsSync,
   modulesByNamespaceFromCard,

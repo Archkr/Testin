@@ -195,23 +195,17 @@ export async function execute(
   const tStart = Date.now();
   const codeStr = String(code || '');
   const globalKeys = (globals && typeof globals === 'object') ? Object.keys(globals) : [];
-  // Always-on phase timers (cheap Date.now diffs, content-free) so the FE — where
-  // perfEnabled() is false because process.env is absent — still sees where each
-  // fresh-VM call's wall-clock goes. vmCreate+runChunk recur on EVERY call (a new
-  // Lua state + a re-run of the card's whole top-level chunk); compile is cached.
-  let _vmMs = 0, _compileMs = 0, _runChunkMs = 0, _cached = 0, _yields = 0;
   flog(`execute: START code_len=${codeStr.length} globals=${globalKeys.length} entry=${String(opts.entry ?? '<none>')} args=${JSON.stringify(opts.args ?? [])}`);
   fverbose(`execute: globals_keys=${globalKeys.join(',').slice(0, 400)}`);
   fverbose(`execute: code[0..300]=${JSON.stringify(codeStr.slice(0, 300))}`);
-  const __perfCreate0 = Date.now();
+  const __perfCreate0 = perfEnabled() ? Date.now() : 0;
   const L = lauxlib.luaL_newstate();
   try {
     lualib.luaL_openlibs(L);
     fverbose(`execute: luaL_openlibs done`);
     registerJsonModule(L);
     fverbose(`execute: registerJsonModule done`);
-    _vmMs = Date.now() - __perfCreate0;
-    if (perfEnabled()) perfRecord("lua.vmCreate", _vmMs);
+    if (__perfCreate0) perfRecord("lua.vmCreate", Date.now() - __perfCreate0);
 
     if (globals && typeof globals === 'object') {
       let pushed = 0;
@@ -368,10 +362,9 @@ function callListenMain(type, id, value, meta)
 end
 `;
     const wrapped = prelude + '\n' + codeStr;
-    const __compile0 = Date.now();
+    const __compile0 = perfEnabled() ? Date.now() : 0;
     const __bcKey = __luaCodeHash(wrapped);
     const __cachedBc = __luaBytecodeCache.get(__bcKey);
-    _cached = __cachedBc ? 1 : 0;
     let loadStatus: number;
     if (__cachedBc) {
       loadStatus = lauxlib.luaL_loadbuffer(L, __cachedBc, __cachedBc.length, toL("=card"));
@@ -392,8 +385,7 @@ end
         } catch { void 0; }
       }
     }
-    _compileMs = Date.now() - __compile0;
-    if (perfEnabled()) perfRecord("lua.compile", _compileMs, { codeLen: wrapped.length, cached: _cached });
+    if (__compile0) perfRecord("lua.compile", Date.now() - __compile0, { codeLen: wrapped.length, cached: __cachedBc ? 1 : 0 });
     if (loadStatus !== lua.LUA_OK) {
       const err = toJS(lua.lua_tostring(L, -1));
       flogErr(`execute: luaL_loadstring failed — ${err}`);
@@ -401,10 +393,9 @@ end
     }
     fverbose(`execute: luaL_loadstring OK`);
     const topBefore = lua.lua_gettop(L);
-    const __run0 = Date.now();
+    const __run0 = perfEnabled() ? Date.now() : 0;
     const runStatus = lua.lua_pcall(L, 0, lua.LUA_MULTRET, 0);
-    _runChunkMs = Date.now() - __run0;
-    if (perfEnabled()) perfRecord("lua.runChunk", _runChunkMs);
+    if (__run0) perfRecord("lua.runChunk", Date.now() - __run0);
     if (runStatus !== lua.LUA_OK) {
       const err = toJS(lua.lua_tostring(L, -1));
       flogErr(`execute: main chunk pcall FAILED — ${err}`);
@@ -459,7 +450,6 @@ end
         throw new Error("Lua entry '" + opts.entry + "' error: " + err);
       }
       const nret = lua.lua_gettop(co);
-      _yields = iters;
       flog(`execute: entry '${opts.entry}' OK after ${iters} yields nret=${nret} elapsed=${Date.now() - tStart}ms`);
       if (nret === 0) return undefined;
       return luaToJs(co, -1);
@@ -479,10 +469,8 @@ end
     throw err;
   } finally {
     try { lua.lua_close(L); } catch { /* */ }
-    const _execTotal = Date.now() - tStart;
-    flog(`execute: TIMING total=${_execTotal}ms vmCreate=${_vmMs}ms compile=${_compileMs}ms(cached=${_cached}) runChunk=${_runChunkMs}ms yields=${_yields} entry=${String(opts.entry ?? '<none>')} code_len=${codeStr.length}`);
     if (perfEnabled()) {
-      perfRecord("lua.execute", _execTotal, { codeLen: codeStr.length });
+      perfRecord("lua.execute", Date.now() - tStart, { codeLen: codeStr.length });
       perfBump(`lua.execute.entry:${String(opts.entry ?? "<none>")}`);
     }
   }
