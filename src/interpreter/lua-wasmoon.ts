@@ -132,6 +132,12 @@ interface EngineEntry {
   engine: WasmoonEngine;
   code: string | null;
   tail: Promise<unknown>;
+  // Globals are bound ONCE as stable wrappers that delegate to `current`; per
+  // call we only swap `current` (O(1)) instead of re-pushing ~40 closures.
+  // Safe because the mutex (tail) serializes calls, so `current` is correct for
+  // the in-flight call. Mirrors RisuAI's mutable ScriptingEngineState.chat.
+  current: Record<string, unknown>;
+  bound: Set<string>;
 }
 
 let factoryPromise: Promise<WasmoonFactory> | null = null;
@@ -162,7 +168,7 @@ function getEngineEntry(key: string): Promise<EngineEntry> {
   const created = (async (): Promise<EngineEntry> => {
     const factory = await ensureFactory();
     const engine = await factory.createEngine({ injectObjects: true });
-    return { engine, code: null, tail: Promise.resolve() };
+    return { engine, code: null, tail: Promise.resolve(), current: {}, bound: new Set<string>() };
   })();
   engines.set(key, created);
   return created;
@@ -187,8 +193,11 @@ export async function executeWasmoon(
   const entry = await getEngineEntry(opts.wasmoonKey);
   const run = entry.tail.then(async () => {
     const engine = entry.engine;
+    entry.current = globals;
     for (const name of Object.keys(globals)) {
-      if (typeof globals[name] === 'function') engine.global.set(name, globals[name]);
+      if (typeof globals[name] !== 'function' || entry.bound.has(name)) continue;
+      engine.global.set(name, (...args: unknown[]) => (entry.current[name] as (...a: unknown[]) => unknown)(...args));
+      entry.bound.add(name);
     }
     let _compileMs = 0;
     const firstLoad = entry.code !== code;

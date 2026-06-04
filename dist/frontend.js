@@ -29152,7 +29152,7 @@ function getEngineEntry(key) {
   const created = (async () => {
     const factory = await ensureFactory();
     const engine = await factory.createEngine({ injectObjects: true });
-    return { engine, code: null, tail: Promise.resolve() };
+    return { engine, code: null, tail: Promise.resolve(), current: {}, bound: new Set };
   })();
   engines.set(key, created);
   return created;
@@ -29162,9 +29162,12 @@ async function executeWasmoon(code, globals, opts) {
   const entry = await getEngineEntry(opts.wasmoonKey);
   const run = entry.tail.then(async () => {
     const engine = entry.engine;
+    entry.current = globals;
     for (const name of Object.keys(globals)) {
-      if (typeof globals[name] === "function")
-        engine.global.set(name, globals[name]);
+      if (typeof globals[name] !== "function" || entry.bound.has(name))
+        continue;
+      engine.global.set(name, (...args) => entry.current[name](...args));
+      entry.bound.add(name);
     }
     let _compileMs = 0;
     const firstLoad = entry.code !== code;
@@ -29458,7 +29461,7 @@ function runApply(snap, args, recorder) {
   }
   const outMarkers = markersIn(result);
   if (inMarkers || outMarkers || Date.now() - tApplyStart >= 20) {
-    log7.info(`applyScripts.trace chat=${ctx.chatId ?? "?"} msg=${ctx.messageId ?? "?"} placement=${placement} ` + `total=${Date.now() - tApplyStart}ms rules=${scripts.length} skipped=${skipped} ` + `markersIn=${inMarkers || "none"} markersOut=${outMarkers || "none"} ` + `applied=[${trace.join(" ")}]`);
+    log7.info(`applyScripts.trace chat=${ctx.chatId ?? "?"} msg=${ctx.messageId ?? "?"} placement=${placement} ` + `total=${Date.now() - tApplyStart}ms rules=${scripts.length} skipped=${skipped} ` + `cacheable=${!recorder.volatile} touched=${recorder.touched.size} ` + `markersIn=${inMarkers || "none"} markersOut=${outMarkers || "none"} ` + `applied=[${trace.join(" ")}]`);
   }
   return result;
 }

@@ -272,6 +272,7 @@ function runApply(
     log.info(
       `applyScripts.trace chat=${ctx.chatId ?? '?'} msg=${ctx.messageId ?? '?'} placement=${placement} ` +
         `total=${Date.now() - tApplyStart}ms rules=${scripts.length} skipped=${skipped} ` +
+        `cacheable=${!recorder.volatile} touched=${recorder.touched.size} ` +
         `markersIn=${inMarkers || 'none'} markersOut=${outMarkers || 'none'} ` +
         `applied=[${trace.join(' ')}]`,
     );
