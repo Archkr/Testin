@@ -13,6 +13,7 @@ import {
   type DisplayResolutionMode,
 } from './display/snapshot.js';
 import { markOpen, markEvent } from './display/open-timeline.js';
+import { MSG_DEP_KEY } from './interpreter/evaluator/context.js';
 import { STYLES } from './ui/styles.js';
 import { createSidebar } from './ui/sidebar.js';
 import { createAuxDebugPanel } from './ui/aux-debug.js';
@@ -573,6 +574,12 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         setDisplaySnapshot(msg.snapshot);
         if (prev) {
           const changed = diffSnapshotVars(prev, msg.snapshot);
+          const pc = prev.chat, nc = msg.snapshot.chat;
+          if (pc.lastMessageId !== nc.lastMessageId || pc.messageCount !== nc.messageCount
+            || pc.lastMessage !== nc.lastMessage || pc.lastUserMessage !== nc.lastUserMessage
+            || pc.lastCharMessage !== nc.lastCharMessage) {
+            changed.push(MSG_DEP_KEY);
+          }
           if (changed.length > 0) ctx.display?.invalidate(changed);
         }
       }

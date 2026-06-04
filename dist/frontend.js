@@ -23113,6 +23113,7 @@ function getOverlay(chatId) {
   overlay.lastTouched = Date.now();
   return overlay;
 }
+var MSG_DEP_KEY = "__msg__";
 function indexToCharacterAssets(index) {
   if (!index)
     return [];
@@ -23137,9 +23138,9 @@ function buildEvaluatorContext(input) {
   const envChat = variables.chat ?? {};
   const defaults = input.scriptstateDefaults ?? {};
   const recorder = input.recorder;
-  const markVolatile = () => {
+  const recordMessagesDep = () => {
     if (recorder)
-      recorder.volatile = true;
+      recorder.touched.add(MSG_DEP_KEY);
   };
   const recordRead = recorder ? (scope, name) => {
     if (scope === "temp")
@@ -23257,15 +23258,15 @@ function buildEvaluatorContext(input) {
   const effective = fullMessages ?? synthesized;
   const messages = {
     all: () => {
-      markVolatile();
+      recordMessagesDep();
       return effective;
     },
     last: () => {
-      markVolatile();
+      recordMessagesDep();
       return effective[effective.length - 1] ?? null;
     },
     lastOf: (role) => {
-      markVolatile();
+      recordMessagesDep();
       for (let i = effective.length - 1;i >= 0; i--) {
         const m = effective[i];
         if (m.role === role)
@@ -23274,7 +23275,7 @@ function buildEvaluatorContext(input) {
       return null;
     },
     count: (role) => {
-      markVolatile();
+      recordMessagesDep();
       if (role === undefined) {
         if (fullMessages)
           return effective.length;
@@ -44385,6 +44386,10 @@ function setup(ctx) {
         setDisplaySnapshot(msg.snapshot);
         if (prev) {
           const changed = diffSnapshotVars(prev, msg.snapshot);
+          const pc = prev.chat, nc = msg.snapshot.chat;
+          if (pc.lastMessageId !== nc.lastMessageId || pc.messageCount !== nc.messageCount || pc.lastMessage !== nc.lastMessage || pc.lastUserMessage !== nc.lastUserMessage || pc.lastCharMessage !== nc.lastCharMessage) {
+            changed.push(MSG_DEP_KEY);
+          }
           if (changed.length > 0)
             ctx.display?.invalidate(changed);
         }

@@ -79,6 +79,8 @@ export interface VarReadRecorder {
   volatile: boolean;
 }
 
+export const MSG_DEP_KEY = "__msg__";
+
 // Input shape for a single evaluator run. Mirrors the fields
 // buildRuntimeContext reads from MacroInvokeCtx.env plus direct identity +
 // messages slices pulled out of the extension's live ActiveCard state.
@@ -175,7 +177,7 @@ export function buildEvaluatorContext(input: BuildEvaluatorCtxInput): EvaluatorC
   const defaults = input.scriptstateDefaults ?? {};
 
   const recorder = input.recorder;
-  const markVolatile = (): void => { if (recorder) recorder.volatile = true; };
+  const recordMessagesDep = (): void => { if (recorder) recorder.touched.add(MSG_DEP_KEY); };
   const recordRead = recorder
     ? (scope: VarScope, name: string): void => {
         if (scope === "temp") return;
@@ -275,10 +277,10 @@ export function buildEvaluatorContext(input: BuildEvaluatorCtxInput): EvaluatorC
   }
   const effective: readonly Message[] = fullMessages ?? synthesized;
   const messages = {
-    all: () => { markVolatile(); return effective; },
-    last: () => { markVolatile(); return effective[effective.length - 1] ?? null; },
+    all: () => { recordMessagesDep(); return effective; },
+    last: () => { recordMessagesDep(); return effective[effective.length - 1] ?? null; },
     lastOf: (role: Message["role"]): Message | null => {
-      markVolatile();
+      recordMessagesDep();
       for (let i = effective.length - 1; i >= 0; i--) {
         const m = effective[i]!;
         if (m.role === role) return m;
@@ -286,7 +288,7 @@ export function buildEvaluatorContext(input: BuildEvaluatorCtxInput): EvaluatorC
       return null;
     },
     count: (role?: Message["role"]): number => {
-      markVolatile();
+      recordMessagesDep();
       if (role === undefined) {
         if (fullMessages) return effective.length;
         return chat.messageCount != null ? messageCount : synthesized.length;

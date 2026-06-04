@@ -467,7 +467,7 @@ export function createLifecycleEventHandlers(deps: LifecycleEventHandlerDeps): L
       if (!chatId) return;
       deps.invalidateListenEditPreload(chatId);
       if (msgId) deps.invalidateRenderMcpForMessage(chatId, msgId);
-      void deps.refreshMessagesCache(chatId, userId);
+      await deps.refreshMessagesCache(chatId, userId);
       const active = await deps.ensureActiveCardForChat(chatId, null, userId);
       if (!active) return;
       // No bindings fire here, Risu has no binding-firing analogue for deletes.
