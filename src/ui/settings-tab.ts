@@ -33,6 +33,8 @@ interface Settings {
   readonly submodelConnectionId: string | null;
   readonly submodelModelOverride: string | null;
   readonly submodelSamplers: SamplerBag;
+  readonly auxPrefillCompat: boolean;
+  readonly submodelPrefillCompat: boolean;
   readonly auxDebugCaptureRequest: boolean;
   readonly auxDebugCaptureResponse: boolean;
   readonly legacyMediaFindings: boolean;
@@ -244,6 +246,24 @@ export function mountSettingsPanel(
   samplersSection.appendChild(samplersListEl);
   auxBody.appendChild(samplersSection);
 
+  const auxPrefillSection = document.createElement('div');
+  auxPrefillSection.className = 'rs-subsection';
+  const auxPrefillRow = document.createElement('label');
+  auxPrefillRow.className = 'rs-checkbox-row';
+  const auxPrefillCheck = document.createElement('input');
+  auxPrefillCheck.type = 'checkbox';
+  auxPrefillCheck.className = 'rs-checkbox';
+  auxPrefillCheck.id = 'rs-aux-prefill';
+  auxPrefillRow.htmlFor = 'rs-aux-prefill';
+  const auxPrefillText = document.createElement('span');
+  auxPrefillText.className = 'rs-checkbox-label';
+  auxPrefillText.textContent = 'Prefill compatibility';
+  auxPrefillText.title = 'Converts the assistant message prefill to a user message prepended with "Begin your response with: <prefill>" to be compatible with models that don\'t support it.';
+  auxPrefillRow.appendChild(auxPrefillCheck);
+  auxPrefillRow.appendChild(auxPrefillText);
+  auxPrefillSection.appendChild(auxPrefillRow);
+  auxBody.appendChild(auxPrefillSection);
+
   // ---------- Sub subtab body ----------------------------------------------
   const subBody = document.createElement('section');
   subBody.className = 'lr-settings-tab-body';
@@ -324,6 +344,24 @@ export function mountSettingsPanel(
   submodelSamplersListEl.className = 'rs-samplers-list';
   submodelSamplersSection.appendChild(submodelSamplersListEl);
   subBody.appendChild(submodelSamplersSection);
+
+  const submodelPrefillSection = document.createElement('div');
+  submodelPrefillSection.className = 'rs-subsection';
+  const submodelPrefillRow = document.createElement('label');
+  submodelPrefillRow.className = 'rs-checkbox-row';
+  const submodelPrefillCheck = document.createElement('input');
+  submodelPrefillCheck.type = 'checkbox';
+  submodelPrefillCheck.className = 'rs-checkbox';
+  submodelPrefillCheck.id = 'rs-sub-prefill';
+  submodelPrefillRow.htmlFor = 'rs-sub-prefill';
+  const submodelPrefillText = document.createElement('span');
+  submodelPrefillText.className = 'rs-checkbox-label';
+  submodelPrefillText.textContent = 'Prefill compatibility';
+  submodelPrefillText.title = 'Converts the assistant message prefill to a user message prepended with "Begin your response with: <prefill>" to be compatible with models that don\'t support it.';
+  submodelPrefillRow.appendChild(submodelPrefillCheck);
+  submodelPrefillRow.appendChild(submodelPrefillText);
+  submodelPrefillSection.appendChild(submodelPrefillRow);
+  subBody.appendChild(submodelPrefillSection);
 
   // ---------- Debug subtab body --------------------------------------------
   const debugBody = document.createElement('section');
@@ -1045,6 +1083,8 @@ export function mountSettingsPanel(
   }
 
   function renderDebugChecks(): void {
+    auxPrefillCheck.checked = settings?.auxPrefillCompat === true;
+    submodelPrefillCheck.checked = settings?.submodelPrefillCompat === true;
     reqCheck.checked = settings?.auxDebugCaptureRequest === true;
     resCheck.checked = settings?.auxDebugCaptureResponse === true;
   }
@@ -1148,6 +1188,14 @@ export function mountSettingsPanel(
     });
   });
 
+  auxPrefillCheck.addEventListener('change', () => {
+    log.info(`settings-tab: auxPrefillCompat=${auxPrefillCheck.checked}`);
+    sendToBackend({ type: 'update_settings', patch: { auxPrefillCompat: auxPrefillCheck.checked } });
+  });
+  submodelPrefillCheck.addEventListener('change', () => {
+    log.info(`settings-tab: submodelPrefillCompat=${submodelPrefillCheck.checked}`);
+    sendToBackend({ type: 'update_settings', patch: { submodelPrefillCompat: submodelPrefillCheck.checked } });
+  });
   reqCheck.addEventListener('change', () => {
     log.info(`settings-tab: auxDebugCaptureRequest=${reqCheck.checked}`);
     sendToBackend({
@@ -1191,6 +1239,8 @@ export function mountSettingsPanel(
         submodelConnectionId: msg.settings.submodelConnectionId,
         submodelModelOverride: msg.settings.submodelModelOverride,
         submodelSamplers: msg.settings.submodelSamplers,
+        auxPrefillCompat: msg.settings.auxPrefillCompat,
+        submodelPrefillCompat: msg.settings.submodelPrefillCompat,
         auxDebugCaptureRequest: msg.settings.auxDebugCaptureRequest,
         auxDebugCaptureResponse: msg.settings.auxDebugCaptureResponse,
         legacyMediaFindings: msg.settings.legacyMediaFindings,

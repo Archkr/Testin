@@ -14,6 +14,8 @@ export interface DispatchSeams {
   readonly submodelConnectionId: string | null;
   readonly submodelModelOverride: string | null;
   readonly submodelSamplers: RisuCompatSettings['submodelSamplers'];
+  readonly auxPrefillCompat: boolean;
+  readonly submodelPrefillCompat: boolean;
   readonly auxDebugCapture?: DispatchAuxDebugCapture;
   readonly resolveTemplate: (text: string) => Promise<string>;
 }
@@ -43,6 +45,8 @@ export function buildDispatchSeams(args: BuildDispatchSeamsArgs): DispatchSeams 
     submodelConnectionId: string | null;
     submodelModelOverride: string | null;
     submodelSamplers: RisuCompatSettings['submodelSamplers'];
+    auxPrefillCompat: boolean;
+    submodelPrefillCompat: boolean;
     auxDebugCapture?: DispatchAuxDebugCapture;
     resolveTemplate: (text: string) => Promise<string>;
   } = {
@@ -56,6 +60,8 @@ export function buildDispatchSeams(args: BuildDispatchSeamsArgs): DispatchSeams 
     submodelConnectionId: args.settings.submodelConnectionId,
     submodelModelOverride: args.settings.submodelModelOverride,
     submodelSamplers: args.settings.submodelSamplers,
+    auxPrefillCompat: args.settings.auxPrefillCompat,
+    submodelPrefillCompat: args.settings.submodelPrefillCompat,
     resolveTemplate: args.resolveTemplate,
   };
   if (args.auxDebugCapture) seams.auxDebugCapture = args.auxDebugCapture;

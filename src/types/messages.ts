@@ -213,6 +213,8 @@ export type FrontendToBackend =
         readonly submodelConnectionId?: string | null;
         readonly submodelModelOverride?: string | null;
         readonly submodelSamplers?: AuxSamplersWire;
+        readonly auxPrefillCompat?: boolean;
+        readonly submodelPrefillCompat?: boolean;
         readonly auxDebugCaptureRequest?: boolean;
         readonly auxDebugCaptureResponse?: boolean;
         readonly legacyMediaFindings?: boolean;
@@ -541,6 +543,8 @@ export type BackendToFrontend =
         readonly submodelConnectionId: string | null;
         readonly submodelModelOverride: string | null;
         readonly submodelSamplers: AuxSamplersWire;
+        readonly auxPrefillCompat: boolean;
+        readonly submodelPrefillCompat: boolean;
         readonly auxDebugCaptureRequest: boolean;
         readonly auxDebugCaptureResponse: boolean;
         readonly legacyMediaFindings: boolean;

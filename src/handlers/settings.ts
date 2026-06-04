@@ -15,6 +15,8 @@ function settingsToWire(s: RisuCompatSettings): {
   readonly submodelConnectionId: RisuCompatSettings['submodelConnectionId'];
   readonly submodelModelOverride: RisuCompatSettings['submodelModelOverride'];
   readonly submodelSamplers: RisuCompatSettings['submodelSamplers'];
+  readonly auxPrefillCompat: RisuCompatSettings['auxPrefillCompat'];
+  readonly submodelPrefillCompat: RisuCompatSettings['submodelPrefillCompat'];
   readonly auxDebugCaptureRequest: RisuCompatSettings['auxDebugCaptureRequest'];
   readonly auxDebugCaptureResponse: RisuCompatSettings['auxDebugCaptureResponse'];
   readonly legacyMediaFindings: RisuCompatSettings['legacyMediaFindings'];
@@ -28,6 +30,8 @@ function settingsToWire(s: RisuCompatSettings): {
     submodelConnectionId: s.submodelConnectionId,
     submodelModelOverride: s.submodelModelOverride,
     submodelSamplers: s.submodelSamplers,
+    auxPrefillCompat: s.auxPrefillCompat,
+    submodelPrefillCompat: s.submodelPrefillCompat,
     auxDebugCaptureRequest: s.auxDebugCaptureRequest,
     auxDebugCaptureResponse: s.auxDebugCaptureResponse,
     legacyMediaFindings: s.legacyMediaFindings,

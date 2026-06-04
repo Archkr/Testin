@@ -27621,11 +27621,13 @@ async function runLLM(api, routing, value, model, _streaming) {
   const connId = useSubmodel ? routing.submodelConnectionId : null;
   const modelOverride = useSubmodel ? routing.submodelModelOverride : null;
   const paramsWire = useSubmodel ? routing.submodelParamsWire : null;
+  const prefillCompat = useSubmodel ? routing.submodelPrefillCompat : routing.auxPrefillCompat;
   const req = {
     messages: [{ role: "user", content: toStr(value) }],
     ...connId ? { connectionId: connId } : {},
     ...modelOverride ? { model: modelOverride } : {},
-    ...paramsWire ? { parameters: paramsWire } : {}
+    ...paramsWire ? { parameters: paramsWire } : {},
+    ...prefillCompat ? { prefillCompat: true } : {}
   };
   _log2.info(`channel=${model} useSubmodel=${useSubmodel} ` + `submodelConn=${routing.submodelConnectionId ?? "<inherit-aux>"} ` + `submodelModel=${routing.submodelModelOverride ?? "<connection>"}`);
   const captureChannel = useSubmodel ? "submodel" : null;
@@ -27982,6 +27984,8 @@ var DEFAULT_SETTINGS = {
   submodelConnectionId: null,
   submodelModelOverride: null,
   submodelSamplers: DEFAULT_SAMPLERS,
+  auxPrefillCompat: false,
+  submodelPrefillCompat: false,
   auxDebugCaptureRequest: false,
   auxDebugCaptureResponse: false,
   legacyMediaFindings: false,
@@ -28073,6 +28077,12 @@ function normalizeSettingsPatch(patch) {
   if ("submodelSamplers" in p) {
     out.submodelSamplers = normalizeSamplers(p.submodelSamplers);
   }
+  if ("auxPrefillCompat" in p) {
+    out.auxPrefillCompat = !!p.auxPrefillCompat;
+  }
+  if ("submodelPrefillCompat" in p) {
+    out.submodelPrefillCompat = !!p.submodelPrefillCompat;
+  }
   if ("auxDebugCaptureRequest" in p) {
     out.auxDebugCaptureRequest = !!p.auxDebugCaptureRequest;
   }
@@ -28104,6 +28114,8 @@ async function loadSettings(storage, userId) {
       submodelConnectionId: typeof stored.submodelConnectionId === "string" ? stored.submodelConnectionId : null,
       submodelModelOverride: typeof stored.submodelModelOverride === "string" ? stored.submodelModelOverride : null,
       submodelSamplers: stored.submodelSamplers !== undefined ? normalizeSamplers(stored.submodelSamplers) : DEFAULT_SAMPLERS,
+      auxPrefillCompat: stored.auxPrefillCompat === true,
+      submodelPrefillCompat: stored.submodelPrefillCompat === true,
       auxDebugCaptureRequest: stored.auxDebugCaptureRequest === true,
       auxDebugCaptureResponse: stored.auxDebugCaptureResponse === true,
       legacyMediaFindings: stored.legacyMediaFindings === true,
@@ -28131,7 +28143,7 @@ function mergeSettings(base, patch) {
 var SAMPLER_WIRE_KEYS = {
   temperature: "temperature",
   maxTokens: "max_tokens",
-  contextSize: "context_size",
+  contextSize: "max_context_length",
   topP: "top_p",
   minP: "min_p",
   topK: "top_k",
@@ -28149,6 +28161,38 @@ function samplersToWire(samplers) {
       out[SAMPLER_WIRE_KEYS[k]] = v;
   }
   return Object.keys(out).length === 0 ? null : out;
+}
+var ALL_SAMPLER_WIRE_KEYS = new Set(Object.values(SAMPLER_WIRE_KEYS));
+var BASE_SAMPLER_KEYS = new Set([
+  "temperature",
+  "max_tokens",
+  "max_context_length",
+  "top_p",
+  "top_k"
+]);
+function allowedSamplerKeysForProvider(provider) {
+  const p = (provider ?? "").toLowerCase();
+  if (p === "anthropic" || p === "google" || p === "google-vertex" || p === "vertex") {
+    return BASE_SAMPLER_KEYS;
+  }
+  const out = new Set(BASE_SAMPLER_KEYS);
+  out.add("frequency_penalty");
+  out.add("presence_penalty");
+  if (p !== "openai") {
+    out.add("min_p");
+    out.add("repetition_penalty");
+  }
+  return out;
+}
+function filterSamplerParamsForProvider(parameters, provider) {
+  const allowed = allowedSamplerKeysForProvider(provider);
+  const out = {};
+  for (const [k, v] of Object.entries(parameters)) {
+    if (ALL_SAMPLER_WIRE_KEYS.has(k) && !allowed.has(k))
+      continue;
+    out[k] = v;
+  }
+  return out;
 }
 // src/interpreter/runtime/als-compat.ts
 import { AsyncLocalStorage } from "async_hooks";
@@ -28204,6 +28248,24 @@ function invalidateRecentFlush(chatId) {
   cache.delete(chatId);
 }
 
+// src/state/chat-metadata-queue.ts
+var chains = new Map;
+function runChatMetadataExclusive(chatId, fn) {
+  const prev = chains.get(chatId) ?? Promise.resolve();
+  const run = prev.then(fn, fn);
+  const tail = run.then(() => {
+    return;
+  }, () => {
+    return;
+  });
+  chains.set(chatId, tail);
+  tail.then(() => {
+    if (chains.get(chatId) === tail)
+      chains.delete(chatId);
+  });
+  return run;
+}
+
 // src/interpreter/runtime/chat-state.ts
 var META_ROOT = "macro_variables";
 var META_SUB = "local";
@@ -28230,7 +28292,7 @@ async function loadVars(api, chatId) {
   }
 }
 async function saveVars(api, vars, chatId) {
-  try {
+  const write = async () => {
     const existing = await api.chat.getMetadata(META_ROOT);
     const base = existing && typeof existing === "object" ? { ...existing } : {};
     const bareLocal = {};
@@ -28242,6 +28304,12 @@ async function saveVars(api, vars, chatId) {
     await api.chat.setMetadata(META_ROOT, base);
     if (chatId)
       rememberRecentFlush(chatId, vars);
+  };
+  try {
+    if (chatId)
+      await runChatMetadataExclusive(chatId, write);
+    else
+      await write();
   } catch {}
 }
 
@@ -28409,6 +28477,7 @@ var _logFlush = makeSafeLogger("runtime.flush");
 var _logLuaPrint = makeSafeLogger("runtime.lua");
 var _logCbs = makeSafeLogger("runtime.cbs");
 var _wasmoonExec = null;
+var _wasmoonEnabled = true;
 var _cbsUnresolvedAlertFired = false;
 function warnCbsUnresolvedOnce(api) {
   _logCbs.warn("cbs(): no resolver wired, returning input verbatim");
@@ -28438,6 +28507,8 @@ async function makeRisuTriggerRuntime(api, data, scriptNs, opts = {}) {
   const capturedResolveTemplate = opts.resolveTemplate ?? dispatchCtx.resolveTemplate;
   const auxParamsWire = samplersToWire(auxSamplers);
   const submodelParamsWire = samplersToWire(submodelSamplers);
+  const auxPrefillCompat = Boolean(opts.auxPrefillCompat ?? dispatchCtx.auxPrefillCompat ?? false);
+  const submodelPrefillCompat = Boolean(opts.submodelPrefillCompat ?? dispatchCtx.submodelPrefillCompat ?? auxPrefillCompat);
   function notifyStateChanged(source) {
     if (!stateChanged) {
       _logStateChanged.info(`source=${source} \u2192 <no-callback> (no-op)`);
@@ -28668,6 +28739,8 @@ async function makeRisuTriggerRuntime(api, data, scriptNs, opts = {}) {
       submodelConnectionId,
       submodelModelOverride,
       submodelParamsWire,
+      submodelPrefillCompat,
+      auxPrefillCompat,
       ...auxDebugCapture ? { auxDebugCapture } : {}
     }, value, model, _streaming);
   }
@@ -28741,7 +28814,7 @@ async function makeRisuTriggerRuntime(api, data, scriptNs, opts = {}) {
     rverbose(`globals keys=${Object.keys(globals).length}: ${Object.keys(globals).slice(0, 20).join(",")}${Object.keys(globals).length > 20 ? "\u2026" : ""}`);
     const wasmoonKey = typeof effective["wasmoonKey"] === "string" ? effective["wasmoonKey"] : null;
     try {
-      const result = wasmoonKey && _wasmoonExec ? await _wasmoonExec(codeStr, globals, { entry: String(effective["entry"]), args: effective["args"], wasmoonKey }) : await lua.execute(codeStr, globals, effective);
+      const result = wasmoonKey && _wasmoonExec && _wasmoonEnabled ? await _wasmoonExec(codeStr, globals, { entry: String(effective["entry"]), args: effective["args"], wasmoonKey }) : await lua.execute(codeStr, globals, effective);
       const preview = result === undefined ? "undefined" : String(JSON.stringify(result) ?? "").slice(0, 200);
       rlog(`DONE elapsed=${Date.now() - tStart}ms result_type=${typeof result} result_preview=${preview}`);
       if (result === false)
@@ -28992,7 +29065,7 @@ async function makeRisuTriggerRuntime(api, data, scriptNs, opts = {}) {
         const msgs = parseLuaPromptArg(promptStr);
         const tStart = Date.now();
         try {
-          const r = await api.llm.generate({ messages: msgs });
+          const r = await api.llm.generate({ messages: msgs, ...auxPrefillCompat ? { prefillCompat: true } : {} });
           const out = toStr(r && r.content);
           _logLLMMain.info(`msgs=${msgs.length} elapsed=${Date.now() - tStart}ms ` + `out_len=${out.length} chatId=${portalChatId ?? "<none>"}`);
           return JSON.stringify({ success: true, result: out });
@@ -29021,7 +29094,8 @@ async function makeRisuTriggerRuntime(api, data, scriptNs, opts = {}) {
           messages: msgs,
           ...auxConnectionId ? { connectionId: auxConnectionId } : {},
           ...auxModelOverride ? { model: auxModelOverride } : {},
-          ...auxParamsWire ? { parameters: auxParamsWire } : {}
+          ...auxParamsWire ? { parameters: auxParamsWire } : {},
+          ...auxPrefillCompat ? { prefillCompat: true } : {}
         };
         if (auxDebugCapture) {
           try {
@@ -29079,7 +29153,7 @@ async function makeRisuTriggerRuntime(api, data, scriptNs, opts = {}) {
         if (!api.llm?.generate) {
           throw new Error("risu-compat: lua.simpleLLM requires api.llm.generate");
         }
-        const r = await api.llm.generate({ messages: [{ role: "user", content: toStr(prompt2) }] });
+        const r = await api.llm.generate({ messages: [{ role: "user", content: toStr(prompt2) }], ...auxPrefillCompat ? { prefillCompat: true } : {} });
         return toStr(r && r.content);
       },
       hash: (_id, value) => {
@@ -33947,24 +34021,26 @@ function createDisplayWritebackHandlers() {
       if (!chatId || !vars || Object.keys(vars).length === 0)
         return;
       try {
-        const chat = await spindle.chats.get(chatId, ctx.userId);
-        const meta = chat?.metadata ?? {};
-        const mv = meta["macro_variables"] && typeof meta["macro_variables"] === "object" ? { ...meta["macro_variables"] } : {};
-        const local = mv["local"] && typeof mv["local"] === "object" ? { ...mv["local"] } : {};
-        let changed = 0;
-        for (const [k, v] of Object.entries(vars)) {
-          if (local[k] === v)
-            continue;
-          local[k] = v;
-          changed += 1;
-        }
-        if (changed === 0)
-          return;
-        mv["local"] = local;
-        expectChatChange(chatId);
-        await spindle.chats.update(chatId, { metadata: { ...meta, macro_variables: mv } }, ctx.userId);
-        invalidateRecentFlush(chatId);
-        ctx.log.info(`display_writeback chat=${chatId} changed=${changed}`);
+        await runChatMetadataExclusive(chatId, async () => {
+          const chat = await spindle.chats.get(chatId, ctx.userId);
+          const meta = chat?.metadata ?? {};
+          const mv = meta["macro_variables"] && typeof meta["macro_variables"] === "object" ? { ...meta["macro_variables"] } : {};
+          const local = mv["local"] && typeof mv["local"] === "object" ? { ...mv["local"] } : {};
+          let changed = 0;
+          for (const [k, v] of Object.entries(vars)) {
+            if (local[k] === v)
+              continue;
+            local[k] = v;
+            changed += 1;
+          }
+          if (changed === 0)
+            return;
+          mv["local"] = local;
+          expectChatChange(chatId);
+          await spindle.chats.update(chatId, { metadata: { ...meta, macro_variables: mv } }, ctx.userId);
+          invalidateRecentFlush(chatId);
+          ctx.log.info(`display_writeback chat=${chatId} changed=${changed}`);
+        });
       } catch (err) {
         ctx.log.warn(`display_writeback failed chat=${chatId}: ${ctx.errMsg(err)}`);
       }
@@ -34093,6 +34169,8 @@ function settingsToWire(s) {
     submodelConnectionId: s.submodelConnectionId,
     submodelModelOverride: s.submodelModelOverride,
     submodelSamplers: s.submodelSamplers,
+    auxPrefillCompat: s.auxPrefillCompat,
+    submodelPrefillCompat: s.submodelPrefillCompat,
     auxDebugCaptureRequest: s.auxDebugCaptureRequest,
     auxDebugCaptureResponse: s.auxDebugCaptureResponse,
     legacyMediaFindings: s.legacyMediaFindings,
@@ -36454,24 +36532,42 @@ function makeSpindleHost(ctx) {
         }
         const resolved = resolution.value;
         const effectiveModel = req.model || resolved.model || "";
-        const parameters = { ...req.parameters ?? {} };
-        if (effectiveModel)
-          parameters.model = effectiveModel;
         const provider = req.provider || resolved.provider;
-        const input = {
+        const parameters = filterSamplerParamsForProvider({ ...req.parameters ?? {}, ...effectiveModel ? { model: effectiveModel } : {} }, provider);
+        const messages = req.messages.map((m) => ({
+          role: m.role === "sys" ? "system" : m.role === "bot" || m.role === "char" ? "assistant" : m.role === "system" || m.role === "user" || m.role === "assistant" ? m.role : "user",
+          content: m.content
+        }));
+        const toUserInstruction = (msgs) => {
+          const last = msgs[msgs.length - 1];
+          if (!last || last.role !== "assistant")
+            return [...msgs];
+          const instruction = `Begin your response with:
+${last.content}`;
+          const head = msgs.slice(0, -1);
+          const prev = head[head.length - 1];
+          if (prev && prev.role === "user") {
+            return [
+              ...head.slice(0, -1),
+              { role: "user", content: `${prev.content}
+
+${instruction}` }
+            ];
+          }
+          return [...head, { role: "user", content: instruction }];
+        };
+        const buildInput = (msgs) => ({
           type: "raw",
-          messages: req.messages.map((m) => ({
-            role: m.role === "sys" ? "system" : m.role === "bot" || m.role === "char" ? "assistant" : m.role === "system" || m.role === "user" || m.role === "assistant" ? m.role : "user",
-            content: m.content
-          })),
+          messages: msgs,
           connection_id: resolved.id,
           ...provider ? { provider } : {},
           ...effectiveModel ? { model: effectiveModel } : {},
           ...Object.keys(parameters).length > 0 ? { parameters } : {},
           ...uid !== undefined ? { userId: uid } : {}
-        };
-        log7.info(`dispatching connection_id=${resolved.id.slice(0, 8)}\u2026 ` + `model="${effectiveModel || "<connection-default>"}" ` + `provider="${provider || "<connection-default>"}" ` + `msgs=${req.messages.length}`);
-        const result = await generateApi.raw(input);
+        });
+        log7.info(`dispatching connection_id=${resolved.id.slice(0, 8)}\u2026 ` + `model="${effectiveModel || "<connection-default>"}" ` + `provider="${provider || "<connection-default>"}" ` + `msgs=${messages.length} params=[${Object.keys(parameters).join(",")}]`);
+        const finalMessages = req.prefillCompat ? toUserInstruction(messages) : messages;
+        const result = await generateApi.raw(buildInput(finalMessages));
         const r = result;
         return { content: typeof r?.content === "string" ? r.content : "" };
       },
@@ -37493,6 +37589,8 @@ function buildDispatchSeams(args) {
     submodelConnectionId: args.settings.submodelConnectionId,
     submodelModelOverride: args.settings.submodelModelOverride,
     submodelSamplers: args.settings.submodelSamplers,
+    auxPrefillCompat: args.settings.auxPrefillCompat,
+    submodelPrefillCompat: args.settings.submodelPrefillCompat,
     resolveTemplate: args.resolveTemplate
   };
   if (args.auxDebugCapture)
@@ -37558,7 +37656,6 @@ function createTriggerDispatcher(deps) {
       }, binding, (err, name) => {
         const msg = err instanceof Error ? err.message : String(err);
         log8.error(`trigger "${name}" failed on ${binding}: ${msg}`);
-        toastFor(userId, "error", `lumirealm: ${name},${msg}`, { title: "lumirealm trigger error" });
       });
     });
     if (binding === "output") {
@@ -37655,7 +37752,8 @@ function createTriggerDispatcher(deps) {
         });
         const runtime2 = await makeRisuTriggerRuntime(api, { characterId }, scriptNS, {
           ...seams,
-          characterId
+          characterId,
+          lowLevelAccess: Boolean(trigger.lowLevelAccess)
         });
         log8.info(`dispatchManualTrigger: invoking Lua entry=${triggerName} args=[${effectiveTriggerId}] chatId=${chatId}`);
         await runtime2.runLua(luaCode, {
@@ -37687,7 +37785,7 @@ function createTriggerDispatcher(deps) {
             api,
             data: { characterId, manualName: triggerName },
             scriptNS,
-            opts: { characterId, binding: "manual", lowLevelAccess: false }
+            opts: { characterId, binding: "manual", lowLevelAccess: commentMatchedTriggers.some((t) => Boolean(t.lowLevelAccess)) }
           }, triggerName, (err, name) => {
             const msg = err instanceof Error ? err.message : String(err);
             log8.error(`dispatchManualTrigger: comment-matched trigger "${name}" threw: ${msg}`);
@@ -37743,7 +37841,8 @@ function createTriggerDispatcher(deps) {
         });
         const runtime2 = await makeRisuTriggerRuntime(api, { characterId }, scriptNS, {
           ...seams,
-          characterId
+          characterId,
+          lowLevelAccess: Boolean(trigger.lowLevelAccess)
         });
         log8.info(`dispatchButtonClick: invoking onButtonClick args=[${effectiveId}, ${btn}] chatId=${chatId}`);
         await runtime2.runLua(luaCode, {

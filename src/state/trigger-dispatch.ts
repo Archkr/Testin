@@ -85,6 +85,7 @@ interface LuaTrigger {
   effect: readonly { type: string; code?: string }[];
   type?: string;
   comment?: string;
+  lowLevelAccess?: boolean;
 }
 
 export function createTriggerDispatcher(deps: TriggerDispatcherDeps): TriggerDispatcher {
@@ -156,7 +157,6 @@ export function createTriggerDispatcher(deps: TriggerDispatcherDeps): TriggerDis
         (err, name) => {
           const msg = err instanceof Error ? err.message : String(err);
           log.error(`trigger "${name}" failed on ${binding}: ${msg}`);
-          toastFor(userId, 'error', `lumirealm: ${name},${msg}`, { title: 'lumirealm trigger error' });
         },
       );
     });
@@ -299,6 +299,7 @@ export function createTriggerDispatcher(deps: TriggerDispatcherDeps): TriggerDis
         const runtime = await makeRisuTriggerRuntime(api, { characterId }, scriptNS, {
           ...seams,
           characterId,
+          lowLevelAccess: Boolean(trigger.lowLevelAccess),
         });
         log.info(
           `dispatchManualTrigger: invoking Lua entry=${triggerName} args=[${effectiveTriggerId}] chatId=${chatId}`,
@@ -334,7 +335,7 @@ export function createTriggerDispatcher(deps: TriggerDispatcherDeps): TriggerDis
               api,
               data: { characterId, manualName: triggerName },
               scriptNS,
-              opts: { characterId, binding: 'manual', lowLevelAccess: false },
+              opts: { characterId, binding: 'manual', lowLevelAccess: commentMatchedTriggers.some((t) => Boolean(t.lowLevelAccess)) },
             },
             triggerName,
             (err, name) => {
@@ -405,6 +406,7 @@ export function createTriggerDispatcher(deps: TriggerDispatcherDeps): TriggerDis
         const runtime = await makeRisuTriggerRuntime(api, { characterId }, scriptNS, {
           ...seams,
           characterId,
+          lowLevelAccess: Boolean(trigger.lowLevelAccess),
         });
         log.info(
           `dispatchButtonClick: invoking onButtonClick args=[${effectiveId}, ${btn}] chatId=${chatId}`,

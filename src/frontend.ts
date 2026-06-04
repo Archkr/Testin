@@ -13,6 +13,7 @@ import {
   type DisplayResolutionMode,
 } from './display/snapshot.js';
 import { MSG_DEP_KEY } from './interpreter/evaluator/context.js';
+import { setWasmoonEnabled } from './interpreter/runtime.js';
 import { STYLES } from './ui/styles.js';
 import { createSidebar } from './ui/sidebar.js';
 import { createAuxDebugPanel } from './ui/aux-debug.js';
@@ -138,6 +139,14 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   };
   cleanups.push(() => {
     try { delete (window as unknown as Record<string, unknown>).__lumirealmDisplayMode; } catch { /* */ }
+  });
+  (window as unknown as { __lumirealmWasmoon?: (on?: boolean) => void }).__lumirealmWasmoon = (on?: boolean) => {
+    const enabled = on !== false;
+    setWasmoonEnabled(enabled);
+    flog.info(`wasmoon editDisplay engine ${enabled ? 'ENABLED (wasmoon)' : 'DISABLED (fengari fallback)'} — reopen the chat to apply`);
+  };
+  cleanups.push(() => {
+    try { delete (window as unknown as Record<string, unknown>).__lumirealmWasmoon; } catch { /* */ }
   });
 
   const originalFetch = window.fetch.bind(window);
@@ -564,6 +573,13 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       if (getDisplayResolutionMode() !== 'off') {
         const prev = getDisplaySnapshot(msg.snapshot.chatId);
         setDisplaySnapshot(msg.snapshot);
+        const cid = msg.snapshot.characterId;
+        let newlyOwned = false;
+        if (typeof cid === 'string' && !ownedCharacterIds.includes(cid)) {
+          ownedCharacterIds = [...ownedCharacterIds, cid];
+          publishOwnedCharacters();
+          newlyOwned = true;
+        }
         if (prev) {
           const changed = diffSnapshotVars(prev, msg.snapshot);
           const pc = prev.chat, nc = msg.snapshot.chat;
@@ -574,6 +590,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
           }
           if (changed.length > 0) ctx.display?.invalidate(changed);
         }
+        if (newlyOwned) ctx.display?.invalidate(['*']);
       }
       return;
     }
@@ -610,6 +627,10 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       const prevChatId = activeRisuChatId;
       activeRisuChatId = msg.chatId;
       setOwnedDisplayChat(msg.chatId, msg.feDisplay === true);
+      if (typeof msg.characterId === 'string' && !ownedCharacterIds.includes(msg.characterId)) {
+        ownedCharacterIds = [...ownedCharacterIds, msg.characterId];
+        publishOwnedCharacters();
+      }
       sendDisplayAuthority(msg.chatId);
       if (activeRisuChatId !== prevChatId) {
         if (sidebar) sidebar.setActiveChatId(activeRisuChatId);

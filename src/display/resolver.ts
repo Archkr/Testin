@@ -28,6 +28,11 @@ import {
 import { runEditDisplayChain, runEditDisplayAtActions } from './lua-runner.js';
 const log = makeSafeLogger('display-resolver');
 
+const DBG_MARKS = ['🔄', '<CombatChoice', '<ActivityChoice', '<Panel>', '■■■', 'intro', '★■', '🦶'];
+function dbgMarks(s: string): string {
+  return DBG_MARKS.filter((m) => s.includes(m)).join(',');
+}
+
 export type DisplayWritebackSink = (chatId: string, vars: Record<string, string>) => void;
 
 const SNAPSHOT_WAIT_MS = 4000;
@@ -267,6 +272,8 @@ export function createDisplayResolver(writeback?: DisplayWritebackSink): Spindle
         return null;
       }
 
+      log.info(`resolveBody.dbg chat=${chatId} msg=${args.context.messageId ?? '?'} lua=${snap.luaTriggers.length} at=${snap.atActions.length} inMarks=[${dbgMarks(args.content)}] outMarks=[${dbgMarks(feContent)}] cacheable=${!recorder.volatile} touched=${recorder.touched.size}`);
+
       const mode = getDisplayResolutionMode();
       if (mode === 'shadow') {
         const beContent = await fetchBackendBody(
@@ -347,6 +354,8 @@ export function createDisplayResolver(writeback?: DisplayWritebackSink): Spindle
         log.warn(`applyScripts: threw chat=${chatId}: ${String(err)}. Deferring to backend.`);
         return null;
       }
+
+      log.info(`applyScripts.dbg chat=${chatId} msg=${args.context.messageId ?? '?'} placement=${args.context.isUser ? 'user' : 'ai'} rules=${args.scripts.length} inMarks=[${dbgMarks(args.content)}] outMarks=[${dbgMarks(feContent)}] cacheable=${!recorder.volatile}`);
 
       const mode = getDisplayResolutionMode();
       if (mode === 'shadow') {

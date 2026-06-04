@@ -34,7 +34,7 @@ export async function runEditDisplayChain(
     characterName: snap.charName,
     userName: snap.userName,
   };
-  const index = typeof context.messageIndex === 'number' ? context.messageIndex : snap.chat.lastMessageId;
+  const index = risuChatIndex(context, snap);
   return runListenEditChain<string>(
     snap.luaTriggers,
     'editDisplay',

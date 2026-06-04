@@ -34,6 +34,9 @@ export interface RisuCompatSettings {
   /** `null` = use submodel connection's own model. */
   readonly submodelModelOverride: string | null;
   readonly submodelSamplers: AuxSamplerOverrides;
+  /** Fold an assistant-message prefill into a user instruction for models that reject prefill. */
+  readonly auxPrefillCompat: boolean;
+  readonly submodelPrefillCompat: boolean;
   readonly auxDebugCaptureRequest: boolean;
   readonly auxDebugCaptureResponse: boolean;
   readonly legacyMediaFindings: boolean;
@@ -49,6 +52,8 @@ export const DEFAULT_SETTINGS: RisuCompatSettings = {
   submodelConnectionId: null,
   submodelModelOverride: null,
   submodelSamplers: DEFAULT_SAMPLERS,
+  auxPrefillCompat: false,
+  submodelPrefillCompat: false,
   auxDebugCaptureRequest: false,
   auxDebugCaptureResponse: false,
   legacyMediaFindings: false,
@@ -129,6 +134,12 @@ export function normalizeSettingsPatch(patch: unknown): Partial<RisuCompatSettin
   if ("submodelSamplers" in p) {
     out.submodelSamplers = normalizeSamplers(p.submodelSamplers);
   }
+  if ("auxPrefillCompat" in p) {
+    out.auxPrefillCompat = !!p.auxPrefillCompat;
+  }
+  if ("submodelPrefillCompat" in p) {
+    out.submodelPrefillCompat = !!p.submodelPrefillCompat;
+  }
   if ("auxDebugCaptureRequest" in p) {
     out.auxDebugCaptureRequest = !!p.auxDebugCaptureRequest;
   }
@@ -165,6 +176,8 @@ export async function loadSettings(
       submodelConnectionId?: unknown;
       submodelModelOverride?: unknown;
       submodelSamplers?: unknown;
+      auxPrefillCompat?: unknown;
+      submodelPrefillCompat?: unknown;
       auxDebugCaptureRequest?: unknown;
       auxDebugCaptureResponse?: unknown;
       legacyMediaFindings?: unknown;
@@ -186,6 +199,8 @@ export async function loadSettings(
       submodelSamplers: stored.submodelSamplers !== undefined
         ? normalizeSamplers(stored.submodelSamplers)
         : DEFAULT_SAMPLERS,
+      auxPrefillCompat: stored.auxPrefillCompat === true,
+      submodelPrefillCompat: stored.submodelPrefillCompat === true,
       auxDebugCaptureRequest: stored.auxDebugCaptureRequest === true,
       auxDebugCaptureResponse: stored.auxDebugCaptureResponse === true,
       legacyMediaFindings: stored.legacyMediaFindings === true,

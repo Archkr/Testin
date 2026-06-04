@@ -13,6 +13,7 @@ import type {
 import { expectChatChange } from '../state/own-chat-change.js';
 import { expectCharacterEdit } from '../state/own-character-edit.js';
 import { makeSafeLogger } from '../util/safe-log.js';
+import { filterSamplerParamsForProvider } from '../util/samplers-wire.js';
 import { awaitAlertDismissal } from './alert-bridge.js';
 import { awaitPickResolution } from './pick-bridge.js';
 
@@ -381,10 +382,45 @@ export function makeSpindleHost(ctx: SpindleHostCtx): HostApi {
         }
         const resolved = resolution.value;
         const effectiveModel = req.model || resolved.model || '';
-        const parameters: Record<string, unknown> = { ...(req.parameters ?? {}) };
-        if (effectiveModel) parameters.model = effectiveModel;
         const provider = req.provider || resolved.provider;
-        const input: {
+        const parameters = filterSamplerParamsForProvider(
+          { ...(req.parameters ?? {}), ...(effectiveModel ? { model: effectiveModel } : {}) },
+          provider,
+        );
+        // Coerce Risu role aliases ('sys' / 'bot' / 'char') to OpenAI shape.
+        const messages = req.messages.map((m) => ({
+          role:
+            m.role === 'sys' ? 'system'
+            : m.role === 'bot' || m.role === 'char' ? 'assistant'
+            : (m.role === 'system' || m.role === 'user' || m.role === 'assistant') ? m.role
+            : 'user',
+          content: m.content,
+        }));
+        // Prefill-compatibility (opt-in per channel via Settings → Aux/Sub):
+        // models that reject an assistant-ending conversation get the trailing
+        // assistant prefill folded into a user instruction that preserves the
+        // steer ("Begin your response with: …").
+        const toUserInstruction = (
+          msgs: readonly { role: string; content: string }[],
+        ): { role: string; content: string }[] => {
+          const last = msgs[msgs.length - 1];
+          if (!last || last.role !== 'assistant') return [...msgs];
+          const instruction = `Begin your response with:\n${last.content}`;
+          const head = msgs.slice(0, -1);
+          const prev = head[head.length - 1];
+          // Avoid two consecutive user messages (Anthropic rejects them):
+          // fold the instruction into the preceding user turn when present.
+          if (prev && prev.role === 'user') {
+            return [
+              ...head.slice(0, -1),
+              { role: 'user', content: `${prev.content}\n\n${instruction}` },
+            ];
+          }
+          return [...head, { role: 'user', content: instruction }];
+        };
+        const buildInput = (
+          msgs: readonly { role: string; content: string }[],
+        ): {
           type: 'raw' | 'quiet' | 'batch';
           messages: readonly { role: string; content: string }[];
           connection_id: string;
@@ -392,31 +428,23 @@ export function makeSpindleHost(ctx: SpindleHostCtx): HostApi {
           model?: string;
           parameters?: Record<string, unknown>;
           userId?: string;
-        } = {
+        } => ({
           type: 'raw',
-          // Coerce Risu role aliases ('sys' / 'bot' / 'char') to OpenAI shape.
-          // Coerce Risu role aliases to OpenAI shape.
-          messages: req.messages.map((m) => ({
-            role:
-              m.role === 'sys' ? 'system'
-              : m.role === 'bot' || m.role === 'char' ? 'assistant'
-              : (m.role === 'system' || m.role === 'user' || m.role === 'assistant') ? m.role
-              : 'user',
-            content: m.content,
-          })),
+          messages: msgs,
           connection_id: resolved.id,
           ...(provider ? { provider } : {}),
           ...(effectiveModel ? { model: effectiveModel } : {}),
           ...(Object.keys(parameters).length > 0 ? { parameters } : {}),
           ...(uid !== undefined ? { userId: uid } : {}),
-        };
+        });
         log.info(
           `dispatching connection_id=${resolved.id.slice(0, 8)}… ` +
             `model="${effectiveModel || '<connection-default>'}" ` +
             `provider="${provider || '<connection-default>'}" ` +
-            `msgs=${req.messages.length}`,
+            `msgs=${messages.length} params=[${Object.keys(parameters).join(',')}]`,
         );
-        const result = await generateApi.raw!(input);
+        const finalMessages = req.prefillCompat ? toUserInstruction(messages) : messages;
+        const result = await generateApi.raw!(buildInput(finalMessages));
         const r = result as { content?: unknown } | undefined;
         return { content: typeof r?.content === 'string' ? r.content : '' };
       },

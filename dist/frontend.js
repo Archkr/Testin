@@ -23763,11 +23763,13 @@ async function runLLM(api, routing, value, model, _streaming) {
   const connId = useSubmodel ? routing.submodelConnectionId : null;
   const modelOverride = useSubmodel ? routing.submodelModelOverride : null;
   const paramsWire = useSubmodel ? routing.submodelParamsWire : null;
+  const prefillCompat = useSubmodel ? routing.submodelPrefillCompat : routing.auxPrefillCompat;
   const req = {
     messages: [{ role: "user", content: toStr(value) }],
     ...connId ? { connectionId: connId } : {},
     ...modelOverride ? { model: modelOverride } : {},
-    ...paramsWire ? { parameters: paramsWire } : {}
+    ...paramsWire ? { parameters: paramsWire } : {},
+    ...prefillCompat ? { prefillCompat: true } : {}
   };
   _log2.info(`channel=${model} useSubmodel=${useSubmodel} ` + `submodelConn=${routing.submodelConnectionId ?? "<inherit-aux>"} ` + `submodelModel=${routing.submodelModelOverride ?? "<connection>"}`);
   const captureChannel = useSubmodel ? "submodel" : null;
@@ -24110,7 +24112,7 @@ var SAMPLER_KEYS = [
 var SAMPLER_WIRE_KEYS = {
   temperature: "temperature",
   maxTokens: "max_tokens",
-  contextSize: "context_size",
+  contextSize: "max_context_length",
   topP: "top_p",
   minP: "min_p",
   topK: "top_k",
@@ -24129,6 +24131,14 @@ function samplersToWire(samplers) {
   }
   return Object.keys(out).length === 0 ? null : out;
 }
+var ALL_SAMPLER_WIRE_KEYS = new Set(Object.values(SAMPLER_WIRE_KEYS));
+var BASE_SAMPLER_KEYS = new Set([
+  "temperature",
+  "max_tokens",
+  "max_context_length",
+  "top_p",
+  "top_k"
+]);
 
 // src/util/sanitizer-doc-shape.ts
 var DOC_BOUNDARY_RE = /<!doctype|<\/?(?:html|head|body|meta|title|base|link)\b/i;
@@ -24240,6 +24250,24 @@ function getRecentFlush(chatId) {
   return entry;
 }
 
+// src/state/chat-metadata-queue.ts
+var chains = new Map;
+function runChatMetadataExclusive(chatId, fn) {
+  const prev = chains.get(chatId) ?? Promise.resolve();
+  const run = prev.then(fn, fn);
+  const tail = run.then(() => {
+    return;
+  }, () => {
+    return;
+  });
+  chains.set(chatId, tail);
+  tail.then(() => {
+    if (chains.get(chatId) === tail)
+      chains.delete(chatId);
+  });
+  return run;
+}
+
 // src/interpreter/runtime/chat-state.ts
 var META_ROOT = "macro_variables";
 var META_SUB = "local";
@@ -24266,7 +24294,7 @@ async function loadVars(api, chatId) {
   }
 }
 async function saveVars(api, vars, chatId) {
-  try {
+  const write = async () => {
     const existing = await api.chat.getMetadata(META_ROOT);
     const base = existing && typeof existing === "object" ? { ...existing } : {};
     const bareLocal = {};
@@ -24278,6 +24306,12 @@ async function saveVars(api, vars, chatId) {
     await api.chat.setMetadata(META_ROOT, base);
     if (chatId)
       rememberRecentFlush(chatId, vars);
+  };
+  try {
+    if (chatId)
+      await runChatMetadataExclusive(chatId, write);
+    else
+      await write();
   } catch {}
 }
 
@@ -24445,6 +24479,10 @@ var _wasmoonExec = null;
 function setWasmoonExecutor(fn) {
   _wasmoonExec = fn;
 }
+var _wasmoonEnabled = true;
+function setWasmoonEnabled(b) {
+  _wasmoonEnabled = b;
+}
 var _cbsUnresolvedAlertFired = false;
 function warnCbsUnresolvedOnce(api) {
   _logCbs.warn("cbs(): no resolver wired, returning input verbatim");
@@ -24474,6 +24512,8 @@ async function makeRisuTriggerRuntime(api, data, scriptNs, opts = {}) {
   const capturedResolveTemplate = opts.resolveTemplate ?? dispatchCtx.resolveTemplate;
   const auxParamsWire = samplersToWire(auxSamplers);
   const submodelParamsWire = samplersToWire(submodelSamplers);
+  const auxPrefillCompat = Boolean(opts.auxPrefillCompat ?? dispatchCtx.auxPrefillCompat ?? false);
+  const submodelPrefillCompat = Boolean(opts.submodelPrefillCompat ?? dispatchCtx.submodelPrefillCompat ?? auxPrefillCompat);
   function notifyStateChanged(source) {
     if (!stateChanged) {
       _logStateChanged.info(`source=${source} → <no-callback> (no-op)`);
@@ -24704,6 +24744,8 @@ async function makeRisuTriggerRuntime(api, data, scriptNs, opts = {}) {
       submodelConnectionId,
       submodelModelOverride,
       submodelParamsWire,
+      submodelPrefillCompat,
+      auxPrefillCompat,
       ...auxDebugCapture ? { auxDebugCapture } : {}
     }, value, model, _streaming);
   }
@@ -24777,7 +24819,7 @@ async function makeRisuTriggerRuntime(api, data, scriptNs, opts = {}) {
     rverbose(`globals keys=${Object.keys(globals).length}: ${Object.keys(globals).slice(0, 20).join(",")}${Object.keys(globals).length > 20 ? "…" : ""}`);
     const wasmoonKey = typeof effective["wasmoonKey"] === "string" ? effective["wasmoonKey"] : null;
     try {
-      const result = wasmoonKey && _wasmoonExec ? await _wasmoonExec(codeStr, globals, { entry: String(effective["entry"]), args: effective["args"], wasmoonKey }) : await lua.execute(codeStr, globals, effective);
+      const result = wasmoonKey && _wasmoonExec && _wasmoonEnabled ? await _wasmoonExec(codeStr, globals, { entry: String(effective["entry"]), args: effective["args"], wasmoonKey }) : await lua.execute(codeStr, globals, effective);
       const preview = result === undefined ? "undefined" : String(JSON.stringify(result) ?? "").slice(0, 200);
       rlog(`DONE elapsed=${Date.now() - tStart}ms result_type=${typeof result} result_preview=${preview}`);
       if (result === false)
@@ -25028,7 +25070,7 @@ async function makeRisuTriggerRuntime(api, data, scriptNs, opts = {}) {
         const msgs = parseLuaPromptArg(promptStr);
         const tStart = Date.now();
         try {
-          const r = await api.llm.generate({ messages: msgs });
+          const r = await api.llm.generate({ messages: msgs, ...auxPrefillCompat ? { prefillCompat: true } : {} });
           const out = toStr(r && r.content);
           _logLLMMain.info(`msgs=${msgs.length} elapsed=${Date.now() - tStart}ms ` + `out_len=${out.length} chatId=${portalChatId ?? "<none>"}`);
           return JSON.stringify({ success: true, result: out });
@@ -25057,7 +25099,8 @@ async function makeRisuTriggerRuntime(api, data, scriptNs, opts = {}) {
           messages: msgs,
           ...auxConnectionId ? { connectionId: auxConnectionId } : {},
           ...auxModelOverride ? { model: auxModelOverride } : {},
-          ...auxParamsWire ? { parameters: auxParamsWire } : {}
+          ...auxParamsWire ? { parameters: auxParamsWire } : {},
+          ...auxPrefillCompat ? { prefillCompat: true } : {}
         };
         if (auxDebugCapture) {
           try {
@@ -25115,7 +25158,7 @@ async function makeRisuTriggerRuntime(api, data, scriptNs, opts = {}) {
         if (!api.llm?.generate) {
           throw new Error("risu-compat: lua.simpleLLM requires api.llm.generate");
         }
-        const r = await api.llm.generate({ messages: [{ role: "user", content: toStr(prompt2) }] });
+        const r = await api.llm.generate({ messages: [{ role: "user", content: toStr(prompt2) }], ...auxPrefillCompat ? { prefillCompat: true } : {} });
         return toStr(r && r.content);
       },
       hash: (_id, value) => {
@@ -25635,9 +25678,15 @@ function makeSnapshotHostApi(snap, onVarWrite) {
     const local = value && typeof value === "object" ? value.local : undefined;
     if (!local || typeof local !== "object")
       return;
+    const orig = snap.vars.local;
     const out = {};
-    for (const [k, v] of Object.entries(local))
-      out[k] = typeof v === "string" ? v : String(v);
+    for (const [k, v] of Object.entries(local)) {
+      const s = typeof v === "string" ? v : String(v);
+      if (orig[k] !== s)
+        out[k] = s;
+    }
+    if (Object.keys(out).length === 0)
+      return;
     onVarWrite(out);
   };
   const getMetadata = (key) => {
@@ -29116,7 +29165,7 @@ async function runEditDisplayChain(snap, content, context2, resolveTemplate, onV
     characterName: snap.charName,
     userName: snap.userName
   };
-  const index = typeof context2.messageIndex === "number" ? context2.messageIndex : snap.chat.lastMessageId;
+  const index = risuChatIndex(context2, snap);
   return runListenEditChain(snap.luaTriggers, "editDisplay", content, { index }, api, data, scriptNS, {
     chatId: snap.chatId,
     characterId: snap.characterId,
@@ -29139,6 +29188,10 @@ async function runEditDisplayAtActions(snap, content, context2) {
 
 // src/display/resolver.ts
 var log5 = makeSafeLogger("display-resolver");
+var DBG_MARKS = ["\uD83D\uDD04", "<CombatChoice", "<ActivityChoice", "<Panel>", "■■■", "intro", "★■", "\uD83E\uDDB6"];
+function dbgMarks(s) {
+  return DBG_MARKS.filter((m) => s.includes(m)).join(",");
+}
 var SNAPSHOT_WAIT_MS = 4000;
 async function getSnapshotOrWait(chatId) {
   const existing = getDisplaySnapshot(chatId);
@@ -29334,6 +29387,7 @@ function createDisplayResolver(writeback) {
         log5.warn(`resolveBody: threw chat=${chatId}: ${String(err)}. Deferring to backend.`);
         return null;
       }
+      log5.info(`resolveBody.dbg chat=${chatId} msg=${args.context.messageId ?? "?"} lua=${snap.luaTriggers.length} at=${snap.atActions.length} inMarks=[${dbgMarks(args.content)}] outMarks=[${dbgMarks(feContent)}] cacheable=${!recorder.volatile} touched=${recorder.touched.size}`);
       const mode2 = getDisplayResolutionMode();
       if (mode2 === "shadow") {
         const beContent = await fetchBackendBody(chatId, args.context.messageId, args.context.role, args.content);
@@ -29399,6 +29453,7 @@ function createDisplayResolver(writeback) {
         log5.warn(`applyScripts: threw chat=${chatId}: ${String(err)}. Deferring to backend.`);
         return null;
       }
+      log5.info(`applyScripts.dbg chat=${chatId} msg=${args.context.messageId ?? "?"} placement=${args.context.isUser ? "user" : "ai"} rules=${args.scripts.length} inMarks=[${dbgMarks(args.content)}] outMarks=[${dbgMarks(feContent)}] cacheable=${!recorder.volatile}`);
       const mode2 = getDisplayResolutionMode();
       if (mode2 === "shadow") {
         const beContent = await fetchBackendApply(args);
@@ -34981,6 +35036,23 @@ function mountSettingsPanel(opts) {
   samplersListEl.className = "rs-samplers-list";
   samplersSection.appendChild(samplersListEl);
   auxBody.appendChild(samplersSection);
+  const auxPrefillSection = document.createElement("div");
+  auxPrefillSection.className = "rs-subsection";
+  const auxPrefillRow = document.createElement("label");
+  auxPrefillRow.className = "rs-checkbox-row";
+  const auxPrefillCheck = document.createElement("input");
+  auxPrefillCheck.type = "checkbox";
+  auxPrefillCheck.className = "rs-checkbox";
+  auxPrefillCheck.id = "rs-aux-prefill";
+  auxPrefillRow.htmlFor = "rs-aux-prefill";
+  const auxPrefillText = document.createElement("span");
+  auxPrefillText.className = "rs-checkbox-label";
+  auxPrefillText.textContent = "Prefill compatibility";
+  auxPrefillText.title = `Converts the assistant message prefill to a user message prepended with "Begin your response with: <prefill>" to be compatible with models that don't support it.`;
+  auxPrefillRow.appendChild(auxPrefillCheck);
+  auxPrefillRow.appendChild(auxPrefillText);
+  auxPrefillSection.appendChild(auxPrefillRow);
+  auxBody.appendChild(auxPrefillSection);
   const subBody = document.createElement("section");
   subBody.className = "lr-settings-tab-body";
   const subIntro = document.createElement("p");
@@ -35055,6 +35127,23 @@ function mountSettingsPanel(opts) {
   submodelSamplersListEl.className = "rs-samplers-list";
   submodelSamplersSection.appendChild(submodelSamplersListEl);
   subBody.appendChild(submodelSamplersSection);
+  const submodelPrefillSection = document.createElement("div");
+  submodelPrefillSection.className = "rs-subsection";
+  const submodelPrefillRow = document.createElement("label");
+  submodelPrefillRow.className = "rs-checkbox-row";
+  const submodelPrefillCheck = document.createElement("input");
+  submodelPrefillCheck.type = "checkbox";
+  submodelPrefillCheck.className = "rs-checkbox";
+  submodelPrefillCheck.id = "rs-sub-prefill";
+  submodelPrefillRow.htmlFor = "rs-sub-prefill";
+  const submodelPrefillText = document.createElement("span");
+  submodelPrefillText.className = "rs-checkbox-label";
+  submodelPrefillText.textContent = "Prefill compatibility";
+  submodelPrefillText.title = `Converts the assistant message prefill to a user message prepended with "Begin your response with: <prefill>" to be compatible with models that don't support it.`;
+  submodelPrefillRow.appendChild(submodelPrefillCheck);
+  submodelPrefillRow.appendChild(submodelPrefillText);
+  submodelPrefillSection.appendChild(submodelPrefillRow);
+  subBody.appendChild(submodelPrefillSection);
   const debugBody = document.createElement("section");
   debugBody.className = "lr-settings-tab-body";
   const debugIntro = document.createElement("p");
@@ -35723,6 +35812,8 @@ ${willDeleteRows ? "Deleted rows cannot be recovered. " : ""}${willRetranslate ?
     status.classList.remove("rs-status-warn");
   }
   function renderDebugChecks() {
+    auxPrefillCheck.checked = settings?.auxPrefillCompat === true;
+    submodelPrefillCheck.checked = settings?.submodelPrefillCompat === true;
     reqCheck.checked = settings?.auxDebugCaptureRequest === true;
     resCheck.checked = settings?.auxDebugCaptureResponse === true;
   }
@@ -35830,6 +35921,14 @@ ${willDeleteRows ? "Deleted rows cannot be recovered. " : ""}${willRetranslate ?
       }
     });
   });
+  auxPrefillCheck.addEventListener("change", () => {
+    log6.info(`settings-tab: auxPrefillCompat=${auxPrefillCheck.checked}`);
+    sendToBackend({ type: "update_settings", patch: { auxPrefillCompat: auxPrefillCheck.checked } });
+  });
+  submodelPrefillCheck.addEventListener("change", () => {
+    log6.info(`settings-tab: submodelPrefillCompat=${submodelPrefillCheck.checked}`);
+    sendToBackend({ type: "update_settings", patch: { submodelPrefillCompat: submodelPrefillCheck.checked } });
+  });
   reqCheck.addEventListener("change", () => {
     log6.info(`settings-tab: auxDebugCaptureRequest=${reqCheck.checked}`);
     sendToBackend({
@@ -35864,6 +35963,8 @@ ${willDeleteRows ? "Deleted rows cannot be recovered. " : ""}${willRetranslate ?
         submodelConnectionId: msg.settings.submodelConnectionId,
         submodelModelOverride: msg.settings.submodelModelOverride,
         submodelSamplers: msg.settings.submodelSamplers,
+        auxPrefillCompat: msg.settings.auxPrefillCompat,
+        submodelPrefillCompat: msg.settings.submodelPrefillCompat,
         auxDebugCaptureRequest: msg.settings.auxDebugCaptureRequest,
         auxDebugCaptureResponse: msg.settings.auxDebugCaptureResponse,
         legacyMediaFindings: msg.settings.legacyMediaFindings
@@ -43807,6 +43908,16 @@ function setup(ctx) {
       delete window.__lumirealmDisplayMode;
     } catch {}
   });
+  window.__lumirealmWasmoon = (on) => {
+    const enabled = on !== false;
+    setWasmoonEnabled(enabled);
+    flog2.info(`wasmoon editDisplay engine ${enabled ? "ENABLED (wasmoon)" : "DISABLED (fengari fallback)"} — reopen the chat to apply`);
+  };
+  cleanups.push(() => {
+    try {
+      delete window.__lumirealmWasmoon;
+    } catch {}
+  });
   const originalFetch = window.fetch.bind(window);
   const taggedFetch = async (input, init2) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
@@ -44210,6 +44321,13 @@ function setup(ctx) {
       if (getDisplayResolutionMode() !== "off") {
         const prev = getDisplaySnapshot(msg.snapshot.chatId);
         setDisplaySnapshot(msg.snapshot);
+        const cid = msg.snapshot.characterId;
+        let newlyOwned = false;
+        if (typeof cid === "string" && !ownedCharacterIds.includes(cid)) {
+          ownedCharacterIds = [...ownedCharacterIds, cid];
+          publishOwnedCharacters();
+          newlyOwned = true;
+        }
         if (prev) {
           const changed = diffSnapshotVars(prev, msg.snapshot);
           const pc = prev.chat, nc = msg.snapshot.chat;
@@ -44219,6 +44337,8 @@ function setup(ctx) {
           if (changed.length > 0)
             ctx.display?.invalidate(changed);
         }
+        if (newlyOwned)
+          ctx.display?.invalidate(["*"]);
       }
       return;
     }
@@ -44256,6 +44376,10 @@ function setup(ctx) {
       const prevChatId = activeRisuChatId;
       activeRisuChatId = msg.chatId;
       setOwnedDisplayChat(msg.chatId, msg.feDisplay === true);
+      if (typeof msg.characterId === "string" && !ownedCharacterIds.includes(msg.characterId)) {
+        ownedCharacterIds = [...ownedCharacterIds, msg.characterId];
+        publishOwnedCharacters();
+      }
       sendDisplayAuthority(msg.chatId);
       if (activeRisuChatId !== prevChatId) {
         if (sidebar)

@@ -26,8 +26,13 @@ export function makeSnapshotHostApi(snap: DisplaySnapshot, onVarWrite?: DisplayV
       ? (value as { local?: unknown }).local
       : undefined);
     if (!local || typeof local !== 'object') return;
+    const orig = snap.vars.local;
     const out: Record<string, string> = {};
-    for (const [k, v] of Object.entries(local as Record<string, unknown>)) out[k] = typeof v === 'string' ? v : String(v);
+    for (const [k, v] of Object.entries(local as Record<string, unknown>)) {
+      const s = typeof v === 'string' ? v : String(v);
+      if (orig[k] !== s) out[k] = s;
+    }
+    if (Object.keys(out).length === 0) return;
     onVarWrite(out);
   };
   const getMetadata = (key: string): Promise<unknown> => {

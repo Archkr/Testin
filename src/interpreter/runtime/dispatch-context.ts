@@ -37,6 +37,9 @@ export interface DispatchContext {
     presencePenalty: number | null;
     repetitionPenalty: number | null;
   };
+  /** Fold an assistant-message prefill into a user instruction (per channel). */
+  auxPrefillCompat?: boolean;
+  submodelPrefillCompat?: boolean;
   auxDebugCapture?: (event: AuxDebugCaptureEvent) => void;
   /** Backs Lua `cbs(value)`. Routes through resolveReadonly. */
   resolveTemplate?: (text: string) => Promise<string>;
