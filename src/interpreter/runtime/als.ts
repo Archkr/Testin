@@ -1,17 +1,17 @@
 // Async-context-pinned alternatives to module-global mutable state, so
 // concurrent dispatches for different users do not clobber each other.
 
-import { AsyncLocalStorage } from 'node:async_hooks';
+import { createAls } from './als-compat.js';
 
-export const userIdAls = new AsyncLocalStorage<string>();
+export const userIdAls = createAls<string>();
 
 export function currentUserId(): string | null {
   return userIdAls.getStore() ?? null;
 }
 
-export const inheritedVarsAls = new AsyncLocalStorage<Record<string, string>>();
+export const inheritedVarsAls = createAls<Record<string, string>>();
 
-export const triggerDepthAls = new AsyncLocalStorage<number>();
+export const triggerDepthAls = createAls<number>();
 
 export const MAX_TRIGGER_DEPTH = 64;
 

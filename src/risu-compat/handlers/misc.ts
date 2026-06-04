@@ -1,7 +1,7 @@
 import type { MacroHandler } from "../../core/cbs/index.js";
 import { registry } from "../registry.js";
 import { dateTimeFormat, makeArray } from "../risu-helpers.js";
-import { base64ToBytes } from "../../util/base64.js";
+import { base64ToBytes, bytesToBase64 } from "../../util/base64.js";
 
 // Small utility macros (Risu parity).
 
@@ -27,7 +27,7 @@ register("tohex", (_c, a) => Number.parseInt(a[0] ?? "0").toString(16),
 register("xor", (_c, a) => {
   const bytes = new TextEncoder().encode(a[0] ?? "");
   for (let i = 0; i < bytes.length; i++) bytes[i]! ^= 0xFF;
-  return Buffer.from(bytes).toString("base64");
+  return bytesToBase64(bytes);
 }, "XOR-encrypts a string with 0xFF and base64-encodes.");
 
 register("xordecrypt", (_c, a) => {

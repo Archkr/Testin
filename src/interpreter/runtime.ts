@@ -43,6 +43,26 @@ const _logFlush           = makeSafeLogger('runtime.flush');
 const _logLuaPrint        = makeSafeLogger('runtime.lua');
 const _logCbs             = makeSafeLogger('runtime.cbs');
 
+// Concurrency gauge for editDisplay/trigger Lua. Each chat-open fires one
+// runLua per visible message; they all await on the single (browser) main
+// thread, so a call's wall-clock is dominated by how many peers are mid-flight,
+// NOT by its own fengari work. inFlight is the count entered-but-not-exited;
+// peak is the high-water mark since the last DONE log printed it.
+let _luaInFlight = 0;
+let _luaInFlightPeak = 0;
+
+// Wasmoon executor injected by the FE display path only (DI keeps wasmoon + its
+// inlined WASM out of the backend bundle, which never sets this). When present
+// and a runLua call carries a wasmoonKey, editDisplay runs on a persistent
+// near-native wasmoon engine instead of a fresh fengari VM per message.
+type WasmoonExec = (
+  code: string,
+  globals: Record<string, unknown>,
+  opts: { entry?: string; args?: readonly unknown[]; wasmoonKey: string },
+) => Promise<unknown>;
+let _wasmoonExec: WasmoonExec | null = null;
+export function setWasmoonExecutor(fn: WasmoonExec): void { _wasmoonExec = fn; }
+
 // Per-process alert gate so a Lua loop calling cbs() doesn't stack modals.
 let _cbsUnresolvedAlertFired = false;
 function warnCbsUnresolvedOnce(api: HostApi): void {
@@ -568,11 +588,22 @@ export async function makeRisuTriggerRuntime(
     const rerr = _logRunLua.error;
     const codeStr = toStr(code);
     const tStart = Date.now();
-    rlog(`START binding=${binding} code_len=${codeStr.length} characterId=${characterId ?? '<none>'} entry=${String(luaOpts?.['entry'] ?? '<default>')}`);
+    _luaInFlight += 1;
+    if (_luaInFlight > _luaInFlightPeak) _luaInFlightPeak = _luaInFlight;
+    const inFlightAtEntry = _luaInFlight;
+    rlog(`START binding=${binding} code_len=${codeStr.length} characterId=${characterId ?? '<none>'} entry=${String(luaOpts?.['entry'] ?? '<default>')} inFlight=${inFlightAtEntry}`);
     rverbose(`START ctx varsCache_keys=${Object.keys(varsCache).length} messagesCache_count=${messagesCache.length} lorebook_entries=${lorebook.entries.length}`);
     rverbose(`luaOpts=${JSON.stringify(luaOpts ?? {})}`);
+    // requireMs is the wall-clock of `await require` — a cached synchronous
+    // return, so any non-trivial value here is event-loop time spent running
+    // OTHER concurrent runLua calls' synchronous fengari work (contention),
+    // NOT module loading. This is the number that exposes the VM-per-message
+    // contention behind the uniform ~2.3s/call on the FE.
+    const tReq = Date.now();
     const lua = await scriptNs.require('risu-compat-lua') as { execute?: (code: string, globals: unknown, opts: unknown) => Promise<unknown> } | null;
+    const requireMs = Date.now() - tReq;
     if (!lua || typeof lua.execute !== 'function') {
+      _luaInFlight -= 1;
       rerr(`risu-compat-lua bridge missing/invalid: require returned ${lua === null ? 'null' : typeof lua}`);
       return unsupported('runLua', 'risu-compat-lua bridge failed to load exports.execute');
     }
@@ -586,15 +617,25 @@ export async function makeRisuTriggerRuntime(
     rverbose(`calling lua.execute entry=${String(effective['entry'])} args=${JSON.stringify(effective['args'])}`);
     const globals = makeRisuLuaGlobals();
     rverbose(`globals keys=${Object.keys(globals).length}: ${Object.keys(globals).slice(0, 20).join(',')}${Object.keys(globals).length > 20 ? '…' : ''}`);
+    const wasmoonKey = typeof effective['wasmoonKey'] === 'string' ? effective['wasmoonKey'] as string : null;
     try {
-      const result = await lua.execute(codeStr, globals, effective);
+      const tExec = Date.now();
+      const result = (wasmoonKey && _wasmoonExec)
+        ? await _wasmoonExec(codeStr, globals, { entry: String(effective['entry']), args: effective['args'] as readonly unknown[], wasmoonKey })
+        : await lua.execute(codeStr, globals, effective);
+      const execMs = Date.now() - tExec;
       const preview = result === undefined ? 'undefined' : String(JSON.stringify(result) ?? '').slice(0, 200);
-      rlog(`DONE elapsed=${Date.now() - tStart}ms result_type=${typeof result} result_preview=${preview}`);
+      // total = requireWait (contention) + execute (real fengari). When
+      // total >> execMs, the cost is contention, not Lua: the fix is to stop
+      // creating a fresh VM per message, not to optimise fengari.
+      rlog(`DONE elapsed=${Date.now() - tStart}ms requireMs=${requireMs} execMs=${execMs} inFlight=${inFlightAtEntry} peak=${_luaInFlightPeak} result_type=${typeof result} result_preview=${preview}`);
       if (result === false) stopSending = true;
       return result;
     } catch (err) {
-      rerr(`THREW after ${Date.now() - tStart}ms: ${(err as Error).message}`);
+      rerr(`THREW after ${Date.now() - tStart}ms requireMs=${requireMs}: ${(err as Error).message}`);
       throw err;
+    } finally {
+      _luaInFlight -= 1;
     }
   }
 

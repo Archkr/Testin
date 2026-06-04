@@ -4,6 +4,7 @@ import type {
   RealmFrontendToBackend,
   RealmBackendToFrontend,
 } from '../realm/messages.js';
+import type { DisplaySnapshot } from '../display/snapshot.js';
 
 /** One-entry-per-imported-card summary. Backend composes from `StoredRisuCard`
  *  + `spindle.characters.get` name lookup. UI renders directly. */
@@ -112,6 +113,8 @@ export interface PendingRegexScriptMsg {
 /** Frontend → Backend. */
 export type FrontendToBackend =
   | { type: 'get_cards' }
+  | { type: 'display_writeback'; chatId: string; vars: Record<string, string> }
+  | { type: 'display_authority'; chatId: string; authoritative: boolean }
   // Large cards exceed ~1MB WS frame limits; chunked upload avoids close 1006.
   // Send init → N chunks → commit.
   | {
@@ -493,9 +496,19 @@ export type BackendToFrontend =
       /** Character owning the active chat (lumirealm characters only). `null`
        *  when chatId is null OR the chat belongs to a non-lumirealm character. */
       characterId?: string | null;
+      /** True when LumiRealm owns display resolution for this chat in the browser
+       *  (FE-display feature active). The host must not resolve it itself. */
+      feDisplay?: boolean;
     }
   // Pushed on every state-tick. `defaults` is character-level `defaultVariables`
   // (Risu's `getChatVar` fallback when key unset).
+  // Full display-resolution snapshot for the FE engine (P2). Pushed at chat-open
+  // and on state-tick events. Carries everything runPipeline needs minus the
+  // per-message template and dynamic chat_index/role.
+  | {
+      type: 'display_snapshot';
+      snapshot: DisplaySnapshot;
+    }
   // `seq` is monotonic per-chat; pushes only when snapshot changes (or on explicit request).
   | {
       type: 'set_variables';

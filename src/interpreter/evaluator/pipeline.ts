@@ -3,6 +3,7 @@ import { evaluate } from "./scanner.js";
 import {
   buildEvaluatorContext,
   type BuildEvaluatorCtxInput,
+  type VarReadRecorder,
 } from "./context.js";
 
 export type PipelinePhase = "commit" | "display";
@@ -15,11 +16,16 @@ export interface RunPipelineInput extends Omit<BuildEvaluatorCtxInput, "commit">
   readonly wrapIslands?: boolean;
 }
 
-export function runPipeline(input: RunPipelineInput): string {
+export interface RunPipelineOptions {
+  readonly recorder?: VarReadRecorder;
+}
+
+export function runPipeline(input: RunPipelineInput, opts?: RunPipelineOptions): string {
   const commit = input.phase === "commit";
 
   const ctx = buildEvaluatorContext({
     chatId: input.chatId,
+    ...(opts?.recorder ? { recorder: opts.recorder } : {}),
     ...(input.userId !== undefined ? { userId: input.userId } : {}),
     ...(input.characterId !== undefined ? { characterId: input.characterId } : {}),
     userName: input.userName,

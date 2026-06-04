@@ -55,6 +55,7 @@ export interface CreateLumiInterceptorsDeps {
   readonly activeCardByChat: Map<string, ActiveCard>;
   readonly lastActiveChatByUser: Map<string, string>;
   readonly captureUserId: (userId: string | undefined, where: string) => void;
+  readonly isFeDisplayAuthoritative: (chatId: string) => boolean;
   readonly ensureActiveCardForChat: (
     chatId: string,
     characterId: string | null,
@@ -406,6 +407,12 @@ export function createLumiInterceptors(deps: CreateLumiInterceptorsDeps): LumiIn
         }
 
         if (ctx.origin === 'render') {
+          if (deps.isFeDisplayAuthoritative(ctx.chatId)) {
+            log.trace(
+              `messageContentProcessor.exit #${seq} path=fe-owned-passthrough chat=${ctx.chatId} msg=${ctx.messageId ?? '<new>'} total=${Date.now() - tStart}ms (FE owns display; backend skips render-MCP)`,
+            );
+            return;
+          }
           const triggers = active.card.risuPayload.triggers as ReadonlyArray<{
             effect?: ReadonlyArray<{ type?: string }>;
           }>;

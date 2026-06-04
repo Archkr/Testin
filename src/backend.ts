@@ -45,7 +45,7 @@ import {
   GENERATION_ENDED_BINDINGS,
   type ActiveCard,
 } from './interpreter/dispatch.js';
-import { type CompiledTriggerEntry } from './interpreter/dispatcher.js';
+import { type CompiledTriggerEntry, prepareTriggers } from './interpreter/dispatcher.js';
 import { parseDirectLorebook } from './payload/lorebook-direct-import.js';
 import { mapLoreBook } from './core/mappers/lorebook.js';
 import { registerAll as registerAllMacros, clearMacroVarOverlay } from './interpreter/macros.js';
@@ -88,6 +88,7 @@ import { createLorebookImporter } from './state/lorebook-import.js';
 import { createModuleUploader } from './state/module-upload.js';
 import { createOrphanOrchestrator } from './state/orphan-orchestrator.js';
 import type { Handler, HandlerCallCtx, HandlerRegistry } from './handlers/types.js';
+import { createDisplayWritebackHandlers } from './handlers/display-writeback.js';
 import { createScreenHandlers } from './handlers/screen.js';
 import { createConsentHandlers } from './handlers/consent.js';
 import { createConnectionsHandlers } from './handlers/connections.js';
@@ -126,6 +127,7 @@ import {
 } from './boot/misc.js';
 import { makePromptOrphanReviewIfAny } from './boot/orphan-review.js';
 import { createVariablesTogglesService } from './state/variables-toggles.js';
+import { assembleDisplaySnapshot } from './state/display-snapshot-assembly.js';
 import { createSettingsService } from './state/settings-service.js';
 import { makeCaptureUserId } from './boot/capture-user.js';
 import { createImportCardOrchestrator } from './boot/import-card.js';
@@ -808,7 +810,9 @@ function sendSetActiveChat(
   userId: string | undefined,
 ): void {
   try {
-    send({ type: 'set_active_chat', chatId: activeChatId, characterId: activeCharacterId }, userId);
+    const feEnv = (globalThis as { Bun?: { env?: Record<string, string | undefined> } }).Bun?.env?.LUMIREALM_FE_DISPLAY;
+    const feDisplay = activeChatId !== null && (feEnv === '1' || feEnv === 'true');
+    send({ type: 'set_active_chat', chatId: activeChatId, characterId: activeCharacterId, feDisplay }, userId);
   } catch (err) {
     log.warn(`sendSetActiveChat: ${(err as Error).message}`);
   }
@@ -937,6 +941,11 @@ const applySvgRasterIndex = createApplySvgRasterIndex({
 
 const TRANSLATE_TARGET_LANG = 'en';
 
+// Display-snapshot push attribution (probe #4): per-chat push count + last
+// content signature, so redundant identical assemblies are visible in the log.
+const _displaySnapshotSig = new Map<string, string>();
+const _displaySnapshotPushCount = new Map<string, number>();
+
 const variablesTogglesService = createVariablesTogglesService({
   translateLang: TRANSLATE_TARGET_LANG,
   variableState,
@@ -946,6 +955,48 @@ const variablesTogglesService = createVariablesTogglesService({
   ensureActiveCardForChat,
   refreshBgHtml,
   send,
+  pushDisplaySnapshot: (active, chatId, userId, vars) => {
+    const env = (globalThis as { Bun?: { env?: Record<string, string | undefined> } }).Bun?.env;
+    if (!env || (env.LUMIREALM_FE_DISPLAY !== '1' && env.LUMIREALM_FE_DISPLAY !== 'true')) return;
+    void assembleDisplaySnapshot(
+      {
+        modulesByNamespaceFromCard,
+        legacyMediaFindings: (uid) => getCachedSettingsSync(uid).legacyMediaFindings,
+        getCompiledLibraries: (a) => {
+          const cid = a.card.character_id;
+          let compiled = compiledByCharacter.get(cid);
+          if (!compiled) {
+            try {
+              compiled = prepareTriggers(a.card.risuPayload, cid);
+              compiledByCharacter.set(cid, compiled);
+            } catch {
+              compiled = [];
+            }
+          }
+          return compiled.filter((e) => e.type === 'library');
+        },
+      },
+      active,
+      chatId,
+      userId,
+      vars,
+    )
+      .then((snapshot) => {
+        // Attribution: how often we assemble+push, and whether the push is
+        // byte-for-byte redundant (same vars-signature + message shape). Each
+        // assembleDisplaySnapshot does ~4 host IPCs, so redundant pushes are
+        // pure waste AND re-trigger FE re-resolution. Logged, not suppressed.
+        const sig = `${snapshot.chat.messageCount}|${snapshot.chat.lastMessage.length}|`
+          + `${Object.keys(snapshot.vars.local).length}|${Object.keys(snapshot.vars.global).length}|${Object.keys(snapshot.vars.chat).length}`;
+        const prev = _displaySnapshotSig.get(chatId);
+        const n = (_displaySnapshotPushCount.get(chatId) ?? 0) + 1;
+        _displaySnapshotPushCount.set(chatId, n);
+        _displaySnapshotSig.set(chatId, sig);
+        log.info(`pushDisplaySnapshot: send #${n} chat=${chatId} sig=${sig}${prev === sig ? ' REDUNDANT(matches prior)' : ''}`);
+        send({ type: 'display_snapshot', snapshot }, userId);
+      })
+      .catch((err) => { log.warn(`pushDisplaySnapshot: assemble failed chat=${chatId}: ${errMsg(err)}`); });
+  },
   log,
   errMsg,
 });
@@ -971,10 +1022,17 @@ const runBinding = triggerDispatcher.runBinding;
 const dispatchManualTrigger = triggerDispatcher.dispatchManualTrigger;
 const dispatchButtonClick = triggerDispatcher.dispatchButtonClick;
 
+const FE_DISPLAY_ENV = (() => {
+  const v = (globalThis as { Bun?: { env?: Record<string, string | undefined> } }).Bun?.env?.LUMIREALM_FE_DISPLAY;
+  return v === '1' || v === 'true';
+})();
+const feDisplayShadowOptOut = new Set<string>();
+
 createLumiInterceptors({
   activeCardByChat,
   lastActiveChatByUser,
   captureUserId,
+  isFeDisplayAuthoritative: (chatId) => FE_DISPLAY_ENV && !feDisplayShadowOptOut.has(chatId),
   ensureActiveCardForChat,
   getCachedSettingsSync,
   modulesByNamespaceFromCard,
@@ -1622,6 +1680,11 @@ const handlerRegistry: HandlerRegistry = {
   ...logHandlers,
   ...orphanHandlers,
   ...repairHandlers,
+  ...createDisplayWritebackHandlers(),
+  display_authority: async (msg) => {
+    if (msg.authoritative) feDisplayShadowOptOut.delete(msg.chatId);
+    else feDisplayShadowOptOut.add(msg.chatId);
+  },
 };
 
 spindle.onFrontendMessage(userScoped(async (raw, userId) => {

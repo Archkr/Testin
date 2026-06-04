@@ -74,6 +74,11 @@ export function clearVarOverlay(chatId: string): void {
   varOverlays.delete(chatId);
 }
 
+export interface VarReadRecorder {
+  readonly touched: Set<string>;
+  volatile: boolean;
+}
+
 // Input shape for a single evaluator run. Mirrors the fields
 // buildRuntimeContext reads from MacroInvokeCtx.env plus direct identity +
 // messages slices pulled out of the extension's live ActiveCard state.
@@ -136,6 +141,7 @@ export interface BuildEvaluatorCtxInput {
   readonly positionPt?: Readonly<Record<string, string>>;
   /** Risu cbs() call context. See RisuRuntimeContext.cbsContext. */
   readonly cbsContext?: boolean;
+  readonly recorder?: VarReadRecorder;
 }
 
 function indexToCharacterAssets(
@@ -168,8 +174,22 @@ export function buildEvaluatorContext(input: BuildEvaluatorCtxInput): EvaluatorC
   const envChat = variables.chat ?? {};
   const defaults = input.scriptstateDefaults ?? {};
 
+  const recorder = input.recorder;
+  const markVolatile = (): void => { if (recorder) recorder.volatile = true; };
+  const recordRead = recorder
+    ? (scope: VarScope, name: string): void => {
+        if (scope === "temp") return;
+        if (scope === "global") recorder.touched.add(`global:${name}`);
+        else {
+          recorder.touched.add(`chat:${name}`);
+          recorder.touched.add(`local:${name}`);
+        }
+      }
+    : null;
+
   const vars = {
     get(scope: VarScope, name: string): string {
+      if (recordRead) recordRead(scope, name);
       if (scope === "temp") return tempOverlay.get(name) ?? "";
       if (overlay) {
         if (scope === "local" && overlay.local.has(name)) return overlay.local.get(name)!;
@@ -208,6 +228,7 @@ export function buildEvaluatorContext(input: BuildEvaluatorCtxInput): EvaluatorC
       this.set(scope, name, next);
     },
     has(scope: VarScope, name: string): boolean {
+      if (recordRead) recordRead(scope, name);
       if (scope === "temp") return tempOverlay.has(name);
       if (overlay) {
         if (scope === "local" && (overlay.local.has(name) || overlay.chat.has(name))) return true;
@@ -254,9 +275,10 @@ export function buildEvaluatorContext(input: BuildEvaluatorCtxInput): EvaluatorC
   }
   const effective: readonly Message[] = fullMessages ?? synthesized;
   const messages = {
-    all: () => effective,
-    last: () => effective[effective.length - 1] ?? null,
+    all: () => { markVolatile(); return effective; },
+    last: () => { markVolatile(); return effective[effective.length - 1] ?? null; },
     lastOf: (role: Message["role"]): Message | null => {
+      markVolatile();
       for (let i = effective.length - 1; i >= 0; i--) {
         const m = effective[i]!;
         if (m.role === role) return m;
@@ -264,6 +286,7 @@ export function buildEvaluatorContext(input: BuildEvaluatorCtxInput): EvaluatorC
       return null;
     },
     count: (role?: Message["role"]): number => {
+      markVolatile();
       if (role === undefined) {
         if (fullMessages) return effective.length;
         return chat.messageCount != null ? messageCount : synthesized.length;
@@ -316,13 +339,20 @@ export function buildEvaluatorContext(input: BuildEvaluatorCtxInput): EvaluatorC
         has: (name) => sessionFunctions.has(name),
       };
 
+  const rng = recorder
+    ? { random: () => { recorder.volatile = true; return Math.random(); } }
+    : { random: () => Math.random() };
+  const clock = recorder
+    ? { now: () => { recorder.volatile = true; return Date.now(); } }
+    : { now: () => Date.now() };
+
   const out: EvaluatorCtx = {
     vars,
     identity,
     character,
     messages,
-    rng: { random: () => Math.random() },
-    clock: { now: () => Date.now() },
+    rng,
+    clock,
     triggerId: null,
     role: input.currentMessageRoleOverride
       ? normalizeRoleToLumi(input.currentMessageRoleOverride)

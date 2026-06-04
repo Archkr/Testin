@@ -1,5 +1,18 @@
 import type { SpindleFrontendContext } from 'lumiverse-spindle-types';
 import type { BackendToFrontend, FrontendToBackend } from './types/messages.js';
+import { createDisplayResolver } from './display/resolver.js';
+import {
+  setDisplaySnapshot,
+  getDisplaySnapshot,
+  applyVarDelta,
+  diffSnapshotVars,
+  getDisplayResolutionMode,
+  setDisplayResolutionMode,
+  setOwnedDisplayChat,
+  ownsDisplayChat,
+  type DisplayResolutionMode,
+} from './display/snapshot.js';
+import { markOpen, markEvent } from './display/open-timeline.js';
 import { STYLES } from './ui/styles.js';
 import { createSidebar } from './ui/sidebar.js';
 import { createAuxDebugPanel } from './ui/aux-debug.js';
@@ -89,6 +102,49 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   hydrateLogStateFromLocalStorage();
   flog.info('frontend setup: begin');
   const cleanups: (() => void)[] = [];
+
+  const displayRegistered = Boolean(ctx.display);
+  if (ctx.display) {
+    cleanups.push(ctx.display.registerResolver(createDisplayResolver(
+      (chatId, vars) => ctx.sendToBackend({ type: 'display_writeback', chatId, vars }),
+    )));
+  }
+  // Synchronous ownership: publish the set of LumiRealm-owned character IDs to
+  // the host so it routes those chats to our resolver (never the backend
+  // display path) from the first render — no per-render ownership round-trip.
+  // The card list arrives at startup (cards_updated), before navigation.
+  let ownedCharacterIds: string[] = [];
+  const publishOwnedCharacters = (): void => {
+    if (!ctx.display) return;
+    ctx.display.setOwnedCharacters(getDisplayResolutionMode() === 'off' ? [] : ownedCharacterIds);
+  };
+  const sendDisplayAuthority = (chatId: string | null): void => {
+    if (!chatId) return;
+    ctx.sendToBackend({
+      type: 'display_authority',
+      chatId,
+      authoritative: getDisplayResolutionMode() === 'on' && ownsDisplayChat(chatId),
+    });
+  };
+  (window as unknown as { __lumirealmDisplayMode?: (m: string) => void }).__lumirealmDisplayMode = (m: string) => {
+    const mode: DisplayResolutionMode = m === 'shadow' || m === 'on' ? m : 'off';
+    setDisplayResolutionMode(mode);
+    publishOwnedCharacters();
+    sendDisplayAuthority(activeRisuChatId);
+    flog.info(`display resolution mode='${mode}' resolverRegistered=${displayRegistered} (backend push needs LUMIREALM_FE_DISPLAY=1 + chat reopen)`);
+    if (!displayRegistered) {
+      flog.warn('display resolver NOT registered: host ctx.display is undefined — the Lumiverse CORE frontend lacks the P0 display hook. Rebuild it (cd Lumiverse/frontend && bun run build) + restart Lumi + hard-refresh.');
+    }
+  };
+  cleanups.push(() => {
+    try { delete (window as unknown as Record<string, unknown>).__lumirealmDisplayMode; } catch { /* */ }
+  });
+  (window as unknown as { __lumirealmWasmoonProbe?: () => void }).__lumirealmWasmoonProbe = () => {
+    void import('./display/wasmoon-probe.js').then((m) => m.runWasmoonProbe()).catch((e) => flog.error(`wasmoon probe import failed: ${String(e)}`));
+  };
+  cleanups.push(() => {
+    try { delete (window as unknown as Record<string, unknown>).__lumirealmWasmoonProbe; } catch { /* */ }
+  });
 
   const originalFetch = window.fetch.bind(window);
   const taggedFetch = async (
@@ -510,6 +566,37 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       sendToBackend({ type: 'log_set_state', enabled: false, includeChatData: false });
       // Fall through so the Logs panel can show "Downloaded".
     }
+    if (msg.type === 'display_snapshot') {
+      if (getDisplayResolutionMode() !== 'off') {
+        markEvent(msg.snapshot.chatId, 'snapshot-arrived');
+        const prev = getDisplaySnapshot(msg.snapshot.chatId);
+        setDisplaySnapshot(msg.snapshot);
+        if (prev) {
+          const changed = diffSnapshotVars(prev, msg.snapshot);
+          if (changed.length > 0) ctx.display?.invalidate(changed);
+        }
+      }
+      return;
+    }
+    if (msg.type === 'set_variables') {
+      if (getDisplayResolutionMode() !== 'off' && typeof msg.characterId === 'string') {
+        const snap = getDisplaySnapshot(msg.chatId);
+        const changed: string[] = [];
+        for (const scope of ['local', 'global', 'chat'] as const) {
+          const incoming = msg.scopes[scope] ?? {};
+          const cur = { ...(snap?.vars[scope] ?? {}) };
+          for (const [k, v] of Object.entries(incoming)) {
+            if (cur[k] !== v) changed.push(`${scope}:${k}`);
+          }
+          for (const k of Object.keys(cur)) {
+            if (!(k in incoming)) changed.push(`${scope}:${k}`);
+          }
+          applyVarDelta(msg.chatId, scope, { ...incoming });
+        }
+        if (changed.length > 0) ctx.display?.invalidate(changed);
+      }
+      // fall through to sidebar broadcast
+    }
     if (msg.type === 'cards_updated') {
       if (!ready) {
         flog.info('handshake complete on first cards_updated');
@@ -517,10 +604,15 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         reportDims('cards_updated', /* force */ true);
       }
       ready = true;
+      ownedCharacterIds = msg.cards.map((c) => c.character_id);
+      publishOwnedCharacters();
     }
     if (msg.type === 'set_active_chat') {
       const prevChatId = activeRisuChatId;
       activeRisuChatId = msg.chatId;
+      setOwnedDisplayChat(msg.chatId, msg.feDisplay === true);
+      if (msg.chatId && msg.feDisplay === true) markOpen(msg.chatId);
+      sendDisplayAuthority(msg.chatId);
       if (activeRisuChatId !== prevChatId) {
         if (sidebar) sidebar.setActiveChatId(activeRisuChatId);
       }

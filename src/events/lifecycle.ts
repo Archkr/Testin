@@ -233,8 +233,9 @@ export function createLifecycleEventHandlers(deps: LifecycleEventHandlerDeps): L
           return;
         }
         if (!requiresRefresh) return;
-        await deps.refreshBgHtml(active, chatId, userId);
+        // Snapshot before bg-html (see SETTINGS_UPDATED activeChatId rationale).
         await deps.refreshVariables(active, chatId, userId, { force: true });
+        await deps.refreshBgHtml(active, chatId, userId);
       } catch (err) {
         deps.log.error(`scheduleChatChangedRefresh: chat=${chatId} threw: ${deps.errMsg(err)}`);
       }
@@ -314,9 +315,13 @@ export function createLifecycleEventHandlers(deps: LifecycleEventHandlerDeps): L
       deps.invalidateRenderMcpForChat(chatId);
       deps.invalidateMacroInterceptorForChat(chatId);
       void deps.refreshMessagesCache(chatId, userId);
-      await deps.refreshBgHtml(active, chatId, userId);
+      // Push the display snapshot FIRST: the FE resolver needs it to render and
+      // waits on it. bg-html is only styling and can take seconds — running it
+      // first (as it used to) queued the snapshot behind it, so the FE sat on a
+      // not-ready resolver for ~5s. Snapshot before bg-html.
       await deps.refreshVariables(active, chatId, userId, { force: true });
       await deps.refreshToggleDefinitions(active, chatId, userId, { force: true });
+      await deps.refreshBgHtml(active, chatId, userId);
       deps.log.info(`SETTINGS_UPDATED activeChatId: ALL DONE chatId=${chatId}`);
     },
 
