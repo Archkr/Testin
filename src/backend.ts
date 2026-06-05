@@ -379,13 +379,13 @@ const variableState = new VariableStateStore();
 const toggleState = new ToggleStateStore();
 
 function scheduleStateChangedRefresh(chatId: string, userId: string | undefined): void {
-  log.info(`scheduleStateChangedRefresh: scheduling for chat=${chatId}`);
+  log.debug(`scheduleStateChangedRefresh: scheduling for chat=${chatId}`);
   scheduleDebouncedRefresh(
     chatId,
     async () => {
       const active = activeCardByChat.get(chatId);
       if (!active) {
-        log.info(`scheduleStateChangedRefresh: skipped (no active card) chat=${chatId}`);
+        log.debug(`scheduleStateChangedRefresh: skipped (no active card) chat=${chatId}`);
         return;
       }
       const t0 = Date.now();
@@ -397,7 +397,7 @@ function scheduleStateChangedRefresh(chatId: string, userId: string | undefined)
       invalidateMacroInterceptorForChat(chatId);
       await refreshBgHtml(active, chatId, userId);
       await refreshVariables(active, chatId, userId);
-      log.info(`scheduleStateChangedRefresh: completed chat=${chatId} elapsed=${Date.now() - t0}ms`);
+      log.debug(`scheduleStateChangedRefresh: completed chat=${chatId} elapsed=${Date.now() - t0}ms`);
     },
     (err) => log.error(`scheduleStateChangedRefresh: refresh threw chat=${chatId}: ${errMsg(err)}`),
   );
@@ -733,7 +733,7 @@ async function ensureLogStateLoaded(userId: string): Promise<void> {
 }
 async function listCards(userId: string | undefined): Promise<readonly CardSummary[]> {
   const t0 = Date.now();
-  log.info(`listCards: start userId=${userId ?? '<none>'}`);
+  log.debug(`listCards: start userId=${userId ?? '<none>'}`);
   if (userId === undefined) {
     log.info(`listCards: userId not yet captured, returning empty`);
     return [];
@@ -754,7 +754,7 @@ async function listCards(userId: string | undefined): Promise<readonly CardSumma
     };
   });
   summaries.sort((a, b) => b.stored_at - a.stored_at);
-  log.info(`listCards: done count=${summaries.length} elapsed=${Date.now() - t0}ms`);
+  log.debug(`listCards: done count=${summaries.length} elapsed=${Date.now() - t0}ms`);
   return summaries;
 }
 

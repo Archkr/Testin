@@ -1,6 +1,10 @@
 // Wraps Chrome 138+ Built-in AI APIs (Translator + LanguageDetector).
 // Display-only, never persisted from here.
 
+import { makeFrontendLogger } from '../log/frontend-log.js';
+
+const flog = makeFrontendLogger('translator');
+
 export interface TranslatorHandle {
   translateOne(text: string, srcHint?: string): Promise<string>;
 }
@@ -40,8 +44,7 @@ export function subscribeFallbackDisabled(cb: (reason: string) => void): () => v
 function disableFallback(reason: string): void {
   if (fallbackDisabled) return;
   fallbackDisabled = true;
-  // eslint-disable-next-line no-console
-  console.warn(`[lumirealm] google-translate fallback disabled: ${reason}`);
+  flog.warn(`google-translate fallback disabled: ${reason}`);
   for (const cb of fallbackDisabledSubscribers) {
     try { cb(reason); } catch { /* swallow */ }
   }
@@ -93,19 +96,16 @@ async function getTranslatorForPair(
     try {
       if (ctor.availability) {
         const avail = await ctor.availability({ sourceLanguage: src, targetLanguage: tgt });
-        // eslint-disable-next-line no-console
-        console.info(`[lumirealm] translator ${src}->${tgt} availability=${avail}`);
+        flog.debug(`translator ${src}->${tgt} availability=${avail}`);
         // 'downloadable' or 'downloading' need a user gesture to trigger
         // create(), we're called from paint code so let the fallback handle.
         if (avail !== 'available') return null;
       }
       const inst = await ctor.create({ sourceLanguage: src, targetLanguage: tgt });
-      // eslint-disable-next-line no-console
-      console.info(`[lumirealm] translator ${src}->${tgt} created`);
+      flog.debug(`translator ${src}->${tgt} created`);
       return inst;
     } catch (err) {
-      // eslint-disable-next-line no-console
-      console.warn(`[lumirealm] translator ${src}->${tgt} create failed:`, err);
+      flog.warn(`translator ${src}->${tgt} create failed:`, err);
       return null;
     }
   })();
@@ -131,8 +131,7 @@ async function googleTranslateFallback(text: string, src: string): Promise<strin
   try {
     res = await fetch(url);
   } catch (err) {
-    // eslint-disable-next-line no-console
-    console.warn('[lumirealm] google-translate fetch failed:', err);
+    flog.warn('google-translate fetch failed:', err);
     return null;
   }
   if (res.status === 429) {
@@ -140,8 +139,7 @@ async function googleTranslateFallback(text: string, src: string): Promise<strin
     return null;
   }
   if (!res.ok) {
-    // eslint-disable-next-line no-console
-    console.warn(`[lumirealm] google-translate http ${res.status}`);
+    flog.warn(`google-translate http ${res.status}`);
     return null;
   }
   let data: unknown;
@@ -163,8 +161,7 @@ export function getTranslator(): TranslatorHandle | null {
   if (!haveLocal && fallbackDisabled) {
     if (!unavailableLogged) {
       unavailableLogged = true;
-      // eslint-disable-next-line no-console
-      console.info('[lumirealm] browser Translator API unavailable and fallback disabled');
+      flog.debug('browser Translator API unavailable and fallback disabled');
     }
     return null;
   }

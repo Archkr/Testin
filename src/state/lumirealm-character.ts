@@ -19,6 +19,7 @@ import { makeSafeLogger } from '../util/safe-log.js';
 
 const logger = makeSafeLogger('lumirealm:character');
 const logInfo = (msg: string): void => logger.info(msg);
+const logDebug = (msg: string): void => logger.debug(msg);
 const logWarn = (msg: string): void => logger.warn(msg);
 const logError = (msg: string): void => logger.error(msg);
 
@@ -223,7 +224,7 @@ export async function listLumirealmCharacters(
       break;
     }
   }
-  logInfo(
+  logDebug(
     `listLumirealmCharacters: hits=${out.length} pages=${pages} ` +
     `elapsed=${Date.now() - t0}ms`,
   );

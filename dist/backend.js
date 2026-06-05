@@ -26559,6 +26559,7 @@ function consumeOwnCharacterEdit(characterId) {
 // src/state/lumirealm-character.ts
 var logger2 = makeSafeLogger("lumirealm:character");
 var logInfo2 = (msg) => logger2.info(msg);
+var logDebug = (msg) => logger2.debug(msg);
 var logWarn2 = (msg) => logger2.warn(msg);
 var logError2 = (msg) => logger2.error(msg);
 async function readLumirealm(api, characterId, userId) {
@@ -26655,7 +26656,7 @@ async function listLumirealmCharacters(api, userId, opts) {
       break;
     }
   }
-  logInfo2(`listLumirealmCharacters: hits=${out.length} pages=${pages} ` + `elapsed=${Date.now() - t0}ms`);
+  logDebug(`listLumirealmCharacters: hits=${out.length} pages=${pages} ` + `elapsed=${Date.now() - t0}ms`);
   return out;
 }
 var SYNTHETIC_RISU_SPEC_VERSION = "";
@@ -34121,7 +34122,7 @@ function createConnectionsHandlers(deps) {
   return {
     request_connections_list: async (_msg, ctx) => {
       const connections = await deps.listConnectionsForUser(ctx.userId);
-      deps.log.info(`request_connections_list: returning ${connections.length} connection(s) for user=${ctx.userId}`);
+      deps.log.debug(`request_connections_list: returning ${connections.length} connection(s) for user=${ctx.userId}`);
       ctx.send({ type: "connections_list_pushed", connections }, ctx.userId);
     }
   };
@@ -37920,11 +37921,11 @@ __RISU_TEMPLATE_SEP_a3f9b__
       }
       return;
     }
-    log8.info(`refreshBgHtml: resolved chatId=${chatId} bg_in=${bgCombined.length} ` + `bg_out=${resolvedBg.length} crossRuleParts=${crossRuleStyles.length} ` + `crossRule_total=${crossRuleStyles.reduce((a, p) => a + p.length, 0)} ` + `elapsed=${elapsed}ms`);
+    log8.debug(`refreshBgHtml: resolved chatId=${chatId} bg_in=${bgCombined.length} ` + `bg_out=${resolvedBg.length} crossRuleParts=${crossRuleStyles.length} ` + `crossRule_total=${crossRuleStyles.reduce((a, p) => a + p.length, 0)} ` + `elapsed=${elapsed}ms`);
     const sig = resolvedBg + "\x1F" + crossRuleStyles.join("\x1E");
     const prior = lastSentBgHtmlByChat.get(chatId);
     if (prior === sig) {
-      log8.info(`refreshBgHtml: skip redundant send chatId=${chatId} (signature matches prior) ` + `bg_out=${resolvedBg.length} crossRule_total=${crossRuleStyles.reduce((a, p) => a + p.length, 0)}`);
+      log8.debug(`refreshBgHtml: skip redundant send chatId=${chatId} (signature matches prior) ` + `bg_out=${resolvedBg.length} crossRule_total=${crossRuleStyles.reduce((a, p) => a + p.length, 0)}`);
       return;
     }
     lastSentBgHtmlByChat.set(chatId, sig);
@@ -39460,7 +39461,7 @@ function makePromptOrphanReviewIfAny(deps) {
     const charCount = detected.characterIds.length;
     const moduleCount = detected.moduleIds.length;
     if (charCount + moduleCount === 0) {
-      log8.info(`orphan-review: nothing detected elapsed=${Date.now() - tStart}ms`);
+      log8.debug(`orphan-review: nothing detected elapsed=${Date.now() - tStart}ms`);
       return;
     }
     const charPreview = detected.characterIds.slice(0, 8).join(",");
@@ -42770,11 +42771,11 @@ registerAll();
 var variableState = new VariableStateStore;
 var toggleState = new ToggleStateStore;
 function scheduleStateChangedRefresh2(chatId, userId) {
-  log8.info(`scheduleStateChangedRefresh: scheduling for chat=${chatId}`);
+  log8.debug(`scheduleStateChangedRefresh: scheduling for chat=${chatId}`);
   scheduleStateChangedRefresh(chatId, async () => {
     const active = activeCardByChat.get(chatId);
     if (!active) {
-      log8.info(`scheduleStateChangedRefresh: skipped (no active card) chat=${chatId}`);
+      log8.debug(`scheduleStateChangedRefresh: skipped (no active card) chat=${chatId}`);
       return;
     }
     const t0 = Date.now();
@@ -42782,7 +42783,7 @@ function scheduleStateChangedRefresh2(chatId, userId) {
     invalidateMacroInterceptorForChat(chatId);
     await refreshBgHtml(active, chatId, userId);
     await refreshVariables(active, chatId, userId);
-    log8.info(`scheduleStateChangedRefresh: completed chat=${chatId} elapsed=${Date.now() - t0}ms`);
+    log8.debug(`scheduleStateChangedRefresh: completed chat=${chatId} elapsed=${Date.now() - t0}ms`);
   }, (err) => log8.error(`scheduleStateChangedRefresh: refresh threw chat=${chatId}: ${errMsg(err)}`));
 }
 function makeStateChangedCallback(chatId, userId) {
@@ -43040,7 +43041,7 @@ async function ensureLogStateLoaded(userId) {
 }
 async function listCards(userId) {
   const t0 = Date.now();
-  log8.info(`listCards: start userId=${userId ?? "<none>"}`);
+  log8.debug(`listCards: start userId=${userId ?? "<none>"}`);
   if (userId === undefined) {
     log8.info(`listCards: userId not yet captured, returning empty`);
     return [];
@@ -43061,7 +43062,7 @@ async function listCards(userId) {
     };
   });
   summaries.sort((a, b) => b.stored_at - a.stored_at);
-  log8.info(`listCards: done count=${summaries.length} elapsed=${Date.now() - t0}ms`);
+  log8.debug(`listCards: done count=${summaries.length} elapsed=${Date.now() - t0}ms`);
   return summaries;
 }
 function pushCards(cards, userId) {

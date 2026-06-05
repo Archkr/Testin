@@ -36201,7 +36201,51 @@ ${willDeleteRows ? "Deleted rows cannot be recovered. " : ""}${willRetranslate ?
   };
 }
 
+// src/log/frontend-log.ts
+function formatLine(msg, rest) {
+  if (rest.length === 0)
+    return msg;
+  const tail = rest.map((r) => {
+    if (r instanceof Error)
+      return `${r.name}: ${r.message}`;
+    if (typeof r === "string")
+      return r;
+    try {
+      return JSON.stringify(r);
+    } catch {
+      return String(r);
+    }
+  }).join(" ");
+  return `${msg} ${tail}`;
+}
+function consoleFor2(level) {
+  if (level === "error")
+    return console.error.bind(console);
+  if (level === "warn")
+    return console.warn.bind(console);
+  return console.log.bind(console);
+}
+function makeFrontendLogger(category) {
+  function emit(level, msg, rest) {
+    const consoleEmit = level === "error" || logStore.shouldEmit(level);
+    if (consoleEmit) {
+      try {
+        consoleFor2(level)("[lumirealm]", `${category}:`, msg, ...rest);
+      } catch {}
+    }
+    logStore.push(level, category, formatLine(msg, rest));
+  }
+  return {
+    error: (m, ...r) => emit("error", m, r),
+    warn: (m, ...r) => emit("warn", m, r),
+    info: (m, ...r) => emit("info", m, r),
+    debug: (m, ...r) => emit("debug", m, r),
+    trace: (m, ...r) => emit("trace", m, r)
+  };
+}
+
 // src/ui/browser-translator.ts
+var flog2 = makeFrontendLogger("translator");
 var TARGET = "en";
 var translatorByPair = null;
 var detectorPromise = null;
@@ -36217,7 +36261,7 @@ function disableFallback(reason) {
   if (fallbackDisabled)
     return;
   fallbackDisabled = true;
-  console.warn(`[lumirealm] google-translate fallback disabled: ${reason}`);
+  flog2.warn(`google-translate fallback disabled: ${reason}`);
   for (const cb of fallbackDisabledSubscribers) {
     try {
       cb(reason);
@@ -36270,15 +36314,15 @@ async function getTranslatorForPair(src, tgt) {
     try {
       if (ctor.availability) {
         const avail = await ctor.availability({ sourceLanguage: src, targetLanguage: tgt });
-        console.info(`[lumirealm] translator ${src}->${tgt} availability=${avail}`);
+        flog2.debug(`translator ${src}->${tgt} availability=${avail}`);
         if (avail !== "available")
           return null;
       }
       const inst = await ctor.create({ sourceLanguage: src, targetLanguage: tgt });
-      console.info(`[lumirealm] translator ${src}->${tgt} created`);
+      flog2.debug(`translator ${src}->${tgt} created`);
       return inst;
     } catch (err) {
-      console.warn(`[lumirealm] translator ${src}->${tgt} create failed:`, err);
+      flog2.warn(`translator ${src}->${tgt} create failed:`, err);
       return null;
     }
   })();
@@ -36299,7 +36343,7 @@ async function googleTranslateFallback(text, src) {
   try {
     res = await fetch(url);
   } catch (err) {
-    console.warn("[lumirealm] google-translate fetch failed:", err);
+    flog2.warn("google-translate fetch failed:", err);
     return null;
   }
   if (res.status === 429) {
@@ -36307,7 +36351,7 @@ async function googleTranslateFallback(text, src) {
     return null;
   }
   if (!res.ok) {
-    console.warn(`[lumirealm] google-translate http ${res.status}`);
+    flog2.warn(`google-translate http ${res.status}`);
     return null;
   }
   let data;
@@ -36330,7 +36374,7 @@ function getTranslator() {
   if (!haveLocal && fallbackDisabled) {
     if (!unavailableLogged) {
       unavailableLogged = true;
-      console.info("[lumirealm] browser Translator API unavailable and fallback disabled");
+      flog2.debug("browser Translator API unavailable and fallback disabled");
     }
     return null;
   }
@@ -40554,14 +40598,14 @@ function removeChatScopeStyle() {
   if (el && el.parentNode)
     el.parentNode.removeChild(el);
 }
-function setupBgHtmlRenderer(ctx, flog2, islandStyles) {
-  flog2.info("bg-html renderer: init");
+function setupBgHtmlRenderer(ctx, flog3, islandStyles) {
+  flog3.info("bg-html renderer: init");
   let activeChatId = null;
   let handle = null;
   let lastCss = null;
   function dismount() {
     if (handle) {
-      flog2.info(`bg-html renderer: dismount chatId=${activeChatId}`);
+      flog3.info(`bg-html renderer: dismount chatId=${activeChatId}`);
       handle.destroy();
       handle = null;
       lastCss = null;
@@ -40575,7 +40619,7 @@ function setupBgHtmlRenderer(ctx, flog2, islandStyles) {
     handleMessage(msg) {
       if (msg.type === "clear_bg_html") {
         if (activeChatId !== null && activeChatId !== msg.chatId) {
-          flog2.info(`bg-html renderer: chat-switch to empty bg, dismounting prior chat=${activeChatId}`);
+          flog3.info(`bg-html renderer: chat-switch to empty bg, dismounting prior chat=${activeChatId}`);
         }
         dismount();
         return;
@@ -40588,11 +40632,11 @@ function setupBgHtmlRenderer(ctx, flog2, islandStyles) {
       try {
         bundle = splitAndRewriteBgBundle(msg.bgHtml);
       } catch (err) {
-        flog2.error("bg-html renderer: rewrite failed", err);
+        flog3.error("bg-html renderer: rewrite failed", err);
         return;
       }
       if (!handle) {
-        flog2.info(`bg-html renderer: mount chatId=${msg.chatId} html_len=${bundle.html.length} css_len=${bundle.css.length}`);
+        flog3.info(`bg-html renderer: mount chatId=${msg.chatId} html_len=${bundle.html.length} css_len=${bundle.css.length}`);
         handle = mountBgHost(ctx);
       }
       const cssChanged = bundle.css !== lastCss;
@@ -40610,7 +40654,7 @@ function setupBgHtmlRenderer(ctx, flog2, islandStyles) {
         });
         chatBundle = { ...chatBundle, css: unprefixCssClassSelectors(chatBundle.css) };
       } catch (err) {
-        flog2.error("bg-html renderer: chat-scope rewrite failed", err);
+        flog3.error("bg-html renderer: chat-scope rewrite failed", err);
         chatBundle = null;
       }
       if (islandStyles) {
@@ -40623,7 +40667,7 @@ function setupBgHtmlRenderer(ctx, flog2, islandStyles) {
           });
           islandBundle = { ...islandBundle, css: unprefixCssClassSelectors(islandBundle.css) };
         } catch (err) {
-          flog2.error("bg-html renderer: island-style rewrite failed", err);
+          flog3.error("bg-html renderer: island-style rewrite failed", err);
           islandBundle = null;
         }
         if (islandBundle) {
@@ -40633,7 +40677,7 @@ function setupBgHtmlRenderer(ctx, flog2, islandStyles) {
 `;
           const islandCss = stripCssImports(islandLineHeight + islandImgReset + islandBundle.css);
           islandStyles.setStylesheet(islandCss);
-          flog2.info(`bg-html renderer: island-styles updated css_len=${islandCss.length} (raw=${islandBundle.css.length}, @import stripped)`);
+          flog3.info(`bg-html renderer: island-styles updated css_len=${islandCss.length} (raw=${islandBundle.css.length}, @import stripped)`);
         }
         const crossRuleParts = msg.crossRuleStyles ?? [];
         const cleanedParts = crossRuleParts.map((p) => unprefixCssClassSelectors(stripCssImports(p)));
@@ -40657,9 +40701,9 @@ ${p}
 ` : "") + lineHeight + imgReset + bubbleContainment + rest + (wrappedCrossRule ? `
 ` + wrappedCrossRule : "");
         upsertChatScopeStyle(chatScopeCss);
-        flog2.info(`bg-html renderer: chat-scope CSS injected css_len=${chatScopeCss.length} ` + `(imports_hoisted_len=${imports.length}, body_len=${rest.length}, ` + `cross_rule_wrapped_len=${wrappedCrossRule.length}; ` + `+img-reset +bubble-containment preambles)`);
+        flog3.info(`bg-html renderer: chat-scope CSS injected css_len=${chatScopeCss.length} ` + `(imports_hoisted_len=${imports.length}, body_len=${rest.length}, ` + `cross_rule_wrapped_len=${wrappedCrossRule.length}; ` + `+img-reset +bubble-containment preambles)`);
       }
-      flog2.info(`bg-html renderer: applied chatId=${msg.chatId} html_len=${bundle.html.length} css_len=${bundle.css.length} css_changed=${cssChanged}`);
+      flog3.info(`bg-html renderer: applied chatId=${msg.chatId} html_len=${bundle.html.length} css_len=${bundle.css.length} css_changed=${cssChanged}`);
     },
     destroy() {
       dismount();
@@ -40681,7 +40725,7 @@ var SKIP_TAGS = new Set([
 var DOUBLE_QUOTE_RE = /"([^"\n]+?)"/g;
 var SINGLE_QUOTE_RE = /(?<![\w$])'([^'\n]+?)'(?![\w$])/g;
 var MARK_OWN_ATTR = "data-lr-risu-quote";
-function setupQuoteMarks(flog2) {
+function setupQuoteMarks(flog3) {
   const watched = new WeakSet;
   const observers = [];
   function shouldSkipText(textNode, root) {
@@ -40798,7 +40842,7 @@ function setupQuoteMarks(flog2) {
       try {
         transformTextNode(node);
       } catch (err) {
-        flog2.warn("quote-marks: transform threw", err);
+        flog3.warn("quote-marks: transform threw", err);
       }
     }
   }
@@ -40840,7 +40884,7 @@ function setupQuoteMarks(flog2) {
                 try {
                   transformTextNode(n);
                 } catch (err) {
-                  flog2.warn("quote-marks: transform threw", err);
+                  flog3.warn("quote-marks: transform threw", err);
                 }
               }
             } else {
@@ -40854,7 +40898,7 @@ function setupQuoteMarks(flog2) {
       observer.observe(shadow, { childList: true, subtree: true, characterData: true });
       observers.push(observer);
     } catch (err) {
-      flog2.warn("quote-marks: observe failed", err);
+      flog3.warn("quote-marks: observe failed", err);
     }
   }
   return {
@@ -40872,7 +40916,7 @@ function setupQuoteMarks(flog2) {
 }
 
 // src/bghtml/island-styles.ts
-function setupIslandStyles(flog2, opts = {}) {
+function setupIslandStyles(flog3, opts = {}) {
   let sheet = null;
   let envSheet = null;
   const allOwnedSheets = new WeakSet;
@@ -40880,7 +40924,7 @@ function setupIslandStyles(flog2, opts = {}) {
     sheet = new CSSStyleSheet;
     allOwnedSheets.add(sheet);
   } catch (err) {
-    flog2.error("island-styles: CSSStyleSheet constructor unavailable (browser predates 2023)", err);
+    flog3.error("island-styles: CSSStyleSheet constructor unavailable (browser predates 2023)", err);
     return {
       setStylesheet: () => {},
       setCrossRuleSheets: () => {},
@@ -40888,7 +40932,7 @@ function setupIslandStyles(flog2, opts = {}) {
       destroy: () => {}
     };
   }
-  const quoteMarks = setupQuoteMarks(flog2);
+  const quoteMarks = setupQuoteMarks(flog3);
   let crossRuleSheets = [];
   let lastSheetCss = null;
   let lastCrossRuleKey = null;
@@ -40898,9 +40942,9 @@ function setupIslandStyles(flog2, opts = {}) {
       envSheet = new CSSStyleSheet;
       allOwnedSheets.add(envSheet);
       envSheet.replaceSync(rescoped.css);
-      flog2.info(`island-styles: Risu environment sheet built ${opts.riskuEnvironmentCss.length}->${rescoped.css.length} bytes, ` + `${envSheet.cssRules.length} top-level rules ` + `(rewrites: :root=${rescoped.rootHits} .prose=${rescoped.proseHits} ` + `.prose-invert=${rescoped.proseInvertHits} .chattext=${rescoped.chattextHits} ` + `.chat-width=${rescoped.chatWidthHits})`);
+      flog3.info(`island-styles: Risu environment sheet built ${opts.riskuEnvironmentCss.length}->${rescoped.css.length} bytes, ` + `${envSheet.cssRules.length} top-level rules ` + `(rewrites: :root=${rescoped.rootHits} .prose=${rescoped.proseHits} ` + `.prose-invert=${rescoped.proseInvertHits} .chattext=${rescoped.chattextHits} ` + `.chat-width=${rescoped.chatWidthHits})`);
     } catch (err) {
-      flog2.error("island-styles: Risu environment sheet construction failed (falling back to per-card sheet only)", err);
+      flog3.error("island-styles: Risu environment sheet construction failed (falling back to per-card sheet only)", err);
       envSheet = null;
     }
   }
@@ -40945,12 +40989,12 @@ function setupIslandStyles(flog2, opts = {}) {
         const childCount = shadow.childElementCount;
         const sheetRules = sheet.cssRules.length;
         const envRules = envSheet ? envSheet.cssRules.length : 0;
-        flog2.debug(`island-styles: adopted #${adoptionCount} into <${hostTag} class="${hostClass}"> ` + `(shadow has ${childCount} top-level children; envSheet ${envRules} rules + perCardSheet ${sheetRules} rules)`);
+        flog3.debug(`island-styles: adopted #${adoptionCount} into <${hostTag} class="${hostClass}"> ` + `(shadow has ${childCount} top-level children; envSheet ${envRules} rules + perCardSheet ${sheetRules} rules)`);
       } else if (adoptionCount % ADOPT_LOG_STRIDE === 0) {
-        flog2.info(`island-styles: adopted=${adoptionCount} (chat shadows visited=${chatShadowCount}, outside-chat shadows visited=${outsideChatShadowCount})`);
+        flog3.info(`island-styles: adopted=${adoptionCount} (chat shadows visited=${chatShadowCount}, outside-chat shadows visited=${outsideChatShadowCount})`);
       }
     } catch (err) {
-      flog2.warn("island-styles: adoptedStyleSheets append failed", err);
+      flog3.warn("island-styles: adoptedStyleSheets append failed", err);
     }
   }
   function visit(el) {
@@ -40993,14 +41037,14 @@ function setupIslandStyles(flog2, opts = {}) {
   try {
     observer.observe(document.body, { childList: true, subtree: true });
   } catch (err) {
-    flog2.error("island-styles: observer.observe failed", err);
+    flog3.error("island-styles: observer.observe failed", err);
   }
   try {
     walkSubtree(document.body);
   } catch (err) {
-    flog2.warn("island-styles: initial walk failed", err);
+    flog3.warn("island-styles: initial walk failed", err);
   }
-  flog2.info("island-styles: setup complete (adopting into Lumi message-island shadows)");
+  flog3.info("island-styles: setup complete (adopting into Lumi message-island shadows)");
   function nudgeAdopters(reason) {
     if (adoptedRefs.length === 0)
       return;
@@ -41021,7 +41065,7 @@ function setupIslandStyles(flog2, opts = {}) {
       } catch {}
     }
     if (nudged > 0 || dead > 0) {
-      flog2.info(`island-styles: nudged adopters reason=${reason} ` + `nudged=${nudged} dead_refs_pruned=${dead} live=${adoptedRefs.length}`);
+      flog3.info(`island-styles: nudged adopters reason=${reason} ` + `nudged=${nudged} dead_refs_pruned=${dead} live=${adoptedRefs.length}`);
     }
   }
   function reAdoptAll() {
@@ -41043,7 +41087,7 @@ function setupIslandStyles(flog2, opts = {}) {
         const filtered = existing.filter((s) => !allOwnedSheets.has(s));
         shadow.adoptedStyleSheets = [...filtered, ...append];
       } catch (err) {
-        flog2.warn("island-styles: re-adopt failed", err);
+        flog3.warn("island-styles: re-adopt failed", err);
       }
     }
   }
@@ -41052,7 +41096,7 @@ function setupIslandStyles(flog2, opts = {}) {
       if (!sheet)
         return;
       if (lastSheetCss !== null && lastSheetCss === css) {
-        flog2.info(`island-styles: setStylesheet skipped — content unchanged (${css.length} bytes)`);
+        flog3.info(`island-styles: setStylesheet skipped — content unchanged (${css.length} bytes)`);
         return;
       }
       try {
@@ -41060,13 +41104,13 @@ function setupIslandStyles(flog2, opts = {}) {
         lastSheetCss = css;
         nudgeAdopters("setStylesheet");
       } catch (err) {
-        flog2.error("island-styles: replaceSync failed", err);
+        flog3.error("island-styles: replaceSync failed", err);
       }
     },
     setCrossRuleSheets(cssParts) {
       const key = cssParts.length + "\x1F" + cssParts.join("\x1E");
       if (lastCrossRuleKey === key) {
-        flog2.info(`island-styles: setCrossRuleSheets skipped — content unchanged (parts=${cssParts.length})`);
+        flog3.info(`island-styles: setCrossRuleSheets skipped — content unchanged (parts=${cssParts.length})`);
         return;
       }
       const next = [];
@@ -41084,13 +41128,13 @@ function setupIslandStyles(flog2, opts = {}) {
           okCount++;
         } catch (err) {
           failCount++;
-          flog2.warn(`island-styles: cross-rule sheet ${i} parse failed (skipped): ${err instanceof Error ? err.message : String(err)}`);
+          flog3.warn(`island-styles: cross-rule sheet ${i} parse failed (skipped): ${err instanceof Error ? err.message : String(err)}`);
         }
       }
       crossRuleSheets = next;
       lastCrossRuleKey = key;
       reAdoptAll();
-      flog2.info(`island-styles: cross-rule sheets set ok=${okCount} failed=${failCount} total_parts=${cssParts.length}`);
+      flog3.info(`island-styles: cross-rule sheets set ok=${okCount} failed=${failCount} total_parts=${cssParts.length}`);
     },
     clear() {
       if (!sheet)
@@ -43873,33 +43917,33 @@ function downloadBundle(bundle) {
 
 // src/frontend.ts
 var HANDSHAKE_RETRY_MS = 3000;
-var flog2 = {
+var flog3 = {
   error(msg, ...rest) {
     console.error("[lumirealm]", msg, ...rest);
-    logStore.push("error", "frontend", formatLine(msg, rest));
+    logStore.push("error", "frontend", formatLine2(msg, rest));
   },
   warn(msg, ...rest) {
     if (logStore.shouldEmit("warn"))
       console.warn("[lumirealm]", msg, ...rest);
-    logStore.push("warn", "frontend", formatLine(msg, rest));
+    logStore.push("warn", "frontend", formatLine2(msg, rest));
   },
   info(msg, ...rest) {
     if (logStore.shouldEmit("info"))
       console.log("[lumirealm]", msg, ...rest);
-    logStore.push("info", "frontend", formatLine(msg, rest));
+    logStore.push("info", "frontend", formatLine2(msg, rest));
   },
   debug(msg, ...rest) {
     if (logStore.shouldEmit("debug"))
       console.log("[lumirealm]", msg, ...rest);
-    logStore.push("debug", "frontend", formatLine(msg, rest));
+    logStore.push("debug", "frontend", formatLine2(msg, rest));
   },
   trace(msg, ...rest) {
     if (logStore.shouldEmit("trace"))
       console.log("[lumirealm]", msg, ...rest);
-    logStore.push("trace", "frontend", formatLine(msg, rest));
+    logStore.push("trace", "frontend", formatLine2(msg, rest));
   }
 };
-function formatLine(msg, rest) {
+function formatLine2(msg, rest) {
   if (rest.length === 0)
     return msg;
   const tail = rest.map((r) => {
@@ -43938,7 +43982,7 @@ function persistLogStateToLocalStorage(state) {
 }
 function setup(ctx) {
   hydrateLogStateFromLocalStorage();
-  flog2.info("frontend setup: begin");
+  flog3.info("frontend setup: begin");
   const cleanups = [];
   const displayRegistered = Boolean(ctx.display);
   if (ctx.display) {
@@ -43964,9 +44008,9 @@ function setup(ctx) {
     setDisplayResolutionMode(mode2);
     publishOwnedCharacters();
     sendDisplayAuthority(activeRisuChatId);
-    flog2.info(`display resolution mode='${mode2}' resolverRegistered=${displayRegistered}`);
+    flog3.info(`display resolution mode='${mode2}' resolverRegistered=${displayRegistered}`);
     if (!displayRegistered) {
-      flog2.warn("display resolver NOT registered: host ctx.display is undefined — the Lumiverse core frontend lacks the display hook.");
+      flog3.warn("display resolver NOT registered: host ctx.display is undefined — the Lumiverse core frontend lacks the display hook.");
     }
   };
   cleanups.push(() => {
@@ -43977,7 +44021,7 @@ function setup(ctx) {
   window.__lumirealmWasmoon = (on) => {
     const enabled = on !== false;
     setWasmoonEnabled(enabled);
-    flog2.info(`wasmoon editDisplay engine ${enabled ? "ENABLED (wasmoon)" : "DISABLED (fengari fallback)"} — reopen the chat to apply`);
+    flog3.info(`wasmoon editDisplay engine ${enabled ? "ENABLED (wasmoon)" : "DISABLED (fengari fallback)"} — reopen the chat to apply`);
   };
   cleanups.push(() => {
     try {
@@ -44006,7 +44050,7 @@ function setup(ctx) {
           preview = `scripts=${parsed.scripts?.length ?? 0} content_len=${parsed.content?.length ?? 0} preFind=${findKeys.length} preReplace=${replaceKeys.length} dyn=[${dynKeys.join(",")}]`;
         }
       } catch {}
-      flog2.trace(`[macro-tap] → POST regex-scripts/apply ${preview}`);
+      flog3.trace(`[macro-tap] → POST regex-scripts/apply ${preview}`);
       const resp2 = await originalFetch(input, init2);
       try {
         const clone = resp2.clone();
@@ -44020,19 +44064,19 @@ function setup(ctx) {
         })();
         if (parsed && typeof parsed.result === "string") {
           const stillRaw = /\{\{(?!\s*(?:user|char|bot|notChar|not_char|charName)\s*\}\})/i.test(parsed.result);
-          flog2.trace(`[macro-tap] ← regex-scripts/apply 200 in ${Math.round(performance.now() - t0)}ms result_len=${parsed.result.length} touched=${parsed.touched_vars?.length ?? 0} cacheable=${parsed.cacheable} still_has_raw_cbs=${stillRaw} result[0..200]=${JSON.stringify(parsed.result.slice(0, 200))}`);
+          flog3.trace(`[macro-tap] ← regex-scripts/apply 200 in ${Math.round(performance.now() - t0)}ms result_len=${parsed.result.length} touched=${parsed.touched_vars?.length ?? 0} cacheable=${parsed.cacheable} still_has_raw_cbs=${stillRaw} result[0..200]=${JSON.stringify(parsed.result.slice(0, 200))}`);
         } else {
-          flog2.warn(`[macro-tap] ← regex-scripts/apply HTTP ${resp2.status} in ${Math.round(performance.now() - t0)}ms (body not JSON)`);
+          flog3.warn(`[macro-tap] ← regex-scripts/apply HTTP ${resp2.status} in ${Math.round(performance.now() - t0)}ms (body not JSON)`);
         }
       } catch (err) {
-        flog2.warn("[macro-tap] regex-scripts/apply clone/parse failed:", err);
+        flog3.warn("[macro-tap] regex-scripts/apply clone/parse failed:", err);
       }
       return resp2;
     }
     if (isDisplayPreprocess) {
-      flog2.trace(`[macro-tap] → POST display-preprocess`);
+      flog3.trace(`[macro-tap] → POST display-preprocess`);
       const resp2 = await originalFetch(input, init2);
-      flog2.trace(`[macro-tap] ← display-preprocess HTTP ${resp2.status} in ${Math.round(performance.now() - t0)}ms`);
+      flog3.trace(`[macro-tap] ← display-preprocess HTTP ${resp2.status} in ${Math.round(performance.now() - t0)}ms`);
       return resp2;
     }
     let reqPreview = "";
@@ -44046,7 +44090,7 @@ function setup(ctx) {
         reqPreview = `templates=${keys.length} chat_id=${parsed.chat_id ?? "?"} character_id=${parsed.character_id ?? "?"} first_template[0..200]=${JSON.stringify((firstTmpl ?? "").slice(0, 200))}`;
       }
     } catch {}
-    flog2.trace(`[macro-tap] → POST resolve-batch ${reqPreview}`);
+    flog3.trace(`[macro-tap] → POST resolve-batch ${reqPreview}`);
     const resp = await originalFetch(input, init2);
     try {
       const clone = resp.clone();
@@ -44062,20 +44106,20 @@ function setup(ctx) {
         const entries = Object.entries(parsed.resolved);
         const leaksRaw = entries.filter(([, v]) => /\{\{/.test(v));
         const emptyKeys = entries.filter(([, v]) => v.length === 0).length;
-        flog2.trace(`[macro-tap] ← resolve-batch 200 in ${Math.round(performance.now() - t0)}ms keys=${entries.length} leaks_with_raw_macros=${leaksRaw.length} empty_keys=${emptyKeys}`);
+        flog3.trace(`[macro-tap] ← resolve-batch 200 in ${Math.round(performance.now() - t0)}ms keys=${entries.length} leaks_with_raw_macros=${leaksRaw.length} empty_keys=${emptyKeys}`);
         if (leaksRaw.length > 0) {
           for (const [k, v] of leaksRaw.slice(0, 3)) {
-            flog2.warn(`[macro-tap]   leak id=${k} resolved[0..300]=${JSON.stringify(v.slice(0, 300))}`);
+            flog3.warn(`[macro-tap]   leak id=${k} resolved[0..300]=${JSON.stringify(v.slice(0, 300))}`);
           }
         }
         for (const [k, v] of entries) {
-          flog2.trace(`[macro-tap]   id=${k} len=${v.length} resolved[0..200]=${JSON.stringify(v.slice(0, 200))}`);
+          flog3.trace(`[macro-tap]   id=${k} len=${v.length} resolved[0..200]=${JSON.stringify(v.slice(0, 200))}`);
         }
       } else {
-        flog2.warn(`[macro-tap] ← resolve-batch HTTP ${resp.status} in ${Math.round(performance.now() - t0)}ms (body not JSON)`);
+        flog3.warn(`[macro-tap] ← resolve-batch HTTP ${resp.status} in ${Math.round(performance.now() - t0)}ms (body not JSON)`);
       }
     } catch (err) {
-      flog2.warn("[macro-tap] clone/parse failed:", err);
+      flog3.warn("[macro-tap] clone/parse failed:", err);
     }
     return resp;
   };
@@ -44147,32 +44191,32 @@ function setup(ctx) {
     } catch {}
   });
   cleanups.push(ctx.dom.addStyle(STYLES));
-  flog2.info("frontend setup: styles injected");
+  flog3.info("frontend setup: styles injected");
   const QUIET_SEND_TYPES = new Set([
     "import_card_chunk",
     "upload_module_chunk"
   ]);
   const sendToBackend = (msg) => {
     if (!QUIET_SEND_TYPES.has(msg.type)) {
-      flog2.trace(`frontend send: ${msg.type}`, msg);
+      flog3.trace(`frontend send: ${msg.type}`, msg);
     }
     ctx.sendToBackend(msg);
   };
-  const importOverlay = setupImportOverlay(flog2, sendToBackend);
+  const importOverlay = setupImportOverlay(flog3, sendToBackend);
   cleanups.push(() => importOverlay.destroy());
   let sidebar = null;
   try {
     sidebar = createSidebar({
       ctx,
       sendToBackend,
-      log: flog2,
+      log: flog3,
       onImportStart: (fileName, onCancel, totalBytes) => importOverlay.notifyImportStart(fileName, "drawer", onCancel, totalBytes),
       onModuleImportStart: (fileName, onCancel, totalBytes) => importOverlay.notifyImportStart(fileName, "module", onCancel, totalBytes)
     });
     cleanups.push(() => sidebar?.destroy());
-    flog2.info("frontend setup: unified sidebar registered");
+    flog3.info("frontend setup: unified sidebar registered");
   } catch (err) {
-    flog2.error("createSidebar failed:", err);
+    flog3.error("createSidebar failed:", err);
     return () => {
       for (const fn of cleanups) {
         try {
@@ -44181,32 +44225,32 @@ function setup(ctx) {
       }
     };
   }
-  const islandStyles = setupIslandStyles(flog2, {
+  const islandStyles = setupIslandStyles(flog3, {
     riskuEnvironmentCss: risu_environment_default
   });
   cleanups.push(() => islandStyles.destroy());
-  const bgRenderer = setupBgHtmlRenderer(ctx, flog2, islandStyles);
+  const bgRenderer = setupBgHtmlRenderer(ctx, flog3, islandStyles);
   cleanups.push(() => bgRenderer.destroy());
-  const bgmPlayer = setupBgmPlayer(flog2);
+  const bgmPlayer = setupBgmPlayer(flog3);
   cleanups.push(() => bgmPlayer.destroy());
   let auxDebug = null;
   try {
-    auxDebug = createAuxDebugPanel(flog2);
+    auxDebug = createAuxDebugPanel(flog3);
     cleanups.push(() => auxDebug?.destroy());
   } catch (err) {
-    flog2.error("createAuxDebugPanel failed:", err);
+    flog3.error("createAuxDebugPanel failed:", err);
   }
-  const alertModal = setupAlertModal({ ctx, sendToBackend, log: flog2 });
+  const alertModal = setupAlertModal({ ctx, sendToBackend, log: flog3 });
   cleanups.push(() => alertModal.destroy());
-  const pickModal = setupPickModal({ ctx, sendToBackend, log: flog2 });
+  const pickModal = setupPickModal({ ctx, sendToBackend, log: flog3 });
   cleanups.push(() => pickModal.destroy());
-  const legacyReimportModal = setupLegacyReimportModal({ ctx, sendToBackend, log: flog2 });
+  const legacyReimportModal = setupLegacyReimportModal({ ctx, sendToBackend, log: flog3 });
   cleanups.push(() => legacyReimportModal.destroy());
-  const hostVersionModal = setupHostVersionModal({ ctx, sendToBackend, log: flog2 });
+  const hostVersionModal = setupHostVersionModal({ ctx, sendToBackend, log: flog3 });
   cleanups.push(() => hostVersionModal.destroy());
-  const permissionsModal = setupPermissionsModal({ ctx, sendToBackend, log: flog2 });
+  const permissionsModal = setupPermissionsModal({ ctx, sendToBackend, log: flog3 });
   cleanups.push(() => permissionsModal.destroy());
-  const bridgeBanner = setupBridgeStatusBanner({ ctx, log: flog2 });
+  const bridgeBanner = setupBridgeStatusBanner({ ctx, log: flog3 });
   cleanups.push(() => bridgeBanner.destroy());
   let realm = null;
   try {
@@ -44215,24 +44259,24 @@ function setup(ctx) {
     realm = setupRealmModal({
       ctx,
       sendToBackend,
-      log: flog2,
+      log: flog3,
       mountTarget: sidebar.headerRoot,
       onImportStart: (label) => importOverlay.notifyImportStart(label, "realm")
     });
     cleanups.push(() => realm?.destroy());
-    flog2.info("frontend setup: realm modal registered");
+    flog3.info("frontend setup: realm modal registered");
   } catch (err) {
-    flog2.error("setupRealmModal failed:", err);
+    flog3.error("setupRealmModal failed:", err);
   }
   const translateToggle = setupTranslateToggle({
     mountTarget: sidebar.headerRoot,
     sendToBackend,
-    log: flog2
+    log: flog3
   });
   cleanups.push(() => translateToggle.destroy());
-  const translateOrchestrator = initTranslateOrchestrator({ sendToBackend, log: flog2 });
+  const translateOrchestrator = initTranslateOrchestrator({ sendToBackend, log: flog3 });
   cleanups.push(() => translateOrchestrator.destroy());
-  const svgRasterizer = setupSvgRasterizer({ log: flog2, sendToBackend });
+  const svgRasterizer = setupSvgRasterizer({ log: flog3, sendToBackend });
   let activeRisuChatId = null;
   const onClickCapture = (e) => {
     const path = typeof e.composedPath === "function" ? e.composedPath() : [];
@@ -44250,13 +44294,13 @@ function setup(ctx) {
     const chatId = activeRisuChatId;
     if (!chatId) {
       const label = triggerName ?? `btn=${btn}`;
-      flog2.warn(`manual click: active chat isn't a lumirealm chat, ignoring ${label}`);
+      flog3.warn(`manual click: active chat isn't a lumirealm chat, ignoring ${label}`);
       return;
     }
     e.preventDefault();
     e.stopPropagation();
     if (triggerName) {
-      flog2.info(`manual-trigger click: triggerName=${triggerName} triggerId=${idAttr ?? "<none>"} chatId=${chatId}`);
+      flog3.info(`manual-trigger click: triggerName=${triggerName} triggerId=${idAttr ?? "<none>"} chatId=${chatId}`);
       sendToBackend({
         type: "manual_trigger",
         triggerName,
@@ -44264,7 +44308,7 @@ function setup(ctx) {
         chatId
       });
     } else if (btn) {
-      flog2.info(`manual-button click: btn=${btn} btnId=${idAttr ?? "<none>"} chatId=${chatId}`);
+      flog3.info(`manual-button click: btn=${btn} btnId=${idAttr ?? "<none>"} chatId=${chatId}`);
       sendToBackend({
         type: "manual_button_click",
         btn,
@@ -44282,11 +44326,11 @@ function setup(ctx) {
     fire(triggerName, triggerId) {
       const chatId = activeRisuChatId;
       if (!chatId) {
-        flog2.warn(`__riCompat.fire: active chat isn't a lumirealm chat; open one first. triggerName=${triggerName}`);
+        flog3.warn(`__riCompat.fire: active chat isn't a lumirealm chat; open one first. triggerName=${triggerName}`);
         return false;
       }
       if (typeof triggerName !== "string" || triggerName.length === 0) {
-        flog2.warn("__riCompat.fire: triggerName must be a non-empty string");
+        flog3.warn("__riCompat.fire: triggerName must be a non-empty string");
         return false;
       }
       sendToBackend({
@@ -44299,11 +44343,11 @@ function setup(ctx) {
     },
     requestVariablesSnapshot() {
       if (!activeRisuChatId) {
-        flog2.warn("__riCompat.requestVariablesSnapshot: no active Risu chat");
+        flog3.warn("__riCompat.requestVariablesSnapshot: no active Risu chat");
         return false;
       }
       sendToBackend({ type: "request_variables_snapshot", chatId: activeRisuChatId });
-      flog2.info(`__riCompat.requestVariablesSnapshot: requested for chatId=${activeRisuChatId}`);
+      flog3.info(`__riCompat.requestVariablesSnapshot: requested for chatId=${activeRisuChatId}`);
       return true;
     }
   };
@@ -44320,7 +44364,7 @@ function setup(ctx) {
       } catch {}
     });
   } catch (err) {
-    flog2.warn(`__riCompat install failed: ${err.message}`);
+    flog3.warn(`__riCompat install failed: ${err.message}`);
   }
   let lastSentW = -1;
   let lastSentH = -1;
@@ -44331,7 +44375,7 @@ function setup(ctx) {
       return;
     lastSentW = w;
     lastSentH = h;
-    flog2.debug(`screen_dims: reporting reason=${reason} w=${w} h=${h}`);
+    flog3.debug(`screen_dims: reporting reason=${reason} w=${w} h=${h}`);
     sendToBackend({ type: "screen_dims", width: w, height: h });
   };
   let resizeTimer;
@@ -44354,7 +44398,7 @@ function setup(ctx) {
   const unsub = ctx.onBackendMessage((raw) => {
     const msg = raw;
     if (!QUIET_RECV_TYPES.has(msg.type)) {
-      flog2.trace(`frontend recv: ${msg.type}`, msg);
+      flog3.trace(`frontend recv: ${msg.type}`, msg);
     }
     if (msg.type === "log_state_pushed") {
       const level = isLogThreshold(msg.level) ? msg.level : DEFAULT_LOG_LEVEL;
@@ -44379,7 +44423,7 @@ function setup(ctx) {
         });
         downloadBundle(bundle);
       } catch (err) {
-        flog2.error("log_export_pushed: bundle/download failed", err);
+        flog3.error("log_export_pushed: bundle/download failed", err);
       }
       sendToBackend({ type: "log_set_state", enabled: false, includeChatData: false });
     }
@@ -44431,7 +44475,7 @@ function setup(ctx) {
     }
     if (msg.type === "cards_updated") {
       if (!ready) {
-        flog2.info("handshake complete on first cards_updated");
+        flog3.info("handshake complete on first cards_updated");
         reportDims("cards_updated", true);
       }
       ready = true;
@@ -44458,7 +44502,7 @@ function setup(ctx) {
       try {
         bgRenderer.handleMessage(msg);
       } catch (err) {
-        flog2.error("bg-html dispatch failed:", err);
+        flog3.error("bg-html dispatch failed:", err);
       }
       return;
     }
@@ -44499,25 +44543,25 @@ function setup(ctx) {
       try {
         importOverlay.handleBackendMessage(msg);
       } catch (err) {
-        flog2.warn("importOverlay realm dispatch threw:", err);
+        flog3.warn("importOverlay realm dispatch threw:", err);
       }
       return;
     }
     try {
       importOverlay.handleBackendMessage(msg);
     } catch (err) {
-      flog2.warn("importOverlay dispatch threw:", err);
+      flog3.warn("importOverlay dispatch threw:", err);
     }
     try {
       translateToggle.handleBackendMessage(msg);
     } catch (err) {
-      flog2.warn("translateToggle dispatch threw:", err);
+      flog3.warn("translateToggle dispatch threw:", err);
     }
     sidebar?.handleBackendMessage(msg);
   });
   cleanups.push(unsub);
   function handshake() {
-    flog2.info("handshake: sending get_cards + screen_dims + log_request_state");
+    flog3.info("handshake: sending get_cards + screen_dims + log_request_state");
     sendToBackend({ type: "get_cards" });
     sendToBackend({ type: "log_request_state" });
     reportDims("handshake", true);
@@ -44528,13 +44572,13 @@ function setup(ctx) {
       window.clearInterval(retry);
       return;
     }
-    flog2.debug(`handshake retry (ready=${ready})`);
+    flog3.debug(`handshake retry (ready=${ready})`);
     handshake();
   }, HANDSHAKE_RETRY_MS);
   cleanups.push(() => window.clearInterval(retry));
-  flog2.info("frontend setup: done");
+  flog3.info("frontend setup: done");
   return () => {
-    flog2.info("frontend teardown");
+    flog3.info("frontend teardown");
     for (const fn of cleanups) {
       try {
         fn();
@@ -44544,5 +44588,5 @@ function setup(ctx) {
 }
 export {
   setup,
-  flog2 as flog
+  flog3 as flog
 };
