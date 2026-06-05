@@ -16377,12 +16377,16 @@ var init_context_reads = __esm(() => {
       return "null";
     if (ctx.role !== null)
       return lumiRoleToRisu(ctx.role);
+    if (ctx.promptRegexLiteralVars)
+      return "null";
     if (ctx.isFirstMessage)
       return "char";
     return "null";
   }, "Returns the role of the current message ('user', 'char'/'assistant', 'system').");
   register("isfirstmsg", (ctx) => {
     if (ctx.cbsContext)
+      return "0";
+    if (ctx.promptRegexLiteralVars)
       return "0";
     if (ctx.currentMessageIndex !== null && ctx.currentMessageIndex !== undefined) {
       return ctx.currentMessageIndex === -1 ? "1" : "0";
@@ -37517,10 +37521,10 @@ var PROMPT_REGEX_TIMEOUT_MS = (() => {
   const env = globalThis.Bun?.env;
   const raw = env?.LUMIREALM_PROMPT_REGEX_TIMEOUT_MS;
   const parsed = raw !== undefined ? parseInt(raw, 10) : NaN;
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 2000;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 30000;
 })();
 var STARTUP_TIMEOUT_MS = 1e4;
-var HEARTBEAT_TIMEOUT_MS = 30000;
+var HEARTBEAT_TIMEOUT_MS = 45000;
 function getBackendProcessesApi() {
   const api = spindle.backendProcesses;
   if (!api || typeof api.spawn !== "function" || typeof api.onMessage !== "function")
@@ -43086,15 +43090,15 @@ var FE_DISPLAY_ENABLED = (() => {
 })();
 var PROMPT_REGEX_ENV = (() => {
   const v = globalThis.Bun?.env?.LUMIREALM_PROMPT_REGEX;
-  return v === "1" || v === "true";
+  return v !== "0" && v !== "false";
 })();
 var PROMPT_REGEX_RUNNER_AVAILABLE = isPromptRegexRunnerAvailable();
 var PROMPT_REGEX_HOST_OWNERSHIP_AVAILABLE = typeof spindle.promptRegex?.setOwnedChats === "function";
 var PROMPT_REGEX_ACTIVE = PROMPT_REGEX_ENV && PROMPT_REGEX_RUNNER_AVAILABLE && PROMPT_REGEX_HOST_OWNERSHIP_AVAILABLE;
 if (PROMPT_REGEX_ENV && !PROMPT_REGEX_RUNNER_AVAILABLE) {
-  log8.warn("LUMIREALM_PROMPT_REGEX is set but spindle.backendProcesses is unavailable on this host; " + "declining prompt-regex ownership so the host keeps running its own sandboxed pass. " + "Upgrade Lumiverse to enable inline prompt regex in a killable subprocess.");
+  log8.warn("Inline prompt regex is enabled (LUMIREALM_PROMPT_REGEX) but spindle.backendProcesses is unavailable " + "on this host; declining prompt-regex ownership so the host keeps running its own sandboxed pass. " + "Upgrade Lumiverse to enable inline prompt regex in a killable subprocess.");
 } else if (PROMPT_REGEX_ENV && !PROMPT_REGEX_HOST_OWNERSHIP_AVAILABLE) {
-  log8.warn("LUMIREALM_PROMPT_REGEX is set and backendProcesses is available, but spindle.promptRegex.setOwnedChats " + "is missing on this host; declining prompt-regex ownership so the host keeps its own pass (a host that " + "cannot be told to skip would otherwise double-apply). Upgrade Lumiverse to enable inline prompt regex.");
+  log8.warn("Inline prompt regex is enabled (LUMIREALM_PROMPT_REGEX) and backendProcesses is available, but " + "spindle.promptRegex.setOwnedChats is missing on this host; declining prompt-regex ownership so the host " + "keeps its own pass (a host that cannot be told to skip would otherwise double-apply). Upgrade Lumiverse to " + "enable inline prompt regex.");
 }
 var promptRegexRunnerClient = PROMPT_REGEX_ACTIVE ? createPromptRegexRunnerClient({ log: log8, errMsg }) : null;
 var promptRegexOwnedByUser = new Map;

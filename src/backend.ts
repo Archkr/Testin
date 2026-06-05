@@ -816,7 +816,7 @@ const FE_DISPLAY_ENABLED = (() => {
 
 const PROMPT_REGEX_ENV = (() => {
   const v = (globalThis as { Bun?: { env?: Record<string, string | undefined> } }).Bun?.env?.LUMIREALM_PROMPT_REGEX;
-  return v === '1' || v === 'true';
+  return v !== '0' && v !== 'false';
 })();
 
 const PROMPT_REGEX_RUNNER_AVAILABLE = isPromptRegexRunnerAvailable();
@@ -833,15 +833,16 @@ const PROMPT_REGEX_ACTIVE =
 
 if (PROMPT_REGEX_ENV && !PROMPT_REGEX_RUNNER_AVAILABLE) {
   log.warn(
-    'LUMIREALM_PROMPT_REGEX is set but spindle.backendProcesses is unavailable on this host; ' +
-      'declining prompt-regex ownership so the host keeps running its own sandboxed pass. ' +
+    'Inline prompt regex is enabled (LUMIREALM_PROMPT_REGEX) but spindle.backendProcesses is unavailable ' +
+      'on this host; declining prompt-regex ownership so the host keeps running its own sandboxed pass. ' +
       'Upgrade Lumiverse to enable inline prompt regex in a killable subprocess.',
   );
 } else if (PROMPT_REGEX_ENV && !PROMPT_REGEX_HOST_OWNERSHIP_AVAILABLE) {
   log.warn(
-    'LUMIREALM_PROMPT_REGEX is set and backendProcesses is available, but spindle.promptRegex.setOwnedChats ' +
-      'is missing on this host; declining prompt-regex ownership so the host keeps its own pass (a host that ' +
-      'cannot be told to skip would otherwise double-apply). Upgrade Lumiverse to enable inline prompt regex.',
+    'Inline prompt regex is enabled (LUMIREALM_PROMPT_REGEX) and backendProcesses is available, but ' +
+      'spindle.promptRegex.setOwnedChats is missing on this host; declining prompt-regex ownership so the host ' +
+      'keeps its own pass (a host that cannot be told to skip would otherwise double-apply). Upgrade Lumiverse to ' +
+      'enable inline prompt regex.',
   );
 }
 

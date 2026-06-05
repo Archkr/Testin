@@ -5148,12 +5148,16 @@ var init_context_reads = __esm(() => {
       return "null";
     if (ctx.role !== null)
       return lumiRoleToRisu(ctx.role);
+    if (ctx.promptRegexLiteralVars)
+      return "null";
     if (ctx.isFirstMessage)
       return "char";
     return "null";
   }, "Returns the role of the current message ('user', 'char'/'assistant', 'system').");
   register("isfirstmsg", (ctx) => {
     if (ctx.cbsContext)
+      return "0";
+    if (ctx.promptRegexLiteralVars)
       return "0";
     if (ctx.currentMessageIndex !== null && ctx.currentMessageIndex !== undefined) {
       return ctx.currentMessageIndex === -1 ? "1" : "0";
@@ -10763,7 +10767,7 @@ function applyTrimStrings(result, trims) {
 
 // src/display/regex-core.ts
 function applyRegexScriptsCore(content, scripts, opts) {
-  const { placement, depth, evalTemplate } = opts;
+  const { placement, depth, evalTemplate, reResolveAfterRule } = opts;
   let result = content;
   for (const script of scripts) {
     if (script.disabled === true)
@@ -10776,6 +10780,7 @@ function applyRegexScriptsCore(content, scripts, opts) {
       if (script.max_depth !== null && depth > script.max_depth)
         continue;
     }
+    const before = result;
     let findRegex = script.find_regex;
     if (script.preResolvedFind !== undefined) {
       findRegex = script.preResolvedFind;
@@ -10809,6 +10814,9 @@ function applyRegexScriptsCore(content, scripts, opts) {
         result = result.replace(regex, replaceString);
       }
       result = applyTrimStrings(result, script.trim_strings);
+      if (reResolveAfterRule && script.substitute_macros === "none" && result !== before) {
+        result = evalTemplate(result);
+      }
     } catch {
       continue;
     }
@@ -10847,7 +10855,6 @@ function placementForRole(role) {
 async function applyPromptRegexToArray(messages, prebuilt, scripts) {
   if (scripts.length === 0)
     return { changed: false };
-  const evalTemplate = (text) => runPipeline({ ...prebuilt, template: text });
   const hasHistoryFlag = messages.some((m) => m.__isChatHistory === true);
   const isHistory = (m) => hasHistoryFlag ? m.__isChatHistory === true : m.role !== "system";
   const historyIndices = [];
@@ -10856,16 +10863,26 @@ async function applyPromptRegexToArray(messages, prebuilt, scripts) {
       historyIndices.push(i);
   }
   const depthByIndex = new Map;
+  const risuIndexByArrayIndex = new Map;
   for (let pos = 0;pos < historyIndices.length; pos++) {
     depthByIndex.set(historyIndices[pos], historyIndices.length - 1 - pos);
+    risuIndexByArrayIndex.set(historyIndices[pos], pos - 1);
   }
+  const evalTemplateFor = (msgIndex, role) => (text) => runPipeline({
+    ...prebuilt,
+    currentMessageIndexOverride: msgIndex,
+    ...role !== undefined ? { currentMessageRoleOverride: role } : {},
+    template: text
+  });
   let changed = false;
   for (let i = 0;i < messages.length; i++) {
     const msg = messages[i];
     const placement = placementForRole(msg.role);
     const depth = depthByIndex.get(i);
+    const risuIdx = risuIndexByArrayIndex.has(i) ? risuIndexByArrayIndex.get(i) : -1;
+    const evalTemplate = evalTemplateFor(risuIdx, risuIdx >= 0 && msg.role !== "system" ? msg.role : undefined);
     if (typeof msg.content === "string") {
-      const next = applyRegexScriptsCore(msg.content, scripts, { placement, depth, evalTemplate });
+      const next = applyRegexScriptsCore(msg.content, scripts, { placement, depth, evalTemplate, reResolveAfterRule: true });
       if (next !== msg.content) {
         messages[i] = { ...msg, content: next };
         changed = true;
@@ -10876,7 +10893,7 @@ async function applyPromptRegexToArray(messages, prebuilt, scripts) {
       const nextParts = parts.map((rawPart) => {
         const part = rawPart;
         if (part?.type === "text" && typeof part.text === "string") {
-          const next = applyRegexScriptsCore(part.text, scripts, { placement, depth, evalTemplate });
+          const next = applyRegexScriptsCore(part.text, scripts, { placement, depth, evalTemplate, reResolveAfterRule: true });
           if (next !== part.text) {
             partsChanged = true;
             return { ...part, text: next };

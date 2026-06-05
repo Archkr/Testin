@@ -13,11 +13,15 @@ const PROMPT_REGEX_TIMEOUT_MS = (() => {
   const env = (globalThis as { Bun?: { env?: Record<string, string | undefined> } }).Bun?.env;
   const raw = env?.LUMIREALM_PROMPT_REGEX_TIMEOUT_MS;
   const parsed = raw !== undefined ? parseInt(raw, 10) : NaN;
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 2_000;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 30_000;
 })();
 
 const STARTUP_TIMEOUT_MS = 10_000;
-const HEARTBEAT_TIMEOUT_MS = 30_000;
+// Above PROMPT_REGEX_TIMEOUT_MS so the per-request dispatch timeout is the binding
+// kill. A catastrophic regex blocks the runner thread synchronously and stops the
+// heartbeat, so an equal heartbeat budget would let the host watchdog preempt the
+// dispatch timeout (it measures from the last heartbeat, ~one interval early).
+const HEARTBEAT_TIMEOUT_MS = 45_000;
 
 interface BackendProcessHandleLike {
   readonly processId: string;

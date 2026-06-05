@@ -5182,12 +5182,16 @@ var init_context_reads = __esm(() => {
       return "null";
     if (ctx.role !== null)
       return lumiRoleToRisu(ctx.role);
+    if (ctx.promptRegexLiteralVars)
+      return "null";
     if (ctx.isFirstMessage)
       return "char";
     return "null";
   }, "Returns the role of the current message ('user', 'char'/'assistant', 'system').");
   register("isfirstmsg", (ctx) => {
     if (ctx.cbsContext)
+      return "0";
+    if (ctx.promptRegexLiteralVars)
       return "0";
     if (ctx.currentMessageIndex !== null && ctx.currentMessageIndex !== undefined) {
       return ctx.currentMessageIndex === -1 ? "1" : "0";
@@ -23131,7 +23135,7 @@ function applyTrimStrings(result, trims) {
 
 // src/display/regex-core.ts
 function applyRegexScriptsCore(content, scripts, opts) {
-  const { placement, depth, evalTemplate } = opts;
+  const { placement, depth, evalTemplate, reResolveAfterRule } = opts;
   let result = content;
   for (const script of scripts) {
     if (script.disabled === true)
@@ -23144,6 +23148,7 @@ function applyRegexScriptsCore(content, scripts, opts) {
       if (script.max_depth !== null && depth > script.max_depth)
         continue;
     }
+    const before = result;
     let findRegex = script.find_regex;
     if (script.preResolvedFind !== undefined) {
       findRegex = script.preResolvedFind;
@@ -23177,6 +23182,9 @@ function applyRegexScriptsCore(content, scripts, opts) {
         result = result.replace(regex, replaceString);
       }
       result = applyTrimStrings(result, script.trim_strings);
+      if (reResolveAfterRule && script.substitute_macros === "none" && result !== before) {
+        result = evalTemplate(result);
+      }
     } catch {
       continue;
     }
