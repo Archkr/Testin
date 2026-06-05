@@ -111,6 +111,10 @@ import { createOrphanHandlers } from './handlers/orphan.js';
 import { createRepairHandlers } from './handlers/repair.js';
 import { createLifecycleEventHandlers } from './events/lifecycle.js';
 import { createLumiInterceptors } from './interceptors/lumi-hooks.js';
+import {
+  createPromptRegexRunnerClient,
+  isPromptRegexRunnerAvailable,
+} from './interceptors/prompt-regex-runner-client.js';
 import { createReadonlyResolver } from './state/readonly-resolver.js';
 import { createBgHtmlRefresher } from './state/bg-html.js';
 import { createTriggerDispatcher } from './state/trigger-dispatch.js';
@@ -446,6 +450,7 @@ const deleteCardByChar = makeDeleteCardByChar({
   toggleState,
   listCards,
   pushCards,
+  onActiveChatEvicted: dropPromptRegexOwnershipForChat,
   log,
 });
 
@@ -809,6 +814,79 @@ const FE_DISPLAY_ENABLED = (() => {
   return v !== '0' && v !== 'false';
 })();
 
+const PROMPT_REGEX_ENV = (() => {
+  const v = (globalThis as { Bun?: { env?: Record<string, string | undefined> } }).Bun?.env?.LUMIREALM_PROMPT_REGEX;
+  return v === '1' || v === 'true';
+})();
+
+const PROMPT_REGEX_RUNNER_AVAILABLE = isPromptRegexRunnerAvailable();
+
+// The host-skip side of the apply<=>skip invariant rides spindle.promptRegex.setOwnedChats.
+// A host that exposes backendProcesses but predates that plumbing would never be told to skip,
+// so claiming authority there would double-apply (host pass + inline pass). Require both.
+const PROMPT_REGEX_HOST_OWNERSHIP_AVAILABLE = typeof (
+  spindle as unknown as { promptRegex?: { setOwnedChats?: unknown } }
+).promptRegex?.setOwnedChats === 'function';
+
+const PROMPT_REGEX_ACTIVE =
+  PROMPT_REGEX_ENV && PROMPT_REGEX_RUNNER_AVAILABLE && PROMPT_REGEX_HOST_OWNERSHIP_AVAILABLE;
+
+if (PROMPT_REGEX_ENV && !PROMPT_REGEX_RUNNER_AVAILABLE) {
+  log.warn(
+    'LUMIREALM_PROMPT_REGEX is set but spindle.backendProcesses is unavailable on this host; ' +
+      'declining prompt-regex ownership so the host keeps running its own sandboxed pass. ' +
+      'Upgrade Lumiverse to enable inline prompt regex in a killable subprocess.',
+  );
+} else if (PROMPT_REGEX_ENV && !PROMPT_REGEX_HOST_OWNERSHIP_AVAILABLE) {
+  log.warn(
+    'LUMIREALM_PROMPT_REGEX is set and backendProcesses is available, but spindle.promptRegex.setOwnedChats ' +
+      'is missing on this host; declining prompt-regex ownership so the host keeps its own pass (a host that ' +
+      'cannot be told to skip would otherwise double-apply). Upgrade Lumiverse to enable inline prompt regex.',
+  );
+}
+
+const promptRegexRunnerClient = PROMPT_REGEX_ACTIVE
+  ? createPromptRegexRunnerClient({ log, errMsg })
+  : null;
+
+const promptRegexOwnedByUser = new Map<string, string>();
+let promptRegexOwnedSnapshot = '';
+
+function syncPromptRegexOwnedChats(): void {
+  if (!PROMPT_REGEX_ACTIVE) return;
+  const owned = new Set<string>();
+  for (const chatId of promptRegexOwnedByUser.values()) owned.add(chatId);
+  const next = [...owned].sort().join(' ');
+  if (next === promptRegexOwnedSnapshot) return;
+  promptRegexOwnedSnapshot = next;
+  const api = (spindle as unknown as { promptRegex?: { setOwnedChats?: (ids: string[]) => void } }).promptRegex;
+  if (!api?.setOwnedChats) return;
+  try {
+    api.setOwnedChats([...owned]);
+  } catch (err) {
+    log.warn(`syncPromptRegexOwnedChats: ${(err as Error).message}`);
+  }
+}
+
+function dropPromptRegexOwnershipForChat(chatId: string): void {
+  if (!PROMPT_REGEX_ACTIVE) return;
+  let dropped = false;
+  for (const [uid, owned] of promptRegexOwnedByUser) {
+    if (owned === chatId) {
+      promptRegexOwnedByUser.delete(uid);
+      dropped = true;
+    }
+  }
+  if (dropped) syncPromptRegexOwnedChats();
+}
+
+function isPromptRegexOwnedChat(chatId: string): boolean {
+  for (const owned of promptRegexOwnedByUser.values()) {
+    if (owned === chatId) return true;
+  }
+  return false;
+}
+
 function sendSetActiveChat(
   activeChatId: string | null,
   activeCharacterId: string | null,
@@ -819,6 +897,33 @@ function sendSetActiveChat(
     send({ type: 'set_active_chat', chatId: activeChatId, characterId: activeCharacterId, feDisplay }, userId);
   } catch (err) {
     log.warn(`sendSetActiveChat: ${(err as Error).message}`);
+  }
+  if (PROMPT_REGEX_ACTIVE && userId !== undefined) {
+    const nowOwned = activeChatId !== null;
+    const prevOwned = promptRegexOwnedByUser.get(userId);
+    if (nowOwned) {
+      if (prevOwned !== activeChatId) {
+        promptRegexOwnedByUser.set(userId, activeChatId!);
+        // Prove the killable runner can spawn BEFORE relying on the host-skip we just
+        // declared. The skip is now in effect; if the runner can't come up, the inline
+        // pass can't run and the prompt would ship un-regex'd, so drop the claim (the host
+        // resumes its own pass). Fire-and-forget — chat-open must not block on spawn.
+        const claimedChat = activeChatId!;
+        const claimingUser = userId;
+        void promptRegexRunnerClient?.warmUp(claimingUser).then((ok) => {
+          if (ok) return;
+          if (promptRegexOwnedByUser.get(claimingUser) !== claimedChat) return;
+          log.error(
+            `prompt-regex: runner warm-up failed for chat=${claimedChat}; dropping ownership so the host resumes its own prompt-regex pass.`,
+          );
+          promptRegexOwnedByUser.delete(claimingUser);
+          syncPromptRegexOwnedChats();
+        });
+      }
+    } else if (prevOwned !== undefined) {
+      promptRegexOwnedByUser.delete(userId);
+    }
+    syncPromptRegexOwnedChats();
   }
 }
 
@@ -938,6 +1043,7 @@ const applySvgRasterIndex = createApplySvgRasterIndex({
   ensureActiveCardForChat,
   invalidateRenderMcpForChat,
   invalidateMacroInterceptorForChat,
+  onActiveChatEvicted: dropPromptRegexOwnershipForChat,
   refreshBgHtml,
   log,
   errMsg,
@@ -1014,6 +1120,11 @@ createLumiInterceptors({
   lastActiveChatByUser,
   captureUserId,
   isFeDisplayAuthoritative: (chatId) => FE_DISPLAY_ENABLED && !feDisplayShadowOptOut.has(chatId),
+  isPromptRegexAuthoritative: (chatId: string) => PROMPT_REGEX_ACTIVE && isPromptRegexOwnedChat(chatId),
+  dispatchPromptRegex: (prebuilt, scripts, messages, userId) =>
+    promptRegexRunnerClient
+      ? promptRegexRunnerClient.dispatch(prebuilt, scripts, messages, userId)
+      : Promise.resolve({ ok: false, changed: false, messages }),
   ensureActiveCardForChat,
   getCachedSettingsSync,
   modulesByNamespaceFromCard,
@@ -1067,6 +1178,7 @@ const lifecycleHandlers = createLifecycleEventHandlers({
   ensureActiveCardForChat,
   // Trampoline: characterModuleAttach is wired below, this defers the lookup to call time.
   invalidateActiveForCharacter: (characterId, userId) => characterModuleAttach.invalidateActiveForCharacter(characterId, userId),
+  onActiveChatEvicted: dropPromptRegexOwnershipForChat,
   invalidateRenderMcpForChat,
   invalidateRenderMcpForMessage,
   invalidateMacroInterceptorForChat,
@@ -1321,6 +1433,7 @@ const characterModuleAttach = createCharacterModuleAttach({
   refreshToggleDefinitions,
   refreshBgHtml,
   send,
+  onActiveChatEvicted: dropPromptRegexOwnershipForChat,
   log,
   errMsg,
 });

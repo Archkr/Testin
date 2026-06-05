@@ -66,6 +66,7 @@ export interface CharacterModuleAttachDeps {
     userId: string | undefined,
   ) => Promise<void>;
   readonly send: (msg: BackendToFrontend, userId: string | undefined) => void;
+  readonly onActiveChatEvicted?: (chatId: string) => void;
   readonly log: { readonly info: (m: string) => void; readonly warn: (m: string) => void };
   readonly errMsg: (e: unknown) => string;
 }
@@ -98,6 +99,7 @@ export function createCharacterModuleAttach(deps: CharacterModuleAttachDeps): Ch
     refreshToggleDefinitions,
     refreshBgHtml,
     send,
+    onActiveChatEvicted,
     log,
     errMsg,
   } = deps;
@@ -113,6 +115,7 @@ export function createCharacterModuleAttach(deps: CharacterModuleAttachDeps): Ch
     for (const [chatId, active] of activeCardByChat) {
       if (active.card.character_id === characterId && active.ownerUserId === userId) {
         activeCardByChat.delete(chatId);
+        onActiveChatEvicted?.(chatId);
         clearActiveAssetIndexes(chatId);
         clearActiveCharacterImage(chatId);
         variableState.clearChat(chatId);

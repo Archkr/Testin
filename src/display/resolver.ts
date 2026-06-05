@@ -17,14 +17,8 @@ import {
   waitForSnapshot,
   type DisplaySnapshot,
 } from './snapshot.js';
-import {
-  compileRegex,
-  collectMatches,
-  substituteRegexCaptures,
-  rebuildFromMatches,
-  applyTrimStrings,
-  type FeRegexScript,
-} from './regex-apply.js';
+import { type FeRegexScript } from './regex-apply.js';
+import { applyRegexScriptsCore, type RegexCoreScript } from './regex-core.js';
 import { runEditDisplayChain, runEditDisplayAtActions } from './lua-runner.js';
 const log = makeSafeLogger('display-resolver');
 
@@ -179,64 +173,38 @@ function runApply(
   const ctx = args.context;
   const placement = ctx.isUser ? 'user_input' : 'ai_output';
   const scripts = args.scripts as readonly FeRegexScript[];
-  let result = args.content;
 
-  for (const script of scripts) {
-    if (script.disabled === true) continue;
-    if (!script.placement.includes(placement)) continue;
-    if (script.min_depth !== null && ctx.depth < script.min_depth) continue;
-    if (script.max_depth !== null && ctx.depth > script.max_depth) continue;
-
-    let findRegex = script.find_regex;
+  const coreScripts: RegexCoreScript[] = scripts.map((script) => {
     const preFind = args.resolvedFindPatterns?.[script.id];
-    if (preFind !== undefined) {
-      findRegex = preFind;
-    } else if (script.substitute_macros !== 'none') {
-      findRegex = evalTemplate(snap, findRegex, ctx, recorder);
-    }
+    const preReplace = args.resolvedReplacements?.[script.id];
+    return {
+      find_regex: script.find_regex,
+      replace_string: script.replace_string,
+      flags: script.flags,
+      substitute_macros: script.substitute_macros,
+      placement: script.placement,
+      target: 'display',
+      min_depth: script.min_depth,
+      max_depth: script.max_depth,
+      trim_strings: script.trim_strings,
+      ...(script.disabled !== undefined ? { disabled: script.disabled } : {}),
+      ...(preFind !== undefined ? { preResolvedFind: preFind } : {}),
+      ...(preReplace !== undefined ? { preResolvedReplace: preReplace } : {}),
+    };
+  });
 
-    const regex = compileRegex(findRegex, script.flags);
-    if (!regex) continue;
-
-    try {
-      if (script.substitute_macros === 'raw') {
-        const matches = collectMatches(result, regex);
-        if (matches.length > 0) {
-          const replacements = matches.map((m) => {
-            const withCaptures = substituteRegexCaptures(
-              script.replace_string, m.fullMatch, m.groups, m.index, result, m.namedGroups,
-            );
-            return evalTemplate(snap, withCaptures, ctx, recorder);
-          });
-          result = rebuildFromMatches(result, matches, replacements);
-        }
-      } else if (script.substitute_macros === 'after') {
-        const substituted = result.replace(regex, script.replace_string);
-        result = evalTemplate(snap, substituted, ctx, recorder);
-      } else {
-        let replaceString = script.replace_string;
-        const preReplace = args.resolvedReplacements?.[script.id];
-        if (preReplace !== undefined) {
-          replaceString = script.substitute_macros === 'escaped'
-            ? preReplace.replace(/\$/g, '$$$$')
-            : preReplace;
-        } else if (script.substitute_macros !== 'none') {
-          const resolved = evalTemplate(snap, replaceString, ctx, recorder);
-          replaceString = script.substitute_macros === 'escaped'
-            ? resolved.replace(/\$/g, '$$$$')
-            : resolved;
-        }
-        result = result.replace(regex, replaceString);
+  return applyRegexScriptsCore(args.content, coreScripts, {
+    placement,
+    depth: ctx.depth,
+    evalTemplate: (text) => {
+      try {
+        return evalTemplate(snap, text, ctx, recorder);
+      } catch (err) {
+        recorder.volatile = true;
+        throw err;
       }
-
-      result = applyTrimStrings(result, script.trim_strings);
-    } catch {
-      recorder.volatile = true;
-      continue;
-    }
-  }
-
-  return result;
+    },
+  });
 }
 
 export function createDisplayResolver(writeback?: DisplayWritebackSink): SpindleDisplayResolver {
@@ -255,6 +223,7 @@ export function createDisplayResolver(writeback?: DisplayWritebackSink): Spindle
       try {
         let body = args.content;
         if (snap.luaTriggers.length > 0) {
+          body = runPipeline(buildInput(snap, body, args.context), { recorder });
           body = await runEditDisplayChain(
             snap,
             body,

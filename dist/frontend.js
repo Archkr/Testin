@@ -5783,23 +5783,26 @@ var init_random = __esm(() => {
 function register7(name, handler, description) {
   registry.register({ name, handler, description, category: "Risu / Variables", scoped: false });
 }
+function leaveVarLiteral(ctx) {
+  return !ctx.commit || ctx.promptRegexLiteralVars === true;
+}
 var init_variables = __esm(() => {
   init_registry();
   register7("risu_getvar", (ctx, a) => ctx.vars.get("local", a[0] ?? ""), "Reads a local chat variable. Empty string if unset.");
   register7("risu_setvar", (ctx, a) => {
-    if (!ctx.commit)
+    if (leaveVarLiteral(ctx))
       return `{{setvar::${a[0] ?? ""}::${a[1] ?? ""}}}`;
     ctx.vars.set("local", a[0] ?? "", a[1] ?? "");
     return "";
   }, "Sets a local chat variable.");
   register7("risu_addvar", (ctx, a) => {
-    if (!ctx.commit)
+    if (leaveVarLiteral(ctx))
       return `{{addvar::${a[0] ?? ""}::${a[1] ?? ""}}}`;
     ctx.vars.add("local", a[0] ?? "", Number(a[1] ?? "0"));
     return "";
   }, "Adds delta to a local chat variable (coerces current value to number).");
   register7("setdefaultvar", (ctx, a) => {
-    if (!ctx.commit)
+    if (leaveVarLiteral(ctx))
       return `{{setdefaultvar::${a[0] ?? ""}::${a[1] ?? ""}}}`;
     const name = a[0] ?? "";
     if (!ctx.vars.get("local", name)) {
@@ -5814,20 +5817,20 @@ var init_variables = __esm(() => {
     return "";
   }, "Sets a temporary variable.");
   register7("deletevar", (ctx, a) => {
-    if (!ctx.commit)
+    if (leaveVarLiteral(ctx))
       return `{{deletevar::${a[0] ?? ""}}}`;
     ctx.vars.delete("local", a[0] ?? "");
     return "";
   }, "Deletes a local chat variable.");
   register7("flushvar", (ctx, a) => {
-    if (!ctx.commit)
+    if (leaveVarLiteral(ctx))
       return `{{flushvar::${a[0] ?? ""}}}`;
     ctx.vars.delete("local", a[0] ?? "");
     return "";
   }, "Alias of deletevar.");
   register7("risu_getchatvar", (ctx, a) => ctx.vars.get("local", a[0] ?? ""), "Reads a chat-scoped variable (aliased to local in Risu).");
   register7("risu_setchatvar", (ctx, a) => {
-    if (!ctx.commit)
+    if (leaveVarLiteral(ctx))
       return `{{setchatvar::${a[0] ?? ""}::${a[1] ?? ""}}}`;
     ctx.vars.set("local", a[0] ?? "", a[1] ?? "");
     return "";
@@ -22458,6 +22461,15 @@ function getOverlay(chatId) {
   overlay.lastTouched = Date.now();
   return overlay;
 }
+function makeEphemeralOverlay() {
+  return {
+    local: new Map,
+    global: new Map,
+    chat: new Map,
+    temp: new Map,
+    lastTouched: 0
+  };
+}
 var MSG_DEP_KEY = "__msg__";
 function indexToCharacterAssets(index) {
   if (!index)
@@ -22476,7 +22488,8 @@ function indexToCharacterAssets(index) {
 }
 function buildEvaluatorContext(input) {
   const { chatId, commit, character: card, chat, variables } = input;
-  const overlay = chatId && commit ? getOverlay(chatId) : null;
+  const persistVars = commit && input.suppressVarPersist !== true;
+  const overlay = !commit ? null : input.suppressVarPersist === true ? makeEphemeralOverlay() : chatId ? getOverlay(chatId) : null;
   const tempOverlay = new Map;
   const envLocal = variables.local ?? {};
   const envGlobal = variables.global ?? {};
@@ -22535,7 +22548,7 @@ function buildEvaluatorContext(input) {
         overlay.global.set(name, value);
       else
         overlay.chat.set(name, value);
-      if (chatId && spindleGlobal) {
+      if (chatId && spindleGlobal && persistVars) {
         try {
           const op = scope === "global" ? spindleGlobal.variables.global.set(name, value) : spindleGlobal.variables.chat.set(chatId, name, value);
           op.catch(() => {});
@@ -22579,7 +22592,7 @@ function buildEvaluatorContext(input) {
           overlay.chat.delete(name);
         }
       }
-      if (chatId && spindleGlobal) {
+      if (chatId && spindleGlobal && persistVars) {
         try {
           const op = scope === "global" ? spindleGlobal.variables.global.delete(name) : spindleGlobal.variables.chat.delete(chatId, name);
           op.catch(() => {});
@@ -22703,7 +22716,8 @@ function buildEvaluatorContext(input) {
     callStack: 0,
     ...input.modulesByNamespace ? { modulesByNamespace: input.modulesByNamespace } : {},
     ...input.positionPt ? { positionPt: input.positionPt } : {},
-    ...input.cbsContext ? { cbsContext: true } : {}
+    ...input.cbsContext ? { cbsContext: true } : {},
+    ...input.suppressVarPersist ? { promptRegexLiteralVars: true } : {}
   };
   out.evaluate = (text) => {
     if (typeof text !== "string" || text.length === 0)
@@ -22741,6 +22755,7 @@ function runPipeline(input, opts) {
     ...input.lorebook ? { lorebook: input.lorebook } : {},
     ...input.positionPt ? { positionPt: input.positionPt } : {},
     ...input.cbsContext ? { cbsContext: true } : {},
+    ...input.suppressVarPersist ? { suppressVarPersist: true } : {},
     commit
   });
   return evaluate(input.template, ctx);
@@ -23112,6 +23127,61 @@ function applyTrimStrings(result, trims) {
       out = out.replaceAll(trim, "");
   }
   return out;
+}
+
+// src/display/regex-core.ts
+function applyRegexScriptsCore(content, scripts, opts) {
+  const { placement, depth, evalTemplate } = opts;
+  let result = content;
+  for (const script of scripts) {
+    if (script.disabled === true)
+      continue;
+    if (!script.placement.includes(placement))
+      continue;
+    if (depth !== undefined) {
+      if (script.min_depth !== null && depth < script.min_depth)
+        continue;
+      if (script.max_depth !== null && depth > script.max_depth)
+        continue;
+    }
+    let findRegex = script.find_regex;
+    if (script.preResolvedFind !== undefined) {
+      findRegex = script.preResolvedFind;
+    } else if (script.substitute_macros !== "none") {
+      findRegex = evalTemplate(findRegex);
+    }
+    const regex = compileRegex(findRegex, script.flags);
+    if (!regex)
+      continue;
+    try {
+      if (script.substitute_macros === "raw") {
+        const matches = collectMatches(result, regex);
+        if (matches.length > 0) {
+          const replacements = matches.map((m) => {
+            const withCaptures = substituteRegexCaptures(script.replace_string, m.fullMatch, m.groups, m.index, result, m.namedGroups);
+            return evalTemplate(withCaptures);
+          });
+          result = rebuildFromMatches(result, matches, replacements);
+        }
+      } else if (script.substitute_macros === "after") {
+        const substituted = result.replace(regex, script.replace_string);
+        result = evalTemplate(substituted);
+      } else {
+        let replaceString = script.replace_string;
+        if (script.preResolvedReplace !== undefined) {
+          replaceString = script.substitute_macros === "escaped" ? script.preResolvedReplace.replace(/\$/g, "$$$$") : script.preResolvedReplace;
+        } else if (script.substitute_macros !== "none") {
+          const resolved = evalTemplate(replaceString);
+          replaceString = script.substitute_macros === "escaped" ? resolved.replace(/\$/g, "$$$$") : resolved;
+        }
+        result = result.replace(regex, replaceString);
+      }
+      result = applyTrimStrings(result, script.trim_strings);
+    } catch {
+      continue;
+    }
+  }
+  return result;
 }
 
 // src/interpreter/risu-chat-view.ts
@@ -29308,57 +29378,36 @@ function runApply(snap, args, recorder) {
   const ctx = args.context;
   const placement = ctx.isUser ? "user_input" : "ai_output";
   const scripts = args.scripts;
-  let result = args.content;
-  for (const script of scripts) {
-    if (script.disabled === true)
-      continue;
-    if (!script.placement.includes(placement))
-      continue;
-    if (script.min_depth !== null && ctx.depth < script.min_depth)
-      continue;
-    if (script.max_depth !== null && ctx.depth > script.max_depth)
-      continue;
-    let findRegex = script.find_regex;
+  const coreScripts = scripts.map((script) => {
     const preFind = args.resolvedFindPatterns?.[script.id];
-    if (preFind !== undefined) {
-      findRegex = preFind;
-    } else if (script.substitute_macros !== "none") {
-      findRegex = evalTemplate(snap, findRegex, ctx, recorder);
-    }
-    const regex2 = compileRegex(findRegex, script.flags);
-    if (!regex2)
-      continue;
-    try {
-      if (script.substitute_macros === "raw") {
-        const matches = collectMatches(result, regex2);
-        if (matches.length > 0) {
-          const replacements = matches.map((m) => {
-            const withCaptures = substituteRegexCaptures(script.replace_string, m.fullMatch, m.groups, m.index, result, m.namedGroups);
-            return evalTemplate(snap, withCaptures, ctx, recorder);
-          });
-          result = rebuildFromMatches(result, matches, replacements);
-        }
-      } else if (script.substitute_macros === "after") {
-        const substituted = result.replace(regex2, script.replace_string);
-        result = evalTemplate(snap, substituted, ctx, recorder);
-      } else {
-        let replaceString2 = script.replace_string;
-        const preReplace = args.resolvedReplacements?.[script.id];
-        if (preReplace !== undefined) {
-          replaceString2 = script.substitute_macros === "escaped" ? preReplace.replace(/\$/g, "$$$$") : preReplace;
-        } else if (script.substitute_macros !== "none") {
-          const resolved = evalTemplate(snap, replaceString2, ctx, recorder);
-          replaceString2 = script.substitute_macros === "escaped" ? resolved.replace(/\$/g, "$$$$") : resolved;
-        }
-        result = result.replace(regex2, replaceString2);
+    const preReplace = args.resolvedReplacements?.[script.id];
+    return {
+      find_regex: script.find_regex,
+      replace_string: script.replace_string,
+      flags: script.flags,
+      substitute_macros: script.substitute_macros,
+      placement: script.placement,
+      target: "display",
+      min_depth: script.min_depth,
+      max_depth: script.max_depth,
+      trim_strings: script.trim_strings,
+      ...script.disabled !== undefined ? { disabled: script.disabled } : {},
+      ...preFind !== undefined ? { preResolvedFind: preFind } : {},
+      ...preReplace !== undefined ? { preResolvedReplace: preReplace } : {}
+    };
+  });
+  return applyRegexScriptsCore(args.content, coreScripts, {
+    placement,
+    depth: ctx.depth,
+    evalTemplate: (text) => {
+      try {
+        return evalTemplate(snap, text, ctx, recorder);
+      } catch (err) {
+        recorder.volatile = true;
+        throw err;
       }
-      result = applyTrimStrings(result, script.trim_strings);
-    } catch {
-      recorder.volatile = true;
-      continue;
     }
-  }
-  return result;
+  });
 }
 function createDisplayResolver(writeback) {
   return {
@@ -29377,6 +29426,7 @@ function createDisplayResolver(writeback) {
       try {
         let body = args.content;
         if (snap.luaTriggers.length > 0) {
+          body = runPipeline(buildInput(snap, body, args.context), { recorder });
           body = await runEditDisplayChain(snap, body, args.context, (t) => Promise.resolve(runPipeline(buildInput(snap, t, args.context), { recorder })), (vars) => writeback?.(chatId, vars));
         }
         if (snap.atActions.length > 0) {
@@ -42745,8 +42795,12 @@ function setupRealmModal(deps) {
   function renderPopup(card) {
     const wrap = document.createElement("div");
     wrap.className = "lr-realm-popup-overlay";
+    let pointerDownOnOverlay = false;
+    wrap.addEventListener("pointerdown", (ev) => {
+      pointerDownOnOverlay = ev.target === wrap;
+    });
     wrap.addEventListener("click", (ev) => {
-      if (ev.target === wrap) {
+      if (ev.target === wrap && pointerDownOnOverlay) {
         state.selected = null;
         render();
       }
@@ -42861,8 +42915,12 @@ function setupRealmModal(deps) {
   function renderPrompt() {
     const wrap = document.createElement("div");
     wrap.className = "lr-realm-prompt-overlay";
+    let pointerDownOnOverlay = false;
+    wrap.addEventListener("pointerdown", (ev) => {
+      pointerDownOnOverlay = ev.target === wrap;
+    });
     wrap.addEventListener("click", (ev) => {
-      if (ev.target === wrap) {
+      if (ev.target === wrap && pointerDownOnOverlay) {
         state.promptOpen = false;
         render();
       }

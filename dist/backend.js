@@ -16978,23 +16978,26 @@ var init_random = __esm(() => {
 function register7(name, handler, description) {
   registry.register({ name, handler, description, category: "Risu / Variables", scoped: false });
 }
+function leaveVarLiteral(ctx) {
+  return !ctx.commit || ctx.promptRegexLiteralVars === true;
+}
 var init_variables = __esm(() => {
   init_registry();
   register7("risu_getvar", (ctx, a) => ctx.vars.get("local", a[0] ?? ""), "Reads a local chat variable. Empty string if unset.");
   register7("risu_setvar", (ctx, a) => {
-    if (!ctx.commit)
+    if (leaveVarLiteral(ctx))
       return `{{setvar::${a[0] ?? ""}::${a[1] ?? ""}}}`;
     ctx.vars.set("local", a[0] ?? "", a[1] ?? "");
     return "";
   }, "Sets a local chat variable.");
   register7("risu_addvar", (ctx, a) => {
-    if (!ctx.commit)
+    if (leaveVarLiteral(ctx))
       return `{{addvar::${a[0] ?? ""}::${a[1] ?? ""}}}`;
     ctx.vars.add("local", a[0] ?? "", Number(a[1] ?? "0"));
     return "";
   }, "Adds delta to a local chat variable (coerces current value to number).");
   register7("setdefaultvar", (ctx, a) => {
-    if (!ctx.commit)
+    if (leaveVarLiteral(ctx))
       return `{{setdefaultvar::${a[0] ?? ""}::${a[1] ?? ""}}}`;
     const name = a[0] ?? "";
     if (!ctx.vars.get("local", name)) {
@@ -17009,20 +17012,20 @@ var init_variables = __esm(() => {
     return "";
   }, "Sets a temporary variable.");
   register7("deletevar", (ctx, a) => {
-    if (!ctx.commit)
+    if (leaveVarLiteral(ctx))
       return `{{deletevar::${a[0] ?? ""}}}`;
     ctx.vars.delete("local", a[0] ?? "");
     return "";
   }, "Deletes a local chat variable.");
   register7("flushvar", (ctx, a) => {
-    if (!ctx.commit)
+    if (leaveVarLiteral(ctx))
       return `{{flushvar::${a[0] ?? ""}}}`;
     ctx.vars.delete("local", a[0] ?? "");
     return "";
   }, "Alias of deletevar.");
   register7("risu_getchatvar", (ctx, a) => ctx.vars.get("local", a[0] ?? ""), "Reads a chat-scoped variable (aliased to local in Risu).");
   register7("risu_setchatvar", (ctx, a) => {
-    if (!ctx.commit)
+    if (leaveVarLiteral(ctx))
       return `{{setchatvar::${a[0] ?? ""}::${a[1] ?? ""}}}`;
     ctx.vars.set("local", a[0] ?? "", a[1] ?? "");
     return "";
@@ -31962,6 +31965,15 @@ function getOverlay2(chatId) {
 function clearVarOverlay(chatId) {
   varOverlays2.delete(chatId);
 }
+function makeEphemeralOverlay() {
+  return {
+    local: new Map,
+    global: new Map,
+    chat: new Map,
+    temp: new Map,
+    lastTouched: 0
+  };
+}
 var MSG_DEP_KEY = "__msg__";
 function indexToCharacterAssets2(index) {
   if (!index)
@@ -31980,7 +31992,8 @@ function indexToCharacterAssets2(index) {
 }
 function buildEvaluatorContext(input) {
   const { chatId, commit, character: card, chat, variables } = input;
-  const overlay = chatId && commit ? getOverlay2(chatId) : null;
+  const persistVars = commit && input.suppressVarPersist !== true;
+  const overlay = !commit ? null : input.suppressVarPersist === true ? makeEphemeralOverlay() : chatId ? getOverlay2(chatId) : null;
   const tempOverlay = new Map;
   const envLocal = variables.local ?? {};
   const envGlobal = variables.global ?? {};
@@ -32039,7 +32052,7 @@ function buildEvaluatorContext(input) {
         overlay.global.set(name, value);
       else
         overlay.chat.set(name, value);
-      if (chatId && spindleGlobal2) {
+      if (chatId && spindleGlobal2 && persistVars) {
         try {
           const op = scope === "global" ? spindleGlobal2.variables.global.set(name, value) : spindleGlobal2.variables.chat.set(chatId, name, value);
           op.catch(() => {});
@@ -32083,7 +32096,7 @@ function buildEvaluatorContext(input) {
           overlay.chat.delete(name);
         }
       }
-      if (chatId && spindleGlobal2) {
+      if (chatId && spindleGlobal2 && persistVars) {
         try {
           const op = scope === "global" ? spindleGlobal2.variables.global.delete(name) : spindleGlobal2.variables.chat.delete(chatId, name);
           op.catch(() => {});
@@ -32207,7 +32220,8 @@ function buildEvaluatorContext(input) {
     callStack: 0,
     ...input.modulesByNamespace ? { modulesByNamespace: input.modulesByNamespace } : {},
     ...input.positionPt ? { positionPt: input.positionPt } : {},
-    ...input.cbsContext ? { cbsContext: true } : {}
+    ...input.cbsContext ? { cbsContext: true } : {},
+    ...input.suppressVarPersist ? { promptRegexLiteralVars: true } : {}
   };
   out.evaluate = (text) => {
     if (typeof text !== "string" || text.length === 0)
@@ -35516,6 +35530,7 @@ function createLifecycleEventHandlers(deps) {
       invalidateRecentFlush(chatId);
       deps.lastSentBgHtmlByChat.delete(chatId);
       deps.activeCardByChat.delete(chatId);
+      deps.onActiveChatEvicted?.(chatId);
       deps.clearActiveAssetIndexes(chatId);
       deps.clearActiveCharacterImage(chatId);
       deps.clearActiveScriptstateDefaults(chatId);
@@ -35668,6 +35683,7 @@ function runPipeline(input, opts) {
     ...input.lorebook ? { lorebook: input.lorebook } : {},
     ...input.positionPt ? { positionPt: input.positionPt } : {},
     ...input.cbsContext ? { cbsContext: true } : {},
+    ...input.suppressVarPersist ? { suppressVarPersist: true } : {},
     commit
   });
   return evaluate(input.template, ctx);
@@ -36107,12 +36123,12 @@ function lookupMacroInterceptor(chatId, template, commit, ctxKey) {
     return null;
   }
   hitCount2 += 1;
-  return entry.result;
+  return { result: entry.result, touchedVars: entry.touchedVars, volatile: entry.volatile };
 }
-function cacheMacroInterceptor(chatId, template, commit, ctxKey, result) {
+function cacheMacroInterceptor(chatId, template, commit, ctxKey, result, touchedVars, volatile) {
   const now = Date.now();
   evictIfNeeded2(now);
-  cache5.set(key2(chatId, template, commit, ctxKey), { result, ts: now });
+  cache5.set(key2(chatId, template, commit, ctxKey), { result, touchedVars, volatile, ts: now });
 }
 function invalidateMacroInterceptorForChat(chatId) {
   const prefix = `${chatId}::`;
@@ -36630,11 +36646,170 @@ function getRegexScriptsApi() {
   };
   if (api.update)
     out.update = api.update.bind(api);
+  if (api.getActive)
+    out.getActive = api.getActive.bind(api);
   return out;
 }
 function getConnectionsListFn() {
   const fn = spindle.connections?.list;
   return fn ?? null;
+}
+
+// src/interceptors/prompt-regex-apply.ts
+var PROMPT_REGEX_PHASE = "commit";
+async function fetchMessages(chatId, log8, errMsg2) {
+  try {
+    const msgs = await spindle.chat.getMessages(chatId);
+    return msgs.map((m) => ({ id: m.id, role: m.role, content: m.content }));
+  } catch (err) {
+    log8.error(`prompt-regex fetchMessages chat=${chatId} failed: ${errMsg2(err)}`);
+    return [];
+  }
+}
+async function buildBackendPipelineInput(chatId, characterId, userId, deps, personaId) {
+  const { log: log8, errMsg: errMsg2 } = deps;
+  const personaFetch = personaId !== undefined ? spindle.personas.get(personaId, userId).catch(() => null) : spindle.personas.getActive(userId).catch(() => null);
+  const [chat, character2, messages, persona] = await Promise.all([
+    spindle.chats.get(chatId, userId),
+    spindle.characters.get(characterId, userId),
+    fetchMessages(chatId, log8, errMsg2),
+    personaFetch
+  ]);
+  const metadata = chat?.metadata ?? {};
+  const mv = metadata.macro_variables ?? {};
+  const chatVars = metadata.chat_variables;
+  const lastMessageId = messages.length === 0 ? -1 : messages.length - 1;
+  const assistantTail = [...messages].reverse().find((m) => m.role === "assistant");
+  const userTail = [...messages].reverse().find((m) => m.role === "user");
+  const assetIndexes = getActiveAssetIndexes(chatId);
+  const activeCard = deps.activeCardByChat.get(chatId)?.card;
+  const scriptstateDefaults = activeCard?.risuPayload.scriptstate_defaults;
+  const screenDims = getScreenDims(userId);
+  const cachedMessages = getCachedMessages(chatId);
+  const activeLore = getActiveLorebook(chatId);
+  const charImageUrl = imageUrlFromId(character2?.image_id);
+  const personaImageUrl = imageUrlFromId(persona?.image_id);
+  return {
+    phase: PROMPT_REGEX_PHASE,
+    suppressVarPersist: true,
+    chatId,
+    userId,
+    characterId,
+    ...scriptstateDefaults && Object.keys(scriptstateDefaults).length > 0 ? { scriptstateDefaults } : {},
+    ...screenDims ? { screenWidth: screenDims.width, screenHeight: screenDims.height } : {},
+    userName: persona?.name ?? "",
+    charName: character2?.name ?? "",
+    ...persona?.description ? { personaText: persona.description } : {},
+    ...personaImageUrl ? { personaImage: personaImageUrl } : {},
+    character: {
+      description: character2?.description ?? "",
+      personality: character2?.personality ?? "",
+      scenario: character2?.scenario ?? "",
+      exampleDialogue: character2?.mes_example ?? "",
+      mainPrompt: character2?.system_prompt ?? "",
+      postHistoryInstructions: character2?.post_history_instructions ?? "",
+      creatorNotes: character2?.creator_notes ?? "",
+      firstMessage: character2?.first_mes ?? "",
+      alternateGreetings: character2?.alternate_greetings ?? [],
+      ...assetIndexes ? { additionalAssets: assetIndexes.assets } : {},
+      ...assetIndexes ? { emotionImages: assetIndexes.emotions } : {},
+      ...charImageUrl ? { image: charImageUrl } : {}
+    },
+    chat: {
+      messageCount: messages.length,
+      lastMessageId,
+      lastMessage: messages[messages.length - 1]?.content ?? "",
+      lastCharMessage: assistantTail?.content ?? "",
+      lastUserMessage: userTail?.content ?? "",
+      ...cachedMessages ? { messages: cachedMessages } : {}
+    },
+    variables: {
+      ...mv.local ? { local: mv.local } : {},
+      ...mv.global ? { global: mv.global } : {},
+      ...chatVars ? { chat: chatVars } : {}
+    },
+    legacyMediaFindings: deps.getCachedSettingsSync(userId).legacyMediaFindings,
+    wrapIslands: false,
+    lorebook: activeLore,
+    ...activeCard && deps.modulesByNamespaceFromCard(activeCard) ? { modulesByNamespace: deps.modulesByNamespaceFromCard(activeCard) } : {},
+    ...getDecoratorBuffers(chatId)?.positionPt ? { positionPt: getDecoratorBuffers(chatId).positionPt } : {}
+  };
+}
+function rowToPromptScript(r) {
+  const row = r;
+  const target = row.target;
+  const isPrompt = Array.isArray(target) ? target.includes("prompt") : target === "prompt";
+  if (!isPrompt)
+    return null;
+  if (typeof row.find_regex !== "string")
+    return null;
+  const mode = row.substitute_macros;
+  return {
+    find_regex: row.find_regex,
+    replace_string: typeof row.replace_string === "string" ? row.replace_string : "",
+    flags: typeof row.flags === "string" ? row.flags : "g",
+    substitute_macros: mode === "escaped" || mode === "after" || mode === "raw" ? mode : "none",
+    placement: Array.isArray(row.placement) ? row.placement : [],
+    target: "prompt",
+    min_depth: typeof row.min_depth === "number" ? row.min_depth : null,
+    max_depth: typeof row.max_depth === "number" ? row.max_depth : null,
+    trim_strings: Array.isArray(row.trim_strings) ? row.trim_strings : [],
+    disabled: false
+  };
+}
+async function listPromptRegexScope(regexApi, userId, scope, scopeId) {
+  const PAGE_SIZE2 = 200;
+  const out = [];
+  let offset = 0;
+  while (true) {
+    const page = await regexApi.list({
+      userId,
+      limit: PAGE_SIZE2,
+      offset,
+      scope,
+      ...scopeId !== undefined ? { scopeId } : {},
+      target: "prompt"
+    });
+    if (!Array.isArray(page.data) || page.data.length === 0)
+      break;
+    for (const r of page.data) {
+      const row = r;
+      if (row.scope !== scope)
+        continue;
+      if (scopeId !== undefined && row.scope_id !== scopeId)
+        continue;
+      if (row.disabled === true)
+        continue;
+      const mapped = rowToPromptScript(r);
+      if (mapped)
+        out.push(mapped);
+    }
+    offset += page.data.length;
+    if (typeof page.total === "number" && offset >= page.total)
+      break;
+  }
+  return out;
+}
+async function listLivePromptRegexScripts(characterId, chatId, userId) {
+  const regexApi = getRegexScriptsApi();
+  if (!regexApi?.list) {
+    throw new Error("spindle.regex_scripts.list is not available on this host");
+  }
+  if (regexApi.getActive) {
+    const rows = await regexApi.getActive({ target: "prompt", characterId, chatId, userId });
+    const out = [];
+    for (const r of rows) {
+      const mapped = rowToPromptScript(r);
+      if (mapped)
+        out.push(mapped);
+    }
+    return out;
+  }
+  return [
+    ...await listPromptRegexScope(regexApi, userId, "global", undefined),
+    ...await listPromptRegexScope(regexApi, userId, "character", characterId),
+    ...await listPromptRegexScope(regexApi, userId, "chat", chatId)
+  ];
 }
 
 // src/interceptors/lumi-hooks.ts
@@ -36715,10 +36890,8 @@ function createLumiInterceptors(deps) {
         const hit = lookupMacroInterceptor(chatId, ctx.template, ctx.commit !== false, micCtxKey);
         if (hit !== null) {
           maybeEmitMicCacheStats();
-          log8.trace(`macroInterceptor.exit #${callId} path=cache_hit elapsed=${Date.now() - t0}ms ` + `tmpl_len=${ctx.template.length} out_len=${hit.length}`);
-          if (hit === ctx.template)
-            return;
-          return hit;
+          log8.trace(`macroInterceptor.exit #${callId} path=cache_hit elapsed=${Date.now() - t0}ms ` + `tmpl_len=${ctx.template.length} out_len=${hit.result.length}`);
+          return { text: hit.result, touchedVars: hit.touchedVars, volatile: hit.volatile };
         }
       }
       const charCard = ctx.env.character;
@@ -36739,6 +36912,7 @@ function createLumiInterceptors(deps) {
         log8.trace(`macroInterceptor #${callId}: lorebook entries=${activeLore.length} for chat=${chatId} (tmpl mentions lorebook/each)`);
       }
       let resolved;
+      const recorder = { touched: new Set, volatile: false };
       const __ppT0 = perfEnabled() ? Date.now() : 0;
       try {
         resolved = runPipeline({
@@ -36785,7 +36959,7 @@ function createLumiInterceptors(deps) {
           lorebook: activeLore,
           ...deps.modulesByNamespaceFromCard(active.card) ? { modulesByNamespace: deps.modulesByNamespaceFromCard(active.card) } : {},
           ...getDecoratorBuffers(chatId)?.positionPt ? { positionPt: getDecoratorBuffers(chatId).positionPt } : {}
-        });
+        }, { recorder });
       } catch (err) {
         log8.warn(`macroInterceptor: runPipeline threw chat=${chatId} phase=${ctx.phase}: ${errMsg2(err)}. Passing through.`);
         return;
@@ -36815,21 +36989,23 @@ function createLumiInterceptors(deps) {
               characterId: active.card.character_id,
               resolveTemplate: (text) => deps.resolveReadonly(text, chatId, active.card.character_id, ctx.userId, { cbsContext: true })
             });
+            recorder.volatile = true;
           } catch (err) {
             log8.warn(`macroInterceptor: listenEdit chain threw: ${errMsg2(err)}. Continuing with pre-hook resolved.`);
           }
         }
       }
+      const touchedVars = [...recorder.touched];
       if (resolved === ctx.template) {
         if (cacheable) {
-          cacheMacroInterceptor(chatId, ctx.template, ctx.commit !== false, micCtxKey, resolved);
+          cacheMacroInterceptor(chatId, ctx.template, ctx.commit !== false, micCtxKey, resolved, touchedVars, recorder.volatile);
           maybeEmitMicCacheStats();
         }
         log8.trace(`macroInterceptor.exit #${callId} path=unchanged_passthrough elapsed=${Date.now() - t0}ms ` + `tmpl_len=${ctx.template.length} marker=${resolvedMarker ?? "none"}`);
-        return;
+        return { text: resolved, touchedVars, volatile: recorder.volatile };
       }
       if (cacheable) {
-        cacheMacroInterceptor(chatId, ctx.template, ctx.commit !== false, micCtxKey, resolved);
+        cacheMacroInterceptor(chatId, ctx.template, ctx.commit !== false, micCtxKey, resolved, touchedVars, recorder.volatile);
         maybeEmitMicCacheStats();
       }
       log8.trace(`macroInterceptor.exit #${callId} path=resolved elapsed=${Date.now() - t0}ms ` + `in_len=${ctx.template.length} out_len=${resolved.length} ` + `marker=${resolvedMarker ?? "none"} still_has_raw_cbs=${stillHasRaw} ` + `out_head=${JSON.stringify(resolved.slice(0, 120))}`);
@@ -36839,7 +37015,7 @@ function createLumiInterceptors(deps) {
           log8.info(`[panel-shape] callId=${callId} commit=${ctx.commit} count=${panelMatches.length} ` + `out_len=${resolved.length} ` + `head=${JSON.stringify(resolved.slice(0, 60))} ` + `tail=${JSON.stringify(resolved.slice(-60))}`);
         }
       }
-      return resolved;
+      return { text: resolved, touchedVars, volatile: recorder.volatile };
     }), 100);
     log8.info("macroInterceptor: registered at priority=100");
   }
@@ -37065,16 +37241,46 @@ function createLumiInterceptors(deps) {
             break;
           }
         }
-        if (!userId)
+        if (!userId) {
+          if (deps.isPromptRegexAuthoritative(chatId)) {
+            log8.error(`interceptor: chat=${chatId} is prompt-regex owned (host skipped its pass) but userId is unattributable \u2014 shipping an UN-REGEX'd prompt.`);
+          }
           return messages;
+        }
         activeCandidate = await deps.ensureActiveCardForChat(chatId, null, userId);
-        if (!activeCandidate)
+        if (!activeCandidate) {
+          if (deps.isPromptRegexAuthoritative(chatId)) {
+            log8.error(`interceptor: chat=${chatId} is prompt-regex owned (host skipped its pass) but no active card resolved \u2014 shipping an UN-REGEX'd prompt.`);
+          }
           return messages;
+        }
       }
       const active = activeCandidate;
       const resolvedUserId = userId;
       return userIdAls.run(resolvedUserId, async () => {
         let out = messages;
+        if (deps.isPromptRegexAuthoritative(chatId) && userId !== undefined) {
+          try {
+            const scripts = await listLivePromptRegexScripts(active.card.character_id, chatId, userId);
+            if (scripts.length > 0) {
+              const prebuilt = await buildBackendPipelineInput(chatId, active.card.character_id, userId, {
+                activeCardByChat,
+                getCachedSettingsSync: deps.getCachedSettingsSync,
+                modulesByNamespaceFromCard: deps.modulesByNamespaceFromCard,
+                log: log8,
+                errMsg: errMsg2
+              }, typeof ctx.personaId === "string" ? ctx.personaId : undefined);
+              const target = out === messages ? out.slice() : out;
+              const result = await deps.dispatchPromptRegex(prebuilt, scripts, target, userId);
+              if (result.ok && result.changed) {
+                log8.info(`interceptor.promptRegex: chat=${chatId} applied scripts=${scripts.length} messages=${result.messages.length} (via runner)`);
+                out = result.messages;
+              }
+            }
+          } catch (err) {
+            log8.error(`interceptor.promptRegex threw for prompt-regex-owned chat=${chatId} (host skipped its pass): ` + `${errMsg2(err)}. Shipping an UN-REGEX'd prompt.`);
+          }
+        }
         const buffers = getDecoratorBuffers(chatId);
         if (buffers && buffers.injectAt.length > 0) {
           const character2 = await spindle.characters.get(active.card.character_id, userId).catch(() => null);
@@ -37303,10 +37509,167 @@ function createLumiInterceptors(deps) {
   };
 }
 
+// src/interceptors/prompt-regex-runner-client.ts
+var RUNNER_ENTRY = "dist/regex-runner.js";
+var RUNNER_KIND = "lumirealm-prompt-regex";
+var RUNNER_KEY = "singleton";
+var PROMPT_REGEX_TIMEOUT_MS = (() => {
+  const env = globalThis.Bun?.env;
+  const raw = env?.LUMIREALM_PROMPT_REGEX_TIMEOUT_MS;
+  const parsed = raw !== undefined ? parseInt(raw, 10) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 2000;
+})();
+var STARTUP_TIMEOUT_MS = 1e4;
+var HEARTBEAT_TIMEOUT_MS = 30000;
+function getBackendProcessesApi() {
+  const api = spindle.backendProcesses;
+  if (!api || typeof api.spawn !== "function" || typeof api.onMessage !== "function")
+    return null;
+  return api;
+}
+function isPromptRegexRunnerAvailable() {
+  return getBackendProcessesApi() !== null;
+}
+function createPromptRegexRunnerClient(deps) {
+  const { log: log8, errMsg: errMsg2 } = deps;
+  const pending3 = new Map;
+  let handle = null;
+  let handleProcessId = null;
+  let spawnInFlight = null;
+  let listenersWired = false;
+  let requestSeq = 0;
+  function failAllPending(reason) {
+    for (const [requestId, p] of pending3) {
+      clearTimeout(p.timer);
+      p.resolve({ requestId, ok: false, error: reason });
+    }
+    pending3.clear();
+  }
+  function wireListeners(api) {
+    if (listenersWired)
+      return;
+    listenersWired = true;
+    api.onMessage((event) => {
+      if (handleProcessId !== null && event.processId !== handleProcessId)
+        return;
+      const reply = event.payload;
+      if (!reply || typeof reply.requestId !== "string")
+        return;
+      const p = pending3.get(reply.requestId);
+      if (!p)
+        return;
+      pending3.delete(reply.requestId);
+      clearTimeout(p.timer);
+      p.resolve(reply);
+    });
+    api.onLifecycle((event) => {
+      if (handleProcessId === null || event.processId !== handleProcessId)
+        return;
+      if (event.state === "failed" || event.state === "stopped" || event.state === "timed_out" || event.state === "completed") {
+        log8.warn(`prompt-regex runner died state=${event.state} processId=${event.processId.slice(0, 8)}`);
+        handle = null;
+        handleProcessId = null;
+        failAllPending(`runner ${event.state}`);
+      }
+    });
+  }
+  async function ensureHandle(userId) {
+    if (handle !== null)
+      return handle;
+    if (spawnInFlight !== null)
+      return spawnInFlight;
+    if (userId === undefined) {
+      log8.warn("prompt-regex runner: no userId, cannot spawn managed process; shipping prompt without inline regex");
+      return null;
+    }
+    const api = getBackendProcessesApi();
+    if (!api)
+      return null;
+    wireListeners(api);
+    spawnInFlight = (async () => {
+      try {
+        const spawned = await api.spawn({
+          entry: RUNNER_ENTRY,
+          kind: RUNNER_KIND,
+          key: RUNNER_KEY,
+          startupTimeoutMs: STARTUP_TIMEOUT_MS,
+          heartbeatTimeoutMs: HEARTBEAT_TIMEOUT_MS,
+          replaceExisting: true,
+          userId
+        });
+        handle = spawned;
+        handleProcessId = spawned.processId;
+        log8.info(`prompt-regex runner spawned processId=${spawned.processId.slice(0, 8)}`);
+        return spawned;
+      } catch (err) {
+        log8.error(`prompt-regex runner spawn failed: ${errMsg2(err)}`);
+        handle = null;
+        handleProcessId = null;
+        return null;
+      } finally {
+        spawnInFlight = null;
+      }
+    })();
+    return spawnInFlight;
+  }
+  function respawnAfterFault() {
+    const dead = handle;
+    handle = null;
+    handleProcessId = null;
+    if (dead) {
+      dead.stop({ reason: "prompt-regex runner fault" }).catch(() => {});
+    }
+  }
+  async function dispatch(prebuilt, scripts, messages, userId) {
+    const failOpen = { ok: false, changed: false, messages };
+    const active = await ensureHandle(userId);
+    if (!active) {
+      log8.error("prompt-regex runner unavailable; shipping prompt without inline regex (host already skipped its pass)");
+      return failOpen;
+    }
+    const requestId = `prq-${++requestSeq}`;
+    const replyPromise = new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        if (!pending3.has(requestId))
+          return;
+        pending3.delete(requestId);
+        resolve({ requestId, ok: false, error: `timeout after ${PROMPT_REGEX_TIMEOUT_MS}ms` });
+      }, PROMPT_REGEX_TIMEOUT_MS);
+      if (typeof timer.unref === "function") {
+        timer.unref();
+      }
+      pending3.set(requestId, { resolve, timer });
+    });
+    try {
+      active.send({ requestId, prebuilt, scripts, messages });
+    } catch (err) {
+      const p = pending3.get(requestId);
+      if (p) {
+        clearTimeout(p.timer);
+        pending3.delete(requestId);
+      }
+      log8.error(`prompt-regex runner send failed: ${errMsg2(err)}; shipping prompt without inline regex`);
+      respawnAfterFault();
+      return failOpen;
+    }
+    const reply = await replyPromise;
+    if (reply.ok) {
+      return { ok: true, changed: reply.changed, messages: reply.messages };
+    }
+    log8.error(`prompt-regex runner request failed (${reply.error}); killing + respawning runner, shipping prompt without inline regex (host already skipped its pass)`);
+    respawnAfterFault();
+    return failOpen;
+  }
+  async function warmUp(userId) {
+    return await ensureHandle(userId) !== null;
+  }
+  return { dispatch, warmUp };
+}
+
 // src/state/readonly-resolver.ts
 function createReadonlyResolver(deps) {
   const { log: log8, errMsg: errMsg2, activeCardByChat } = deps;
-  async function fetchMessages(chatId) {
+  async function fetchMessages2(chatId) {
     try {
       const msgs = await spindle.chat.getMessages(chatId);
       return msgs.map((m) => ({ id: m.id, role: m.role, content: m.content }));
@@ -37319,7 +37682,7 @@ function createReadonlyResolver(deps) {
     const [chat, character2, messages, persona] = await Promise.all([
       spindle.chats.get(chatId, userId),
       spindle.characters.get(characterId, userId),
-      fetchMessages(chatId),
+      fetchMessages2(chatId),
       spindle.personas.getActive(userId).catch(() => null)
     ]);
     const metadata = chat?.metadata ?? {};
@@ -37423,7 +37786,7 @@ function createReadonlyResolver(deps) {
       throw err;
     }
   }
-  return { resolve, resolveInWorker, fetchMessages };
+  return { resolve, resolveInWorker, fetchMessages: fetchMessages2 };
 }
 
 // src/state/bg-html.ts
@@ -38852,6 +39215,7 @@ function createApplySvgRasterIndex(deps) {
     ensureActiveCardForChat,
     invalidateRenderMcpForChat: invalidateRenderMcpForChat2,
     invalidateMacroInterceptorForChat: invalidateMacroInterceptorForChat2,
+    onActiveChatEvicted,
     refreshBgHtml,
     log: log8,
     errMsg: errMsg2
@@ -38939,6 +39303,7 @@ function createApplySvgRasterIndex(deps) {
     for (const [chatId, active] of activeCardByChat) {
       if (active.card.character_id === characterId) {
         activeCardByChat.delete(chatId);
+        onActiveChatEvicted?.(chatId);
         evictedChatIds.push(chatId);
       }
     }
@@ -40655,6 +41020,7 @@ function createCharacterModuleAttach(deps) {
     refreshToggleDefinitions,
     refreshBgHtml,
     send,
+    onActiveChatEvicted,
     log: log8,
     errMsg: errMsg2
   } = deps;
@@ -40668,6 +41034,7 @@ function createCharacterModuleAttach(deps) {
     for (const [chatId, active] of activeCardByChat) {
       if (active.card.character_id === characterId && active.ownerUserId === userId) {
         activeCardByChat.delete(chatId);
+        onActiveChatEvicted?.(chatId);
         clearActiveAssetIndexes(chatId);
         clearActiveCharacterImage(chatId);
         variableState.clearChat(chatId);
@@ -41352,6 +41719,7 @@ function makeDeleteCardByChar(deps) {
     toggleState,
     listCards,
     pushCards,
+    onActiveChatEvicted,
     log: log8
   } = deps;
   return async (characterId, userId, mode = "cascade") => {
@@ -41372,6 +41740,7 @@ function makeDeleteCardByChar(deps) {
       for (const [chatId, active] of activeCardByChat) {
         if (active.card.character_id === characterId && active.ownerUserId === userId) {
           activeCardByChat.delete(chatId);
+          onActiveChatEvicted?.(chatId);
           clearActiveAssetIndexes(chatId);
           clearActiveCharacterImage(chatId);
           variableState.clearChat(chatId);
@@ -42441,6 +42810,7 @@ var deleteCardByChar = makeDeleteCardByChar({
   toggleState,
   listCards,
   pushCards,
+  onActiveChatEvicted: dropPromptRegexOwnershipForChat,
   log: log8
 });
 var orphanDetectBuilders = createOrphanDetectBuilders({
@@ -42714,12 +43084,89 @@ var FE_DISPLAY_ENABLED = (() => {
   const v = globalThis.Bun?.env?.LUMIREALM_FE_DISPLAY;
   return v !== "0" && v !== "false";
 })();
+var PROMPT_REGEX_ENV = (() => {
+  const v = globalThis.Bun?.env?.LUMIREALM_PROMPT_REGEX;
+  return v === "1" || v === "true";
+})();
+var PROMPT_REGEX_RUNNER_AVAILABLE = isPromptRegexRunnerAvailable();
+var PROMPT_REGEX_HOST_OWNERSHIP_AVAILABLE = typeof spindle.promptRegex?.setOwnedChats === "function";
+var PROMPT_REGEX_ACTIVE = PROMPT_REGEX_ENV && PROMPT_REGEX_RUNNER_AVAILABLE && PROMPT_REGEX_HOST_OWNERSHIP_AVAILABLE;
+if (PROMPT_REGEX_ENV && !PROMPT_REGEX_RUNNER_AVAILABLE) {
+  log8.warn("LUMIREALM_PROMPT_REGEX is set but spindle.backendProcesses is unavailable on this host; " + "declining prompt-regex ownership so the host keeps running its own sandboxed pass. " + "Upgrade Lumiverse to enable inline prompt regex in a killable subprocess.");
+} else if (PROMPT_REGEX_ENV && !PROMPT_REGEX_HOST_OWNERSHIP_AVAILABLE) {
+  log8.warn("LUMIREALM_PROMPT_REGEX is set and backendProcesses is available, but spindle.promptRegex.setOwnedChats " + "is missing on this host; declining prompt-regex ownership so the host keeps its own pass (a host that " + "cannot be told to skip would otherwise double-apply). Upgrade Lumiverse to enable inline prompt regex.");
+}
+var promptRegexRunnerClient = PROMPT_REGEX_ACTIVE ? createPromptRegexRunnerClient({ log: log8, errMsg }) : null;
+var promptRegexOwnedByUser = new Map;
+var promptRegexOwnedSnapshot = "";
+function syncPromptRegexOwnedChats() {
+  if (!PROMPT_REGEX_ACTIVE)
+    return;
+  const owned = new Set;
+  for (const chatId of promptRegexOwnedByUser.values())
+    owned.add(chatId);
+  const next = [...owned].sort().join(" ");
+  if (next === promptRegexOwnedSnapshot)
+    return;
+  promptRegexOwnedSnapshot = next;
+  const api = spindle.promptRegex;
+  if (!api?.setOwnedChats)
+    return;
+  try {
+    api.setOwnedChats([...owned]);
+  } catch (err) {
+    log8.warn(`syncPromptRegexOwnedChats: ${err.message}`);
+  }
+}
+function dropPromptRegexOwnershipForChat(chatId) {
+  if (!PROMPT_REGEX_ACTIVE)
+    return;
+  let dropped = false;
+  for (const [uid, owned] of promptRegexOwnedByUser) {
+    if (owned === chatId) {
+      promptRegexOwnedByUser.delete(uid);
+      dropped = true;
+    }
+  }
+  if (dropped)
+    syncPromptRegexOwnedChats();
+}
+function isPromptRegexOwnedChat(chatId) {
+  for (const owned of promptRegexOwnedByUser.values()) {
+    if (owned === chatId)
+      return true;
+  }
+  return false;
+}
 function sendSetActiveChat(activeChatId, activeCharacterId, userId) {
   try {
     const feDisplay = activeChatId !== null && FE_DISPLAY_ENABLED;
     send({ type: "set_active_chat", chatId: activeChatId, characterId: activeCharacterId, feDisplay }, userId);
   } catch (err) {
     log8.warn(`sendSetActiveChat: ${err.message}`);
+  }
+  if (PROMPT_REGEX_ACTIVE && userId !== undefined) {
+    const nowOwned = activeChatId !== null;
+    const prevOwned = promptRegexOwnedByUser.get(userId);
+    if (nowOwned) {
+      if (prevOwned !== activeChatId) {
+        promptRegexOwnedByUser.set(userId, activeChatId);
+        const claimedChat = activeChatId;
+        const claimingUser = userId;
+        promptRegexRunnerClient?.warmUp(claimingUser).then((ok) => {
+          if (ok)
+            return;
+          if (promptRegexOwnedByUser.get(claimingUser) !== claimedChat)
+            return;
+          log8.error(`prompt-regex: runner warm-up failed for chat=${claimedChat}; dropping ownership so the host resumes its own prompt-regex pass.`);
+          promptRegexOwnedByUser.delete(claimingUser);
+          syncPromptRegexOwnedChats();
+        });
+      }
+    } else if (prevOwned !== undefined) {
+      promptRegexOwnedByUser.delete(userId);
+    }
+    syncPromptRegexOwnedChats();
   }
 }
 var nudgeGc = makeNudgeGc(log8, errMsg);
@@ -42824,6 +43271,7 @@ var applySvgRasterIndex = createApplySvgRasterIndex({
   ensureActiveCardForChat,
   invalidateRenderMcpForChat,
   invalidateMacroInterceptorForChat,
+  onActiveChatEvicted: dropPromptRegexOwnershipForChat,
   refreshBgHtml,
   log: log8,
   errMsg
@@ -42892,6 +43340,8 @@ createLumiInterceptors({
   lastActiveChatByUser,
   captureUserId,
   isFeDisplayAuthoritative: (chatId) => FE_DISPLAY_ENABLED && !feDisplayShadowOptOut.has(chatId),
+  isPromptRegexAuthoritative: (chatId) => PROMPT_REGEX_ACTIVE && isPromptRegexOwnedChat(chatId),
+  dispatchPromptRegex: (prebuilt, scripts, messages, userId) => promptRegexRunnerClient ? promptRegexRunnerClient.dispatch(prebuilt, scripts, messages, userId) : Promise.resolve({ ok: false, changed: false, messages }),
   ensureActiveCardForChat,
   getCachedSettingsSync,
   modulesByNamespaceFromCard,
@@ -42941,6 +43391,7 @@ var lifecycleHandlers = createLifecycleEventHandlers({
   toggleState,
   ensureActiveCardForChat,
   invalidateActiveForCharacter: (characterId, userId) => characterModuleAttach.invalidateActiveForCharacter(characterId, userId),
+  onActiveChatEvicted: dropPromptRegexOwnershipForChat,
   invalidateRenderMcpForChat,
   invalidateRenderMcpForMessage,
   invalidateMacroInterceptorForChat,
@@ -43149,6 +43600,7 @@ var characterModuleAttach = createCharacterModuleAttach({
   refreshToggleDefinitions,
   refreshBgHtml,
   send,
+  onActiveChatEvicted: dropPromptRegexOwnershipForChat,
   log: log8,
   errMsg
 });

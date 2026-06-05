@@ -63,6 +63,10 @@ register("axmodel", (ctx) => ctx.axModel,
 register("role", (ctx) => {
   if (ctx.cbsContext) return "null";
   if (ctx.role !== null) return lumiRoleToRisu(ctx.role);
+  // Prompt-regex (editprocess) pass mirrors Risu: chatID=-1 / no chatRole → matcherArg.role
+  // ?? 'null' (cbs.ts:684). Risu's editprocess never sets the firstmsg condition, so the
+  // greeting and any role-less block resolve 'null', NOT the display-path 'char' fallback.
+  if (ctx.promptRegexLiteralVars) return "null";
   if (ctx.isFirstMessage) return "char";
   return "null";
 }, "Returns the role of the current message ('user', 'char'/'assistant', 'system').");
@@ -71,6 +75,11 @@ register("role", (ctx) => {
 // for prompt-assembly / lorebook contexts that have no per-message index.
 register("isfirstmsg", (ctx) => {
   if (ctx.cbsContext) return "0";
+  // Prompt-regex (editprocess) pass: Risu's editprocess never threads cbsConditions.firstmsg
+  // (it's a display-only condition, set in Chat/ChatBody.svelte), so {{isfirstmsg}} is always
+  // '0' there — including the greeting (cbs.ts:691-697). The display path keeps its per-index
+  // greeting semantics below.
+  if (ctx.promptRegexLiteralVars) return "0";
   if (ctx.currentMessageIndex !== null && ctx.currentMessageIndex !== undefined) {
     return ctx.currentMessageIndex === -1 ? "1" : "0";
   }

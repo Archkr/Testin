@@ -116,6 +116,7 @@ export interface DeleteCardDeps {
   readonly toggleState: { clearChat: (chatId: string) => void };
   readonly listCards: (userId: string | undefined) => Promise<readonly CardSummary[]>;
   readonly pushCards: (cards: readonly CardSummary[], userId: string | undefined) => void;
+  readonly onActiveChatEvicted?: (chatId: string) => void;
   readonly log: { readonly info: (m: string) => void; readonly warn: (m: string) => void };
 }
 
@@ -132,6 +133,7 @@ export function makeDeleteCardByChar(deps: DeleteCardDeps): (
     toggleState,
     listCards,
     pushCards,
+    onActiveChatEvicted,
     log,
   } = deps;
 
@@ -155,6 +157,7 @@ export function makeDeleteCardByChar(deps: DeleteCardDeps): (
       for (const [chatId, active] of activeCardByChat) {
         if (active.card.character_id === characterId && active.ownerUserId === userId) {
           activeCardByChat.delete(chatId);
+          onActiveChatEvicted?.(chatId);
           clearActiveAssetIndexes(chatId);
           clearActiveCharacterImage(chatId);
           variableState.clearChat(chatId);

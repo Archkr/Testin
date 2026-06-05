@@ -31,6 +31,7 @@ export interface LifecycleEventHandlerDeps {
     userId: string | undefined,
   ) => Promise<ActiveCard | null>;
   readonly invalidateActiveForCharacter: (characterId: string, userId: string | undefined) => void;
+  readonly onActiveChatEvicted?: (chatId: string) => void;
   readonly invalidateRenderMcpForChat: (chatId: string) => void;
   readonly invalidateRenderMcpForMessage: (chatId: string, messageId: string) => void;
   readonly invalidateMacroInterceptorForChat: (chatId: string) => void;
@@ -488,6 +489,7 @@ export function createLifecycleEventHandlers(deps: LifecycleEventHandlerDeps): L
       invalidateRecentFlush(chatId);
       deps.lastSentBgHtmlByChat.delete(chatId);
       deps.activeCardByChat.delete(chatId);
+      deps.onActiveChatEvicted?.(chatId);
       deps.clearActiveAssetIndexes(chatId);
       deps.clearActiveCharacterImage(chatId);
       deps.clearActiveScriptstateDefaults(chatId);
