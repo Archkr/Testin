@@ -59,16 +59,15 @@ export function runPipeline(input: RunPipelineInput, opts?: RunPipelineOptions):
   return evaluate(input.template, ctx);
 }
 
-// RISU_COMPAT_USE_WORKER_EVAL=1 routes resolveReadonly through this pipeline.
-// Reads via Bun.env to avoid Lumi's detectDangerousBackendCapabilities check
-// on the literal `process.env` string (Lumi commit 5195652).
+// resolveReadonly resolves in-worker by default so bg-html and cross-rule CSS skip
+// the Lumi evaluate + macroInterceptor round-trip (RISU_COMPAT_USE_WORKER_EVAL=0 restores it).
 export function workerEvalEnabled(): boolean {
   try {
     const env = (globalThis as { Bun?: { env?: Record<string, string | undefined> } }).Bun?.env;
-    if (!env) return false;
+    if (!env) return true;
     const v = env.RISU_COMPAT_USE_WORKER_EVAL;
-    return v === "1" || v === "true" || v === "yes";
+    return v !== "0" && v !== "false" && v !== "no";
   } catch {
-    return false;
+    return true;
   }
 }

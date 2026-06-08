@@ -35697,11 +35697,11 @@ function workerEvalEnabled() {
   try {
     const env = globalThis.Bun?.env;
     if (!env)
-      return false;
+      return true;
     const v = env.RISU_COMPAT_USE_WORKER_EVAL;
-    return v === "1" || v === "true" || v === "yes";
+    return v !== "0" && v !== "false" && v !== "no";
   } catch {
-    return false;
+    return true;
   }
 }
 

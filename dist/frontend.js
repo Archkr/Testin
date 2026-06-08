@@ -44447,7 +44447,7 @@ function setup(ctx) {
           if (changed.length > 0)
             ctx.display?.invalidate(changed);
         }
-        if (newlyOwned)
+        if (newlyOwned || !prev)
           ctx.display?.invalidate(["*"]);
       }
       return;

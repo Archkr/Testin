@@ -590,7 +590,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
           }
           if (changed.length > 0) ctx.display?.invalidate(changed);
         }
-        if (newlyOwned) ctx.display?.invalidate(['*']);
+        if (newlyOwned || !prev) ctx.display?.invalidate(['*']);
       }
       return;
     }
