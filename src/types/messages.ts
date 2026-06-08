@@ -498,9 +498,6 @@ export type BackendToFrontend =
       /** Character owning the active chat (lumirealm characters only). `null`
        *  when chatId is null OR the chat belongs to a non-lumirealm character. */
       characterId?: string | null;
-      /** True when LumiRealm owns display resolution for this chat in the browser
-       *  (FE-display feature active). The host must not resolve it itself. */
-      feDisplay?: boolean;
     }
   // Pushed on every state-tick. `defaults` is character-level `defaultVariables`
   // (Risu's `getChatVar` fallback when key unset).

@@ -83,6 +83,11 @@ export interface ImportHandlerDeps {
   readonly errMsg: (e: unknown) => string;
 }
 
+// Coalesce concurrent get_cards per user. The FE handshake retries get_cards
+// until cards_updated lands, and each runs a heavy listCards + bg-html re-paint
+// that would otherwise pile onto the single worker and saturate it.
+const getCardsInFlight = new Set<string>();
+
 export function createImportHandlers(deps: ImportHandlerDeps): {
   readonly get_cards: Handler<'get_cards'>;
   readonly import_card_init: Handler<'import_card_init'>;
@@ -94,61 +99,70 @@ export function createImportHandlers(deps: ImportHandlerDeps): {
 } {
   return {
     get_cards: async (_msg, ctx) => {
-      const hostVersionCheck = deps.hostVersionCheckRef.current;
-      if (hostVersionCheck?.needsUpdate) {
-        deps.notifyHostVersionOutdated({
-          type: 'notify_host_version_outdated',
-          hostVersion: hostVersionCheck.hostVersion,
-          minimum: hostVersionCheck.minimum,
-          message: hostVersionCheck.message,
-        }, ctx.userId);
+      if (ctx.userId && getCardsInFlight.has(ctx.userId)) {
+        deps.log.info(`get_cards: coalesced (already in flight) userId=${ctx.userId}`);
+        return;
       }
-      const missingPerms = deps.getMissingPermissions();
-      if (missingPerms.length > 0) {
-        const purposes: Record<string, string> = {};
-        for (const p of missingPerms) purposes[p] = deps.permissionPurpose[p] ?? p;
-        deps.log.warn(`get_cards: pushing notify_missing_permissions missing=[${missingPerms.join(',')}] userId=${ctx.userId}`);
-        deps.notifyMissingPermissions({
-          type: 'notify_missing_permissions',
-          missing: missingPerms,
-          purposes,
-        }, ctx.userId);
-      }
-      let cleared = 0;
-      for (const [chatId] of deps.lastSentBgHtmlByChat) {
-        const active = deps.activeCardByChat.get(chatId);
-        if (active && active.ownerUserId === ctx.userId) {
-          deps.lastSentBgHtmlByChat.delete(chatId);
-          cleared++;
+      if (ctx.userId) getCardsInFlight.add(ctx.userId);
+      try {
+        const hostVersionCheck = deps.hostVersionCheckRef.current;
+        if (hostVersionCheck?.needsUpdate) {
+          deps.notifyHostVersionOutdated({
+            type: 'notify_host_version_outdated',
+            hostVersion: hostVersionCheck.hostVersion,
+            minimum: hostVersionCheck.minimum,
+            message: hostVersionCheck.message,
+          }, ctx.userId);
         }
-      }
-      const lastChatHint = deps.lastActiveChatByUser.get(ctx.userId);
-      if (lastChatHint && deps.lastSentBgHtmlByChat.delete(lastChatHint)) cleared++;
-      if (cleared > 0) {
-        deps.log.info(`get_cards: cleared ${cleared} bg-html send memo(s) for FE remount`);
-      }
-      deps.pushCards(await deps.listCards(ctx.userId), ctx.userId);
-      const lastChat = deps.lastActiveChatByUser.get(ctx.userId);
-      if (lastChat) {
-        deps.log.info(`get_cards: re-painting bg+scope-css for lastChat=${lastChat} userId=${ctx.userId}`);
-        try {
-          const active = await deps.ensureActiveCardForChat(lastChat, null, ctx.userId);
-          deps.sendSetActiveChat(
-            active ? lastChat : null,
-            active ? active.card.character_id : null,
-            ctx.userId,
-          );
-          if (active) {
-            deps.invalidateRenderMcpForChat(lastChat);
-            deps.invalidateMacroInterceptorForChat(lastChat);
-            await deps.refreshBgHtml(active, lastChat, ctx.userId);
-            await deps.refreshVariables(active, lastChat, ctx.userId, { force: true });
+        const missingPerms = deps.getMissingPermissions();
+        if (missingPerms.length > 0) {
+          const purposes: Record<string, string> = {};
+          for (const p of missingPerms) purposes[p] = deps.permissionPurpose[p] ?? p;
+          deps.log.warn(`get_cards: pushing notify_missing_permissions missing=[${missingPerms.join(',')}] userId=${ctx.userId}`);
+          deps.notifyMissingPermissions({
+            type: 'notify_missing_permissions',
+            missing: missingPerms,
+            purposes,
+          }, ctx.userId);
+        }
+        let cleared = 0;
+        for (const [chatId] of deps.lastSentBgHtmlByChat) {
+          const active = deps.activeCardByChat.get(chatId);
+          if (active && active.ownerUserId === ctx.userId) {
+            deps.lastSentBgHtmlByChat.delete(chatId);
+            cleared++;
           }
-        } catch (err) {
-          deps.log.warn(`get_cards: rehydrate failed chat=${lastChat}: ${deps.errMsg(err)}`);
         }
-      } else {
-        deps.sendSetActiveChat(null, null, ctx.userId);
+        const lastChatHint = deps.lastActiveChatByUser.get(ctx.userId);
+        if (lastChatHint && deps.lastSentBgHtmlByChat.delete(lastChatHint)) cleared++;
+        if (cleared > 0) {
+          deps.log.info(`get_cards: cleared ${cleared} bg-html send memo(s) for FE remount`);
+        }
+        deps.pushCards(await deps.listCards(ctx.userId), ctx.userId);
+        const lastChat = deps.lastActiveChatByUser.get(ctx.userId);
+        if (lastChat) {
+          deps.log.info(`get_cards: re-painting bg+scope-css for lastChat=${lastChat} userId=${ctx.userId}`);
+          try {
+            const active = await deps.ensureActiveCardForChat(lastChat, null, ctx.userId);
+            deps.sendSetActiveChat(
+              active ? lastChat : null,
+              active ? active.card.character_id : null,
+              ctx.userId,
+            );
+            if (active) {
+              deps.invalidateRenderMcpForChat(lastChat);
+              deps.invalidateMacroInterceptorForChat(lastChat);
+              await deps.refreshBgHtml(active, lastChat, ctx.userId);
+              await deps.refreshVariables(active, lastChat, ctx.userId, { force: true });
+            }
+          } catch (err) {
+            deps.log.warn(`get_cards: rehydrate failed chat=${lastChat}: ${deps.errMsg(err)}`);
+          }
+        } else {
+          deps.sendSetActiveChat(null, null, ctx.userId);
+        }
+      } finally {
+        if (ctx.userId) getCardsInFlight.delete(ctx.userId);
       }
     },
     import_card_init: async (msg, ctx) => {

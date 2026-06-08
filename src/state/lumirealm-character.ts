@@ -133,7 +133,7 @@ export async function writeLumirealm(
   try {
     await api.update(
       characterId,
-      { extensions: { [LUMIREALM_EXT_KEY]: data } },
+      { extensions: { [LUMIREALM_EXT_KEY]: { ...data, display_owner: true } } },
       userId,
     );
     logInfo(

@@ -80,16 +80,7 @@ export type DisplayResolutionMode = 'off' | 'shadow' | 'on';
 
 const snapshots = new Map<string, DisplaySnapshot>();
 let mode: DisplayResolutionMode = 'on';
-let ownedChatId: string | null = null;
 const snapshotWaiters = new Map<string, Array<(ok: boolean) => void>>();
-
-export function setOwnedDisplayChat(chatId: string | null, feDisplay: boolean): void {
-  ownedChatId = feDisplay && chatId ? chatId : null;
-}
-
-export function ownsDisplayChat(chatId: string): boolean {
-  return ownedChatId === chatId;
-}
 
 export function setDisplaySnapshot(snapshot: DisplaySnapshot): void {
   snapshots.set(snapshot.chatId, snapshot);
@@ -151,13 +142,9 @@ export function diffSnapshotVars(prev: DisplaySnapshot, next: DisplaySnapshot): 
 }
 
 export function isDisplayResolutionReady(chatId: string): boolean {
-  if (mode === 'off') return false;
-  // 'on': owned once EITHER early signal has landed — set_active_chat (sets
-  // ownedChatId, ~t0) or the snapshot (~+450ms). Both are far earlier than the
-  // host-store character.extensions blob (seconds), so the host ORs this with
-  // its own synchronous check and engages the resolver on whichever is first.
-  if (mode === 'on') return ownedChatId === chatId || snapshots.has(chatId);
-  return snapshots.has(chatId);
+  // Host decides ownership from chat.metadata.display_owner. ready() means a
+  // snapshot landed so we can resolve, else the host shows raw until invalidate.
+  return mode !== 'off' && snapshots.has(chatId);
 }
 
 export function getDisplayResolutionMode(): DisplayResolutionMode {

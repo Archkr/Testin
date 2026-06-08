@@ -26595,7 +26595,7 @@ async function writeLumirealm(api, characterId, data, userId) {
   const t0 = Date.now();
   expectCharacterEdit(characterId);
   try {
-    await api.update(characterId, { extensions: { [LUMIREALM_EXT_KEY]: data } }, userId);
+    await api.update(characterId, { extensions: { [LUMIREALM_EXT_KEY]: { ...data, display_owner: true } } }, userId);
     logInfo2(`writeLumirealm: ok id=${characterId} schema=${data.schema_version} ` + `regex=${data.regex_scripts.length} assets=${Object.keys(data.asset_index).length} ` + `elapsed=${Date.now() - t0}ms`);
   } catch (err) {
     logError2(`writeLumirealm: update(${characterId}) threw \u2014 ${err instanceof Error ? err.message : String(err)}`);
@@ -34785,62 +34785,74 @@ function createModuleHandlers(deps) {
 
 // src/handlers/import.ts
 init_base64();
+var getCardsInFlight = new Set;
 function createImportHandlers(deps) {
   return {
     get_cards: async (_msg, ctx) => {
-      const hostVersionCheck = deps.hostVersionCheckRef.current;
-      if (hostVersionCheck?.needsUpdate) {
-        deps.notifyHostVersionOutdated({
-          type: "notify_host_version_outdated",
-          hostVersion: hostVersionCheck.hostVersion,
-          minimum: hostVersionCheck.minimum,
-          message: hostVersionCheck.message
-        }, ctx.userId);
+      if (ctx.userId && getCardsInFlight.has(ctx.userId)) {
+        deps.log.info(`get_cards: coalesced (already in flight) userId=${ctx.userId}`);
+        return;
       }
-      const missingPerms = deps.getMissingPermissions();
-      if (missingPerms.length > 0) {
-        const purposes = {};
-        for (const p of missingPerms)
-          purposes[p] = deps.permissionPurpose[p] ?? p;
-        deps.log.warn(`get_cards: pushing notify_missing_permissions missing=[${missingPerms.join(",")}] userId=${ctx.userId}`);
-        deps.notifyMissingPermissions({
-          type: "notify_missing_permissions",
-          missing: missingPerms,
-          purposes
-        }, ctx.userId);
-      }
-      let cleared = 0;
-      for (const [chatId] of deps.lastSentBgHtmlByChat) {
-        const active = deps.activeCardByChat.get(chatId);
-        if (active && active.ownerUserId === ctx.userId) {
-          deps.lastSentBgHtmlByChat.delete(chatId);
-          cleared++;
+      if (ctx.userId)
+        getCardsInFlight.add(ctx.userId);
+      try {
+        const hostVersionCheck = deps.hostVersionCheckRef.current;
+        if (hostVersionCheck?.needsUpdate) {
+          deps.notifyHostVersionOutdated({
+            type: "notify_host_version_outdated",
+            hostVersion: hostVersionCheck.hostVersion,
+            minimum: hostVersionCheck.minimum,
+            message: hostVersionCheck.message
+          }, ctx.userId);
         }
-      }
-      const lastChatHint = deps.lastActiveChatByUser.get(ctx.userId);
-      if (lastChatHint && deps.lastSentBgHtmlByChat.delete(lastChatHint))
-        cleared++;
-      if (cleared > 0) {
-        deps.log.info(`get_cards: cleared ${cleared} bg-html send memo(s) for FE remount`);
-      }
-      deps.pushCards(await deps.listCards(ctx.userId), ctx.userId);
-      const lastChat = deps.lastActiveChatByUser.get(ctx.userId);
-      if (lastChat) {
-        deps.log.info(`get_cards: re-painting bg+scope-css for lastChat=${lastChat} userId=${ctx.userId}`);
-        try {
-          const active = await deps.ensureActiveCardForChat(lastChat, null, ctx.userId);
-          deps.sendSetActiveChat(active ? lastChat : null, active ? active.card.character_id : null, ctx.userId);
-          if (active) {
-            deps.invalidateRenderMcpForChat(lastChat);
-            deps.invalidateMacroInterceptorForChat(lastChat);
-            await deps.refreshBgHtml(active, lastChat, ctx.userId);
-            await deps.refreshVariables(active, lastChat, ctx.userId, { force: true });
+        const missingPerms = deps.getMissingPermissions();
+        if (missingPerms.length > 0) {
+          const purposes = {};
+          for (const p of missingPerms)
+            purposes[p] = deps.permissionPurpose[p] ?? p;
+          deps.log.warn(`get_cards: pushing notify_missing_permissions missing=[${missingPerms.join(",")}] userId=${ctx.userId}`);
+          deps.notifyMissingPermissions({
+            type: "notify_missing_permissions",
+            missing: missingPerms,
+            purposes
+          }, ctx.userId);
+        }
+        let cleared = 0;
+        for (const [chatId] of deps.lastSentBgHtmlByChat) {
+          const active = deps.activeCardByChat.get(chatId);
+          if (active && active.ownerUserId === ctx.userId) {
+            deps.lastSentBgHtmlByChat.delete(chatId);
+            cleared++;
           }
-        } catch (err) {
-          deps.log.warn(`get_cards: rehydrate failed chat=${lastChat}: ${deps.errMsg(err)}`);
         }
-      } else {
-        deps.sendSetActiveChat(null, null, ctx.userId);
+        const lastChatHint = deps.lastActiveChatByUser.get(ctx.userId);
+        if (lastChatHint && deps.lastSentBgHtmlByChat.delete(lastChatHint))
+          cleared++;
+        if (cleared > 0) {
+          deps.log.info(`get_cards: cleared ${cleared} bg-html send memo(s) for FE remount`);
+        }
+        deps.pushCards(await deps.listCards(ctx.userId), ctx.userId);
+        const lastChat = deps.lastActiveChatByUser.get(ctx.userId);
+        if (lastChat) {
+          deps.log.info(`get_cards: re-painting bg+scope-css for lastChat=${lastChat} userId=${ctx.userId}`);
+          try {
+            const active = await deps.ensureActiveCardForChat(lastChat, null, ctx.userId);
+            deps.sendSetActiveChat(active ? lastChat : null, active ? active.card.character_id : null, ctx.userId);
+            if (active) {
+              deps.invalidateRenderMcpForChat(lastChat);
+              deps.invalidateMacroInterceptorForChat(lastChat);
+              await deps.refreshBgHtml(active, lastChat, ctx.userId);
+              await deps.refreshVariables(active, lastChat, ctx.userId, { force: true });
+            }
+          } catch (err) {
+            deps.log.warn(`get_cards: rehydrate failed chat=${lastChat}: ${deps.errMsg(err)}`);
+          }
+        } else {
+          deps.sendSetActiveChat(null, null, ctx.userId);
+        }
+      } finally {
+        if (ctx.userId)
+          getCardsInFlight.delete(ctx.userId);
       }
     },
     import_card_init: async (msg, ctx) => {
@@ -38785,7 +38797,8 @@ var MIGRATION_STATE_PATH = "lumirealm/migration-state.json";
 var EMPTY_MIGRATION_STATE = {
   schema_version: 1,
   last_swept_modules: 0,
-  last_swept_characters: 0
+  last_swept_characters: 0,
+  display_owner_backfilled: false
 };
 function parseMigrationState(raw) {
   if (!raw || typeof raw !== "object")
@@ -38797,7 +38810,8 @@ function parseMigrationState(raw) {
   return {
     schema_version: 1,
     last_swept_modules: typeof obj.last_swept_modules === "number" ? obj.last_swept_modules : legacy,
-    last_swept_characters: typeof obj.last_swept_characters === "number" ? obj.last_swept_characters : 0
+    last_swept_characters: typeof obj.last_swept_characters === "number" ? obj.last_swept_characters : 0,
+    display_owner_backfilled: obj.display_owner_backfilled === true
   };
 }
 async function readMigrationState(storage, userId) {
@@ -38812,7 +38826,8 @@ async function writeMigrationState(storage, userId, state) {
   const out = {
     schema_version: 1,
     last_swept_modules: state.last_swept_modules,
-    last_swept_characters: state.last_swept_characters
+    last_swept_characters: state.last_swept_characters,
+    display_owner_backfilled: state.display_owner_backfilled
   };
   await storage.setJson(MIGRATION_STATE_PATH, out, { indent: 2, userId });
 }
@@ -38830,6 +38845,7 @@ function createMassMigrationsRunner(deps) {
     listModules: listModules2,
     readModuleEnvelope,
     listLumirealmCharacters: listLumirealmCharacters2,
+    writeLumirealm: writeLumirealm2,
     runModuleMigration,
     runCharacterMigration,
     emitOperationProgress,
@@ -38976,7 +38992,28 @@ function createMassMigrationsRunner(deps) {
     if (blockingPermissionsMissing("characters"))
       return;
     massCharacterMigrationStartedThisBoot.add(userId);
-    const state = await readMigrationState(spindle.userStorage, userId);
+    let state = await readMigrationState(spindle.userStorage, userId);
+    if (!state.display_owner_backfilled) {
+      const owned = await listLumirealmCharacters2(userId);
+      let stamped = 0;
+      let failed2 = 0;
+      for (const entry of owned) {
+        if (entry.data.display_owner === true)
+          continue;
+        try {
+          await writeLumirealm2(userId, entry.character.id, entry.data);
+          stamped++;
+        } catch (err) {
+          failed2++;
+          log8.warn(`display-owner-backfill: character=${entry.character.id} threw: ${errMsg2(err)}`);
+        }
+      }
+      log8.info(`display-owner-backfill: user=${userId} stamped=${stamped} failed=${failed2} of ${owned.length}`);
+      if (failed2 === 0) {
+        state = { ...state, display_owner_backfilled: true };
+        await writeMigrationState(spindle.userStorage, userId, state);
+      }
+    }
     if (state.last_swept_characters >= currentCharacterSchemaVersion) {
       log8.info(`mass-migration(characters): user=${userId} already swept to v${state.last_swept_characters}, skipping`);
       return;
@@ -39434,81 +39471,6 @@ function makeMaybeFinalizeImport(deps) {
       pushCards(await listCards(pending3.ownerUserId), pending3.ownerUserId);
     } catch (err) {
       log8.warn(`import.finalize: pushCards failed: ${errMsg2(err)}`);
-    }
-  };
-}
-
-// src/boot/orphan-review.ts
-function makePromptOrphanReviewIfAny(deps) {
-  const {
-    detectDeletedWhileOff,
-    journalStorage,
-    clearImageJournal: clearImageJournal2,
-    clearModuleImageJournal: clearModuleImageJournal2,
-    queueModalConfirm,
-    toastFor,
-    send,
-    log: log8,
-    errMsg: errMsg2
-  } = deps;
-  const orphanReviewPromptedFor = new Set;
-  return async (userId) => {
-    if (orphanReviewPromptedFor.has(userId))
-      return;
-    orphanReviewPromptedFor.add(userId);
-    const tStart = Date.now();
-    const detected = await detectDeletedWhileOff(userId);
-    const charCount = detected.characterIds.length;
-    const moduleCount = detected.moduleIds.length;
-    if (charCount + moduleCount === 0) {
-      log8.debug(`orphan-review: nothing detected elapsed=${Date.now() - tStart}ms`);
-      return;
-    }
-    const charPreview = detected.characterIds.slice(0, 8).join(",");
-    const charPreviewSuffix = detected.characterIds.length > 8 ? `\u2026(+${detected.characterIds.length - 8})` : "";
-    const modulePreview = detected.moduleIds.slice(0, 8).join(",");
-    const modulePreviewSuffix = detected.moduleIds.length > 8 ? `\u2026(+${detected.moduleIds.length - 8})` : "";
-    log8.info(`orphan-review: detected chars=${charCount} modules=${moduleCount} ` + `elapsed=${Date.now() - tStart}ms ` + `charIds=[${charPreview}${charPreviewSuffix}] ` + `moduleIds=[${modulePreview}${modulePreviewSuffix}]`);
-    const parts = [];
-    if (charCount > 0)
-      parts.push(`${charCount} character${charCount === 1 ? "" : "s"}`);
-    if (moduleCount > 0)
-      parts.push(`${moduleCount} module${moduleCount === 1 ? "" : "s"}`);
-    const summarySubject = parts.join(" and ");
-    const message = `Found leftover image journals for ${summarySubject} whose Lumi entries ` + `are gone. This includes anything deleted while LumiRealm wasn't running ` + `and incomplete cleanups from earlier sessions. Open Cleanup to review ` + `the actual image assets?`;
-    log8.info(`orphan-review: opening confirm modal`);
-    const queued = await queueModalConfirm(userId, {
-      title: "Leftover RisuAI image entries detected",
-      message,
-      variant: "info",
-      confirmLabel: "Review",
-      cancelLabel: "Dismiss"
-    });
-    let result = queued;
-    if (queued === null) {
-      log8.warn(`orphan-review: spindle.modal.confirm unavailable, falling back to toast`);
-    }
-    if (result === null) {
-      try {
-        toastFor(userId, "warning", `Found leftover image journals for ${summarySubject}. ` + `Open Settings, Cleanup to review orphaned image assets.`, { title: "lumirealm: leftover image entries" });
-      } catch (err) {
-        log8.warn(`orphan-review: toast fallback threw: ${errMsg2(err)}`);
-      }
-      result = { confirmed: false };
-    }
-    for (const characterId of detected.characterIds) {
-      await clearImageJournal2(journalStorage(), userId, characterId).catch((err) => {
-        log8.warn(`orphan-review: clearImageJournal threw char=${characterId}: ${errMsg2(err)}`);
-      });
-    }
-    for (const moduleId of detected.moduleIds) {
-      await clearModuleImageJournal2(journalStorage(), userId, moduleId).catch((err) => {
-        log8.warn(`orphan-review: clearModuleImageJournal threw module=${moduleId}: ${errMsg2(err)}`);
-      });
-    }
-    log8.info(`orphan-review: confirmed=${result.confirmed} cleared chars=${charCount} modules=${moduleCount}`);
-    if (result.confirmed) {
-      send({ type: "open_settings_cleanup" }, userId);
     }
   };
 }
@@ -40115,13 +40077,11 @@ function createSettingsService(deps) {
 }
 
 // src/boot/capture-user.ts
-var ORPHAN_REVIEW_DEFER_MS = 3000;
 var MASS_MIGRATION_DEFER_MS = 3000;
 function makeCaptureUserId(deps) {
   const {
     capturedUserIds,
     getSettingsForUser,
-    promptOrphanReviewIfAny,
     runMassModuleMigrationIfNeeded,
     runMassCharacterMigrationIfNeeded,
     log: log8,
@@ -40141,11 +40101,6 @@ function makeCaptureUserId(deps) {
     getSettingsForUser(userId).catch((err) => {
       log8.warn(`captureUserId: settings preload failed for user=${userId}: ${errMsg2(err)}`);
     });
-    setTimeout(() => {
-      promptOrphanReviewIfAny(userId).catch((err) => {
-        log8.warn(`captureUserId: orphan-review prompt failed: ${errMsg2(err)}`);
-      });
-    }, ORPHAN_REVIEW_DEFER_MS);
     setTimeout(() => {
       (async () => {
         try {
@@ -42897,27 +42852,14 @@ var orphanOrchestrator = createOrphanOrchestrator({
   log: log8,
   errMsg
 });
-var detectDeletedWhileOff = (userId) => orphanOrchestrator.detectDeletedWhileOff(userId);
 var scanOrphanedImages = (userId) => orphanOrchestrator.scanOrphanedImages(userId);
 var sweepOrphanModuleRegex = (userId) => orphanOrchestrator.sweepOrphanModuleRegex(userId);
 var listStaleCharRegexIds = (userId) => orphanOrchestrator.listStaleCharRegexIds(userId);
 var deleteRegexIds = (userId, ids) => orphanOrchestrator.deleteRegexIds(userId, ids);
 var clearDeadJournals = (userId) => orphanOrchestrator.clearDeadJournals(userId);
-var promptOrphanReviewIfAny = makePromptOrphanReviewIfAny({
-  detectDeletedWhileOff,
-  journalStorage,
-  clearImageJournal,
-  clearModuleImageJournal,
-  queueModalConfirm,
-  toastFor,
-  send,
-  log: log8,
-  errMsg
-});
 var captureUserId = makeCaptureUserId({
   capturedUserIds,
   getSettingsForUser,
-  promptOrphanReviewIfAny,
   runMassModuleMigrationIfNeeded: (uid) => massMigrations.runMassModuleMigrationIfNeeded(uid),
   runMassCharacterMigrationIfNeeded: (uid) => massMigrations.runMassCharacterMigrationIfNeeded(uid),
   notifyMissingPermsForUser: (userId) => {
@@ -43145,8 +43087,7 @@ function isPromptRegexOwnedChat(chatId) {
 }
 function sendSetActiveChat(activeChatId, activeCharacterId, userId) {
   try {
-    const feDisplay = activeChatId !== null && FE_DISPLAY_ENABLED;
-    send({ type: "set_active_chat", chatId: activeChatId, characterId: activeCharacterId, feDisplay }, userId);
+    send({ type: "set_active_chat", chatId: activeChatId, characterId: activeCharacterId }, userId);
   } catch (err) {
     log8.warn(`sendSetActiveChat: ${err.message}`);
   }
@@ -43672,6 +43613,7 @@ var massMigrations = createMassMigrationsRunner({
       data: e.data
     }));
   },
+  writeLumirealm: (userId, characterId, data) => writeLumirealm(charactersApi(), characterId, data, userId),
   runModuleMigration,
   runCharacterMigration,
   emitOperationProgress,

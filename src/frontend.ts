@@ -8,8 +8,6 @@ import {
   diffSnapshotVars,
   getDisplayResolutionMode,
   setDisplayResolutionMode,
-  setOwnedDisplayChat,
-  ownsDisplayChat,
   type DisplayResolutionMode,
 } from './display/snapshot.js';
 import { MSG_DEP_KEY } from './interpreter/evaluator/context.js';
@@ -110,27 +108,21 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       (chatId, vars) => ctx.sendToBackend({ type: 'display_writeback', chatId, vars }),
     )));
   }
-  // Synchronous ownership: publish the set of LumiRealm-owned character IDs to
-  // the host so it routes those chats to our resolver (never the backend
-  // display path) from the first render — no per-render ownership round-trip.
-  // The card list arrives at startup (cards_updated), before navigation.
-  let ownedCharacterIds: string[] = [];
-  const publishOwnedCharacters = (): void => {
-    if (!ctx.display) return;
-    ctx.display.setOwnedCharacters(getDisplayResolutionMode() === 'off' ? [] : ownedCharacterIds);
-  };
+  // Ownership is carried on chat.metadata.display_owner (stamped by our backend),
+  // which the host reads at first render. display_authority only tells the
+  // backend whether to keep producing output: 'on' = we own and resolve in the
+  // browser so the backend can short-circuit, 'shadow'/'off' = let it run.
   const sendDisplayAuthority = (chatId: string | null): void => {
     if (!chatId) return;
     ctx.sendToBackend({
       type: 'display_authority',
       chatId,
-      authoritative: getDisplayResolutionMode() === 'on' && ownsDisplayChat(chatId),
+      authoritative: getDisplayResolutionMode() === 'on',
     });
   };
   (window as unknown as { __lumirealmDisplayMode?: (m: string) => void }).__lumirealmDisplayMode = (m: string) => {
     const mode: DisplayResolutionMode = m === 'shadow' || m === 'on' ? m : 'off';
     setDisplayResolutionMode(mode);
-    publishOwnedCharacters();
     sendDisplayAuthority(activeRisuChatId);
     flog.info(`display resolution mode='${mode}' resolverRegistered=${displayRegistered}`);
     if (!displayRegistered) {
@@ -573,13 +565,6 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       if (getDisplayResolutionMode() !== 'off') {
         const prev = getDisplaySnapshot(msg.snapshot.chatId);
         setDisplaySnapshot(msg.snapshot);
-        const cid = msg.snapshot.characterId;
-        let newlyOwned = false;
-        if (typeof cid === 'string' && !ownedCharacterIds.includes(cid)) {
-          ownedCharacterIds = [...ownedCharacterIds, cid];
-          publishOwnedCharacters();
-          newlyOwned = true;
-        }
         if (prev) {
           const changed = diffSnapshotVars(prev, msg.snapshot);
           const pc = prev.chat, nc = msg.snapshot.chat;
@@ -589,8 +574,11 @@ export function setup(ctx: SpindleFrontendContext): () => void {
             changed.push(MSG_DEP_KEY);
           }
           if (changed.length > 0) ctx.display?.invalidate(changed);
+        } else {
+          // First snapshot for this chat: the host gates resolver use on
+          // ready() (snapshot present), so re-resolve everything now that it is.
+          ctx.display?.invalidate(['*']);
         }
-        if (newlyOwned || !prev) ctx.display?.invalidate(['*']);
       }
       return;
     }
@@ -620,17 +608,10 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         reportDims('cards_updated', /* force */ true);
       }
       ready = true;
-      ownedCharacterIds = msg.cards.map((c) => c.character_id);
-      publishOwnedCharacters();
     }
     if (msg.type === 'set_active_chat') {
       const prevChatId = activeRisuChatId;
       activeRisuChatId = msg.chatId;
-      setOwnedDisplayChat(msg.chatId, msg.feDisplay === true);
-      if (typeof msg.characterId === 'string' && !ownedCharacterIds.includes(msg.characterId)) {
-        ownedCharacterIds = [...ownedCharacterIds, msg.characterId];
-        publishOwnedCharacters();
-      }
       sendDisplayAuthority(msg.chatId);
       if (activeRisuChatId !== prevChatId) {
         if (sidebar) sidebar.setActiveChatId(activeRisuChatId);

@@ -22984,14 +22984,7 @@ function makeSafeLogger(prefix) {
 // src/display/snapshot.ts
 var snapshots = new Map;
 var mode = "on";
-var ownedChatId = null;
 var snapshotWaiters = new Map;
-function setOwnedDisplayChat(chatId, feDisplay) {
-  ownedChatId = feDisplay && chatId ? chatId : null;
-}
-function ownsDisplayChat(chatId) {
-  return ownedChatId === chatId;
-}
 function setDisplaySnapshot(snapshot) {
   snapshots.set(snapshot.chatId, snapshot);
   const waiters = snapshotWaiters.get(snapshot.chatId);
@@ -23044,11 +23037,7 @@ function diffSnapshotVars(prev, next) {
   return changed;
 }
 function isDisplayResolutionReady(chatId) {
-  if (mode === "off")
-    return false;
-  if (mode === "on")
-    return ownedChatId === chatId || snapshots.has(chatId);
-  return snapshots.has(chatId);
+  return mode !== "off" && snapshots.has(chatId);
 }
 function getDisplayResolutionMode() {
   return mode;
@@ -43988,25 +43977,18 @@ function setup(ctx) {
   if (ctx.display) {
     cleanups.push(ctx.display.registerResolver(createDisplayResolver((chatId, vars) => ctx.sendToBackend({ type: "display_writeback", chatId, vars }))));
   }
-  let ownedCharacterIds = [];
-  const publishOwnedCharacters = () => {
-    if (!ctx.display)
-      return;
-    ctx.display.setOwnedCharacters(getDisplayResolutionMode() === "off" ? [] : ownedCharacterIds);
-  };
   const sendDisplayAuthority = (chatId) => {
     if (!chatId)
       return;
     ctx.sendToBackend({
       type: "display_authority",
       chatId,
-      authoritative: getDisplayResolutionMode() === "on" && ownsDisplayChat(chatId)
+      authoritative: getDisplayResolutionMode() === "on"
     });
   };
   window.__lumirealmDisplayMode = (m) => {
     const mode2 = m === "shadow" || m === "on" ? m : "off";
     setDisplayResolutionMode(mode2);
-    publishOwnedCharacters();
     sendDisplayAuthority(activeRisuChatId);
     flog3.info(`display resolution mode='${mode2}' resolverRegistered=${displayRegistered}`);
     if (!displayRegistered) {
@@ -44431,13 +44413,6 @@ function setup(ctx) {
       if (getDisplayResolutionMode() !== "off") {
         const prev = getDisplaySnapshot(msg.snapshot.chatId);
         setDisplaySnapshot(msg.snapshot);
-        const cid = msg.snapshot.characterId;
-        let newlyOwned = false;
-        if (typeof cid === "string" && !ownedCharacterIds.includes(cid)) {
-          ownedCharacterIds = [...ownedCharacterIds, cid];
-          publishOwnedCharacters();
-          newlyOwned = true;
-        }
         if (prev) {
           const changed = diffSnapshotVars(prev, msg.snapshot);
           const pc = prev.chat, nc = msg.snapshot.chat;
@@ -44446,9 +44421,9 @@ function setup(ctx) {
           }
           if (changed.length > 0)
             ctx.display?.invalidate(changed);
-        }
-        if (newlyOwned || !prev)
+        } else {
           ctx.display?.invalidate(["*"]);
+        }
       }
       return;
     }
@@ -44479,17 +44454,10 @@ function setup(ctx) {
         reportDims("cards_updated", true);
       }
       ready = true;
-      ownedCharacterIds = msg.cards.map((c) => c.character_id);
-      publishOwnedCharacters();
     }
     if (msg.type === "set_active_chat") {
       const prevChatId = activeRisuChatId;
       activeRisuChatId = msg.chatId;
-      setOwnedDisplayChat(msg.chatId, msg.feDisplay === true);
-      if (typeof msg.characterId === "string" && !ownedCharacterIds.includes(msg.characterId)) {
-        ownedCharacterIds = [...ownedCharacterIds, msg.characterId];
-        publishOwnedCharacters();
-      }
       sendDisplayAuthority(msg.chatId);
       if (activeRisuChatId !== prevChatId) {
         if (sidebar)

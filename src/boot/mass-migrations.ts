@@ -32,6 +32,11 @@ export interface MassMigrationsDeps {
     readonly character: { readonly id: string; readonly name: string | null };
     readonly data: LumirealmCharacterData;
   }[]>;
+  readonly writeLumirealm: (
+    userId: string,
+    characterId: string,
+    data: LumirealmCharacterData,
+  ) => Promise<void>;
   readonly runModuleMigration: (moduleId: string, userId: string) => Promise<{ ok: boolean }>;
   readonly runCharacterMigration: (
     characterId: string,
@@ -86,6 +91,7 @@ export function createMassMigrationsRunner(deps: MassMigrationsDeps): MassMigrat
     listModules,
     readModuleEnvelope,
     listLumirealmCharacters,
+    writeLumirealm,
     runModuleMigration,
     runCharacterMigration,
     emitOperationProgress,
@@ -264,7 +270,27 @@ export function createMassMigrationsRunner(deps: MassMigrationsDeps): MassMigrat
     if (massCharacterMigrationStartedThisBoot.has(userId)) return;
     if (blockingPermissionsMissing('characters')) return;
     massCharacterMigrationStartedThisBoot.add(userId);
-    const state = await readMigrationState(spindle.userStorage, userId);
+    let state = await readMigrationState(spindle.userStorage, userId);
+    if (!state.display_owner_backfilled) {
+      const owned = await listLumirealmCharacters(userId);
+      let stamped = 0;
+      let failed = 0;
+      for (const entry of owned) {
+        if (entry.data.display_owner === true) continue;
+        try {
+          await writeLumirealm(userId, entry.character.id, entry.data);
+          stamped++;
+        } catch (err) {
+          failed++;
+          log.warn(`display-owner-backfill: character=${entry.character.id} threw: ${errMsg(err)}`);
+        }
+      }
+      log.info(`display-owner-backfill: user=${userId} stamped=${stamped} failed=${failed} of ${owned.length}`);
+      if (failed === 0) {
+        state = { ...state, display_owner_backfilled: true };
+        await writeMigrationState(spindle.userStorage, userId, state);
+      }
+    }
     if (state.last_swept_characters >= currentCharacterSchemaVersion) {
       log.info(`mass-migration(characters): user=${userId} already swept to v${state.last_swept_characters}, skipping`);
       return;

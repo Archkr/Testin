@@ -129,7 +129,6 @@ import {
   makeSeedAuthorsNoteFromDepthPrompt,
   makeMaybeFinalizeImport,
 } from './boot/misc.js';
-import { makePromptOrphanReviewIfAny } from './boot/orphan-review.js';
 import { createVariablesTogglesService } from './state/variables-toggles.js';
 import { assembleDisplaySnapshot } from './state/display-snapshot-assembly.js';
 import { createSettingsService } from './state/settings-service.js';
@@ -537,22 +536,9 @@ const listStaleCharRegexIds = (userId: string) => orphanOrchestrator.listStaleCh
 const deleteRegexIds = (userId: string, ids: readonly string[]) => orphanOrchestrator.deleteRegexIds(userId, ids);
 const clearDeadJournals = (userId: string) => orphanOrchestrator.clearDeadJournals(userId);
 
-const promptOrphanReviewIfAny = makePromptOrphanReviewIfAny({
-  detectDeletedWhileOff,
-  journalStorage,
-  clearImageJournal,
-  clearModuleImageJournal,
-  queueModalConfirm,
-  toastFor,
-  send,
-  log,
-  errMsg,
-});
-
 const captureUserId = makeCaptureUserId({
   capturedUserIds,
   getSettingsForUser,
-  promptOrphanReviewIfAny,
   // Trampolines: massMigrations is declared further down, this closure resolves it at call time.
   runMassModuleMigrationIfNeeded: (uid) => massMigrations.runMassModuleMigrationIfNeeded(uid),
   runMassCharacterMigrationIfNeeded: (uid) => massMigrations.runMassCharacterMigrationIfNeeded(uid),
@@ -894,8 +880,7 @@ function sendSetActiveChat(
   userId: string | undefined,
 ): void {
   try {
-    const feDisplay = activeChatId !== null && FE_DISPLAY_ENABLED;
-    send({ type: 'set_active_chat', chatId: activeChatId, characterId: activeCharacterId, feDisplay }, userId);
+    send({ type: 'set_active_chat', chatId: activeChatId, characterId: activeCharacterId }, userId);
   } catch (err) {
     log.warn(`sendSetActiveChat: ${(err as Error).message}`);
   }
@@ -1511,6 +1496,7 @@ const massMigrations = createMassMigrationsRunner({
       data: e.data,
     }));
   },
+  writeLumirealm: (userId, characterId, data) => writeLumirealm(charactersApi(), characterId, data, userId),
   runModuleMigration,
   runCharacterMigration,
   emitOperationProgress,
