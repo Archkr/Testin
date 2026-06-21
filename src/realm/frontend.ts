@@ -485,8 +485,12 @@ export function setupRealmModal(deps: RealmFrontendDeps): RealmFrontendHandle {
   function renderPopup(card: RealmCard): HTMLElement {
     const wrap = document.createElement('div');
     wrap.className = 'lr-realm-popup-overlay';
+    let pointerDownOnOverlay = false;
+    wrap.addEventListener('pointerdown', (ev) => {
+      pointerDownOnOverlay = ev.target === wrap;
+    });
     wrap.addEventListener('click', (ev) => {
-      if (ev.target === wrap) {
+      if (ev.target === wrap && pointerDownOnOverlay) {
         state.selected = null;
         render();
       }
@@ -615,8 +619,12 @@ export function setupRealmModal(deps: RealmFrontendDeps): RealmFrontendHandle {
   function renderPrompt(): HTMLElement {
     const wrap = document.createElement('div');
     wrap.className = 'lr-realm-prompt-overlay';
+    let pointerDownOnOverlay = false;
+    wrap.addEventListener('pointerdown', (ev) => {
+      pointerDownOnOverlay = ev.target === wrap;
+    });
     wrap.addEventListener('click', (ev) => {
-      if (ev.target === wrap) {
+      if (ev.target === wrap && pointerDownOnOverlay) {
         state.promptOpen = false;
         render();
       }

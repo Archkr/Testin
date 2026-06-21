@@ -1,4 +1,5 @@
 import { extractPngTextChunks, isPngBytes } from './png-chunks.js';
+import { base64ToBytes } from '../../util/base64.js';
 import { writeStoredZip } from './zip-writer.js';
 import type { ZipWriterEntry } from './zip-writer.js';
 
@@ -17,14 +18,7 @@ interface DecodedAsset {
 }
 
 function base64Decode(str: string): Uint8Array {
-  const g = globalThis as { Buffer?: { from(s: string, enc: string): Uint8Array } };
-  if (g.Buffer && typeof g.Buffer.from === 'function') {
-    return new Uint8Array(g.Buffer.from(str, 'base64'));
-  }
-  const bin = atob(str);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
+  return base64ToBytes(str);
 }
 
 function decodeBase64Json(text: string): unknown {

@@ -27,6 +27,7 @@ export function installConsoleCapture(): void {
       try { originalConsole[m]?.(...args); } catch { /* */ }
       try {
         const text = args.map(formatArg).join(' ');
+        if (text.startsWith('[lumirealm] ')) return;
         logStore.push(methodToLevel(m), 'console', text);
       } catch { /* never throw from console */ }
     };
@@ -50,7 +51,6 @@ function formatArg(a: unknown): string {
 }
 
 const DOM_ALLOWLIST: readonly string[] = [
-  '.lumi-message-portal-root',
   '[data-risu-bg-host]',
   '[data-message-id]',
 ];

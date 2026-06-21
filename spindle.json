@@ -1,5 +1,5 @@
 {
-  "version": "0.5.7",
+  "version": "0.7.3",
   "name": "LumiRealm",
   "identifier": "lumirealm",
   "author": "amousepad",
@@ -29,10 +29,10 @@
     "image_gen",
     "images",
     "generation_parameters",
-    "macro_interceptor"
+    "macro_interceptor",
+    "web_search"
   ],
   "requested_capabilities": [
-    "dynamic_code_execution",
     "base64_decode"
   ],
   "entry_backend": "dist/backend.js",

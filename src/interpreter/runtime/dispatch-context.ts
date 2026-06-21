@@ -1,7 +1,7 @@
 // Side-channel for non-serialisable dispatch values (Functions) that can't
 // ride in compiled triggers' JSON-frozen rtOpts.
 
-import { AsyncLocalStorage } from 'node:async_hooks';
+import { createAls } from './als-compat.js';
 
 export interface DispatchContext {
   chatId?: string;
@@ -37,6 +37,9 @@ export interface DispatchContext {
     presencePenalty: number | null;
     repetitionPenalty: number | null;
   };
+  /** Fold an assistant-message prefill into a user instruction (per channel). */
+  auxPrefillCompat?: boolean;
+  submodelPrefillCompat?: boolean;
   auxDebugCapture?: (event: AuxDebugCaptureEvent) => void;
   /** Backs Lua `cbs(value)`. Routes through resolveReadonly. */
   resolveTemplate?: (text: string) => Promise<string>;
@@ -57,7 +60,7 @@ export interface AuxDebugCaptureEvent {
 }
 
 // Concurrent dispatches for different users get isolated frames across awaits.
-const dispatchAls = new AsyncLocalStorage<DispatchContext>();
+const dispatchAls = createAls<DispatchContext>();
 
 export function withDispatchContext<T>(
   ctx: DispatchContext,

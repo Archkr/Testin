@@ -24,6 +24,7 @@ export interface ApplySvgRasterIndexDeps {
   ) => Promise<ActiveCard | null>;
   readonly invalidateRenderMcpForChat: (chatId: string) => void;
   readonly invalidateMacroInterceptorForChat: (chatId: string) => void;
+  readonly onActiveChatEvicted?: (chatId: string) => void;
   readonly refreshBgHtml: (active: ActiveCard, chatId: string, userId: string | undefined) => Promise<void>;
   readonly log: {
     readonly info: (m: string) => void;
@@ -47,6 +48,7 @@ export function createApplySvgRasterIndex(
     ensureActiveCardForChat,
     invalidateRenderMcpForChat,
     invalidateMacroInterceptorForChat,
+    onActiveChatEvicted,
     refreshBgHtml,
     log,
     errMsg,
@@ -150,6 +152,7 @@ export function createApplySvgRasterIndex(
     for (const [chatId, active] of activeCardByChat) {
       if (active.card.character_id === characterId) {
         activeCardByChat.delete(chatId);
+        onActiveChatEvicted?.(chatId);
         evictedChatIds.push(chatId);
       }
     }

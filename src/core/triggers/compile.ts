@@ -80,6 +80,7 @@ function compileBlock(
 
     switch (op.type) {
       case "v2If":
+      case "v2IfVar":
       case "v2IfAdvanced": {
         out.push(line(ctx, `if (${emitCondition(op)}) {`));
         const innerCtx = { ...ctx, indent: ctx.indent + 1 };

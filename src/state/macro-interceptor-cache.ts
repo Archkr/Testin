@@ -10,7 +10,15 @@ const MAX_ENTRIES = 500;
 
 interface CacheEntry {
   readonly result: string;
+  readonly touchedVars: readonly string[];
+  readonly volatile: boolean;
   readonly ts: number;
+}
+
+export interface MacroInterceptorHit {
+  readonly result: string;
+  readonly touchedVars: readonly string[];
+  readonly volatile: boolean;
 }
 
 const cache = new Map<string, CacheEntry>();
@@ -26,8 +34,8 @@ function fnv1a(s: string): number {
   return h >>> 0;
 }
 
-function key(chatId: string, template: string, commit: boolean): string {
-  return `${chatId}::${commit ? 'c' : 'd'}::${template.length}::${fnv1a(template)}`;
+function key(chatId: string, template: string, commit: boolean, ctxKey: string): string {
+  return `${chatId}::${commit ? 'c' : 'd'}::${ctxKey}::${template.length}::${fnv1a(template)}`;
 }
 
 function evictIfNeeded(now: number): void {
@@ -51,8 +59,9 @@ export function lookupMacroInterceptor(
   chatId: string,
   template: string,
   commit: boolean,
-): string | null {
-  const k = key(chatId, template, commit);
+  ctxKey: string,
+): MacroInterceptorHit | null {
+  const k = key(chatId, template, commit, ctxKey);
   const entry = cache.get(k);
   if (!entry) {
     missCount += 1;
@@ -65,18 +74,21 @@ export function lookupMacroInterceptor(
     return null;
   }
   hitCount += 1;
-  return entry.result;
+  return { result: entry.result, touchedVars: entry.touchedVars, volatile: entry.volatile };
 }
 
 export function cacheMacroInterceptor(
   chatId: string,
   template: string,
   commit: boolean,
+  ctxKey: string,
   result: string,
+  touchedVars: readonly string[],
+  volatile: boolean,
 ): void {
   const now = Date.now();
   evictIfNeeded(now);
-  cache.set(key(chatId, template, commit), { result, ts: now });
+  cache.set(key(chatId, template, commit, ctxKey), { result, touchedVars, volatile, ts: now });
 }
 
 export function invalidateMacroInterceptorForChat(chatId: string): void {

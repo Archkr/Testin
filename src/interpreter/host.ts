@@ -99,6 +99,7 @@ export interface HostApi {
       provider?: string;
       connectionId?: string;
       parameters?: Record<string, number>;
+      prefillCompat?: boolean;
     }): Promise<{ content: string }>;
     listConnections?(): Promise<readonly {
       readonly id: string;
@@ -188,6 +189,8 @@ export interface TriggerRuntimeOpts {
     readonly presencePenalty: number | null;
     readonly repetitionPenalty: number | null;
   };
+  readonly auxPrefillCompat?: boolean;
+  readonly submodelPrefillCompat?: boolean;
   readonly auxDebugCapture?: (event: import("./runtime.js").AuxDebugCaptureEvent) => void;
   /** Backs Lua `cbs(value)`. Used by listenEdit chains that don't run
    *  inside a dispatch-context window. */

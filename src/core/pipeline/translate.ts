@@ -1,4 +1,5 @@
 import { readCharx } from "../charx/reader.js";
+import { base64ToBytes } from "../../util/base64.js";
 import { parseRisuModule } from "../schemas/parse.js";
 import { mapCharacter } from "../mappers/character.js";
 import { mapLoreBook, mapLoreBookWithStats } from "../mappers/lorebook.js";
@@ -103,7 +104,7 @@ function expandInlineDataUriAssets(
     let bytes: Uint8Array;
     try {
       if (head.includes(";base64")) {
-        bytes = new Uint8Array(Buffer.from(body, "base64"));
+        bytes = base64ToBytes(body);
       } else {
         bytes = new TextEncoder().encode(decodeURIComponent(body));
       }
@@ -595,7 +596,7 @@ function pickPreferredAvatar(
         const body = uri.slice(comma + 1);
         try {
           if (head.includes(";base64")) {
-            bytes = new Uint8Array(Buffer.from(body, "base64"));
+            bytes = base64ToBytes(body);
           } else {
             bytes = new TextEncoder().encode(decodeURIComponent(body));
           }

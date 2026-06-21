@@ -149,7 +149,7 @@ export function makeChatApi(
     const joined = msgs.map((m) => toStr(m.content)).join('\n').toLowerCase();
     const needle = toStr(value).toLowerCase();
     return condition === 'regex'
-      ? new RegExp(needle).test(joined)
+      ? (() => { try { return new RegExp(needle).test(joined); } catch { return joined.indexOf(needle) >= 0; } })()
       : condition === 'loose'
       ? joined.indexOf(needle) >= 0
       : joined.split(/\s+/).indexOf(needle) >= 0;

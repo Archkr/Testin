@@ -7,12 +7,14 @@ export interface MigrationState {
   readonly schema_version: 1;
   readonly last_swept_modules: number;
   readonly last_swept_characters: number;
+  readonly display_owner_backfilled: boolean;
 }
 
 export const EMPTY_MIGRATION_STATE: MigrationState = {
   schema_version: 1,
   last_swept_modules: 0,
   last_swept_characters: 0,
+  display_owner_backfilled: false,
 };
 
 export interface UserStorageLike {
@@ -34,6 +36,7 @@ export function parseMigrationState(raw: unknown): MigrationState {
     last_swept_modules?: unknown;
     last_swept_characters?: unknown;
     last_swept_translator_version?: unknown;
+    display_owner_backfilled?: unknown;
   };
   if (obj.schema_version !== 1) return EMPTY_MIGRATION_STATE;
   const legacy =
@@ -46,6 +49,7 @@ export function parseMigrationState(raw: unknown): MigrationState {
       typeof obj.last_swept_modules === 'number' ? obj.last_swept_modules : legacy,
     last_swept_characters:
       typeof obj.last_swept_characters === 'number' ? obj.last_swept_characters : 0,
+    display_owner_backfilled: obj.display_owner_backfilled === true,
   };
 }
 
@@ -70,6 +74,7 @@ export async function writeMigrationState(
     schema_version: 1,
     last_swept_modules: state.last_swept_modules,
     last_swept_characters: state.last_swept_characters,
+    display_owner_backfilled: state.display_owner_backfilled,
   };
   await storage.setJson(MIGRATION_STATE_PATH, out, { indent: 2, userId });
 }

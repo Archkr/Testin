@@ -9,6 +9,15 @@ function register(name: string, handler: MacroHandler, description: string): voi
   registry.register({ name, handler, description, category: "Risu / Variables", scoped: false });
 }
 
+// Risu's setvar family executes ONLY when runVar is true (cbs.ts:827-836). The
+// display pass (our !commit) and the inline prompt-regex/editprocess pass (our
+// promptRegexLiteralVars — Risu's editprocess runs risuChatParser without runVar)
+// both leave runVar unset, so the macro returns null and the parser re-emits it
+// LITERAL (parser.svelte.ts:1764). Only the real generation commit pass executes.
+function leaveVarLiteral(ctx: { commit: boolean; promptRegexLiteralVars?: boolean }): boolean {
+  return !ctx.commit || ctx.promptRegexLiteralVars === true;
+}
+
 // cbs.ts.
 register("risu_getvar", (ctx, a) => ctx.vars.get("local", a[0] ?? ""),
   "Reads a local chat variable. Empty string if unset.");
@@ -16,19 +25,19 @@ register("risu_getvar", (ctx, a) => ctx.vars.get("local", a[0] ?? ""),
 // In cbs (rmVar:false, runVar:false) Risu returns null and the parser emits
 // the macro literal. Match on !commit.
 register("risu_setvar", (ctx, a) => {
-  if (!ctx.commit) return `{{setvar::${(a[0] ?? "")}::${(a[1] ?? "")}}}`;
+  if (leaveVarLiteral(ctx)) return `{{setvar::${(a[0] ?? "")}::${(a[1] ?? "")}}}`;
   ctx.vars.set("local", a[0] ?? "", a[1] ?? "");
   return "";
 }, "Sets a local chat variable.");
 
 register("risu_addvar", (ctx, a) => {
-  if (!ctx.commit) return `{{addvar::${(a[0] ?? "")}::${(a[1] ?? "")}}}`;
+  if (leaveVarLiteral(ctx)) return `{{addvar::${(a[0] ?? "")}::${(a[1] ?? "")}}}`;
   ctx.vars.add("local", a[0] ?? "", Number(a[1] ?? "0"));
   return "";
 }, "Adds delta to a local chat variable (coerces current value to number).");
 
 register("setdefaultvar", (ctx, a) => {
-  if (!ctx.commit) return `{{setdefaultvar::${(a[0] ?? "")}::${(a[1] ?? "")}}}`;
+  if (leaveVarLiteral(ctx)) return `{{setdefaultvar::${(a[0] ?? "")}::${(a[1] ?? "")}}}`;
   // cbs.ts. Falsy check; unset and empty both match.
   const name = a[0] ?? "";
   if (!ctx.vars.get("local", name)) {
@@ -53,12 +62,12 @@ register("settempvar", (ctx, a) => {
 // Risu exposes flushvar mainly via triggers; registering here for parity.
 // Not in Risu cbs.ts → matcher returns null in cbs context → emit literal.
 register("deletevar", (ctx, a) => {
-  if (!ctx.commit) return `{{deletevar::${(a[0] ?? "")}}}`;
+  if (leaveVarLiteral(ctx)) return `{{deletevar::${(a[0] ?? "")}}}`;
   ctx.vars.delete("local", a[0] ?? "");
   return "";
 }, "Deletes a local chat variable.");
 register("flushvar", (ctx, a) => {
-  if (!ctx.commit) return `{{flushvar::${(a[0] ?? "")}}}`;
+  if (leaveVarLiteral(ctx)) return `{{flushvar::${(a[0] ?? "")}}}`;
   ctx.vars.delete("local", a[0] ?? "");
   return "";
 }, "Alias of deletevar.");
@@ -68,7 +77,7 @@ register("flushvar", (ctx, a) => {
 register("risu_getchatvar", (ctx, a) => ctx.vars.get("local", a[0] ?? ""),
   "Reads a chat-scoped variable (aliased to local in Risu).");
 register("risu_setchatvar", (ctx, a) => {
-  if (!ctx.commit) return `{{setchatvar::${(a[0] ?? "")}::${(a[1] ?? "")}}}`;
+  if (leaveVarLiteral(ctx)) return `{{setchatvar::${(a[0] ?? "")}::${(a[1] ?? "")}}}`;
   ctx.vars.set("local", a[0] ?? "", a[1] ?? "");
   return "";
 }, "Sets a chat-scoped variable.");

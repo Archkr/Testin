@@ -99,6 +99,7 @@ export interface LumirealmCharacterData {
   readonly translator_version: string;
   // Lazy retranslation on chat-open fires when stored < current.
   readonly translator_schema_version?: number;
+  readonly display_owner?: boolean;
   // Pre-translation Risu source, lets us re-translate without the .charx.
   readonly source?: LumirealmStoredSource;
   readonly payload: {

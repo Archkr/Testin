@@ -4,6 +4,7 @@ import type {
   RealmFrontendToBackend,
   RealmBackendToFrontend,
 } from '../realm/messages.js';
+import type { DisplaySnapshot } from '../display/snapshot.js';
 
 /** One-entry-per-imported-card summary. Backend composes from `StoredRisuCard`
  *  + `spindle.characters.get` name lookup. UI renders directly. */
@@ -112,6 +113,8 @@ export interface PendingRegexScriptMsg {
 /** Frontend → Backend. */
 export type FrontendToBackend =
   | { type: 'get_cards' }
+  | { type: 'display_writeback'; chatId: string; vars: Record<string, string> }
+  | { type: 'display_authority'; chatId: string; authoritative: boolean }
   // Large cards exceed ~1MB WS frame limits; chunked upload avoids close 1006.
   // Send init → N chunks → commit.
   | {
@@ -210,6 +213,8 @@ export type FrontendToBackend =
         readonly submodelConnectionId?: string | null;
         readonly submodelModelOverride?: string | null;
         readonly submodelSamplers?: AuxSamplersWire;
+        readonly auxPrefillCompat?: boolean;
+        readonly submodelPrefillCompat?: boolean;
         readonly auxDebugCaptureRequest?: boolean;
         readonly auxDebugCaptureResponse?: boolean;
         readonly legacyMediaFindings?: boolean;
@@ -496,6 +501,13 @@ export type BackendToFrontend =
     }
   // Pushed on every state-tick. `defaults` is character-level `defaultVariables`
   // (Risu's `getChatVar` fallback when key unset).
+  // Full display-resolution snapshot for the FE engine (P2). Pushed at chat-open
+  // and on state-tick events. Carries everything runPipeline needs minus the
+  // per-message template and dynamic chat_index/role.
+  | {
+      type: 'display_snapshot';
+      snapshot: DisplaySnapshot;
+    }
   // `seq` is monotonic per-chat; pushes only when snapshot changes (or on explicit request).
   | {
       type: 'set_variables';
@@ -528,6 +540,8 @@ export type BackendToFrontend =
         readonly submodelConnectionId: string | null;
         readonly submodelModelOverride: string | null;
         readonly submodelSamplers: AuxSamplersWire;
+        readonly auxPrefillCompat: boolean;
+        readonly submodelPrefillCompat: boolean;
         readonly auxDebugCaptureRequest: boolean;
         readonly auxDebugCaptureResponse: boolean;
         readonly legacyMediaFindings: boolean;
@@ -609,18 +623,6 @@ export type BackendToFrontend =
       /** Display name of the world_book (for status messages). */
       worldBookName?: string;
       reason?: string;
-    }
-  // Streaming state , emitted by BE on 0↔1 transitions of
-  // `generationsInFlight[chatId]`. The frontend portal lifter pauses
-  // sweeps while `active === true` to avoid the per-chunk
-  // drop-and-re-clone cycle (Lumi's React re-renders the bubble per
-  // chunk, briefly text-in-light-DOM then text-in-shadow-DOM, our sig
-  // alternates → flicker). One pre-streaming sweep + one post-streaming
-  // sweep is sufficient for stable lifting.
-  | {
-      type: 'generation_state';
-      chatId: string;
-      active: boolean;
     }
   | {
       type: 'cleanup_character_artifacts';

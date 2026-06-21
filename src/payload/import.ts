@@ -1,4 +1,5 @@
 import { translateFromCharxBundle } from '../core/pipeline/index.js';
+import { base64ToBytes } from '../util/base64.js';
 import { readCharx } from '../core/charx/reader.js';
 import type { LumiBundle } from '../core/pipeline/index.js';
 import { CURRENT_CHARACTER_SCHEMA_VERSION } from '../state/translator-migrations.js';
@@ -154,10 +155,6 @@ function pickAvatar(
     if (isImage(path)) return { path, data };
   }
   return null;
-}
-
-function base64ToBytes(b64: string): Uint8Array {
-  return new Uint8Array(Buffer.from(b64, 'base64'));
 }
 
 // Declared here so tests can inject a mock without importing the full SpindleAPI type.

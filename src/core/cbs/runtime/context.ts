@@ -118,6 +118,10 @@ export interface RisuRuntimeContext {
   /** Set when built for a Lua `cbs(value)` call. Handlers branch to match
    *  Risu output (setvar/asset return literal, chatindex returns "-1"). */
   readonly cbsContext?: boolean;
+  /** Set for the inline prompt-regex (editprocess/editinput) pass. Risu's
+   *  editprocess runs risuChatParser WITHOUT runVar, so the setvar family
+   *  returns null -> the macro is re-emitted LITERAL and never executes */
+  readonly promptRegexLiteralVars?: boolean;
   /** Recursive parser entry. Closure over scanner.evaluate, absent on the
    *  IPC fallback path. */
   readonly evaluate?: (text: string) => string;

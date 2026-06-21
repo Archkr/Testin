@@ -86,7 +86,7 @@ function renderAtActionCode(a: RenderArgs): string {
   const body = renderActionBody(a.action);
 
   const frontmatter = [
-    `// @name       ${a.name}`,
+    `// @name       ${oneLine(a.name)}`,
     `// @type       trigger`,
     ...(a.events.length > 0
       ? [`// @triggers   ${a.events.join(", ")}`]

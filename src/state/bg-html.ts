@@ -180,7 +180,7 @@ export function createBgHtmlRefresher(deps: BgHtmlRefresherDeps): BgHtmlRefreshe
       return;
     }
 
-    log.info(
+    log.debug(
       `refreshBgHtml: resolved chatId=${chatId} bg_in=${bgCombined.length} ` +
         `bg_out=${resolvedBg.length} crossRuleParts=${crossRuleStyles.length} ` +
         `crossRule_total=${crossRuleStyles.reduce((a, p) => a + p.length, 0)} ` +
@@ -190,7 +190,7 @@ export function createBgHtmlRefresher(deps: BgHtmlRefresherDeps): BgHtmlRefreshe
     const sig = resolvedBg + '\x1f' + crossRuleStyles.join('\x1e');
     const prior = lastSentBgHtmlByChat.get(chatId);
     if (prior === sig) {
-      log.info(
+      log.debug(
         `refreshBgHtml: skip redundant send chatId=${chatId} (signature matches prior) ` +
           `bg_out=${resolvedBg.length} crossRule_total=${crossRuleStyles.reduce((a, p) => a + p.length, 0)}`,
       );

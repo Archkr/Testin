@@ -4,6 +4,7 @@
 
 import { toStr } from '../../util/coerce.js';
 import { rememberRecentFlush, getRecentFlush } from '../../state/recent-flush-cache.js';
+import { runChatMetadataExclusive } from '../../state/chat-metadata-queue.js';
 import type { HostApi } from '../host.js';
 
 export const META_ROOT = 'macro_variables';
@@ -30,7 +31,7 @@ export async function loadVars(api: HostApi, chatId?: string): Promise<Record<st
 }
 
 export async function saveVars(api: HostApi, vars: Record<string, string>, chatId?: string): Promise<void> {
-  try {
+  const write = async (): Promise<void> => {
     const existing = await api.chat.getMetadata(META_ROOT);
     const base: Record<string, unknown> = (existing && typeof existing === 'object')
       ? { ...(existing as Record<string, unknown>) }
@@ -43,5 +44,9 @@ export async function saveVars(api: HostApi, vars: Record<string, string>, chatI
     base[META_SUB] = bareLocal;
     await api.chat.setMetadata(META_ROOT, base);
     if (chatId) rememberRecentFlush(chatId, vars);
+  };
+  try {
+    if (chatId) await runChatMetadataExclusive(chatId, write);
+    else await write();
   } catch { /* ignore — chat-metadata write may not be permitted */ }
 }

@@ -74,6 +74,24 @@ export function clearVarOverlay(chatId: string): void {
   varOverlays.delete(chatId);
 }
 
+// A throwaway overlay for passes that must NOT mutate shared/persistent state
+function makeEphemeralOverlay(): VarOverlay {
+  return {
+    local: new Map(),
+    global: new Map(),
+    chat: new Map(),
+    temp: new Map(),
+    lastTouched: 0,
+  };
+}
+
+export interface VarReadRecorder {
+  readonly touched: Set<string>;
+  volatile: boolean;
+}
+
+export const MSG_DEP_KEY = "__msg__";
+
 // Input shape for a single evaluator run. Mirrors the fields
 // buildRuntimeContext reads from MacroInvokeCtx.env plus direct identity +
 // messages slices pulled out of the extension's live ActiveCard state.
@@ -129,6 +147,7 @@ export interface BuildEvaluatorCtxInput {
   readonly currentMessageRoleOverride?: string;
   /** false = display-pass; writes no-op, asset macros emit HTML. */
   readonly commit: boolean;
+  readonly suppressVarPersist?: boolean;
   readonly legacyMediaFindings?: boolean;
   readonly modulesByNamespace?: Readonly<Record<string, readonly string[]>>;
   readonly lorebook?: readonly LorebookEntry[];
@@ -136,6 +155,7 @@ export interface BuildEvaluatorCtxInput {
   readonly positionPt?: Readonly<Record<string, string>>;
   /** Risu cbs() call context. See RisuRuntimeContext.cbsContext. */
   readonly cbsContext?: boolean;
+  readonly recorder?: VarReadRecorder;
 }
 
 function indexToCharacterAssets(
@@ -158,7 +178,19 @@ function indexToCharacterAssets(
 
 export function buildEvaluatorContext(input: BuildEvaluatorCtxInput): EvaluatorCtx {
   const { chatId, commit, character: card, chat, variables } = input;
-  const overlay = (chatId && commit) ? getOverlay(chatId) : null;
+  const persistVars = commit && input.suppressVarPersist !== true;
+  // suppressVarPersist passes (the prompt-regex runner) get a throwaway overlay,
+  // never the shared module-level map, so any incidental write can't bleed into
+  // other chats' state or across pipeline runs in the singleton runner. (In the
+  // prompt-regex pass the setvar family is left literal per Risu — see the
+  // promptRegexLiteralVars gate below — so this overlay normally stays empty.)
+  const overlay = !commit
+    ? null
+    : input.suppressVarPersist === true
+      ? makeEphemeralOverlay()
+      : chatId
+        ? getOverlay(chatId)
+        : null;
   // Temp vars are per-pass scratchpad (Risu cbs.ts). Not persisted;
   // not gated on commit so display-mode settempvar chains work correctly.
   const tempOverlay = new Map<string, string>();
@@ -168,8 +200,22 @@ export function buildEvaluatorContext(input: BuildEvaluatorCtxInput): EvaluatorC
   const envChat = variables.chat ?? {};
   const defaults = input.scriptstateDefaults ?? {};
 
+  const recorder = input.recorder;
+  const recordMessagesDep = (): void => { if (recorder) recorder.touched.add(MSG_DEP_KEY); };
+  const recordRead = recorder
+    ? (scope: VarScope, name: string): void => {
+        if (scope === "temp") return;
+        if (scope === "global") recorder.touched.add(`global:${name}`);
+        else {
+          recorder.touched.add(`chat:${name}`);
+          recorder.touched.add(`local:${name}`);
+        }
+      }
+    : null;
+
   const vars = {
     get(scope: VarScope, name: string): string {
+      if (recordRead) recordRead(scope, name);
       if (scope === "temp") return tempOverlay.get(name) ?? "";
       if (overlay) {
         if (scope === "local" && overlay.local.has(name)) return overlay.local.get(name)!;
@@ -192,7 +238,7 @@ export function buildEvaluatorContext(input: BuildEvaluatorCtxInput): EvaluatorC
       if (!commit || !overlay) return;
       if (scope === "global") overlay.global.set(name, value);
       else overlay.chat.set(name, value);
-      if (chatId && spindleGlobal) {
+      if (chatId && spindleGlobal && persistVars) {
         try {
           const op = scope === "global"
             ? spindleGlobal.variables.global.set(name, value)
@@ -208,6 +254,7 @@ export function buildEvaluatorContext(input: BuildEvaluatorCtxInput): EvaluatorC
       this.set(scope, name, next);
     },
     has(scope: VarScope, name: string): boolean {
+      if (recordRead) recordRead(scope, name);
       if (scope === "temp") return tempOverlay.has(name);
       if (overlay) {
         if (scope === "local" && (overlay.local.has(name) || overlay.chat.has(name))) return true;
@@ -226,7 +273,7 @@ export function buildEvaluatorContext(input: BuildEvaluatorCtxInput): EvaluatorC
         if (scope === "global") overlay.global.delete(name);
         else { overlay.local.delete(name); overlay.chat.delete(name); }
       }
-      if (chatId && spindleGlobal) {
+      if (chatId && spindleGlobal && persistVars) {
         try {
           const op = scope === "global"
             ? spindleGlobal.variables.global.delete(name)
@@ -254,9 +301,10 @@ export function buildEvaluatorContext(input: BuildEvaluatorCtxInput): EvaluatorC
   }
   const effective: readonly Message[] = fullMessages ?? synthesized;
   const messages = {
-    all: () => effective,
-    last: () => effective[effective.length - 1] ?? null,
+    all: () => { recordMessagesDep(); return effective; },
+    last: () => { recordMessagesDep(); return effective[effective.length - 1] ?? null; },
     lastOf: (role: Message["role"]): Message | null => {
+      recordMessagesDep();
       for (let i = effective.length - 1; i >= 0; i--) {
         const m = effective[i]!;
         if (m.role === role) return m;
@@ -264,6 +312,7 @@ export function buildEvaluatorContext(input: BuildEvaluatorCtxInput): EvaluatorC
       return null;
     },
     count: (role?: Message["role"]): number => {
+      recordMessagesDep();
       if (role === undefined) {
         if (fullMessages) return effective.length;
         return chat.messageCount != null ? messageCount : synthesized.length;
@@ -316,13 +365,20 @@ export function buildEvaluatorContext(input: BuildEvaluatorCtxInput): EvaluatorC
         has: (name) => sessionFunctions.has(name),
       };
 
+  const rng = recorder
+    ? { random: () => { recorder.volatile = true; return Math.random(); } }
+    : { random: () => Math.random() };
+  const clock = recorder
+    ? { now: () => { recorder.volatile = true; return Date.now(); } }
+    : { now: () => Date.now() };
+
   const out: EvaluatorCtx = {
     vars,
     identity,
     character,
     messages,
-    rng: { random: () => Math.random() },
-    clock: { now: () => Date.now() },
+    rng,
+    clock,
     triggerId: null,
     role: input.currentMessageRoleOverride
       ? normalizeRoleToLumi(input.currentMessageRoleOverride)
@@ -350,6 +406,9 @@ export function buildEvaluatorContext(input: BuildEvaluatorCtxInput): EvaluatorC
     ...(input.modulesByNamespace ? { modulesByNamespace: input.modulesByNamespace } : {}),
     ...(input.positionPt ? { positionPt: input.positionPt } : {}),
     ...(input.cbsContext ? { cbsContext: true } : {}),
+    // The prompt-regex pass (suppressVarPersist) leaves the setvar family literal,
+    // mirroring Risu's editprocess (no runVar). See RisuRuntimeContext.promptRegexLiteralVars.
+    ...(input.suppressVarPersist ? { promptRegexLiteralVars: true } : {}),
   };
   // Late-bound: handlers re-parse field content with the same context.
   // Lazy require dodges the circular dep through dispatch->handlers.

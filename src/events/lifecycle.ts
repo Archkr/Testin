@@ -31,6 +31,7 @@ export interface LifecycleEventHandlerDeps {
     userId: string | undefined,
   ) => Promise<ActiveCard | null>;
   readonly invalidateActiveForCharacter: (characterId: string, userId: string | undefined) => void;
+  readonly onActiveChatEvicted?: (chatId: string) => void;
   readonly invalidateRenderMcpForChat: (chatId: string) => void;
   readonly invalidateRenderMcpForMessage: (chatId: string, messageId: string) => void;
   readonly invalidateMacroInterceptorForChat: (chatId: string) => void;
@@ -42,6 +43,7 @@ export interface LifecycleEventHandlerDeps {
   readonly clearActiveScriptstateDefaults: (chatId: string) => void;
   readonly clearActiveLorebook: (chatId: string) => void;
   readonly clearVarOverlay: (chatId: string) => void;
+  readonly clearMacroVarOverlay: (chatId: string) => void;
 
   // Refresh / dispatch
   readonly refreshBgHtml: (active: ActiveCard, chatId: string, userId: string | undefined) => Promise<void>;
@@ -75,6 +77,13 @@ export interface LifecycleEventHandlerDeps {
   readonly sendSetActiveChat: (
     activeChatId: string | null,
     activeCharacterId: string | null,
+    userId: string | undefined,
+  ) => void;
+  /** Best-effort call to Lumi's ctx.chat.setStyleMode. Feature-detected,
+   *  no-op on hosts that predate the API. */
+  readonly setChatStyleMode: (
+    chatId: string,
+    mode: 'bounded' | 'extension-relaxed',
     userId: string | undefined,
   ) => void;
   readonly listCards: (userId: string | undefined) => Promise<readonly import('../types/messages.js').CardSummary[]>;
@@ -225,8 +234,9 @@ export function createLifecycleEventHandlers(deps: LifecycleEventHandlerDeps): L
           return;
         }
         if (!requiresRefresh) return;
-        await deps.refreshBgHtml(active, chatId, userId);
+        // Snapshot before bg-html (see SETTINGS_UPDATED activeChatId rationale).
         await deps.refreshVariables(active, chatId, userId, { force: true });
+        await deps.refreshBgHtml(active, chatId, userId);
       } catch (err) {
         deps.log.error(`scheduleChatChangedRefresh: chat=${chatId} threw: ${deps.errMsg(err)}`);
       }
@@ -235,24 +245,6 @@ export function createLifecycleEventHandlers(deps: LifecycleEventHandlerDeps): L
       (timer as { unref: () => void }).unref();
     }
     chatChangedDebounceTimers.set(chatId, timer);
-  }
-
-  // Per-chat in-flight generation counter. 0→1 and N→0 transitions emit
-  // generation_state to the FE so the portal lifter can pause sweeps.
-  const generationsInFlight = new Map<string, number>();
-  function markGenerationStart(chatId: string): boolean {
-    const prev = generationsInFlight.get(chatId) ?? 0;
-    generationsInFlight.set(chatId, prev + 1);
-    return prev === 0;
-  }
-  function markGenerationEnd(chatId: string): boolean {
-    const prev = generationsInFlight.get(chatId) ?? 0;
-    if (prev <= 1) {
-      generationsInFlight.delete(chatId);
-      return prev === 1;
-    }
-    generationsInFlight.set(chatId, prev - 1);
-    return false;
   }
 
   // World-book entry edits via Lumi's UI emit no character/chat event, so
@@ -318,12 +310,19 @@ export function createLifecycleEventHandlers(deps: LifecycleEventHandlerDeps): L
         try { deps.send({ type: 'clear_bg_html', chatId }, userId); } catch { /* */ }
         return;
       }
+      // Card-authored position:fixed needs viewport scope, opt the chat out of
+      // Lumi's bubble-CB sandbox. Gated by app_manipulation per Lumi side.
+      deps.setChatStyleMode(chatId, 'extension-relaxed', userId);
       deps.invalidateRenderMcpForChat(chatId);
       deps.invalidateMacroInterceptorForChat(chatId);
       void deps.refreshMessagesCache(chatId, userId);
-      await deps.refreshBgHtml(active, chatId, userId);
+      // Push the display snapshot FIRST: the FE resolver needs it to render and
+      // waits on it. bg-html is only styling and can take seconds — running it
+      // first (as it used to) queued the snapshot behind it, so the FE sat on a
+      // not-ready resolver for ~5s. Snapshot before bg-html.
       await deps.refreshVariables(active, chatId, userId, { force: true });
       await deps.refreshToggleDefinitions(active, chatId, userId, { force: true });
+      await deps.refreshBgHtml(active, chatId, userId);
       deps.log.info(`SETTINGS_UPDATED activeChatId: ALL DONE chatId=${chatId}`);
     },
 
@@ -342,6 +341,8 @@ export function createLifecycleEventHandlers(deps: LifecycleEventHandlerDeps): L
         deps.invalidateMacroInterceptorForChat(chatId);
         // Own runtime.flush already updated this cache, only external writes need the drop.
         if (!wasOwn) invalidateRecentFlush(chatId);
+        if (!wasOwn) deps.clearVarOverlay(chatId);
+        if (!wasOwn) deps.clearMacroVarOverlay(chatId);
       }
       const fieldsPreview = changedFields === undefined
         ? 'undefined'
@@ -374,9 +375,6 @@ export function createLifecycleEventHandlers(deps: LifecycleEventHandlerDeps): L
       const { chatId, characterId } = deps.extractIds(raw);
       deps.log.info(`event GENERATION_STARTED chatId=${chatId ?? '?'} characterId=${characterId ?? '?'} payload=${deps.dumpPayload(raw)}`);
       if (!chatId) return;
-      if (markGenerationStart(chatId)) {
-        deps.send({ type: 'generation_state', chatId, active: true }, userId);
-      }
       const active = await deps.ensureActiveCardForChat(chatId, characterId, userId);
       if (!active) return;
       deps.log.info(`GENERATION_STARTED: → runBinding(start)`);
@@ -394,10 +392,6 @@ export function createLifecycleEventHandlers(deps: LifecycleEventHandlerDeps): L
       const { chatId, characterId } = deps.extractIds(raw);
       deps.log.info(`event GENERATION_ENDED chatId=${chatId ?? '?'} characterId=${characterId ?? '?'} payload=${deps.dumpPayload(raw)}`);
       if (!chatId) return;
-      const wentIdle = markGenerationEnd(chatId);
-      if (wentIdle) {
-        deps.send({ type: 'generation_state', chatId, active: false }, userId);
-      }
       const active = await deps.ensureActiveCardForChat(chatId, characterId, userId);
       if (!active) return;
       for (const binding of deps.generationEndedBindings) {
@@ -415,10 +409,6 @@ export function createLifecycleEventHandlers(deps: LifecycleEventHandlerDeps): L
       const { chatId, characterId } = deps.extractIds(raw);
       deps.log.info(`event GENERATION_STOPPED chatId=${chatId ?? '?'} characterId=${characterId ?? '?'} payload=${deps.dumpPayload(raw)}`);
       if (!chatId) return;
-      const wentIdle = markGenerationEnd(chatId);
-      if (wentIdle) {
-        deps.send({ type: 'generation_state', chatId, active: false }, userId);
-      }
       const active = await deps.ensureActiveCardForChat(chatId, characterId, userId);
       if (!active) return;
       deps.invalidateRenderMcpForChat(chatId);
@@ -478,7 +468,7 @@ export function createLifecycleEventHandlers(deps: LifecycleEventHandlerDeps): L
       if (!chatId) return;
       deps.invalidateListenEditPreload(chatId);
       if (msgId) deps.invalidateRenderMcpForMessage(chatId, msgId);
-      void deps.refreshMessagesCache(chatId, userId);
+      await deps.refreshMessagesCache(chatId, userId);
       const active = await deps.ensureActiveCardForChat(chatId, null, userId);
       if (!active) return;
       // No bindings fire here, Risu has no binding-firing analogue for deletes.
@@ -499,11 +489,13 @@ export function createLifecycleEventHandlers(deps: LifecycleEventHandlerDeps): L
       invalidateRecentFlush(chatId);
       deps.lastSentBgHtmlByChat.delete(chatId);
       deps.activeCardByChat.delete(chatId);
+      deps.onActiveChatEvicted?.(chatId);
       deps.clearActiveAssetIndexes(chatId);
       deps.clearActiveCharacterImage(chatId);
       deps.clearActiveScriptstateDefaults(chatId);
       deps.clearActiveLorebook(chatId);
       deps.clearVarOverlay(chatId);
+      deps.clearMacroVarOverlay(chatId);
       deps.variableState.clearChat(chatId);
       deps.toggleState.clearChat(chatId);
     },

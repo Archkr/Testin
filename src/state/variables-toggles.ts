@@ -113,6 +113,12 @@ export interface VariablesTogglesDeps {
   ) => Promise<ActiveCard | null>;
   readonly refreshBgHtml: (active: ActiveCard, chatId: string, userId: string | undefined) => Promise<void>;
   readonly send: (msg: BackendToFrontend, userId: string | undefined) => void;
+  readonly pushDisplaySnapshot?: (
+    active: ActiveCard,
+    chatId: string,
+    userId: string,
+    vars: { local: Record<string, string>; global: Record<string, string>; chat: Record<string, string> },
+  ) => void;
   readonly log: {
     readonly info: (m: string) => void;
     readonly warn: (m: string) => void;
@@ -219,6 +225,7 @@ export function createVariablesTogglesService(deps: VariablesTogglesDeps): Varia
     } else {
       log.debug(`variables.refresh: unchanged chat=${chatId} seq=${result.entry.seq}`);
     }
+    deps.pushDisplaySnapshot?.(active, chatId, userId, scopes);
   }
 
   async function writeLocalVariable(

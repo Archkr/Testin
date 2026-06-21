@@ -1,7 +1,7 @@
 // Risu scriptings.ts runLuaEditTrigger.
 // Iterates all triggerlua triggers, threading data through each in sequence.
 
-import type { HostApi, DispatchData, ScriptNS } from "./host.js";
+import type { HostApi, DispatchData, ScriptNS, TriggerRuntimePreloaded } from "./host.js";
 import { makeRisuTriggerRuntime } from "./runtime.js";
 import { errMsg } from "../util/coerce.js";
 import { makeSafeLogger } from "../util/safe-log.js";
@@ -24,6 +24,8 @@ export interface ListenEditOpts {
   readonly chatId?: string;
   readonly characterId?: string;
   readonly resolveTemplate?: (text: string) => Promise<string>;
+  readonly preloaded?: TriggerRuntimePreloaded;
+  readonly wasmoonKey?: string;
 }
 
 export async function runListenEditChain<T>(
@@ -42,6 +44,13 @@ export async function runListenEditChain<T>(
     return luaTrigger && t.luaCode.length > 0;
   });
   if (eligible.length === 0) return value;
+
+  let effApi: HostApi = api;
+  if (mode === 'editDisplay') {
+    const { tokens: _tokens, ...rest } = api;
+    void _tokens;
+    effApi = rest;
+  }
 
   const chainStart = Date.now();
   // valueLen is what we ship to the Lua across the JSON wire , the actual
@@ -64,7 +73,7 @@ export async function runListenEditChain<T>(
   // to 3 (or 0 if cross-chain cache hits), which kills the IPC channel
   // contention that caused 4.5s stalls in the editDisplay path.
   const tPreload = Date.now();
-  const preloaded = await preloadForListenEditChain(
+  const preloaded = opts.preloaded ?? await preloadForListenEditChain(
     api,
     opts.chatId,
     opts.characterId ?? null,
@@ -88,7 +97,7 @@ export async function runListenEditChain<T>(
       // Risu scriptings.ts: lowLevelAccess false; edit hooks are text transforms.
       const tFactoryStart = Date.now();
       const runtime = await makeRisuTriggerRuntime(
-        api,
+        effApi,
         data,
         scriptNS,
         {
@@ -113,6 +122,7 @@ export async function runListenEditChain<T>(
       const result = await runtime.runLua(t.luaCode, {
         entry: "callListenMain",
         args: [mode, accessKey, valueJson, metaJson],
+        ...(opts.wasmoonKey !== undefined ? { wasmoonKey: opts.wasmoonKey } : {}),
       });
       const runLuaMs = Date.now() - tRunLuaStart;
       totalRunLuaMs += runLuaMs;

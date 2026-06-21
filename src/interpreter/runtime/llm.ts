@@ -16,6 +16,8 @@ export interface SubmodelRouting {
    *  events tagged `channel: 'submodel'`. (Aux channel is wired separately
    *  in runtime.ts axLLMMain.) */
   readonly auxDebugCapture?: ((event: AuxDebugCaptureEvent) => void) | undefined;
+  readonly submodelPrefillCompat?: boolean;
+  readonly auxPrefillCompat?: boolean;
 }
 
 // model is a CHANNEL keyword ('model' | 'submodel'), not a model name.
@@ -32,16 +34,19 @@ export async function runLLM(
   const connId = useSubmodel ? routing.submodelConnectionId : null;
   const modelOverride = useSubmodel ? routing.submodelModelOverride : null;
   const paramsWire = useSubmodel ? routing.submodelParamsWire : null;
+  const prefillCompat = useSubmodel ? routing.submodelPrefillCompat : routing.auxPrefillCompat;
   const req: {
     messages: readonly { role: string; content: string }[];
     connectionId?: string;
     model?: string;
     parameters?: Record<string, number>;
+    prefillCompat?: boolean;
   } = {
     messages: [{ role: 'user', content: toStr(value) }],
     ...(connId ? { connectionId: connId } : {}),
     ...(modelOverride ? { model: modelOverride } : {}),
     ...(paramsWire ? { parameters: paramsWire } : {}),
+    ...(prefillCompat ? { prefillCompat: true } : {}),
   };
   _log.info(
     `channel=${model} useSubmodel=${useSubmodel} ` +

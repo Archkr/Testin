@@ -21,7 +21,7 @@ export interface PromptOrphanReviewDeps {
     options?: { title?: string; duration?: number },
   ) => void;
   readonly send: (msg: BackendToFrontend, userId: string | undefined) => void;
-  readonly log: { readonly info: (m: string) => void; readonly warn: (m: string) => void };
+  readonly log: { readonly info: (m: string) => void; readonly debug: (m: string) => void; readonly warn: (m: string) => void };
   readonly errMsg: (e: unknown) => string;
 }
 
@@ -49,7 +49,7 @@ export function makePromptOrphanReviewIfAny(
     const charCount = detected.characterIds.length;
     const moduleCount = detected.moduleIds.length;
     if (charCount + moduleCount === 0) {
-      log.info(`orphan-review: nothing detected elapsed=${Date.now() - tStart}ms`);
+      log.debug(`orphan-review: nothing detected elapsed=${Date.now() - tStart}ms`);
       return;
     }
     // Surface the actual IDs at info level so the user can verify what's flagged, truncated for line readability.

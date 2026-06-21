@@ -1,5 +1,17 @@
 import type { SpindleFrontendContext } from 'lumiverse-spindle-types';
 import type { BackendToFrontend, FrontendToBackend } from './types/messages.js';
+import { createDisplayResolver } from './display/resolver.js';
+import {
+  setDisplaySnapshot,
+  getDisplaySnapshot,
+  applyVarDelta,
+  diffSnapshotVars,
+  getDisplayResolutionMode,
+  setDisplayResolutionMode,
+  type DisplayResolutionMode,
+} from './display/snapshot.js';
+import { MSG_DEP_KEY } from './interpreter/evaluator/context.js';
+import { setWasmoonEnabled } from './interpreter/runtime.js';
 import { STYLES } from './ui/styles.js';
 import { createSidebar } from './ui/sidebar.js';
 import { createAuxDebugPanel } from './ui/aux-debug.js';
@@ -7,8 +19,6 @@ import { setupBgHtmlRenderer } from './bghtml/render.js';
 import { setupIslandStyles } from './bghtml/island-styles.js';
 // Risu compiled CSS (Tailwind v4 + theme vars). GPL-3.0 output; reason LumiRealm is GPL-3.0.
 import risuEnvironmentCss from './bghtml/risu-environment.css' with { type: 'text' };
-import { setupMessagePortal } from './portal/message-portal.js';
-import { dumpHidePanelState } from './portal/hide-panel-css.js';
 import { setupImportOverlay } from './ui/import-overlay.js';
 import { setupBgmPlayer } from './audio/bgm.js';
 import { setupSvgRasterizer } from './svg-raster.js';
@@ -91,6 +101,45 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   hydrateLogStateFromLocalStorage();
   flog.info('frontend setup: begin');
   const cleanups: (() => void)[] = [];
+
+  const displayRegistered = Boolean(ctx.display);
+  if (ctx.display) {
+    cleanups.push(ctx.display.registerResolver(createDisplayResolver(
+      (chatId, vars) => ctx.sendToBackend({ type: 'display_writeback', chatId, vars }),
+    )));
+  }
+  // Ownership is carried on chat.metadata.display_owner (stamped by our backend),
+  // which the host reads at first render. display_authority only tells the
+  // backend whether to keep producing output: 'on' = we own and resolve in the
+  // browser so the backend can short-circuit, 'shadow'/'off' = let it run.
+  const sendDisplayAuthority = (chatId: string | null): void => {
+    if (!chatId) return;
+    ctx.sendToBackend({
+      type: 'display_authority',
+      chatId,
+      authoritative: getDisplayResolutionMode() === 'on',
+    });
+  };
+  (window as unknown as { __lumirealmDisplayMode?: (m: string) => void }).__lumirealmDisplayMode = (m: string) => {
+    const mode: DisplayResolutionMode = m === 'shadow' || m === 'on' ? m : 'off';
+    setDisplayResolutionMode(mode);
+    sendDisplayAuthority(activeRisuChatId);
+    flog.info(`display resolution mode='${mode}' resolverRegistered=${displayRegistered}`);
+    if (!displayRegistered) {
+      flog.warn('display resolver NOT registered: host ctx.display is undefined — the Lumiverse core frontend lacks the display hook.');
+    }
+  };
+  cleanups.push(() => {
+    try { delete (window as unknown as Record<string, unknown>).__lumirealmDisplayMode; } catch { /* */ }
+  });
+  (window as unknown as { __lumirealmWasmoon?: (on?: boolean) => void }).__lumirealmWasmoon = (on?: boolean) => {
+    const enabled = on !== false;
+    setWasmoonEnabled(enabled);
+    flog.info(`wasmoon editDisplay engine ${enabled ? 'ENABLED (wasmoon)' : 'DISABLED (fengari fallback)'} — reopen the chat to apply`);
+  };
+  cleanups.push(() => {
+    try { delete (window as unknown as Record<string, unknown>).__lumirealmWasmoon; } catch { /* */ }
+  });
 
   const originalFetch = window.fetch.bind(window);
   const taggedFetch = async (
@@ -229,45 +278,18 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     const result = {
       chatScopeBytes: chatScope?.textContent?.length ?? null,
       bgHtmlHostExists: document.querySelector('[data-risu-bg-host]') !== null,
-      messagePortalRootExists: document.querySelector('.lumi-message-portal-root') !== null,
       islandShadows: islandSheets,
     };
     console.log('[lumirealm] [STYLE-SCOPE]', JSON.stringify(result, null, 2));
     return result;
   };
 
-  // Per-bubble height + tall-descendant snapshot, focused on the
-  // streaming-balloon investigation (handoff-2026-05-04-streaming-flicker.md
-  // §3). Run `__riCompatDump.balloon()` at the moment the bubble grows;
-  // the result enumerates per-bubble `bubbleHeight` + tallest descendants
-  // (light DOM AND open shadow roots) with classes + position +
-  // outerHTML head , enough to identify the culprit element without
-  // walking the DOM by hand.
-  function dumpBalloon(): unknown {
-    return messagePortal.dumpBalloonState();
-  }
-
-  // Hide-panel CSS dump , verifies the source-hiding stylesheet is built
-  // and the document-level <style> is connected. Surfaces:
-  //   - classes: list of classes we've added to the hide-set
-  //   - documentStyleConnected: true when our <style> is in document.head
-  //   - documentStyleText: the literal CSS body , paste into a sheet and
-  //     try `document.querySelectorAll('.<class>')` to verify selector match
-  //   - sheetRuleCount: rules in the constructed sheet adopted into shadows
-  function dumpHidePanel(): unknown {
-    return dumpHidePanelState();
-  }
-
   (window as unknown as { __riCompatDump?: {
     bubble: () => unknown;
     styleScope: () => unknown;
-    balloon: () => unknown;
-    hidePanel: () => unknown;
   } }).__riCompatDump = {
     bubble: dumpBubble,
     styleScope: dumpStyleScope,
-    balloon: dumpBalloon,
-    hidePanel: dumpHidePanel,
   };
   cleanups.push(() => {
     try { delete (window as unknown as Record<string, unknown>).__riCompatDump; } catch { /* */ }
@@ -315,19 +337,8 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     };
   }
 
-  // Runtime DOM lifter: walks chat-message subtrees, finds position:fixed
-  // elements, reparents them into a body-level overlay to escape Lumi's
-  // row-transform containing block. Ground truth via getComputedStyle.
-  const messagePortal = setupMessagePortal(ctx, flog);
-  cleanups.push(() => messagePortal.destroy());
-
-  // Island-styles before the bg-html renderer so the sheet exists when the
-  // first render_bg_html arrives. Adopting a sheet that flips computed position
-  // to fixed doesn't fire a DOM mutation, so the lifter wouldn't see it. The
-  // styles-updated callback triggers a sweep.
   const islandStyles = setupIslandStyles(flog, {
     riskuEnvironmentCss: risuEnvironmentCss,
-    onStylesUpdated: () => messagePortal.sweep('island-styles-updated'),
   });
   cleanups.push(() => islandStyles.destroy());
 
@@ -460,49 +471,6 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       });
       return true;
     },
-    dumpPortalState(): {
-      activeRisuChatId: string | null;
-      portal: ReturnType<typeof messagePortal.diagnostic>;
-    } {
-      return {
-        activeRisuChatId,
-        portal: messagePortal.diagnostic(),
-      };
-    },
-    sweepPortals(): void {
-      messagePortal.sweep('manual');
-    },
-    setDiagAllSweeps(on: boolean): void {
-      messagePortal.setDiagAllSweeps(on === true);
-      flog.info(`__riCompat.setDiagAllSweeps: ${on === true ? 'ON' : 'OFF'}`);
-    },
-    setDiagPortalTrace(on: boolean): void {
-      messagePortal.setDiagPortalTrace(on === true);
-      flog.info(`__riCompat.setDiagPortalTrace: ${on === true ? 'ON' : 'OFF'}`);
-    },
-    setDiagBalloonTrace(on: boolean): void {
-      messagePortal.setDiagBalloonTrace(on === true);
-      flog.info(`__riCompat.setDiagBalloonTrace: ${on === true ? 'ON' : 'OFF'}`);
-    },
-    /** Synchronous one-shot: returns per-bubble height + tallest
-     *  descendants (light + open shadow). Use this from DevTools at the
-     *  exact moment the bubble balloons to identify the culprit element. */
-    dumpBalloonState(): unknown {
-      return messagePortal.dumpBalloonState();
-    },
-    /** Toggles a per-clear log line for the runtime min-height clearer
-     *  (the runtime fix for the streaming-balloon mismeasurement). Off
-     *  by default. Counter is always tracked , call `minHeightClears()`
-     *  to read it without enabling the log. */
-    setDiagMinHeightClear(on: boolean): void {
-      messagePortal.setDiagMinHeightClear(on === true);
-      flog.info(`__riCompat.setDiagMinHeightClear: ${on === true ? 'ON' : 'OFF'}`);
-    },
-    /** Cumulative count of min-height clears since extension mount.
-     *  Non-zero confirms the runtime fix engaged at least once. */
-    minHeightClears(): number {
-      return messagePortal.minHeightClears();
-    },
     requestVariablesSnapshot(): boolean {
       if (!activeRisuChatId) {
         flog.warn('__riCompat.requestVariablesSnapshot: no active Risu chat');
@@ -593,6 +561,46 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       sendToBackend({ type: 'log_set_state', enabled: false, includeChatData: false });
       // Fall through so the Logs panel can show "Downloaded".
     }
+    if (msg.type === 'display_snapshot') {
+      if (getDisplayResolutionMode() !== 'off') {
+        const prev = getDisplaySnapshot(msg.snapshot.chatId);
+        setDisplaySnapshot(msg.snapshot);
+        if (prev) {
+          const changed = diffSnapshotVars(prev, msg.snapshot);
+          const pc = prev.chat, nc = msg.snapshot.chat;
+          if (pc.lastMessageId !== nc.lastMessageId || pc.messageCount !== nc.messageCount
+            || pc.lastMessage !== nc.lastMessage || pc.lastUserMessage !== nc.lastUserMessage
+            || pc.lastCharMessage !== nc.lastCharMessage) {
+            changed.push(MSG_DEP_KEY);
+          }
+          if (changed.length > 0) ctx.display?.invalidate(changed);
+        } else {
+          // First snapshot for this chat: the host gates resolver use on
+          // ready() (snapshot present), so re-resolve everything now that it is.
+          ctx.display?.invalidate(['*']);
+        }
+      }
+      return;
+    }
+    if (msg.type === 'set_variables') {
+      if (getDisplayResolutionMode() !== 'off' && typeof msg.characterId === 'string') {
+        const snap = getDisplaySnapshot(msg.chatId);
+        const changed: string[] = [];
+        for (const scope of ['local', 'global', 'chat'] as const) {
+          const incoming = msg.scopes[scope] ?? {};
+          const cur = { ...(snap?.vars[scope] ?? {}) };
+          for (const [k, v] of Object.entries(incoming)) {
+            if (cur[k] !== v) changed.push(`${scope}:${k}`);
+          }
+          for (const k of Object.keys(cur)) {
+            if (!(k in incoming)) changed.push(`${scope}:${k}`);
+          }
+          applyVarDelta(msg.chatId, scope, { ...incoming });
+        }
+        if (changed.length > 0) ctx.display?.invalidate(changed);
+      }
+      // fall through to sidebar broadcast
+    }
     if (msg.type === 'cards_updated') {
       if (!ready) {
         flog.info('handshake complete on first cards_updated');
@@ -604,9 +612,8 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     if (msg.type === 'set_active_chat') {
       const prevChatId = activeRisuChatId;
       activeRisuChatId = msg.chatId;
+      sendDisplayAuthority(msg.chatId);
       if (activeRisuChatId !== prevChatId) {
-        // Without clearAll, null->null transitions leak stale clones across chats.
-        messagePortal.clearAll(activeRisuChatId === null ? 'set_active_chat:null' : 'chat-switch');
         if (sidebar) sidebar.setActiveChatId(activeRisuChatId);
       }
       // Fall through to sidebar broadcast so the viewer panel can read
@@ -624,19 +631,6 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     }
     if (msg.type === 'rasterize_svgs') {
       svgRasterizer.handleRasterizeSvgsMessage(msg);
-      return;
-    }
-    if (msg.type === 'generation_state') {
-      // Streaming gate , backend tracks `generationsInFlight[chatId]`
-      // and fires this on 0↔N transitions. The portal lifter uses it
-      // to suppress sweeps for the duration of streaming, eliminating
-      // the per-chunk drop+re-clone cycle that produced visible
-      // 20Hz flicker.
-      try {
-        messagePortal.setStreamingActive(msg.chatId, msg.active === true);
-      } catch (err) {
-        flog.warn('generation_state dispatch failed:', err);
-      }
       return;
     }
     if (msg.type === 'aux_debug_capture') {

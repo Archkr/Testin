@@ -51,7 +51,13 @@ export interface MacroInterceptorCtx {
   readonly sourceHint?: string;
   readonly userId?: string;
 }
-export type MacroInterceptorHandler = (ctx: MacroInterceptorCtx) => Promise<string | void>;
+export interface MacroInterceptorRichResult {
+  readonly text: string;
+  readonly touchedVars?: readonly string[];
+  readonly volatile?: boolean;
+}
+export type MacroInterceptorResult = string | MacroInterceptorRichResult | void;
+export type MacroInterceptorHandler = (ctx: MacroInterceptorCtx) => Promise<MacroInterceptorResult>;
 export type RegisterMacroInterceptor = (
   handler: MacroInterceptorHandler,
   priority?: number,
@@ -121,7 +127,14 @@ export function getModalConfirmApi(): ModalConfirmApi | null {
 // list/delete-only legacy adapter shape keeps working on older Lumi builds.
 export interface RegexScriptsApi {
   readonly list: (
-    opts: { userId?: string; limit?: number; offset?: number },
+    opts: {
+      userId?: string;
+      limit?: number;
+      offset?: number;
+      scope?: 'global' | 'character' | 'chat';
+      scopeId?: string;
+      target?: 'prompt' | 'response' | 'display';
+    },
   ) => Promise<{ data: readonly unknown[]; total: number }>;
   readonly delete: (id: string, userId?: string) => Promise<boolean>;
   readonly update?: (
@@ -129,6 +142,14 @@ export interface RegexScriptsApi {
     input: { replace_string?: string },
     userId?: string,
   ) => Promise<unknown>;
+  readonly getActive?: (
+    opts: {
+      target: 'prompt' | 'response' | 'display';
+      characterId?: string;
+      chatId?: string;
+      userId?: string;
+    },
+  ) => Promise<readonly unknown[]>;
 }
 
 export function getRegexScriptsApi(): RegexScriptsApi | null {
@@ -137,6 +158,7 @@ export function getRegexScriptsApi(): RegexScriptsApi | null {
       list?: RegexScriptsApi['list'];
       delete?: RegexScriptsApi['delete'];
       update?: RegexScriptsApi['update'];
+      getActive?: RegexScriptsApi['getActive'];
     };
   }).regex_scripts;
   if (!api?.list || !api?.delete) return null;
@@ -145,6 +167,7 @@ export function getRegexScriptsApi(): RegexScriptsApi | null {
     delete: api.delete.bind(api),
   };
   if (api.update) (out as { update?: RegexScriptsApi['update'] }).update = api.update.bind(api);
+  if (api.getActive) (out as { getActive?: RegexScriptsApi['getActive'] }).getActive = api.getActive.bind(api);
   return out;
 }
 

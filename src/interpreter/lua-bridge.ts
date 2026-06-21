@@ -6,6 +6,7 @@ import * as fengari from 'fengari-web';
 // Bun text loader inlines at build time, avoids node:fs (Lumi blocks it).
 import jsonLuaSource from './lua-json.lua' with { type: 'text' };
 import { makeSafeLogger } from '../util/safe-log.js';
+import { perfEnabled, perfRecord, perfBump } from '../util/perf.js';
 
 type LuaState = unknown;
 
@@ -176,6 +177,16 @@ export interface ExecuteOpts {
   readonly args?: readonly unknown[];
 }
 
+const __luaBytecodeCache = new Map<number, Uint8Array>();
+function __luaCodeHash(s: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
+  }
+  return h >>> 0;
+}
+
 export async function execute(
   code: string,
   globals: Record<string, unknown>,
@@ -187,12 +198,14 @@ export async function execute(
   flog(`execute: START code_len=${codeStr.length} globals=${globalKeys.length} entry=${String(opts.entry ?? '<none>')} args=${JSON.stringify(opts.args ?? [])}`);
   fverbose(`execute: globals_keys=${globalKeys.join(',').slice(0, 400)}`);
   fverbose(`execute: code[0..300]=${JSON.stringify(codeStr.slice(0, 300))}`);
+  const __perfCreate0 = perfEnabled() ? Date.now() : 0;
   const L = lauxlib.luaL_newstate();
   try {
     lualib.luaL_openlibs(L);
     fverbose(`execute: luaL_openlibs done`);
     registerJsonModule(L);
     fverbose(`execute: registerJsonModule done`);
+    if (__perfCreate0) perfRecord("lua.vmCreate", Date.now() - __perfCreate0);
 
     if (globals && typeof globals === 'object') {
       let pushed = 0;
@@ -349,7 +362,30 @@ function callListenMain(type, id, value, meta)
 end
 `;
     const wrapped = prelude + '\n' + codeStr;
-    const loadStatus = lauxlib.luaL_loadstring(L, toL(wrapped));
+    const __compile0 = perfEnabled() ? Date.now() : 0;
+    const __bcKey = __luaCodeHash(wrapped);
+    const __cachedBc = __luaBytecodeCache.get(__bcKey);
+    let loadStatus: number;
+    if (__cachedBc) {
+      loadStatus = lauxlib.luaL_loadbuffer(L, __cachedBc, __cachedBc.length, toL("=card"));
+    } else {
+      loadStatus = lauxlib.luaL_loadstring(L, toL(wrapped));
+      if (loadStatus === lua.LUA_OK) {
+        try {
+          const __bc: number[] = [];
+          lua.lua_dump(L, (_L: unknown, p: Uint8Array, sz: number) => {
+            for (let i = 0; i < sz; i++) __bc.push(p[i]!);
+            return 0;
+          }, null, 0);
+          __luaBytecodeCache.set(__bcKey, new Uint8Array(__bc));
+          if (__luaBytecodeCache.size > 32) {
+            const k = __luaBytecodeCache.keys().next().value;
+            if (k !== undefined) __luaBytecodeCache.delete(k);
+          }
+        } catch { void 0; }
+      }
+    }
+    if (__compile0) perfRecord("lua.compile", Date.now() - __compile0, { codeLen: wrapped.length, cached: __cachedBc ? 1 : 0 });
     if (loadStatus !== lua.LUA_OK) {
       const err = toJS(lua.lua_tostring(L, -1));
       flogErr(`execute: luaL_loadstring failed — ${err}`);
@@ -357,7 +393,9 @@ end
     }
     fverbose(`execute: luaL_loadstring OK`);
     const topBefore = lua.lua_gettop(L);
+    const __run0 = perfEnabled() ? Date.now() : 0;
     const runStatus = lua.lua_pcall(L, 0, lua.LUA_MULTRET, 0);
+    if (__run0) perfRecord("lua.runChunk", Date.now() - __run0);
     if (runStatus !== lua.LUA_OK) {
       const err = toJS(lua.lua_tostring(L, -1));
       flogErr(`execute: main chunk pcall FAILED — ${err}`);
@@ -431,5 +469,9 @@ end
     throw err;
   } finally {
     try { lua.lua_close(L); } catch { /* */ }
+    if (perfEnabled()) {
+      perfRecord("lua.execute", Date.now() - tStart, { codeLen: codeStr.length });
+      perfBump(`lua.execute.entry:${String(opts.entry ?? "<none>")}`);
+    }
   }
 }

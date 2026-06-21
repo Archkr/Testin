@@ -43,6 +43,17 @@ const _logFlush           = makeSafeLogger('runtime.flush');
 const _logLuaPrint        = makeSafeLogger('runtime.lua');
 const _logCbs             = makeSafeLogger('runtime.cbs');
 
+type WasmoonExec = (
+  code: string,
+  globals: Record<string, unknown>,
+  opts: { entry?: string; args?: readonly unknown[]; wasmoonKey: string },
+) => Promise<unknown>;
+let _wasmoonExec: WasmoonExec | null = null;
+export function setWasmoonExecutor(fn: WasmoonExec): void { _wasmoonExec = fn; }
+let _wasmoonEnabled = true;
+export function setWasmoonEnabled(b: boolean): void { _wasmoonEnabled = b; }
+export function isWasmoonEnabled(): boolean { return _wasmoonEnabled; }
+
 // Per-process alert gate so a Lua loop calling cbs() doesn't stack modals.
 let _cbsUnresolvedAlertFired = false;
 function warnCbsUnresolvedOnce(api: HostApi): void {
@@ -241,6 +252,10 @@ export async function makeRisuTriggerRuntime(
     opts.resolveTemplate ?? dispatchCtx.resolveTemplate;
   const auxParamsWire = samplersToWire(auxSamplers);
   const submodelParamsWire = samplersToWire(submodelSamplers);
+  const auxPrefillCompat: boolean =
+    Boolean(opts.auxPrefillCompat ?? dispatchCtx.auxPrefillCompat ?? false);
+  const submodelPrefillCompat: boolean =
+    Boolean(opts.submodelPrefillCompat ?? dispatchCtx.submodelPrefillCompat ?? auxPrefillCompat);
   function notifyStateChanged(source: string): void {
     if (!stateChanged) {
       _logStateChanged.info(`source=${source} → <no-callback> (no-op)`);
@@ -438,7 +453,7 @@ export async function makeRisuTriggerRuntime(
         const joined = msgs.map((m) => toStr(m.content)).join('\n').toLowerCase();
         const cond = co['condition'];
         pass = cond === 'loose' ? joined.indexOf(needle) >= 0
-          : cond === 'regex' ? new RegExp(needle).test(joined)
+          : cond === 'regex' ? (() => { try { return new RegExp(needle).test(joined); } catch { return joined.indexOf(needle) >= 0; } })()
           : joined.split(/\s+/).indexOf(needle) >= 0;
       } else {
         const source = type === 'value' ? toStr(co['var']) : getVar(toStr(co['var']));
@@ -504,6 +519,8 @@ export async function makeRisuTriggerRuntime(
         submodelConnectionId,
         submodelModelOverride,
         submodelParamsWire,
+        submodelPrefillCompat,
+        auxPrefillCompat,
         ...(auxDebugCapture ? { auxDebugCapture } : {}),
       },
       value,
@@ -586,8 +603,11 @@ export async function makeRisuTriggerRuntime(
     rverbose(`calling lua.execute entry=${String(effective['entry'])} args=${JSON.stringify(effective['args'])}`);
     const globals = makeRisuLuaGlobals();
     rverbose(`globals keys=${Object.keys(globals).length}: ${Object.keys(globals).slice(0, 20).join(',')}${Object.keys(globals).length > 20 ? '…' : ''}`);
+    const wasmoonKey = typeof effective['wasmoonKey'] === 'string' ? effective['wasmoonKey'] as string : null;
     try {
-      const result = await lua.execute(codeStr, globals, effective);
+      const result = (wasmoonKey && _wasmoonExec && _wasmoonEnabled)
+        ? await _wasmoonExec(codeStr, globals, { entry: String(effective['entry']), args: effective['args'] as readonly unknown[], wasmoonKey })
+        : await lua.execute(codeStr, globals, effective);
       const preview = result === undefined ? 'undefined' : String(JSON.stringify(result) ?? '').slice(0, 200);
       rlog(`DONE elapsed=${Date.now() - tStart}ms result_type=${typeof result} result_preview=${preview}`);
       if (result === false) stopSending = true;
@@ -649,7 +669,7 @@ export async function makeRisuTriggerRuntime(
         const m = messagesCache[real];
         // Risu chat.message[i].role is 'user' | 'char' (scriptings.ts:154-165,182).
         // Cards branch on `msg.role == "char"`; surface Lumi roles in Risu shape.
-        return m ? JSON.stringify({ role: lumiRoleToRisu(m.role), data: toStr(m.content) }) : JSON.stringify({ role: '', data: '' });
+        return m ? JSON.stringify({ role: lumiRoleToRisu(m.role), data: toStr(m.content) }) : JSON.stringify(null);
       },
       setChat: (_id: unknown, index: unknown, value: unknown) => {
         const n = Number(index);
@@ -663,8 +683,7 @@ export async function makeRisuTriggerRuntime(
           return;
         }
         // Doc-boundary normalize. Strips DOCTYPE/html/head/body tags, wraps
-        // leading style so DOMPurify keeps the CSS. Fixed-position Lua-emitted
-        // content is lifted at render time by message-portal, no write-time wrap.
+        // leading style so DOMPurify keeps the CSS.
         const raw = normalizeReplaceStringForSanitizer(toStr(value));
         const msgId = messagesCache[real]!.id;
         const prevContent = messagesCache[real]!.content;
@@ -865,7 +884,7 @@ export async function makeRisuTriggerRuntime(
         const msgs = parseLuaPromptArg(promptStr);
         const tStart = Date.now();
         try {
-          const r = await api.llm.generate({ messages: msgs });
+          const r = await api.llm.generate({ messages: msgs, ...(auxPrefillCompat ? { prefillCompat: true } : {}) });
           const out = toStr(r && r.content);
           _logLLMMain.info(
             `msgs=${msgs.length} elapsed=${Date.now() - tStart}ms ` +
@@ -899,11 +918,13 @@ export async function makeRisuTriggerRuntime(
           model?: string;
           connectionId?: string;
           parameters?: Record<string, number>;
+          prefillCompat?: boolean;
         } = {
           messages: msgs,
           ...(auxConnectionId ? { connectionId: auxConnectionId } : {}),
           ...(auxModelOverride ? { model: auxModelOverride } : {}),
           ...(auxParamsWire ? { parameters: auxParamsWire } : {}),
+          ...(auxPrefillCompat ? { prefillCompat: true } : {}),
         };
         if (auxDebugCapture) {
           try {
@@ -966,7 +987,7 @@ export async function makeRisuTriggerRuntime(
         if (!api.llm?.generate) {
           throw new Error('risu-compat: lua.simpleLLM requires api.llm.generate');
         }
-        const r = await api.llm.generate({ messages: [{ role: 'user', content: toStr(prompt) }] });
+        const r = await api.llm.generate({ messages: [{ role: 'user', content: toStr(prompt) }], ...(auxPrefillCompat ? { prefillCompat: true } : {}) });
         return toStr(r && r.content);
       },
       hash: (_id: unknown, value: unknown) => {

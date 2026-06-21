@@ -45,10 +45,10 @@ import {
   GENERATION_ENDED_BINDINGS,
   type ActiveCard,
 } from './interpreter/dispatch.js';
-import { type CompiledTriggerEntry } from './interpreter/dispatcher.js';
+import { type CompiledTriggerEntry, prepareTriggers } from './interpreter/dispatcher.js';
 import { parseDirectLorebook } from './payload/lorebook-direct-import.js';
 import { mapLoreBook } from './core/mappers/lorebook.js';
-import { registerAll as registerAllMacros } from './interpreter/macros.js';
+import { registerAll as registerAllMacros, clearMacroVarOverlay } from './interpreter/macros.js';
 import { setActiveAssetIndexes, clearActiveAssetIndexes } from './interpreter/asset-cache.js';
 import {
   setActiveCharacterImage,
@@ -88,6 +88,7 @@ import { createLorebookImporter } from './state/lorebook-import.js';
 import { createModuleUploader } from './state/module-upload.js';
 import { createOrphanOrchestrator } from './state/orphan-orchestrator.js';
 import type { Handler, HandlerCallCtx, HandlerRegistry } from './handlers/types.js';
+import { createDisplayWritebackHandlers } from './handlers/display-writeback.js';
 import { createScreenHandlers } from './handlers/screen.js';
 import { createConsentHandlers } from './handlers/consent.js';
 import { createConnectionsHandlers } from './handlers/connections.js';
@@ -110,6 +111,10 @@ import { createOrphanHandlers } from './handlers/orphan.js';
 import { createRepairHandlers } from './handlers/repair.js';
 import { createLifecycleEventHandlers } from './events/lifecycle.js';
 import { createLumiInterceptors } from './interceptors/lumi-hooks.js';
+import {
+  createPromptRegexRunnerClient,
+  isPromptRegexRunnerAvailable,
+} from './interceptors/prompt-regex-runner-client.js';
 import { createReadonlyResolver } from './state/readonly-resolver.js';
 import { createBgHtmlRefresher } from './state/bg-html.js';
 import { createTriggerDispatcher } from './state/trigger-dispatch.js';
@@ -124,8 +129,8 @@ import {
   makeSeedAuthorsNoteFromDepthPrompt,
   makeMaybeFinalizeImport,
 } from './boot/misc.js';
-import { makePromptOrphanReviewIfAny } from './boot/orphan-review.js';
 import { createVariablesTogglesService } from './state/variables-toggles.js';
+import { assembleDisplaySnapshot } from './state/display-snapshot-assembly.js';
 import { createSettingsService } from './state/settings-service.js';
 import { makeCaptureUserId } from './boot/capture-user.js';
 import { createImportCardOrchestrator } from './boot/import-card.js';
@@ -373,13 +378,13 @@ const variableState = new VariableStateStore();
 const toggleState = new ToggleStateStore();
 
 function scheduleStateChangedRefresh(chatId: string, userId: string | undefined): void {
-  log.info(`scheduleStateChangedRefresh: scheduling for chat=${chatId}`);
+  log.debug(`scheduleStateChangedRefresh: scheduling for chat=${chatId}`);
   scheduleDebouncedRefresh(
     chatId,
     async () => {
       const active = activeCardByChat.get(chatId);
       if (!active) {
-        log.info(`scheduleStateChangedRefresh: skipped (no active card) chat=${chatId}`);
+        log.debug(`scheduleStateChangedRefresh: skipped (no active card) chat=${chatId}`);
         return;
       }
       const t0 = Date.now();
@@ -391,7 +396,7 @@ function scheduleStateChangedRefresh(chatId: string, userId: string | undefined)
       invalidateMacroInterceptorForChat(chatId);
       await refreshBgHtml(active, chatId, userId);
       await refreshVariables(active, chatId, userId);
-      log.info(`scheduleStateChangedRefresh: completed chat=${chatId} elapsed=${Date.now() - t0}ms`);
+      log.debug(`scheduleStateChangedRefresh: completed chat=${chatId} elapsed=${Date.now() - t0}ms`);
     },
     (err) => log.error(`scheduleStateChangedRefresh: refresh threw chat=${chatId}: ${errMsg(err)}`),
   );
@@ -444,6 +449,7 @@ const deleteCardByChar = makeDeleteCardByChar({
   toggleState,
   listCards,
   pushCards,
+  onActiveChatEvicted: dropPromptRegexOwnershipForChat,
   log,
 });
 
@@ -530,22 +536,9 @@ const listStaleCharRegexIds = (userId: string) => orphanOrchestrator.listStaleCh
 const deleteRegexIds = (userId: string, ids: readonly string[]) => orphanOrchestrator.deleteRegexIds(userId, ids);
 const clearDeadJournals = (userId: string) => orphanOrchestrator.clearDeadJournals(userId);
 
-const promptOrphanReviewIfAny = makePromptOrphanReviewIfAny({
-  detectDeletedWhileOff,
-  journalStorage,
-  clearImageJournal,
-  clearModuleImageJournal,
-  queueModalConfirm,
-  toastFor,
-  send,
-  log,
-  errMsg,
-});
-
 const captureUserId = makeCaptureUserId({
   capturedUserIds,
   getSettingsForUser,
-  promptOrphanReviewIfAny,
   // Trampolines: massMigrations is declared further down, this closure resolves it at call time.
   runMassModuleMigrationIfNeeded: (uid) => massMigrations.runMassModuleMigrationIfNeeded(uid),
   runMassCharacterMigrationIfNeeded: (uid) => massMigrations.runMassCharacterMigrationIfNeeded(uid),
@@ -726,7 +719,7 @@ async function ensureLogStateLoaded(userId: string): Promise<void> {
 }
 async function listCards(userId: string | undefined): Promise<readonly CardSummary[]> {
   const t0 = Date.now();
-  log.info(`listCards: start userId=${userId ?? '<none>'}`);
+  log.debug(`listCards: start userId=${userId ?? '<none>'}`);
   if (userId === undefined) {
     log.info(`listCards: userId not yet captured, returning empty`);
     return [];
@@ -747,7 +740,7 @@ async function listCards(userId: string | undefined): Promise<readonly CardSumma
     };
   });
   summaries.sort((a, b) => b.stored_at - a.stored_at);
-  log.info(`listCards: done count=${summaries.length} elapsed=${Date.now() - t0}ms`);
+  log.debug(`listCards: done count=${summaries.length} elapsed=${Date.now() - t0}ms`);
   return summaries;
 }
 
@@ -802,6 +795,85 @@ function dumpPayload(raw: unknown): string {
 // succeed before any frontend message arrives.
 
 // Decoupled from bg-html paint so empty-bg cards activate.
+const FE_DISPLAY_ENABLED = (() => {
+  const v = (globalThis as { Bun?: { env?: Record<string, string | undefined> } }).Bun?.env?.LUMIREALM_FE_DISPLAY;
+  return v !== '0' && v !== 'false';
+})();
+
+const PROMPT_REGEX_ENV = (() => {
+  const v = (globalThis as { Bun?: { env?: Record<string, string | undefined> } }).Bun?.env?.LUMIREALM_PROMPT_REGEX;
+  return v !== '0' && v !== 'false';
+})();
+
+const PROMPT_REGEX_RUNNER_AVAILABLE = isPromptRegexRunnerAvailable();
+
+// The host-skip side of the apply<=>skip invariant rides spindle.promptRegex.setOwnedChats.
+// A host that exposes backendProcesses but predates that plumbing would never be told to skip,
+// so claiming authority there would double-apply (host pass + inline pass). Require both.
+const PROMPT_REGEX_HOST_OWNERSHIP_AVAILABLE = typeof (
+  spindle as unknown as { promptRegex?: { setOwnedChats?: unknown } }
+).promptRegex?.setOwnedChats === 'function';
+
+const PROMPT_REGEX_ACTIVE =
+  PROMPT_REGEX_ENV && PROMPT_REGEX_RUNNER_AVAILABLE && PROMPT_REGEX_HOST_OWNERSHIP_AVAILABLE;
+
+if (PROMPT_REGEX_ENV && !PROMPT_REGEX_RUNNER_AVAILABLE) {
+  log.warn(
+    'Inline prompt regex is enabled (LUMIREALM_PROMPT_REGEX) but spindle.backendProcesses is unavailable ' +
+      'on this host; declining prompt-regex ownership so the host keeps running its own sandboxed pass. ' +
+      'Upgrade Lumiverse to enable inline prompt regex in a killable subprocess.',
+  );
+} else if (PROMPT_REGEX_ENV && !PROMPT_REGEX_HOST_OWNERSHIP_AVAILABLE) {
+  log.warn(
+    'Inline prompt regex is enabled (LUMIREALM_PROMPT_REGEX) and backendProcesses is available, but ' +
+      'spindle.promptRegex.setOwnedChats is missing on this host; declining prompt-regex ownership so the host ' +
+      'keeps its own pass (a host that cannot be told to skip would otherwise double-apply). Upgrade Lumiverse to ' +
+      'enable inline prompt regex.',
+  );
+}
+
+const promptRegexRunnerClient = PROMPT_REGEX_ACTIVE
+  ? createPromptRegexRunnerClient({ log, errMsg })
+  : null;
+
+const promptRegexOwnedByUser = new Map<string, string>();
+let promptRegexOwnedSnapshot = '';
+
+function syncPromptRegexOwnedChats(): void {
+  if (!PROMPT_REGEX_ACTIVE) return;
+  const owned = new Set<string>();
+  for (const chatId of promptRegexOwnedByUser.values()) owned.add(chatId);
+  const next = [...owned].sort().join(' ');
+  if (next === promptRegexOwnedSnapshot) return;
+  promptRegexOwnedSnapshot = next;
+  const api = (spindle as unknown as { promptRegex?: { setOwnedChats?: (ids: string[]) => void } }).promptRegex;
+  if (!api?.setOwnedChats) return;
+  try {
+    api.setOwnedChats([...owned]);
+  } catch (err) {
+    log.warn(`syncPromptRegexOwnedChats: ${(err as Error).message}`);
+  }
+}
+
+function dropPromptRegexOwnershipForChat(chatId: string): void {
+  if (!PROMPT_REGEX_ACTIVE) return;
+  let dropped = false;
+  for (const [uid, owned] of promptRegexOwnedByUser) {
+    if (owned === chatId) {
+      promptRegexOwnedByUser.delete(uid);
+      dropped = true;
+    }
+  }
+  if (dropped) syncPromptRegexOwnedChats();
+}
+
+function isPromptRegexOwnedChat(chatId: string): boolean {
+  for (const owned of promptRegexOwnedByUser.values()) {
+    if (owned === chatId) return true;
+  }
+  return false;
+}
+
 function sendSetActiveChat(
   activeChatId: string | null,
   activeCharacterId: string | null,
@@ -811,6 +883,33 @@ function sendSetActiveChat(
     send({ type: 'set_active_chat', chatId: activeChatId, characterId: activeCharacterId }, userId);
   } catch (err) {
     log.warn(`sendSetActiveChat: ${(err as Error).message}`);
+  }
+  if (PROMPT_REGEX_ACTIVE && userId !== undefined) {
+    const nowOwned = activeChatId !== null;
+    const prevOwned = promptRegexOwnedByUser.get(userId);
+    if (nowOwned) {
+      if (prevOwned !== activeChatId) {
+        promptRegexOwnedByUser.set(userId, activeChatId!);
+        // Prove the killable runner can spawn BEFORE relying on the host-skip we just
+        // declared. The skip is now in effect; if the runner can't come up, the inline
+        // pass can't run and the prompt would ship un-regex'd, so drop the claim (the host
+        // resumes its own pass). Fire-and-forget — chat-open must not block on spawn.
+        const claimedChat = activeChatId!;
+        const claimingUser = userId;
+        void promptRegexRunnerClient?.warmUp(claimingUser).then((ok) => {
+          if (ok) return;
+          if (promptRegexOwnedByUser.get(claimingUser) !== claimedChat) return;
+          log.error(
+            `prompt-regex: runner warm-up failed for chat=${claimedChat}; dropping ownership so the host resumes its own prompt-regex pass.`,
+          );
+          promptRegexOwnedByUser.delete(claimingUser);
+          syncPromptRegexOwnedChats();
+        });
+      }
+    } else if (prevOwned !== undefined) {
+      promptRegexOwnedByUser.delete(userId);
+    }
+    syncPromptRegexOwnedChats();
   }
 }
 
@@ -930,6 +1029,7 @@ const applySvgRasterIndex = createApplySvgRasterIndex({
   ensureActiveCardForChat,
   invalidateRenderMcpForChat,
   invalidateMacroInterceptorForChat,
+  onActiveChatEvicted: dropPromptRegexOwnershipForChat,
   refreshBgHtml,
   log,
   errMsg,
@@ -946,6 +1046,34 @@ const variablesTogglesService = createVariablesTogglesService({
   ensureActiveCardForChat,
   refreshBgHtml,
   send,
+  pushDisplaySnapshot: (active, chatId, userId, vars) => {
+    if (!FE_DISPLAY_ENABLED) return;
+    void assembleDisplaySnapshot(
+      {
+        modulesByNamespaceFromCard,
+        legacyMediaFindings: (uid) => getCachedSettingsSync(uid).legacyMediaFindings,
+        getCompiledLibraries: (a) => {
+          const cid = a.card.character_id;
+          let compiled = compiledByCharacter.get(cid);
+          if (!compiled) {
+            try {
+              compiled = prepareTriggers(a.card.risuPayload, cid);
+              compiledByCharacter.set(cid, compiled);
+            } catch {
+              compiled = [];
+            }
+          }
+          return compiled.filter((e) => e.type === 'library');
+        },
+      },
+      active,
+      chatId,
+      userId,
+      vars,
+    )
+      .then((snapshot) => { send({ type: 'display_snapshot', snapshot }, userId); })
+      .catch((err) => { log.warn(`pushDisplaySnapshot: assemble failed chat=${chatId}: ${errMsg(err)}`); });
+  },
   log,
   errMsg,
 });
@@ -971,10 +1099,18 @@ const runBinding = triggerDispatcher.runBinding;
 const dispatchManualTrigger = triggerDispatcher.dispatchManualTrigger;
 const dispatchButtonClick = triggerDispatcher.dispatchButtonClick;
 
+const feDisplayShadowOptOut = new Set<string>();
+
 createLumiInterceptors({
   activeCardByChat,
   lastActiveChatByUser,
   captureUserId,
+  isFeDisplayAuthoritative: (chatId) => FE_DISPLAY_ENABLED && !feDisplayShadowOptOut.has(chatId),
+  isPromptRegexAuthoritative: (chatId: string) => PROMPT_REGEX_ACTIVE && isPromptRegexOwnedChat(chatId),
+  dispatchPromptRegex: (prebuilt, scripts, messages, userId) =>
+    promptRegexRunnerClient
+      ? promptRegexRunnerClient.dispatch(prebuilt, scripts, messages, userId)
+      : Promise.resolve({ ok: false, changed: false, messages }),
   ensureActiveCardForChat,
   getCachedSettingsSync,
   modulesByNamespaceFromCard,
@@ -992,7 +1128,7 @@ async function refreshMessagesCache(chatId: string, _userId: string | undefined)
   if (existing) return existing;
   const task = (async () => {
     try {
-      const raw = (await spindle.chat.getMessages(chatId)) as readonly Record<string, unknown>[];
+      const raw = (await spindle.chat.getMessages(chatId)) as unknown as readonly Record<string, unknown>[];
       const arr = Array.isArray(raw) ? raw : [];
       const sliced = arr.length > 0 && arr[0] && arr[0].role !== 'user' ? arr.slice(1) : arr;
       const msgs = sliced.map((m) => {
@@ -1028,6 +1164,7 @@ const lifecycleHandlers = createLifecycleEventHandlers({
   ensureActiveCardForChat,
   // Trampoline: characterModuleAttach is wired below, this defers the lookup to call time.
   invalidateActiveForCharacter: (characterId, userId) => characterModuleAttach.invalidateActiveForCharacter(characterId, userId),
+  onActiveChatEvicted: dropPromptRegexOwnershipForChat,
   invalidateRenderMcpForChat,
   invalidateRenderMcpForMessage,
   invalidateMacroInterceptorForChat,
@@ -1039,6 +1176,7 @@ const lifecycleHandlers = createLifecycleEventHandlers({
   clearActiveScriptstateDefaults,
   clearActiveLorebook,
   clearVarOverlay,
+  clearMacroVarOverlay,
   refreshBgHtml,
   refreshVariables,
   refreshToggleDefinitions,
@@ -1049,6 +1187,13 @@ const lifecycleHandlers = createLifecycleEventHandlers({
   consumeIfOurWrite,
   send,
   sendSetActiveChat,
+  setChatStyleMode: (chatId, mode, userId) => {
+    const setter = (spindle.chat as { setStyleMode?: (chatId: string, mode: 'bounded' | 'extension-relaxed', userId?: string) => Promise<void> }).setStyleMode;
+    if (typeof setter !== 'function') return;
+    setter.call(spindle.chat, chatId, mode, userId).catch((err: unknown) => {
+      log.warn(`setChatStyleMode chat=${chatId} mode=${mode}: ${errMsg(err)}`);
+    });
+  },
   listCards,
   pushCards,
   deleteCardByChar,
@@ -1274,6 +1419,7 @@ const characterModuleAttach = createCharacterModuleAttach({
   refreshToggleDefinitions,
   refreshBgHtml,
   send,
+  onActiveChatEvicted: dropPromptRegexOwnershipForChat,
   log,
   errMsg,
 });
@@ -1350,6 +1496,7 @@ const massMigrations = createMassMigrationsRunner({
       data: e.data,
     }));
   },
+  writeLumirealm: (userId, characterId, data) => writeLumirealm(charactersApi(), characterId, data, userId),
   runModuleMigration,
   runCharacterMigration,
   emitOperationProgress,
@@ -1614,6 +1761,11 @@ const handlerRegistry: HandlerRegistry = {
   ...logHandlers,
   ...orphanHandlers,
   ...repairHandlers,
+  ...createDisplayWritebackHandlers(),
+  display_authority: async (msg) => {
+    if (msg.authoritative) feDisplayShadowOptOut.delete(msg.chatId);
+    else feDisplayShadowOptOut.add(msg.chatId);
+  },
 };
 
 spindle.onFrontendMessage(userScoped(async (raw, userId) => {
