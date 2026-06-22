@@ -794,6 +794,30 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
     return 'image';
   }
 
+  function downloadFilenameForAsset(a: ViewerAssetEntry): string {
+    const safeBase = a.name
+      .replace(/[<>:"/\\|?*\x00-\x1f]/g, '_')
+      .trim()
+      .replace(/[. ]+$/g, '');
+    const base = safeBase.length > 0 ? safeBase : 'asset';
+    const ext = a.ext
+      ?.replace(/^\.+/, '')
+      .replace(/[<>:"/\\|?*\x00-\x1f]/g, '_')
+      .trim();
+    if (!ext) return avoidReservedDownloadName(base);
+    const suffix = `.${ext}`;
+    return avoidReservedDownloadName(
+      base.toLowerCase().endsWith(suffix.toLowerCase()) ? base : `${base}${suffix}`,
+    );
+  }
+
+  function avoidReservedDownloadName(filename: string): string {
+    const dot = filename.lastIndexOf('.');
+    const stem = dot > 0 ? filename.slice(0, dot) : filename;
+    if (!/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(stem)) return filename;
+    return dot > 0 ? `${stem}_${filename.slice(dot)}` : `${filename}_`;
+  }
+
   function renderAssetTile(a: ViewerAssetEntry): HTMLDivElement {
     const tile = document.createElement('div');
     tile.className = 'lrv-asset-tile';
@@ -873,6 +897,14 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
       openBtn.target = '_blank';
       openBtn.rel = 'noopener noreferrer';
       actions.appendChild(openBtn);
+      const downloadBtn = document.createElement('a');
+      const downloadFilename = downloadFilenameForAsset(a);
+      downloadBtn.className = 'lrv-asset-action';
+      downloadBtn.textContent = 'Download';
+      downloadBtn.title = `Download "${a.name}" as "${downloadFilename}".`;
+      downloadBtn.href = a.url;
+      downloadBtn.download = downloadFilename;
+      actions.appendChild(downloadBtn);
       const renameBtn = document.createElement('button');
       renameBtn.type = 'button';
       renameBtn.className = 'lrv-asset-action';

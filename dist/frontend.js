@@ -31989,9 +31989,10 @@ var styles_default = `.risu-compat-drawer {\r
   color: var(--lumiverse-danger, rgba(255, 130, 130, 0.95));\r
 }\r
 \r
-/* Asset action buttons (per-tile rename/delete) */\r
+/* Asset action buttons (per-tile open/download/rename/delete) */\r
 .lr-viewer-drawer .lrv-asset-actions {\r
   display: flex;\r
+  flex-wrap: wrap;\r
   gap: 4px;\r
   margin-top: 4px;\r
   opacity: 0.55;\r
@@ -32010,7 +32011,7 @@ var styles_default = `.risu-compat-drawer {\r
   padding: 2px 6px;\r
   font-size: 10px;\r
   cursor: pointer;\r
-  flex: 1 1 auto;\r
+  flex: 1 1 58px;\r
   text-decoration: none;\r
   text-align: center;\r
   display: inline-block;\r
@@ -38561,6 +38562,22 @@ affection=0`;
       return "audio";
     return "image";
   }
+  function downloadFilenameForAsset(a) {
+    const safeBase = a.name.replace(/[<>:"/\\|?*\x00-\x1f]/g, "_").trim().replace(/[. ]+$/g, "");
+    const base = safeBase.length > 0 ? safeBase : "asset";
+    const ext = a.ext?.replace(/^\.+/, "").replace(/[<>:"/\\|?*\x00-\x1f]/g, "_").trim();
+    if (!ext)
+      return avoidReservedDownloadName(base);
+    const suffix = `.${ext}`;
+    return avoidReservedDownloadName(base.toLowerCase().endsWith(suffix.toLowerCase()) ? base : `${base}${suffix}`);
+  }
+  function avoidReservedDownloadName(filename) {
+    const dot = filename.lastIndexOf(".");
+    const stem = dot > 0 ? filename.slice(0, dot) : filename;
+    if (!/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(stem))
+      return filename;
+    return dot > 0 ? `${stem}_${filename.slice(dot)}` : `${filename}_`;
+  }
   function renderAssetTile(a) {
     const tile = document.createElement("div");
     tile.className = "lrv-asset-tile";
@@ -38651,6 +38668,14 @@ affection=0`;
       openBtn.target = "_blank";
       openBtn.rel = "noopener noreferrer";
       actions.appendChild(openBtn);
+      const downloadBtn = document.createElement("a");
+      const downloadFilename = downloadFilenameForAsset(a);
+      downloadBtn.className = "lrv-asset-action";
+      downloadBtn.textContent = "Download";
+      downloadBtn.title = `Download "${a.name}" as "${downloadFilename}".`;
+      downloadBtn.href = a.url;
+      downloadBtn.download = downloadFilename;
+      actions.appendChild(downloadBtn);
       const renameBtn = document.createElement("button");
       renameBtn.type = "button";
       renameBtn.className = "lrv-asset-action";

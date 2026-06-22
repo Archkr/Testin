@@ -2463,9 +2463,10 @@
   color: var(--lumiverse-danger, rgba(255, 130, 130, 0.95));
 }
 
-/* Asset action buttons (per-tile rename/delete) */
+/* Asset action buttons (per-tile open/download/rename/delete) */
 .lr-viewer-drawer .lrv-asset-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 4px;
   margin-top: 4px;
   opacity: 0.55;
@@ -2484,7 +2485,7 @@
   padding: 2px 6px;
   font-size: 10px;
   cursor: pointer;
-  flex: 1 1 auto;
+  flex: 1 1 58px;
   text-decoration: none;
   text-align: center;
   display: inline-block;
