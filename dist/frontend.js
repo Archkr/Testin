@@ -38578,6 +38578,26 @@ affection=0`;
       return filename;
     return dot > 0 ? `${stem}_${filename.slice(dot)}` : `${filename}_`;
   }
+  async function downloadAsset(a) {
+    const filename = downloadFilenameForAsset(a);
+    try {
+      const resp = await fetch(a.url, { credentials: "include" });
+      if (!resp.ok)
+        throw new Error(`HTTP ${resp.status}`);
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.setTimeout(() => URL.revokeObjectURL(url), 0);
+    } catch (err) {
+      log.error(`viewer-panel: download failed name="${a.name}"`, err);
+      window.alert(`Download failed: ${errMsg(err)}`);
+    }
+  }
   function renderAssetTile(a) {
     const tile = document.createElement("div");
     tile.className = "lrv-asset-tile";
@@ -38668,13 +38688,15 @@ affection=0`;
       openBtn.target = "_blank";
       openBtn.rel = "noopener noreferrer";
       actions.appendChild(openBtn);
-      const downloadBtn = document.createElement("a");
+      const downloadBtn = document.createElement("button");
       const downloadFilename = downloadFilenameForAsset(a);
+      downloadBtn.type = "button";
       downloadBtn.className = "lrv-asset-action";
       downloadBtn.textContent = "Download";
       downloadBtn.title = `Download "${a.name}" as "${downloadFilename}".`;
-      downloadBtn.href = a.url;
-      downloadBtn.download = downloadFilename;
+      downloadBtn.addEventListener("click", () => {
+        void downloadAsset(a);
+      });
       actions.appendChild(downloadBtn);
       const renameBtn = document.createElement("button");
       renameBtn.type = "button";
