@@ -31729,6 +31729,10 @@ var styles_default = `.risu-compat-drawer {\r
   background: var(--lumiverse-fill, rgba(255, 255, 255, 0.08));\r
   border-color: var(--lumiverse-primary, rgba(120, 160, 255, 0.55));\r
 }\r
+.lr-viewer-drawer .lrv-btn:disabled {\r
+  cursor: not-allowed;\r
+  opacity: 0.45;\r
+}\r
 .lr-viewer-drawer .lrv-current-btn {\r
   appearance: none;\r
   border: 0;\r
@@ -32102,6 +32106,10 @@ var styles_default = `.risu-compat-drawer {\r
   padding: 4px;\r
   min-width: 0;\r
 }\r
+.lr-viewer-drawer .lrv-asset-tile-selected {\r
+  border-color: var(--lumiverse-primary, rgba(120, 160, 255, 0.65));\r
+  background: rgba(120, 160, 255, 0.08);\r
+}\r
 .lr-viewer-drawer .lrv-asset-media {\r
   width: 100%;\r
   flex: 1 1 auto;\r
@@ -32167,6 +32175,16 @@ var styles_default = `.risu-compat-drawer {\r
   flex-direction: column;\r
   gap: 1px;\r
   min-width: 0;\r
+}\r
+.lr-viewer-drawer .lrv-asset-name-row {\r
+  display: flex;\r
+  align-items: center;\r
+  gap: 4px;\r
+  min-width: 0;\r
+}\r
+.lr-viewer-drawer .lrv-asset-select {\r
+  flex: 0 0 auto;\r
+  margin: 0;\r
 }\r
 .lr-viewer-drawer .lrv-asset-name {\r
   font-size: 11px;\r
@@ -37902,6 +37920,7 @@ function mountViewerPanel(opts) {
   const ASSET_TILE_H = 220;
   const ASSET_OVERSCAN_ROWS = 2;
   let assetSearchTerm = "";
+  const selectedAssetNames = new Set;
   let assetPagesShown = 1;
   const attachedByCharacter = new Map;
   let assetUploadStatus = null;
@@ -38086,6 +38105,7 @@ function mountViewerPanel(opts) {
     bgHtmlTextBuffer = null;
     renamingAssetName = null;
     assetSearchTerm = "";
+    selectedAssetNames.clear();
     activeSubTab = o.kind === "character" ? "notes" : "assets";
     assetPagesShown = 1;
     renderStatus();
@@ -38468,6 +38488,10 @@ affection=0`;
   }
   function renderAssetsSection(assets) {
     const det = document.createElement("section");
+    pruneAssetSelection(assets);
+    const term = assetSearchTerm.trim().toLowerCase();
+    const filtered = term ? assets.filter((a) => a.name.toLowerCase().includes(term)) : assets;
+    const selectedAssets = assets.filter((a) => selectedAssetNames.has(a.name));
     const toolbar2 = document.createElement("div");
     toolbar2.className = "lrv-asset-toolbar";
     const addBtn = document.createElement("button");
@@ -38488,6 +38512,40 @@ affection=0`;
     const filterCount = document.createElement("span");
     filterCount.className = "lrv-asset-filter-count";
     toolbar2.appendChild(filterCount);
+    const selectVisibleBtn = document.createElement("button");
+    selectVisibleBtn.type = "button";
+    selectVisibleBtn.className = "lrv-btn";
+    selectVisibleBtn.textContent = "Select all visible";
+    selectVisibleBtn.title = "Select only the assets matching the current search.";
+    selectVisibleBtn.disabled = filtered.length === 0;
+    selectVisibleBtn.addEventListener("click", () => {
+      selectedAssetNames.clear();
+      for (const a of filtered)
+        selectedAssetNames.add(a.name);
+      render();
+    });
+    toolbar2.appendChild(selectVisibleBtn);
+    const downloadSelectedBtn = document.createElement("button");
+    downloadSelectedBtn.type = "button";
+    downloadSelectedBtn.className = "lrv-btn";
+    downloadSelectedBtn.textContent = `Download selected${selectedAssets.length > 0 ? ` (${selectedAssets.length})` : ""}`;
+    downloadSelectedBtn.title = "Download all selected assets.";
+    downloadSelectedBtn.disabled = selectedAssets.length === 0;
+    downloadSelectedBtn.addEventListener("click", () => {
+      void downloadAssets(selectedAssets);
+    });
+    toolbar2.appendChild(downloadSelectedBtn);
+    if (selectedAssets.length > 0) {
+      const clearSelectedBtn = document.createElement("button");
+      clearSelectedBtn.type = "button";
+      clearSelectedBtn.className = "lrv-btn";
+      clearSelectedBtn.textContent = "Clear selection";
+      clearSelectedBtn.addEventListener("click", () => {
+        selectedAssetNames.clear();
+        render();
+      });
+      toolbar2.appendChild(clearSelectedBtn);
+    }
     if (assetUploadStatus !== null) {
       const status2 = document.createElement("span");
       status2.className = "lrv-asset-upload-status";
@@ -38498,9 +38556,8 @@ affection=0`;
       toolbar2.appendChild(status2);
     }
     det.appendChild(toolbar2);
-    const term = assetSearchTerm.trim().toLowerCase();
-    const filtered = term ? assets.filter((a) => a.name.toLowerCase().includes(term)) : assets;
-    filterCount.textContent = term ? `${filtered.length} of ${assets.length}` : "";
+    const selectedText = selectedAssets.length > 0 ? `${selectedAssets.length} selected` : "";
+    filterCount.textContent = term ? `${filtered.length} of ${assets.length}${selectedText ? ` - ${selectedText}` : ""}` : selectedText;
     if (assets.length === 0) {
       const empty = document.createElement("div");
       empty.className = "lrv-empty";
@@ -38578,7 +38635,16 @@ affection=0`;
       return filename;
     return dot > 0 ? `${stem}_${filename.slice(dot)}` : `${filename}_`;
   }
-  async function downloadAsset(a) {
+  function pruneAssetSelection(assets) {
+    if (selectedAssetNames.size === 0)
+      return;
+    const live = new Set(assets.map((a) => a.name));
+    for (const name of selectedAssetNames) {
+      if (!live.has(name))
+        selectedAssetNames.delete(name);
+    }
+  }
+  async function downloadAsset(a, alertOnError = true) {
     const filename = downloadFilenameForAsset(a);
     try {
       const resp = await fetch(a.url, { credentials: "include" });
@@ -38593,14 +38659,44 @@ affection=0`;
       link.click();
       document.body.removeChild(link);
       window.setTimeout(() => URL.revokeObjectURL(url), 0);
+      return true;
     } catch (err) {
-      log.error(`viewer-panel: download failed name="${a.name}"`, err);
-      window.alert(`Download failed: ${errMsg(err)}`);
+      log6.error(`viewer-panel: download failed name="${a.name}"`, err);
+      if (alertOnError)
+        window.alert(`Download failed: ${errMsg(err)}`);
+      return false;
     }
+  }
+  async function downloadAssets(assets) {
+    if (assets.length === 0)
+      return;
+    const failures = [];
+    const total = assets.length;
+    assetUploadStatus = { kind: "info", message: `Downloading 0/${total}...` };
+    render();
+    const progressEvery = Math.max(1, Math.floor(total / 20));
+    for (let i = 0;i < total; i++) {
+      const asset = assets[i];
+      const ok = await downloadAsset(asset, false);
+      if (!ok)
+        failures.push(asset.name);
+      if (i + 1 === total || (i + 1) % progressEvery === 0) {
+        assetUploadStatus = {
+          kind: failures.length > 0 ? "error" : "info",
+          message: `Downloading ${i + 1}/${total}${failures.length > 0 ? ` (${failures.length} failed)` : ""}...`
+        };
+        render();
+      }
+    }
+    assetUploadStatus = failures.length > 0 ? { kind: "error", message: `Downloaded ${total - failures.length}/${total}; ${failures.length} failed.` } : { kind: "info", message: `Downloaded ${total} asset${total === 1 ? "" : "s"}.` };
+    render();
   }
   function renderAssetTile(a) {
     const tile = document.createElement("div");
     tile.className = "lrv-asset-tile";
+    const selected = selectedAssetNames.has(a.name);
+    if (selected)
+      tile.classList.add("lrv-asset-tile-selected");
     const kind = assetMediaKind(a.ext);
     if (kind === "video") {
       const vid = document.createElement("video");
@@ -38664,11 +38760,27 @@ affection=0`;
         input.select();
       });
     } else {
+      const nameRow = document.createElement("label");
+      nameRow.className = "lrv-asset-name-row";
+      const selectBox = document.createElement("input");
+      selectBox.type = "checkbox";
+      selectBox.className = "lrv-asset-select";
+      selectBox.checked = selected;
+      selectBox.title = `Select "${a.name}"`;
+      selectBox.addEventListener("change", () => {
+        if (selectBox.checked)
+          selectedAssetNames.add(a.name);
+        else
+          selectedAssetNames.delete(a.name);
+        render();
+      });
+      nameRow.appendChild(selectBox);
       const nameEl = document.createElement("span");
       nameEl.className = "lrv-asset-name";
       nameEl.textContent = a.name;
       nameEl.title = a.name;
-      cap.appendChild(nameEl);
+      nameRow.appendChild(nameEl);
+      cap.appendChild(nameRow);
       const meta = document.createElement("span");
       meta.className = "lrv-asset-meta";
       const parts = [];

@@ -83,6 +83,7 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
   const ASSET_OVERSCAN_ROWS = 2;
   // Search persists across re-renders (asset rename/delete/upload).
   let assetSearchTerm = '';
+  const selectedAssetNames = new Set<string>();
   // Pagination is dead , kept the variable name elsewhere for now to minimise
   // diff churn; ignored in the new windowed renderer.
   let assetPagesShown = 1; void assetPagesShown;
@@ -279,6 +280,7 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
     bgHtmlTextBuffer = null;
     renamingAssetName = null;
     assetSearchTerm = '';
+    selectedAssetNames.clear();
     // Modules have no creator notes, jump straight to Assets.
     activeSubTab = o.kind === 'character' ? 'notes' : 'assets';
     assetPagesShown = 1;
@@ -695,6 +697,14 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
 
   function renderAssetsSection(assets: readonly ViewerAssetEntry[]): HTMLElement {
     const det = document.createElement('section');
+    pruneAssetSelection(assets);
+
+    // Filter (case-insensitive substring match on asset name).
+    const term = assetSearchTerm.trim().toLowerCase();
+    const filtered = term
+      ? assets.filter((a) => a.name.toLowerCase().includes(term))
+      : assets;
+    const selectedAssets = assets.filter((a) => selectedAssetNames.has(a.name));
 
     const toolbar = document.createElement('div');
     toolbar.className = 'lrv-asset-toolbar';
@@ -714,6 +724,37 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
     const filterCount = document.createElement('span');
     filterCount.className = 'lrv-asset-filter-count';
     toolbar.appendChild(filterCount);
+    const selectVisibleBtn = document.createElement('button');
+    selectVisibleBtn.type = 'button';
+    selectVisibleBtn.className = 'lrv-btn';
+    selectVisibleBtn.textContent = 'Select all visible';
+    selectVisibleBtn.title = 'Select only the assets matching the current search.';
+    selectVisibleBtn.disabled = filtered.length === 0;
+    selectVisibleBtn.addEventListener('click', () => {
+      selectedAssetNames.clear();
+      for (const a of filtered) selectedAssetNames.add(a.name);
+      render();
+    });
+    toolbar.appendChild(selectVisibleBtn);
+    const downloadSelectedBtn = document.createElement('button');
+    downloadSelectedBtn.type = 'button';
+    downloadSelectedBtn.className = 'lrv-btn';
+    downloadSelectedBtn.textContent = `Download selected${selectedAssets.length > 0 ? ` (${selectedAssets.length})` : ''}`;
+    downloadSelectedBtn.title = 'Download all selected assets.';
+    downloadSelectedBtn.disabled = selectedAssets.length === 0;
+    downloadSelectedBtn.addEventListener('click', () => { void downloadAssets(selectedAssets); });
+    toolbar.appendChild(downloadSelectedBtn);
+    if (selectedAssets.length > 0) {
+      const clearSelectedBtn = document.createElement('button');
+      clearSelectedBtn.type = 'button';
+      clearSelectedBtn.className = 'lrv-btn';
+      clearSelectedBtn.textContent = 'Clear selection';
+      clearSelectedBtn.addEventListener('click', () => {
+        selectedAssetNames.clear();
+        render();
+      });
+      toolbar.appendChild(clearSelectedBtn);
+    }
     if (assetUploadStatus !== null) {
       const status = document.createElement('span');
       status.className = 'lrv-asset-upload-status';
@@ -725,12 +766,10 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
     }
     det.appendChild(toolbar);
 
-    // Filter (case-insensitive substring match on asset name).
-    const term = assetSearchTerm.trim().toLowerCase();
-    const filtered = term
-      ? assets.filter((a) => a.name.toLowerCase().includes(term))
-      : assets;
-    filterCount.textContent = term ? `${filtered.length} of ${assets.length}` : '';
+    const selectedText = selectedAssets.length > 0 ? `${selectedAssets.length} selected` : '';
+    filterCount.textContent = term
+      ? `${filtered.length} of ${assets.length}${selectedText ? ` - ${selectedText}` : ''}`
+      : selectedText;
 
     if (assets.length === 0) {
       const empty = document.createElement('div');
@@ -818,7 +857,15 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
     return dot > 0 ? `${stem}_${filename.slice(dot)}` : `${filename}_`;
   }
 
-  async function downloadAsset(a: ViewerAssetEntry): Promise<void> {
+  function pruneAssetSelection(assets: readonly ViewerAssetEntry[]): void {
+    if (selectedAssetNames.size === 0) return;
+    const live = new Set(assets.map((a) => a.name));
+    for (const name of selectedAssetNames) {
+      if (!live.has(name)) selectedAssetNames.delete(name);
+    }
+  }
+
+  async function downloadAsset(a: ViewerAssetEntry, alertOnError = true): Promise<boolean> {
     const filename = downloadFilenameForAsset(a);
     try {
       const resp = await fetch(a.url, { credentials: 'include' });
@@ -832,15 +879,44 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
       link.click();
       document.body.removeChild(link);
       window.setTimeout(() => URL.revokeObjectURL(url), 0);
+      return true;
     } catch (err) {
       log.error(`viewer-panel: download failed name="${a.name}"`, err);
-      window.alert(`Download failed: ${errMsg(err)}`);
+      if (alertOnError) window.alert(`Download failed: ${errMsg(err)}`);
+      return false;
     }
+  }
+
+  async function downloadAssets(assets: readonly ViewerAssetEntry[]): Promise<void> {
+    if (assets.length === 0) return;
+    const failures: string[] = [];
+    const total = assets.length;
+    assetUploadStatus = { kind: 'info', message: `Downloading 0/${total}...` };
+    render();
+    const progressEvery = Math.max(1, Math.floor(total / 20));
+    for (let i = 0; i < total; i++) {
+      const asset = assets[i]!;
+      const ok = await downloadAsset(asset, false);
+      if (!ok) failures.push(asset.name);
+      if (i + 1 === total || (i + 1) % progressEvery === 0) {
+        assetUploadStatus = {
+          kind: failures.length > 0 ? 'error' : 'info',
+          message: `Downloading ${i + 1}/${total}${failures.length > 0 ? ` (${failures.length} failed)` : ''}...`,
+        };
+        render();
+      }
+    }
+    assetUploadStatus = failures.length > 0
+      ? { kind: 'error', message: `Downloaded ${total - failures.length}/${total}; ${failures.length} failed.` }
+      : { kind: 'info', message: `Downloaded ${total} asset${total === 1 ? '' : 's'}.` };
+    render();
   }
 
   function renderAssetTile(a: ViewerAssetEntry): HTMLDivElement {
     const tile = document.createElement('div');
     tile.className = 'lrv-asset-tile';
+    const selected = selectedAssetNames.has(a.name);
+    if (selected) tile.classList.add('lrv-asset-tile-selected');
     const kind = assetMediaKind(a.ext);
     if (kind === 'video') {
       const vid = document.createElement('video');
@@ -895,11 +971,25 @@ export function mountViewerPanel(opts: MountViewerPanelOptions): ViewerPanelHand
       cap.appendChild(cancelBtn);
       queueMicrotask(() => { input.focus(); input.select(); });
     } else {
+      const nameRow = document.createElement('label');
+      nameRow.className = 'lrv-asset-name-row';
+      const selectBox = document.createElement('input');
+      selectBox.type = 'checkbox';
+      selectBox.className = 'lrv-asset-select';
+      selectBox.checked = selected;
+      selectBox.title = `Select "${a.name}"`;
+      selectBox.addEventListener('change', () => {
+        if (selectBox.checked) selectedAssetNames.add(a.name);
+        else selectedAssetNames.delete(a.name);
+        render();
+      });
+      nameRow.appendChild(selectBox);
       const nameEl = document.createElement('span');
       nameEl.className = 'lrv-asset-name';
       nameEl.textContent = a.name;
       nameEl.title = a.name;
-      cap.appendChild(nameEl);
+      nameRow.appendChild(nameEl);
+      cap.appendChild(nameRow);
       const meta = document.createElement('span');
       meta.className = 'lrv-asset-meta';
       const parts: string[] = [];
